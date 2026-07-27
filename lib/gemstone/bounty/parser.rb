@@ -153,11 +153,9 @@ module Lich
         end
 
         def self.parse(desc = checkbounty)
-          if desc&.empty?
-            return
-          else
-            self.new(desc).parse
-          end
+          return if desc.nil? || desc.empty?
+
+          self.new(desc).parse
         end
       end
     end
