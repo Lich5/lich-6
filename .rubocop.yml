@@ -8,6 +8,7 @@ AllCops:
   Include:
     - '**/*.lic'
     - '**/*.rb'
+    - 'lich.rbw'
 
 Layout/ClosingHeredocIndentation:
   Enabled: false

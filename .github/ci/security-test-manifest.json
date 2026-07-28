@@ -1,0 +1,14 @@
+{
+  "tests": [
+    {"id":"sec-host-origin","requirement":"REQ-SEC-012","check_name":"security-host-origin","state":"pending"},
+    {"id":"sec-auth-fallback","requirement":"REQ-SEC-013","check_name":"security-auth-fallback","state":"pending"},
+    {"id":"sec-escaping","requirement":"REQ-SEC-020","check_name":"security-escaping","state":"pending"},
+    {"id":"sec-bulk-leakage","requirement":"REQ-SEC-031","check_name":"security-bulk-leakage","state":"pending","method":{"canary":"unique high-entropy value","fragments":["full","first-8","last-8"],"sinks":["bulk state payload","log line","telemetry record","error output"]}},
+    {"id":"sec-sensitive-carrier","requirement":"REQ-SEC-034","check_name":"security-sensitive-carrier","state":"pending"},
+    {"id":"sec-component-id","requirement":"REQ-SEC-070","check_name":"security-component-id","state":"pending"},
+    {"id":"sec-server-routing","requirement":"REQ-SEC-071","check_name":"security-server-routing","state":"pending"},
+    {"id":"sec-event-type","requirement":"REQ-SEC-072","check_name":"security-event-type","state":"pending"},
+    {"id":"sec-value-schema","requirement":"REQ-SEC-073","check_name":"security-value-schema","state":"pending"},
+    {"id":"sec-frame-size","requirement":"REQ-SEC-077","check_name":"security-frame-size","state":"pending"}
+  ]
+}

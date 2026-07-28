@@ -800,6 +800,7 @@ reconnect_if_wanted = proc {
     detachable_client_port: @argv_options[:detachable_client_port]
   )
   Lich::Common::SessionLifecycle.start(session_name: session_name, role: session_role)
+  LichCiStartupProbe.report! if defined?(LichCiStartupProbe)
   begin
     wait_while { $offline_mode }
 

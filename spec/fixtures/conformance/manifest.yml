@@ -1,0 +1,5 @@
+fixtures:
+  - path: minimal_trace.json
+    target_script_id: ci-foundation-fixture.lic
+    origin: synthetic CI foundation contract fixture
+    license: Lich repository license

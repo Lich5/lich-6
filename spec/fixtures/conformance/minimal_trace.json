@@ -1,0 +1,10 @@
+{
+  "script_id": "ci-foundation-fixture.lic",
+  "trace": [
+    {
+      "receiver": "Gtk::Window",
+      "method": "new",
+      "arguments": []
+    }
+  ]
+}
