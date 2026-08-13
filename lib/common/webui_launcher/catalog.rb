@@ -128,7 +128,7 @@ module Lich
             end
             character ||= {}.tap { |candidate| characters << candidate }
             character.merge!(
-              'char_name'         => entry.fetch(:char_name).to_s.capitalize,
+              'char_name'         => normalize_character_name(entry.fetch(:char_name)),
               'game_code'         => entry.fetch(:game_code).to_s,
               'game_name'         => entry[:game_name].to_s,
               'frontend'          => entry.fetch(:frontend).to_s,
@@ -159,7 +159,7 @@ module Lich
               end
 
               existing << {
-                'char_name' => character.fetch(:char_name).to_s.capitalize,
+                'char_name' => normalize_character_name(character.fetch(:char_name)),
                 'game_code' => character.fetch(:game_code).to_s,
                 'game_name' => character[:game_name].to_s,
                 'frontend'  => frontend.to_s,
@@ -193,7 +193,7 @@ module Lich
             return false if duplicate
 
             characters << {
-              'char_name'         => character.fetch(:char_name).to_s.strip.split.map(&:capitalize).join(' '),
+              'char_name'         => normalize_character_name(character.fetch(:char_name)),
               'game_code'         => character.fetch(:game_code).to_s,
               'game_name'         => character.fetch(:game_name).to_s,
               'frontend'          => character.fetch(:frontend).to_s,
@@ -215,7 +215,7 @@ module Lich
             return false unless current
 
             current.merge!(
-              'char_name'         => character.fetch(:char_name).to_s.strip.split.map(&:capitalize).join(' '),
+              'char_name'         => normalize_character_name(character.fetch(:char_name)),
               'game_code'         => character.fetch(:game_code).to_s,
               'game_name'         => character.fetch(:game_name).to_s,
               'frontend'          => character.fetch(:frontend).to_s,
@@ -287,8 +287,7 @@ module Lich
               character.delete('favorite_added')
               normalize_favorite_order(data)
             end
-            write_yaml(data)
-            favorite
+            write_yaml(data) ? favorite : nil
           end
         end
 
@@ -371,6 +370,8 @@ module Lich
           return [] unless File.exist?(file)
 
           decoded = File.open(file, 'rb') { |io| Marshal.load(io.read.unpack1('m')) }
+          return [] unless decoded.is_a?(Array) && decoded.all? { |entry| valid_legacy_entry?(entry) }
+
           decoded.map.with_index do |entry, index|
             entry.transform_keys(&:to_sym).merge(key: "entry-#{index}", encryption_mode: :plaintext)
           end
@@ -410,6 +411,17 @@ module Lich
             candidate['game_code'].to_s == metadata[:game_code].to_s &&
             candidate['frontend'].to_s == metadata[:frontend].to_s &&
             candidate['custom_launch'].to_s == metadata[:custom_launch].to_s
+        end
+
+        def normalize_character_name(value)
+          value.to_s.strip.split.map(&:capitalize).join(' ')
+        end
+
+        def valid_legacy_entry?(entry)
+          return false unless entry.is_a?(Hash)
+
+          scalar = ->(value) { value.nil? || value.is_a?(String) || value.is_a?(Symbol) || value.is_a?(Numeric) || value == true || value == false }
+          entry.all? { |key, value| scalar.call(key) && scalar.call(value) }
         end
 
         def next_favorite_order(data)

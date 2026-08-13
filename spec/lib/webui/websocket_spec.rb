@@ -16,9 +16,12 @@ RSpec.describe Lich::WebUI::WebSocket do
   it 'encodes the largest allowed frame with the RFC 64-bit length form' do
     payload = 'x' * described_class::MAX_PAYLOAD_BYTES
     frame = described_class.encode_frame(payload)
+    client_frame = described_class.encode_client_frame(payload)
 
     expect(frame.byteslice(0, 2).unpack('CC')).to eq([0x81, 127])
     expect(described_class.read_frame(StringIO.new(frame), require_mask: false).payload).to eq(payload)
+    expect(client_frame.byteslice(0, 2).unpack('CC')).to eq([0x81, 0x80 | 127])
+    expect(described_class.read_frame(StringIO.new(client_frame)).payload).to eq(payload)
   end
 
   it 'fragments larger server messages into individually bounded frames' do

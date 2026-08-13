@@ -50,7 +50,8 @@ RSpec.describe Lich::WebUI::Validator do
 
   valid_properties.each do |type, properties|
     it "accepts the minimal valid #{type} schema" do
-      expect(validator.validate_component!(type, properties, **context)).to be_a(Hash)
+      isolated_properties = Marshal.load(Marshal.dump(properties))
+      expect(validator.validate_component!(type, isolated_properties, **context)).to be_a(Hash)
     end
   end
 
@@ -139,7 +140,8 @@ RSpec.describe Lich::WebUI::Validator do
   end
 
   it 'refuses disabled composite events' do
-    props = validator.validate_component!(:composite, valid_properties[:composite], **context)
+    composite = Marshal.load(Marshal.dump(valid_properties[:composite]))
+    props = validator.validate_component!(:composite, composite, **context)
     expect do
       validator.validate_event!(
         :composite, :surface_activate,

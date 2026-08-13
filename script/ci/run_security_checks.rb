@@ -4,6 +4,7 @@
 require 'json'
 require 'open3'
 require 'rbconfig'
+require 'tempfile'
 require 'yaml'
 
 module SecurityCheckRunner
@@ -14,15 +15,22 @@ module SecurityCheckRunner
       id = entry.fetch('id')
       next [id, 'neutral'] if entry.fetch('state') == 'pending'
 
-      command = [
-        ruby, '-S', 'rspec', entry.fetch('spec'),
-        '--tag', "security_id:#{entry.fetch('tag')}", '--format', 'progress',
-      ]
-      stdout, stderr, status = Open3.capture3(*command, chdir: root)
-      output.puts("#{id}: #{status.success? ? 'success' : 'failure'}")
-      output.puts(stdout) unless status.success? || stdout.empty?
-      output.puts(stderr) unless status.success? || stderr.empty?
-      [id, status.success? ? 'success' : 'failure']
+      Tempfile.create(['lich-security-check-', '.json']) do |results|
+        command = [
+          ruby, '-S', 'rspec', entry.fetch('spec'),
+          '--tag', "security_id:#{entry.fetch('tag')}", '--format', 'json', '--out', results.path,
+        ]
+        stdout, stderr, status = Open3.capture3(*command, chdir: root)
+        example_count = JSON.parse(File.read(results.path)).dig('summary', 'example_count').to_i
+        passed = status.success? && example_count.positive?
+        output.puts("#{id}: #{passed ? 'success' : 'failure'} (#{example_count} examples)")
+        output.puts(stdout) unless passed || stdout.empty?
+        output.puts(stderr) unless passed || stderr.empty?
+        [id, passed ? 'success' : 'failure']
+      rescue JSON::ParserError, Errno::ENOENT
+        output.puts("#{id}: failure (unreadable RSpec results)")
+        [id, 'failure']
+      end
     end
   end
 end

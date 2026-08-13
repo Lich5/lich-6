@@ -20,11 +20,13 @@ require_relative 'webui/websocket'
 
 module Lich
   module WebUI
+    INITIALIZATION_MUTEX = Mutex.new
+
     class << self
       attr_writer :registry, :service
 
       def registry
-        @registry ||= Registry.new
+        INITIALIZATION_MUTEX.synchronize { @registry ||= Registry.new }
       end
 
       def page(owner:, id:, title:, props: {}, on: {}, &render_block)
@@ -33,7 +35,10 @@ module Lich
       end
 
       def service
-        @service ||= Service.new(registry: registry)
+        INITIALIZATION_MUTEX.synchronize do
+          @registry ||= Registry.new
+          @service ||= Service.new(registry: @registry)
+        end
       end
 
       def start
@@ -61,9 +66,13 @@ module Lich
       end
 
       def reset!
-        @service&.stop
-        @service = nil
-        @registry = Registry.new
+        service = INITIALIZATION_MUTEX.synchronize do
+          current = @service
+          @service = nil
+          @registry = Registry.new
+          current
+        end
+        service&.stop
       end
     end
   end

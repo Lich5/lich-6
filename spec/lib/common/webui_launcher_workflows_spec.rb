@@ -180,6 +180,10 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   it 'runs manual authentication, selection, save, favorite, and launch through core collaborators' do
     connect = event({ 'account' => 'doug', 'password' => viewer_secret('manual-canary') })
     launcher.manual_connect(connect, 'account', 'password')
+    launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront' }))
+    expect(launches).to be_empty
+    expect(launcher.send(:render_state)[:manual][:error]).to match(/select a character/)
+
     launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
     launch = event({
       'select:manual-frontend' => 'stormfront', 'checkbox:manual-custom-enabled' => false,
@@ -192,6 +196,16 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(launches.last.first).to eq(:manual)
     expect(authenticator.calls.map { |call| call[:password] }).to include('manual-canary')
     expect(WorkflowFrontendLocator.resolved).to include(['stormfront', true])
+  end
+
+  it 'discards an unlock submission if its modal has already closed' do
+    secret = viewer_secret('late-secret')
+
+    expect(launcher.unlock_response(
+             event({ 'password' => secret }, payload: { button: 'unlock' }), 'password'
+           )).to be_nil
+    expect(secret).to be_consumed
+    expect(catalog.calls).to be_empty
   end
 
   it 'refuses manual Play unless credentials, character, and an available frontend are selected' do

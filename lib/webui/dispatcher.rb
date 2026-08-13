@@ -8,6 +8,7 @@ module Lich
     class Dispatcher
       VIEWER_LIMIT = 256
       PAGE_LIMIT = 1024
+      SHUTDOWN_JOIN_TIMEOUT = 2
       THREAD_CONTEXT_KEY = :lich_webui_dispatch_context
 
       Event = Data.define(:owner, :page_id, :viewer_id, :cid, :event, :coalescable, :callable)
@@ -66,7 +67,10 @@ module Lich
           state.events.clear
           state.condition.broadcast
         end
-        state.thread.join unless state.thread.equal?(Thread.current)
+        unless state.thread.equal?(Thread.current)
+          state.thread.join(SHUTDOWN_JOIN_TIMEOUT)
+          log(:warning, "WebUI callback thread did not stop within #{SHUTDOWN_JOIN_TIMEOUT}s") if state.thread.alive?
+        end
         true
       end
 

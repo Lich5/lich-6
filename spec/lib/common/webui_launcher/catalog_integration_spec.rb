@@ -55,4 +55,22 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     expect(reloaded.remove_account('DOUG')).to be(true)
     expect(reloaded.entries).to be_empty
   end
+
+  it 'reports an indeterminate favorite state when persistence fails' do
+    entry = catalog.entries.first
+    allow(catalog).to receive(:write_yaml).and_return(false)
+
+    expect(catalog.toggle_favorite(entry.key)).to be_nil
+  end
+
+  it 'rejects a legacy payload containing nested objects' do
+    legacy_dir = Dir.mktmpdir('webui-legacy-catalog')
+    payload = [{ 'user_id' => 'DOUG', 'password' => { 'nested' => 'not allowed' } }]
+    File.binwrite(File.join(legacy_dir, 'entry.dat'), [Marshal.dump(payload)].pack('m'))
+    legacy_catalog = described_class.new(data_dir: legacy_dir, master_password_manager: manager)
+
+    expect(legacy_catalog.entries).to be_empty
+  ensure
+    FileUtils.remove_entry(legacy_dir) if legacy_dir && File.directory?(legacy_dir)
+  end
 end

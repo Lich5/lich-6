@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'securerandom'
+require 'monitor'
 require_relative 'contract'
 require_relative 'errors'
 require_relative 'page'
@@ -31,7 +32,7 @@ module Lich
         @bindings = {}
         @viewer_values = {}
         @dirty_roots = {}.compare_by_identity
-        @mutex = Mutex.new
+        @mutex = Monitor.new
       end
 
       def create(type, props)
@@ -220,21 +221,20 @@ module Lich
       private
 
       def flush!
-        roots = @mutex.synchronize do
+        @mutex.synchronize do
           selected = @dirty_roots.keys.filter_map do |candidate|
             root_for(candidate) if handle_for(candidate)
           end.uniq
           @dirty_roots.clear
-          selected
-        end
-        roots.each do |root|
-          next unless handle_for(root)
+          selected.each do |root|
+            next unless handle_for(root)
 
-          ensure_page!(root)
-          root.page.refresh_definition(
-            title: root.props.fetch(:title), props: root.props.except(:title), on: callbacks_for(root)
-          )
-          @service.refresh(root.page)
+            ensure_page!(root)
+            root.page.refresh_definition(
+              title: root.props.fetch(:title), props: root.props.except(:title), on: callbacks_for(root)
+            )
+            @service.refresh(root.page)
+          end
         end
         nil
       end
@@ -256,15 +256,17 @@ module Lich
       end
 
       def render_children(builder, node)
-        adapter = self
-        node.children.each do |child_handle|
-          child = @nodes.fetch(child_handle)
-          props = effective_props(child, child_handle)
-          bindings = child.bindings.to_h do |event, binding_id|
-            [event, @bindings.fetch(binding_id).last]
-          end
-          builder.component(child.type, slot: child.slot, on: bindings, **props) do
-            adapter.send(:render_children, self, child)
+        @mutex.synchronize do
+          adapter = self
+          node.children.each do |child_handle|
+            child = @nodes.fetch(child_handle)
+            props = effective_props(child, child_handle)
+            bindings = child.bindings.to_h do |event, binding_id|
+              [event, @bindings.fetch(binding_id).last]
+            end
+            builder.component(child.type, slot: child.slot, on: bindings, **props) do
+              adapter.send(:render_children, self, child)
+            end
           end
         end
       end

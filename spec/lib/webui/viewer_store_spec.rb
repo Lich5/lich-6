@@ -28,6 +28,13 @@ RSpec.describe Lich::WebUI::ViewerStore do
     expect(store.serialize(second).dig(:children, 0, :props, :value)).to eq('')
   end
 
+  it 'refuses serialization before a render has been delivered' do
+    store = described_class.new
+    attachment = store.attach(connection_id: 'one', address: 'page-one', page: page)
+
+    expect { store.serialize(attachment) }.to raise_error(Lich::WebUI::Error, /no delivered render/)
+  end
+
   it 'resumes within the transient window and destroys values after expiry' do
     now = 100.0
     store = described_class.new(clock: -> { now })

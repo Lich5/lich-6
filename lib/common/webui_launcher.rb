@@ -81,10 +81,7 @@ module Lich
         @notice = nil
         @modal = nil
         @selected_entry = nil
-        @manual = {
-          phase: :editing, account: '', characters: [], selected: nil, error: nil,
-          frontend: @frontend_options.first&.fetch(:value, nil), custom_enabled: false
-        }
+        @manual = default_manual_state
         @manual_credentials = {}
         @draft_entry_key = nil
         reload_catalog
@@ -579,18 +576,17 @@ module Lich
       def manual_disconnect(viewer_id)
         @mutex.synchronize do
           @manual_credentials.delete(viewer_id)&.discard!
-          @manual = {
-            phase: :editing, account: '', characters: [], selected: nil, error: nil,
-            frontend: @frontend_options.first&.fetch(:value, nil), custom_enabled: false
-          }
+          @manual = default_manual_state
         end
         refresh
       end
 
       def manual_play(event)
         state = @mutex.synchronize do
-          index = @manual[:selected].to_s.delete_prefix('character-').to_i
-          [@manual[:account], @manual[:characters][index], @manual_credentials[event.viewer_id], @manual[:frontend]]
+          selected = @manual[:selected].to_s
+          index = selected.start_with?('character-') ? Integer(selected.delete_prefix('character-'), exception: false) : nil
+          character = index && @manual[:characters][index]
+          [@manual[:account], character, @manual_credentials[event.viewer_id], @manual[:frontend]]
         end
         account, character, credential, frontend = state
         unless character && credential && frontend && frontend_available?(frontend, refresh: true)
@@ -615,7 +611,9 @@ module Lich
       def unlock_response(event, password_cid)
         return cancel_modal if event.payload[:button] == 'cancel'
 
-        entry_key = @mutex.synchronize { @modal[:entry_key] }
+        entry_key = @mutex.synchronize { @modal&.fetch(:entry_key, nil) }
+        return event.submission.discard_sensitive! unless entry_key
+
         master = transfer_secret(event.submission.fetch(password_cid))
         operation = begin_operation(:saved_launch, event)
         @executor.post do
@@ -674,7 +672,9 @@ module Lich
       def delete_response(event)
         return cancel_modal unless event.payload[:button] == 'remove'
 
-        target = @mutex.synchronize { @modal.dup }
+        target = @mutex.synchronize { @modal&.dup }
+        return unless target
+
         cancel_modal
         mutate(:delete, event, 'Removal failed.') do
           result = target[:account] ? @catalog.remove_account(target[:account]) : @catalog.remove_entry(target[:entry_key])
@@ -711,6 +711,7 @@ module Lich
         password_pair = values.find { |key, _| key.end_with?('password_input:account-password') }
         return set_notice('Account name is required.', :error) if account.empty?
         return set_notice('Choose an available front end.', :error) unless frontend_available?(frontend, refresh: true)
+        return set_notice('Password is required.', :error) unless password_pair
 
         secret = transfer_secret(password_pair.last)
         operation = begin_operation(:account, event)
@@ -729,6 +730,8 @@ module Lich
         values = submission_values(event.submission)
         mode = values.find { |key, _| key.end_with?('radio:encryption-mode') }&.last.to_s.to_sym
         master_pair = values.find { |key, _| key.end_with?('password_input:encryption-master') }
+        return set_notice('Master password submission is incomplete.', :error) unless master_pair
+
         if mode == :enhanced && !@catalog.enhanced_encryption_available?
           master_pair.last.discard!
           return set_notice('Enhanced Encryption is unavailable because no secure keychain is present.', :error)
@@ -747,11 +750,16 @@ module Lich
       end
 
       def change_master_password(event)
-        carriers = submission_values(event.submission).select do |key, _|
-          key.include?('password_input:master-')
-        end.values.map do |carrier|
-          transfer_secret(carrier)
+        values = submission_values(event.submission)
+        pairs = %w[master-current master-new master-confirm].map do |key|
+          values.find { |cid, _| cid.end_with?("password_input:#{key}") }
         end
+        if pairs.any?(&:nil?)
+          event.submission.discard_sensitive!
+          return set_notice('Master password change requires all three fields.', :error)
+        end
+
+        carriers = pairs.map { |pair| transfer_secret(pair.last) }
         operation = begin_operation(:master_password, event)
         @executor.post do
           consume_three(carriers) do |current, replacement, confirmation|
@@ -779,7 +787,7 @@ module Lich
         @mutex.synchronize do
           @manual_credentials.delete(viewer_id)&.discard!
           @active.delete_if { |_kind, operation| operation.viewer_id == viewer_id }
-          @manual = { phase: :editing, account: '', characters: [], selected: nil, error: nil }
+          @manual = default_manual_state
           @modal = nil
         end
       end
@@ -892,6 +900,13 @@ module Lich
         transferred = nil
         carrier.consume { |plaintext| transferred = Lich::WebUI::SensitiveValue.viewer(plaintext) }
         transferred
+      end
+
+      def default_manual_state
+        {
+          phase: :editing, account: '', characters: [], selected: nil, error: nil,
+          frontend: @frontend_options.first&.fetch(:value, nil), custom_enabled: false
+        }
       end
 
       def cancel_modal
@@ -1007,6 +1022,13 @@ module Lich
         @browser_terminate.call('TERM', pid)
       rescue Errno::ESRCH, Errno::ECHILD
         nil
+      rescue StandardError => error
+        @logger.call(:warning, "browser termination failed error=#{error.class}")
+        begin
+          @browser_terminate.call('KILL', pid)
+        rescue StandardError
+          nil
+        end
       end
 
       def find_entry_key(entry)

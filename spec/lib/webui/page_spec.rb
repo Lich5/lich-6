@@ -33,6 +33,29 @@ RSpec.describe Lich::WebUI::Page do
       .to raise_error(Lich::WebUI::IdentityError, /author key required.*owner=.*page=items/)
   end
 
+  it 'retains outer collection key requirements after a nested collection finishes' do
+    page = described_class.new(owner: owner, id: 'nested-items', title: 'Nested items') do
+      stack do
+        collection([1]) do
+          collection([1]) { text(key: 'inner', content: 'inner') }
+          text content: 'outer'
+        end
+      end
+    end
+
+    expect { page.render }
+      .to raise_error(Lich::WebUI::IdentityError, /author key required.*page=nested-items/)
+  end
+
+  it 'allows page state accessors from an author render block without deadlocking' do
+    page = nil
+    page = described_class.new(owner: owner, id: 'stateful', title: 'Stateful') do
+      text(content: page.fetch_shared_value('status', :content, 'ready'))
+    end
+
+    expect(page.render.tree.children.first.props[:content]).to eq('ready')
+  end
+
   it 'gives positional siblings distinct cids' do
     page = described_class.new(owner: owner, id: 'siblings', title: 'Siblings') do
       stack do

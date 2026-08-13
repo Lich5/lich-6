@@ -57,7 +57,7 @@ module Lich
         route = @mutex.synchronize { @routes[alias_name.to_s]&.dup }
         return nil unless route
 
-        relative_path = URI.decode_www_form_component(encoded_relative_path.to_s)
+        relative_path = URI::DEFAULT_PARSER.unescape(encoded_relative_path.to_s)
         return nil if relative_path.empty? || relative_path.include?("\0")
 
         content_type = EXTENSIONS[File.extname(relative_path).downcase]

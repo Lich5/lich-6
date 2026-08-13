@@ -23,6 +23,8 @@ RSpec.describe Lich::Common::WebUILauncher::WindowGeometryStore do
   it 'rejects malformed and unbounded geometry' do
     store = described_class.new(data_dir: Dir.tmpdir)
 
+    expect(store.validate(width: 900, height: 700, position: nil))
+      .to eq(width: 900, height: 700, position: nil)
     expect(store.validate(width: 200, height: 700, position: [0, 0])).to be_nil
     expect(store.validate(width: 900, height: 700, position: [100_000, 0])).to be_nil
     expect(store.validate(width: '900', height: 700, position: [0, 0])).to be_nil

@@ -3,6 +3,7 @@
 require 'rbconfig'
 require 'tmpdir'
 require 'fileutils'
+require_relative 'errors'
 
 module Lich
   module WebUI
@@ -63,10 +64,17 @@ module Lich
 
       def monitor_process(pid, profile_dir, waitpid:, thread_factory:, on_exit:)
         thread_factory.call do
-          waitpid.call(pid, 0)
-          on_exit.call
-        ensure
-          remove_profile(profile_dir)
+          begin
+            waitpid.call(pid, 0)
+          rescue Errno::ECHILD, Errno::ESRCH
+            nil
+          ensure
+            begin
+              on_exit.call
+            ensure
+              remove_profile(profile_dir)
+            end
+          end
         end
       end
 

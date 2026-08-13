@@ -90,6 +90,6 @@ RSpec.describe Lich::WebUI::Adapter do
     )
 
     expect(future).to be_a(Lich::WebUI::Future)
-    expect(future.await.button).to eq('yes')
+    expect(future.await(timeout: 1)&.button).to eq('yes')
   end
 end

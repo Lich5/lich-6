@@ -34,6 +34,7 @@ module Lich
         @render_block = render_block
         @generation = 0
         @mutex = Mutex.new
+        @render_mutex = Mutex.new
         @last_render = nil
         @runtime = nil
         @shared_values = {}
@@ -48,23 +49,28 @@ module Lich
       end
 
       def render
-        @mutex.synchronize do
-          @generation += 1
+        @render_mutex.synchronize do
+          generation, root_props, shared_values = @mutex.synchronize do
+            @generation += 1
+            [@generation, @root_props.dup, @shared_values.dup]
+          end
           builder = TreeBuilder.new(
-            owner: owner, page_id: id, title: title, root_props: @root_props, validator: @validator
+            owner: owner, page_id: id, title: title, root_props: root_props, validator: @validator
           )
           builder.instance_exec(builder, &@render_block)
-          tree = apply_shared_values(builder.build)
+          tree = apply_shared_values(builder.build, shared_values)
           if tree.each.count > Contract::BOUNDS[:components]
             raise SchemaViolationError.new(
               "page exceeds #{Contract::BOUNDS[:components]} components",
               owner: owner_label, page_id: id, cid: tree.cid, field: :children
             )
           end
-          @last_render = Render.new(
-            id, @generation, tree, builder.bindings.freeze,
+          render = Render.new(
+            id, generation, tree, builder.bindings.freeze,
             builder.submissions.freeze, builder.facilities.freeze
           )
+          @mutex.synchronize { @last_render = render }
+          render
         end
       end
 
@@ -137,8 +143,8 @@ module Lich
         @mutex.synchronize { @runtime } || raise(Error.new('page is not bound to a runtime', owner: owner_label, page_id: id))
       end
 
-      def apply_shared_values(component)
-        overrides = @shared_values.each_with_object({}) do |((cid, property), value), result|
+      def apply_shared_values(component, shared_values)
+        overrides = shared_values.each_with_object({}) do |((cid, property), value), result|
           (result[cid] ||= {})[property] = value
         end
         apply_component_values(component, overrides)

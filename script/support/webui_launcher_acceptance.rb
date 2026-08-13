@@ -3,6 +3,7 @@
 $LOAD_PATH.unshift(File.expand_path('../../lib', __dir__))
 
 require 'tmpdir'
+require 'fileutils'
 require_relative '../../lib/version'
 
 module Lich
@@ -20,7 +21,11 @@ end
 require 'common/webui_launcher'
 
 acceptance_port = Integer(ENV.fetch('WEBUI_ACCEPTANCE_PORT', '0'), 10)
-acceptance_data_dir = ENV.fetch('WEBUI_ACCEPTANCE_DATA_DIR', Dir.tmpdir)
+acceptance_data_dir_owned = !ENV.key?('WEBUI_ACCEPTANCE_DATA_DIR')
+acceptance_data_dir = ENV.fetch('WEBUI_ACCEPTANCE_DATA_DIR') { Dir.mktmpdir('lich-webui-acceptance-') }
+at_exit do
+  FileUtils.remove_entry(acceptance_data_dir) if acceptance_data_dir_owned && File.directory?(acceptance_data_dir)
+end
 
 class AcceptanceCatalog
   Entry = Lich::Common::WebUILauncher::Catalog::Entry
