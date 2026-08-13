@@ -22,69 +22,6 @@ rescue
   nil
 end
 
-# find the FE locations for Win and for Linux | WINE
-
-if (RUBY_PLATFORM =~ /mingw|win/i) && (RUBY_PLATFORM !~ /darwin/i)
-  require 'win32/registry'
-  include Win32
-
-  paths = ['SOFTWARE\\WOW6432Node\\Simutronics\\STORM32',
-           'SOFTWARE\\WOW6432Node\\Simutronics\\WIZ32']
-
-  def key_exists?(path)
-    Registry.open(Registry::HKEY_LOCAL_MACHINE, path, ::Win32::Registry::KEY_READ)
-    true
-  rescue StandardError
-    false
-  end
-
-  paths.each do |path|
-    next unless key_exists?(path)
-
-    Registry.open(Registry::HKEY_LOCAL_MACHINE, path).each_value do |_subkey, _type, data|
-      dirloc = data
-      if path =~ /WIZ32/
-        $wiz_fe_loc = dirloc
-      elsif path =~ /STORM32/
-        $sf_fe_loc = dirloc
-      else
-        Lich.log("Hammer time, couldn't find me a SIMU FE on a Windows box")
-      end
-    end
-  end
-elsif defined?(Wine)
-  ## reminder Wine is defined in the file wine.rb by confirming prefix, directory and executable
-  unless (sf_fe_loc_temp = Wine.registry_gets('HKEY_LOCAL_MACHINE\\Software\\Simutronics\\STORM32\\Directory'))
-    sf_fe_loc_temp = Wine.registry_gets('HKEY_LOCAL_MACHINE\\Software\\Wow6432Node\\Simutronics\\STORM32\\Directory')
-  end
-  unless (wiz_fe_loc_temp = Wine.registry_gets('HKEY_LOCAL_MACHINE\\Software\\Simutronics\\WIZ32\\Directory'))
-    wiz_fe_loc_temp = Wine.registry_gets('HKEY_LOCAL_MACHINE\\Software\\Wow6432Node\\Simutronics\\WIZ32\\Directory')
-  end
-  ## at this point, the temp variables are either FalseClass or have what wine believes is the Directory subkey from registry
-  ## fix it up so we can use it on a *nix based system.  If the return is FalseClass, leave it FalseClass
-  sf_fe_loc_temp ? $sf_fe_loc = sf_fe_loc_temp.gsub('\\', '/').gsub('C:', Wine::PREFIX + '/drive_c') : :noop
-  wiz_fe_loc_temp ? $wiz_fe_loc = wiz_fe_loc_temp.gsub('\\', '/').gsub('C:', Wine::PREFIX + '/drive_c') : :noop
-  ## if we have a String class (directory) and the directory exists -- no error detectable at this level
-  ## if we have a nil, we have no directory, or if we have a path but cannot find that path (directory) we have an error
-  if $sf_fe_loc.nil? # no directory
-    Lich.log("STORM equivalent FE is not installed under WINE.") if $debug
-  else
-    unless $sf_fe_loc.is_a? String and File.exist?($sf_fe_loc) # cannot confirm directory location
-      Lich.log("Cannot find STORM equivalent FE to launch under WINE.")
-    end
-  end
-  if $wiz_fe_loc.nil? # no directory
-    Lich.log("WIZARD FE is not installed under WINE.") if $debug
-  else
-    unless $wiz_fe_loc.is_a? String and File.exist?($wiz_fe_loc) # cannot confirm directory location
-      Lich.log("Cannot find WIZARD FE to launch under WINE.")
-    end
-  end
-  if $sf_fe_loc.nil? and $wiz_fe_loc.nil? # got nuttin - no FE installed under WINE in registry (or something changed. . . )
-    Lich.log("This system has WINE installed but does not have a suitable FE from Simu installed under WINE.")
-  end
-  ## We have either declared an error, or the global variables for Simu FE are populated with a confirmed path
-end
 ## The following should be deprecated with the direct-frontend-launch-method
 ## TODO: remove as part of chore/Remove unnecessary Win32 calls
 ## Temporarily reinstatated for DR
@@ -448,12 +385,12 @@ end
 
 begin
   require 'sqlite3'
-rescue LoadError
+rescue LoadError => sqlite_load_error
   # sqlite3 is a required dependency. It is restored only from an approved,
   # hash-verified Ruby4Lich5 manifest unit; this never falls back to `gem
   # install` or a user GEM_HOME.
   unless Lich::GemCheck.self_healing_supported?
-    Lich::GemCheck.alert(missing: ['sqlite3'], groups: [:default])
+    Lich::GemCheck.alert(missing: ['sqlite3'], groups: [:default], error: sqlite_load_error)
     exit 1
   end
 
@@ -481,7 +418,7 @@ unless ARGV.any? { |arg| arg.match?(/^--no-(?:gtk|gui)$/i) }
   begin
     require 'gtk3'
     HAVE_GTK = true
-  rescue LoadError
+  rescue LoadError => gtk_load_error
     # gtk3 stands for the whole GTK runtime unit in the manifest. A missing
     # native dependency therefore restores the complete, ordered closure.
     if Lich::GemCheck.self_healing_supported?
@@ -507,7 +444,7 @@ unless ARGV.any? { |arg| arg.match?(/^--no-(?:gtk|gui)$/i) }
     else
       # GTK is required unless the user explicitly selected a headless launch.
       # Do not infer that choice from DISPLAY, TTY, or cron environment state.
-      Lich::GemCheck.alert(missing: ['gtk3'], groups: [:gtk])
+      Lich::GemCheck.alert(missing: ['gtk3'], groups: [:gtk], error: gtk_load_error)
       exit 1
     end
   end

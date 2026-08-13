@@ -9,9 +9,11 @@
 require File.join(LIB_DIR, 'util', 'opts.rb')
 require File.join(LIB_DIR, 'common', 'cli', 'cli_orchestration.rb')
 require File.join(LIB_DIR, 'common', 'bind_host_resolver.rb')
+require File.join(LIB_DIR, 'main', 'bind_address_option.rb')
 require File.join(LIB_DIR, 'main', 'arg_normalization.rb')
 require File.join(LIB_DIR, 'main', 'detachable_client_target.rb')
 require File.join(LIB_DIR, 'main', 'help_text.rb')
+require File.join(LIB_DIR, 'main', 'startup_theme.rb')
 
 module Lich
   module Main
@@ -129,12 +131,8 @@ module Lich
         end
 
         def self.handle_dark_mode(value)
-          # Regex returns Integer/nil; force strict boolean for persisted settings.
+          # Regex returns Integer/nil; force strict boolean for startup handling.
           @argv_options[:dark_mode] = !!(value =~ /^(true|on)$/i)
-          if defined?(Gtk)
-            @theme_state = Lich.track_dark_mode = @argv_options[:dark_mode]
-            Gtk::Settings.default.gtk_application_prefer_dark_theme = true if @theme_state == true
-          end
         end
 
         def self.print_help(topic = nil)
@@ -154,21 +152,47 @@ module Lich
         end
       end
 
-      # Apply side effects: dark mode, hosts-dir, detachable-client
+      # Apply side effects: dark mode, hosts-dir, bind-address, detachable-client
       module SideEffects
         def self.execute(argv_options)
+          StartupTheme.apply(argv_options)
           handle_hosts_dir(argv_options)
+          handle_bind_address(argv_options)
           handle_detachable_client(argv_options)
           handle_sal_launch(argv_options)
           argv_options
         end
 
+        # Surface a message on both channels every bind handler uses.
+        def self.announce(level, message)
+          $stdout.puts "#{level}: #{message}"
+          Lich.log "#{level}: #{message}"
+        end
+
+        # Fatal argv problem: tell the user everywhere, then stop.
+        def self.die(message)
+          announce('error', message)
+          exit 1
+        end
+
+        # --bind-address shares the keyword vocabulary of --detachable-client
+        # hosts (tailscale/lan/any). Resolve it once, up front, so the
+        # frontend listener, the --game proxy, and a detachable client that
+        # inherits it all bind the same concrete address -- and so the
+        # exposure warning appears exactly once.
+        def self.handle_bind_address(argv_options)
+          result = BindAddressOption.apply(argv_options[:bind_address])
+          die(result.error) if result.error
+          return unless result.host
+
+          argv_options[:bind_address] = result.host
+          announce('warning', result.warning) if result.warning
+        end
+
         def self.handle_hosts_dir(argv_options)
-          if (arg = ARGV.find { |a| a == '--hosts-dir' })
-            i = ARGV.index(arg)
-            ARGV.delete_at(i)
-            hosts_dir = ARGV[i]
-            ARGV.delete_at(i)
+          if (arg = ARGV.find { |a| a =~ /^--hosts-dir=(.+)$/i })
+            hosts_dir = arg[/^--hosts-dir=(.+)$/i, 1]
+            ARGV.delete(arg)
             if hosts_dir && File.exist?(hosts_dir)
               hosts_dir = hosts_dir.tr('\\', '/')
               hosts_dir += '/' unless hosts_dir[-1..-1] == '/'
@@ -190,23 +214,14 @@ module Lich
             if target.host
               resolution = Lich::Common::BindHostResolver.resolve(target.host)
               argv_options[:detachable_client_host] = resolution.host
-              if resolution.warning
-                $stdout.puts "warning: #{resolution.warning}"
-                Lich.log "warning: #{resolution.warning}"
-              end
-            else
-              # Port-only form inherits --bind-address; warn just like an explicit host would.
-              warning = Lich::Common::BindHostResolver.warning_for_explicit(argv_options[:detachable_client_host])
-              if warning
-                $stdout.puts "warning: #{warning}"
-                Lich.log "warning: #{warning}"
-              end
+              announce('warning', resolution.warning) if resolution.warning
             end
+            # (The port-only form inherits --bind-address, which
+            # handle_bind_address already resolved and warned about; the
+            # loopback default warrants no warning.)
             argv_options[:detachable_client_port] = target.port
           rescue DetachableClientTarget::ParseError, Lich::Common::BindHostResolver::Error => e
-            $stdout.puts "error: #{e.message}"
-            Lich.log "error: #{e.message}"
-            exit 1
+            die(e.message)
           end
         end
 
@@ -234,7 +249,7 @@ module Lich
               dir = dir_file.slice(/^.*[\\\/]/)
               file = dir_file.sub(/^.*[\\\/]/, '')
               operation = (Win32.isXP? ? 'open' : 'runas')
-              Win32.ShellExecute(lpOperation: operation, lpFile: file, lpDirectory: dir, lpParameters: param)
+              r = Win32.ShellExecute(lpOperation: operation, lpFile: file, lpDirectory: dir, lpParameters: param)
               Lich.log "error: Win32.ShellExecute returned #{r}; Win32.GetLastError: #{Win32.GetLastError}" if r < 33
             elsif defined?(Wine)
               system("#{Wine::BIN} #{launcher_cmd}")

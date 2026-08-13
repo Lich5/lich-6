@@ -17,7 +17,7 @@ module Lich
                   :roundtime_end, :cast_roundtime_end, :last_pulse, :level, :next_level_value,
                   :next_level_text, :society_task, :stow_container_id, :name, :game, :in_stream,
                   :player_id, :prompt, :current_target_ids, :current_target_id, :room_window_disabled,
-                  :dialogs, :room_id, :previous_nav_rm, :concentration, :max_concentration,
+                  :dialogs, :room_id, :previous_nav_rm, :show_room_id, :concentration, :max_concentration,
                   :arrival_pcs, :room_player_hidden, :field_exp, :max_field_exp,
                   :ascension_exp, :exp, :until_next, :fashlonae, :lumnis, :rpa,
                   :room_climate, :room_terrain, :room_weather, :room_bonfire,
@@ -44,7 +44,9 @@ module Lich
         @obj_name = nil
         @obj_after_name = nil
         @pc = nil
+        @pc_status = nil
         @last_obj = nil
+        @last_npc = nil
         @in_stream = false
         @player_status = nil
         @fam_mode = String.new
@@ -65,6 +67,13 @@ module Lich
         @next_level_text = String.new
         @current_target_ids = Array.new
         @pending_crtr_status = Hash.new
+        # DragonRealms stream-order name backfill: bold room-objs names and the
+        # <crtrStatus> batch ids are both captured in order, then paired at the
+        # following <prompt> - but only when their counts match exactly (an
+        # all-or-nothing gate; see the prompt handler). DR-only; unused by
+        # GemStone, which carries the name inline on the bold <a> tag.
+        @dr_room_npc_names = []
+        @dr_crtr_ids = []
 
         @room_count = 0
         @room_title = String.new
@@ -132,8 +141,23 @@ module Lich
         @dialogs = {}
 
         # real id updates
-        @room_id = nil
+        # Default 0 (not nil) so a read before the first <nav> tag is a valid "no UID" value
+        # rather than a NoMethodError on room_id.zero? (DR) or room_id > N (GS) in the map layer.
+        @room_id = 0
         @previous_nav_rm = nil
+        # True once <nav> has supplied a real (non-zero) UID for the current
+        # arrival and the streamWindow subtitle has not yet consumed it. Keeps a
+        # ShowRoomID-on subtitle from overwriting an authoritative nav UID in the
+        # same arrival (see the streamWindow handler).
+        @nav_uid_pending = false
+        # True when the game itself embedded the RealID marker in the room title
+        # this arrival (i.e. the DragonRealms ShowRoomID flag is ON), e.g. the
+        # subtitle " - [Room] (230008)" or the no-UID " - [Room] (**)". Distinct
+        # from a UID merely known via <nav>: it records whether the *game* chose
+        # to display it, so Lich's room-name/subtitle rewrite can preserve that
+        # choice instead of second-guessing the flag (see the DR streamWindow
+        # branch and Lich::DragonRealms::GameInstance#modify_room_display).
+        @show_room_id = false
 
         # Lich::Claim update
         @arrival_pcs = []
@@ -186,6 +210,11 @@ module Lich
         @current_stream = String.new
         @current_style = String.new
         @sax_parse_errors = []
+        # Any staged GameObj refresh still open here is incomplete. Left in
+        # place, an interrupted container fill would be published as
+        # authoritative by the next <prompt>, so drop the in-flight buffers and
+        # keep the previously published snapshot visible instead.
+        GameObj.discard_staged_refreshes
         # A <crtrStatus> tag can be fully parsed and cached here while the
         # matching bold <a> text is still in an as-yet-unparsed remainder of
         # the fragment. If a malformed/truncated fragment forces a reset in
@@ -193,6 +222,10 @@ module Lich
         # could misapply to an unrelated creature that later reuses the same
         # exist id (ids are recycled - see Creature.targets' notes).
         @pending_crtr_status.clear
+        # A reset mid-fragment invalidates the room-objs<->crtrStatus pairing, so
+        # drop any captured names and collected ids.
+        @dr_room_npc_names = []
+        @dr_crtr_ids = []
       end
 
       def safe_to_respond?
@@ -372,17 +405,27 @@ module Lich
             GameObj.clear_pcs
             GameObj.clear_room_desc
             # Creature tracks its own room roster independently of GameObj
-            # (see lib/gemstone/creature.rb) - not loaded for DR sessions.
+            # (see lib/gemstone/creature.rb / lib/dragonrealms/creature.rb).
+            # Only one game's Creature is ever loaded per session.
             Lich::Gemstone::Creature.clear_room if defined?(Lich::Gemstone::Creature)
+            Lich::DragonRealms::Creature.clear_room if defined?(Lich::DragonRealms::Creature)
             # Any <crtrStatus> cached for the room being left is scoped to
             # that room - don't let it survive to misapply if the id gets
             # reused elsewhere.
             @pending_crtr_status.clear
             @check_obvious_hiding = true
-            unless XMLData.game =~ /^DR/
-              @previous_nav_rm = @room_id
-              @room_id = attributes['rm'].to_i
-            end
+            # The <nav rm='NNNN'/> tag is the authoritative room UID for every game, including
+            # DragonRealms, which now emits it on every arrival (a plain <nav/> with no rm
+            # attribute for a room that has no UID, which yields 0 here). Capturing it on nav
+            # gives early room knowledge before the room text streams, and keeps
+            # @previous_nav_rm accurate for Map.previous_uid.
+            @previous_nav_rm = @room_id
+            @room_id = attributes['rm'].to_i
+            # A real nav UID this arrival is authoritative; flag it so the
+            # streamWindow subtitle below treats its own UID marker as a fallback
+            # and does not overwrite this value. A bare <nav/> (no UID, room_id 0)
+            # leaves the subtitle free to supply one.
+            @nav_uid_pending = @room_id.positive?
             @arrival_pcs = []
             $nav_seen = true
           end
@@ -409,18 +452,25 @@ module Lich
 
           if (name == 'compDef') or (name == 'component')
             if attributes['id'] == 'room objs'
-              GameObj.clear_loot
-              GameObj.clear_npcs
+              GameObj.begin_room_objs
               Lich::Gemstone::Creature.clear_room if defined?(Lich::Gemstone::Creature)
+              # DR rebuilds the roster from the <crtrStatus> batch that follows
+              # this component; clearing here gives that batch a clean snapshot.
+              Lich::DragonRealms::Creature.clear_room if defined?(Lich::DragonRealms::Creature)
               @pending_crtr_status.clear
+              # Start a fresh room-objs<->crtrStatus pairing for this refresh: the
+              # bold names captured below and the crtrStatus ids that follow are
+              # zipped at the next <prompt>, gated on equal counts.
+              @dr_room_npc_names = []
+              @dr_crtr_ids = []
             elsif attributes['id'] == 'room players'
-              GameObj.clear_pcs
+              GameObj.begin_room_players
             elsif attributes['id'] == 'room exits'
               @room_exits = Array.new
               @room_exits_string = String.new
             elsif attributes['id'] == 'room desc'
               @room_description = String.new
-              GameObj.clear_room_desc
+              GameObj.begin_room_desc
             end
           end
 
@@ -440,8 +490,28 @@ module Lich
             # reappear in Creature.targets/.in_room. Deferring to the text()
             # handler keeps registration/room-marking and flag application on
             # the same path for both new and already-known creatures.
+            #
+            # DragonRealms differs: its room-objs carry no per-creature <a exist>
+            # tag, so there is no text() path to defer to. Its <crtrStatus> tags
+            # arrive batched after the room-objs component and carry their own id,
+            # so flags are applied immediately, id-first. The name is backfilled
+            # two ways: the stream-order pairing (bold room-objs names zipped to
+            # this batch's ids at the next <prompt>, gated on equal counts) and,
+            # authoritatively, later from the assess stream (see
+            # lib/dragonrealms/creature.rb).
             crtr_id = attributes['exist']
-            @pending_crtr_status[crtr_id] = attributes.reject { |k, _| k == 'exist' } if crtr_id
+            if crtr_id
+              crtr_flags = attributes.reject { |k, _| k == 'exist' }
+              if XMLData.game =~ /^DR/
+                # Apply flags now (id-first, name-less); collect the id in arrival
+                # order so the prompt handler can pair it to a bold name only if
+                # the counts match for this refresh.
+                Lich::DragonRealms::Creature.sync(crtr_id, crtr_flags) if defined?(Lich::DragonRealms::Creature)
+                @dr_crtr_ids << crtr_id
+              else
+                @pending_crtr_status[crtr_id] = crtr_flags
+              end
+            end
           end
           if name == 'inv'
             if attributes['id'] == 'stow'
@@ -482,8 +552,8 @@ module Lich
               @assess_ids = []
             end
             if XMLData.game =~ /^GS/
-              GameObj.clear_inv if attributes['id'].to_s == 'inv'
-              GameObj.clear_reserve if attributes['id'].to_s == 'reserve'
+              GameObj.begin_inv if attributes['id'].to_s == 'inv'
+              GameObj.begin_reserve if attributes['id'].to_s == 'reserve'
             end
           end
 
@@ -493,7 +563,15 @@ module Lich
           if name == 'popStream'
             if @current_stream == 'assess' && @assess_buffer
               entry = parse_assess_line(@assess_buffer, @assess_ids)
-              @assess << entry if entry
+              if entry
+                @assess << entry
+                # The assess stream is DragonRealms' only tie between an exist id
+                # and a creature name/position, so it backfills the id-first
+                # instances created from <crtrStatus>. Self and PCs are skipped.
+                if XMLData.game =~ /^DR/ && !entry[:self] && !entry[:pc] && defined?(Lich::DragonRealms::Creature)
+                  Lich::DragonRealms::Creature.feed_assess(entry)
+                end
+              end
               @assess_buffer = nil
             end
             if attributes['id'] == 'room'
@@ -503,6 +581,11 @@ module Lich
               end
             end
             @in_stream = false
+            # @current_stream still names the closing stream here; commit_* is a
+            # no-op when the matching refresh was never opened (e.g. in DR).
+            GameObj.commit_inv      if @current_stream == 'inv'
+            GameObj.commit_reserve  if @current_stream == 'reserve'
+            GameObj.commit_familiar if @current_stream == 'familiar'
             if attributes['id'] == 'bounty'
               @bounty_task.strip!
             end
@@ -523,10 +606,32 @@ module Lich
                   end
                   @room_title = '[' + attributes['subtitle'][3..-1].gsub(/ - \d+$/, '') + ']'
                 elsif XMLData.game =~ /^DR/
-                  # - [Bosque Deriel, Hermit's Shacks] (230008)
-                  room = attributes['subtitle'].match(/(?<roomtitle>\[.*?\])(?:\s\((?<uid>\d+)\))?/)
-                  @room_title = "[#{room[:roomtitle]}]"
-                  @room_id = room[:uid].to_i
+                  # - [Bosque Deriel, Hermit's Shacks] (a trailing UID marker is present only when
+                  # the game's ShowRoomID flag is ON): " (230008)" for a room that has a UID, or
+                  # " (**)" for a room that has none. The <nav rm=.../> tag is the PRIMARY UID
+                  # source (see the nav handler above); this subtitle marker is only a FALLBACK
+                  # for arrivals where nav arrived late, was absent, or was a bare no-uid <nav/>.
+                  # When nav already supplied a real UID this arrival (@nav_uid_pending), leave
+                  # room_id alone so the subtitle never clobbers the authoritative nav value; the
+                  # subtitle consumes that flag either way, so the next arrival's marker (if its
+                  # nav is missing) is free to act as the fallback. When nav did not supply one, a
+                  # numeric marker sets the UID and "(**)" clears it to 0 (explicit "no UID",
+                  # dropping any stale id from a prior room). A ShowRoomID-OFF subtitle has no
+                  # marker at all, so room_id is left untouched (never write 0 blindly). The title
+                  # stays UID-free in every case. Guard the match: a blank/identity-less subtitle
+                  # (e.g. " - ") has no "[...]" and returns nil, so leave the prior title untouched
+                  # rather than crash.
+                  room = attributes['subtitle'].match(%r{(?<roomtitle>\[.*?\])(?:\s\((?<uid>\d+|\*+)\))?})
+                  if room
+                    @room_title = "[#{room[:roomtitle]}]"
+                    @room_id = (room[:uid] =~ /\A\d+\z/ ? room[:uid].to_i : 0) if room[:uid] && !@nav_uid_pending
+                    @nav_uid_pending = false
+                    # Record whether the game displayed the RealID this arrival (a UID
+                    # marker present == ShowRoomID ON) so the outbound room-name/subtitle
+                    # rewrite can preserve that choice GS-style. A marker-less subtitle
+                    # (flag OFF) leaves the previous room's flag stale, so clear it here.
+                    @show_room_id = !room[:uid].nil?
+                  end
                 else
                   @room_title = String.new
                 end
@@ -550,6 +655,11 @@ module Lich
             @server_time_offset = (Time.now.to_f - @server_time)
             $_CLIENT_.puts "\034GSq#{sprintf('%010d', @server_time)}\r\n" if @send_fake_tags
 
+            # A prompt terminates the command burst and is the reliable close
+            # signal for clearContainer/inv container fills, which have no
+            # closing tag of their own. No-op when no container refresh is open.
+            GameObj.commit_all_containers
+
             if @dr_active_spell_tracking
               @dr_active_spell_tracking = false
               @dr_active_spells_slivers = false
@@ -558,13 +668,31 @@ module Lich
             elsif @dr_active_spells_clear
               @dr_active_spells = {}
             end
+
+            # DragonRealms stream-order name backfill, applied as an
+            # all-or-nothing batch at the end of the room-objs + crtrStatus
+            # sequence. Only when the captured bold-name count exactly matches
+            # this batch's crtrStatus id count do we pair them by position; on any
+            # mismatch (e.g. a bold room entity that emits no crtrStatus) we skip
+            # naming rather than risk a shifted mis-pair - assess still backfills
+            # names by id. Reset after every prompt so a later lone crtrStatus
+            # batch can't reuse a previous refresh's names.
+            if XMLData.game =~ /^DR/ && defined?(Lich::DragonRealms::Creature)
+              if !@dr_crtr_ids.empty? && @dr_crtr_ids.length == @dr_room_npc_names.length
+                @dr_crtr_ids.each_with_index do |id, i|
+                  Lich::DragonRealms::Creature[id]&.apply_room_name(@dr_room_npc_names[i])
+                end
+              end
+              @dr_room_npc_names = []
+              @dr_crtr_ids = []
+            end
           end
 
           if name == 'clearContainer'
             if attributes['id'] == 'stow'
-              GameObj.clear_container(@stow_container_id)
+              GameObj.begin_container(@stow_container_id)
             else
-              GameObj.clear_container(attributes['id'])
+              GameObj.begin_container(attributes['id'])
             end
           end
           if name == 'deleteContainer'
@@ -928,8 +1056,20 @@ module Lich
             if @active_ids.include?('room objs')
               if @active_tags.include?('a')
                 if @bold
-                  GameObj.new_npc(@obj_exist, @obj_noun, text_string)
-                  if XMLData.current_target_ids.include?(@obj_exist) || @pending_crtr_status.key?(@obj_exist)
+                  @last_npc = GameObj.new_npc(@obj_exist, @obj_noun, text_string)
+                  if XMLData.game =~ /^DR/
+                    # Future-proofing: DragonRealms room-objs creatures currently
+                    # carry no <a> tag, but if that ever changes to GemStone's
+                    # <a exist noun> shape, register id-first with the inline
+                    # name/noun via DR's own Creature (never the unqualified
+                    # Gemstone Creature below, which is not loaded in DR). With an
+                    # <a> present the stream-order capture branch is skipped, so
+                    # this becomes the sole name source - no double-set.
+                    if @obj_exist && defined?(Lich::DragonRealms::Creature)
+                      dr_creature = Lich::DragonRealms::Creature.register(text_string, @obj_exist, @obj_noun)
+                      dr_creature&.apply_room_name(text_string)
+                    end
+                  elsif XMLData.current_target_ids.include?(@obj_exist) || @pending_crtr_status.key?(@obj_exist)
                     creature = Creature.register(text_string, @obj_exist, @obj_noun)
                     if creature && (pending_flags = @pending_crtr_status.delete(@obj_exist))
                       creature.sync_crtr_status(pending_flags)
@@ -938,22 +1078,38 @@ module Lich
                 else
                   GameObj.new_loot(@obj_exist, @obj_noun, text_string)
                 end
+              elsif @bold && XMLData.game =~ /^DR/
+                # DragonRealms room-objs bold NPC names carry no <a> tag. Capture
+                # them in stream order so the <crtrStatus> batch that follows can
+                # pair the Nth name to the Nth id (see the crtrStatus handler).
+                # Only bold runs are names; the non-bold "(dead)"/"(immobile)"
+                # status runs fall through to the annotation branch below.
+                @dr_room_npc_names << text_string
               elsif (text_string =~ /that (?:is|appears) ([\w\s]+)(?:,| and|\.)/) or (text_string =~ / \(([^\(]+)\)/)
-                GameObj.npcs[-1].status = $1
+                # @last_npc is nil in DragonRealms here (DR room-objs bold names
+                # carry no <a> tag, so the new_npc branch above never runs and
+                # never sets it), so the &. keeps this a safe no-op in DR while
+                # still annotating the last GemStone npc.
+                @last_npc&.status = $1
               end
             elsif @active_ids.include?('room players')
               if @active_tags.include?('a')
                 if @obj_exist.to_s.start_with?('-')
                   @pc = GameObj.new_pc(@obj_exist, @obj_noun, "#{@player_title}#{text_string}", @player_status)
+                  # Track the status we just staged for this pc. The annotation
+                  # branch below appends to this instead of reading it back
+                  # through GameObj#status, which cannot see the in-flight value.
+                  @pc_status = @player_status
                   @arrival_pcs.push(@pc.noun) if (defined?(Lich::Claim) && Lich::Claim::Lock.owned?)
                 else
                   @pc = nil
+                  @pc_status = nil
                 end
                 @player_status = nil
                 @player_title = nil
               else
                 if @game =~ /^DR/
-                  GameObj.clear_pcs
+                  GameObj.begin_room_players
                   text_string.sub(/^Also here\: /, '').sub(/ and ([^,]+)\./) { ", #{$1}" }.split(', ').each { |player|
                     if player =~ / who is (.+)/
                       status = $1
@@ -983,14 +1139,12 @@ module Lich
                     end
                     GameObj.new_pc(nil, noun, player, status)
                   }
+                  GameObj.commit_room_players
                 else
                   if @pc && ((text_string =~ /^ who (?:is|appears) ([\w\s]+)(?:,| and|\.|$)/) || (text_string =~ / \(([\w\s]+)\)(?: \(([\w\s]+)\))?/))
-                    if @pc.status
-                      @pc.status.concat " #{$1}"
-                    else
-                      @pc.status = $1
-                    end
-                    @pc.status.concat " #{$2}" if $2
+                    @pc_status = @pc_status ? "#{@pc_status} #{$1}" : $1
+                    @pc_status = "#{@pc_status} #{$2}" if $2
+                    @pc.status = @pc_status
                   end
                   if text_string =~ /(?:^Also here: |, )(?:a )?([a-z\s]+)?([\w\s\-!\?',]+)?$/
                     @player_status = ($1.strip.gsub('the body of', 'dead')) if $1
@@ -1030,10 +1184,7 @@ module Lich
               @familiar_room_title = text_string
               @familiar_room_description = String.new
               @familiar_room_exits = Array.new
-              GameObj.clear_fam_room_desc
-              GameObj.clear_fam_loot
-              GameObj.clear_fam_npcs
-              GameObj.clear_fam_pcs
+              GameObj.begin_familiar
               @fam_mode = String.new
             elsif @current_style == 'roomDesc'
               @familiar_room_description.concat(text_string)
@@ -1136,6 +1287,15 @@ module Lich
             end
             @room_count += 1
             $room_count += 1
+          end
+          # Commit a staged room component when it closes. @active_ids.last is
+          # the component's own id at this point (inner <a> ids already popped).
+          if (name == 'component') or (name == 'compDef')
+            case @active_ids.last
+            when 'room objs'    then GameObj.commit_room_objs
+            when 'room players' then GameObj.commit_room_players
+            when 'room desc'    then GameObj.commit_room_desc
+            end
           end
           @last_tag = @active_tags.pop
           @last_id = @active_ids.pop

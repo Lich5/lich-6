@@ -20,6 +20,8 @@ RSpec.describe Lich::Main::HelpText do
       expect(output).to include('--headless PORT')
       expect(output).to include('--headless auto')
       expect(output).to include('--save')
+      expect(output).to include('Native saved Saga entries use Saga-managed Via Lich login')
+      expect(output).to include('require the matching account credentials to be saved in Saga.')
     end
 
     it 'maps diagnostics requests to automation help' do
@@ -43,6 +45,21 @@ RSpec.describe Lich::Main::HelpText do
 
       expect(output).to include('Multiple frontends may attach to one detachable port.')
       expect(output).to include('commands from all attached frontends are processed serially')
+    end
+
+    it 'lists every supported path option' do
+      output = described_class.render('paths')
+
+      expect(output).to include('--home=PATH')
+      expect(output).to include('--script-dir=PATH')
+      expect(output).to include('--data-dir=PATH')
+      expect(output).to include('--temp-dir=PATH')
+      expect(output).to include('--map-dir=PATH')
+      expect(output).to include('--log-dir=PATH')
+      expect(output).to include('--backup-dir=PATH')
+      expect(output).to include('--lib-dir=PATH')
+      expect(output).to include('--hosts-dir=PATH')
+      expect(output).to include('--hosts-file=PATH')
     end
   end
 
