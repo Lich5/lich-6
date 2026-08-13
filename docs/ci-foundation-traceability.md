@@ -1,10 +1,10 @@
 # CI foundation traceability
 
-Implements `SPEC-CI-FOUNDATION` 1.4.0. REQ-CI-002, REQ-CI-003, and REQ-CI-020 remain intentionally red forward acceptance gates until the core GTK migration is complete. REQ-CI-001 and REQ-CI-061 await confirmation from a published GitHub run. The branch-protection portions of REQ-CI-013 and REQ-CI-051 are owner-only.
+Implements `SPEC-CI-FOUNDATION` 1.5.0. REQ-CI-002, REQ-CI-003, and REQ-CI-020 remain intentionally red forward acceptance gates until the core GTK migration is complete. REQ-CI-001 and REQ-CI-061 await confirmation from a published GitHub run. The branch-protection portions of REQ-CI-013 and REQ-CI-051 are owner-only.
 
 | Requirement | Implementation | Validation / observable |
 | --- | --- | --- |
-| REQ-CI-001 | CI foundation workflow | log emits the resolved rbenv shim path and exact `.ruby-version` interpreter version |
+| REQ-CI-001 | CI foundation workflow | pinned `ruby/setup-ruby` installs `.ruby-version`; every Ruby job logs its interpreter path and exact version |
 | REQ-CI-002 | CI foundation `without-gtk3` matrix | GTK-free bundle and suite |
 | REQ-CI-003 | CI foundation `with-gtk3` matrix | GTK-present bundle and suite |
 | REQ-CI-010 | `lib/common/script_scope/gtk/.gitkeep` | directory has no Ruby implementation |
