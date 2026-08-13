@@ -1,0 +1,26 @@
+---
+encryption_mode: plaintext
+master_password_validation_test:
+accounts:
+  DOUG:
+    password: ACCEPTANCE_ONLY_NOT_REAL
+    characters:
+      - char_name: Aldor
+        game_code: GS3
+        game_name: GemStone IV
+        frontend: stormfront
+        is_favorite: true
+        favorite_order: 1
+      - char_name: Bera
+        game_code: DR
+        game_name: DragonRealms
+        frontend: wizard
+        is_favorite: false
+  TEST:
+    password: ACCEPTANCE_ONLY_NOT_REAL
+    characters:
+      - char_name: Cera
+        game_code: GSF
+        game_name: GemStone IV Shattered
+        frontend: stormfront
+        is_favorite: false

@@ -87,6 +87,8 @@ module Lich
               @argv_options[:gui] = false
             when /^--gui$/i
               @argv_options[:gui] = true
+            when /^--webui-dev$/i
+              @argv_options[:webui_dev] = true
             when /^--game=(.+)$/i
               @argv_options[:game] = $1
             when /^--account=(.+)$/i

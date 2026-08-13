@@ -1,0 +1,72 @@
+{
+  "date": "2026-08-13",
+  "reference_viewport": {"width": 840, "height": 680},
+  "narrow_viewport": {"width": 520, "height": 680},
+  "reference_assertions": {
+    "top_tab_order": true,
+    "saved_default": true,
+    "saved_account_tab_order": true,
+    "saved_account_tabs_vertical_left_of_content": true,
+    "row_actions_same_parent": true,
+    "row_actions_launch_remove_favorite_left_to_right": true,
+    "manual_section_order": true,
+    "manual_connect_before_disconnect": true,
+    "manual_play_at_workflow_end": true,
+    "account_nested_tab_order": true,
+    "accounts_table_retained": true,
+    "account_actions_after_table": true,
+    "back_left_of_primary": true
+  },
+  "narrow_assertions": {
+    "tabs_remain_tabs": true,
+    "saved_account_tabs_remain_left_of_content": true,
+    "navigation_order_unchanged": true,
+    "row_actions_same_section": true,
+    "row_actions_within_viewport": true,
+    "row_action_workflow_order_unchanged": true,
+    "latest_feedback_viewport": {"width": 488, "height": 661},
+    "latest_feedback_row_bounds": {
+      "launch": {"x": 132, "width": 224, "height": 44},
+      "remove": {"x": 360, "width": 72, "height": 44},
+      "favorite": {"x": 436, "width": 44, "height": 44}
+    }
+  },
+  "latest_feedback": {
+    "window_title": "Lich v5.20.0",
+    "visible_content_heading_count": 0,
+    "visible_connection_header": false,
+    "launch_button_segments": ["Aldor", "GS Prime", "Wrayth"],
+    "remove_precedes_favorite": true,
+    "favorite_glyph": "filled star",
+    "favorite_accessible_name": "Unfavorite Aldor",
+    "tabbed_button_heights": [36, 36, 36],
+    "tabbed_segment_alignment": "center/center for all three segments",
+    "untabbed_button_heights": [28, 28],
+    "untabbed_play_label": "Play Bera | DR Prime | Wizard",
+    "untabbed_favorite_control_count": 0,
+    "window_geometry_persistence": "bounded authenticated event to 0600 geometry file to Chrome/Edge launch flags",
+    "manual_installed_frontends": ["Avalon", "Saga"],
+    "manual_static_frontends_absent": true,
+    "manual_custom_fields_hidden_by_default": true,
+    "manual_play_disabled_before_authentication_and_selection": true,
+    "manual_play_right_aligned": true,
+    "launcher_close_stops_service_and_ruby_session": true,
+    "native_chrome_close_ruby_exit_status": 0,
+    "webui_bypasses_unused_gtk_main_loop": true
+  },
+  "gui_settings": {
+    "control_order": ["Dark Theme", "Tab Layout", "AutoSort", "Multi-Launch"],
+    "tab_layout_off_form": "grouped list",
+    "tab_layout_on_tabs": ["FAVORITES", "DOUG", "TEST"],
+    "saved_order_before_autosort": ["Bera", "Aldor"],
+    "saved_order_after_autosort": ["Aldor", "Bera"],
+    "persisted_gtk_restart_capture": "evidence/gtk-tab-layout-autosort-reference-840x680.png"
+  },
+  "security": {
+    "hostile_literal_visible": true,
+    "injected_img_count": 0,
+    "injected_onerror_count": 0,
+    "browser_warning_error_count": 0,
+    "websocket_event_rerender": true
+  }
+}
