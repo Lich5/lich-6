@@ -59,14 +59,23 @@ RSpec.describe 'CI foundation guard scripts' do
     expect(status).not_to be_success
   end
 
-  it 'expands the security manifest into twenty neutral pending check runs' do
-    output, status = Open3.capture2e(RbConfig.ruby, File.join(LIB_DIR, '..', 'script/ci/security_check_runs.rb'),
-                                     File.join(LIB_DIR, '..', '.github/ci/security-test-manifest.json'))
+  it 'executes implemented security evidence and expands twenty successful check runs' do
+    manifest = File.join(LIB_DIR, '..', '.github/ci/security-test-manifest.json')
+    first = File.join(root, 'security-results-without-gtk3.json')
+    _runner_output, runner_status = Open3.capture2e(
+      RbConfig.ruby, File.join(LIB_DIR, '..', 'script/ci/run_security_checks.rb'), manifest, first
+    )
+    expect(runner_status).to be_success
+    FileUtils.cp(first, File.join(root, 'security-results-with-gtk3.json'))
+
+    output, status = Open3.capture2e(
+      RbConfig.ruby, File.join(LIB_DIR, '..', 'script/ci/security_check_runs.rb'), manifest, root
+    )
     expect(status).to be_success
     payloads = JSON.parse(output)
     expect(payloads).to have_attributes(length: 20)
     expect(payloads.map { |payload| payload['name'] }.uniq.length).to eq(20)
-    expect(payloads.map { |payload| payload['conclusion'] }.uniq).to eq(['neutral'])
+    expect(payloads.map { |payload| payload['conclusion'] }.uniq).to eq(['success'])
   end
 
   it 'validates the complete security manifest and its leakage method' do
@@ -266,6 +275,11 @@ RSpec.describe 'CI foundation guard scripts' do
     expect(workflow).to include('run: bundle exec rspec')
     expect(workflow).to include('run: ruby script/ci/check_shim_namespace.rb')
     expect(workflow).to include('run: bundle exec rubocop --only Custom/AsciiOnlySource')
+    expect(workflow).to include('bundle exec ruby script/ci/run_security_checks.rb')
+    expect(workflow).to include('security-results-${{ matrix.gtk }}.json')
+    expect(workflow).to include('needs: foundation')
+    expect(workflow).to include('actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16')
+    expect(workflow).to include('"$RUNNER_TEMP/security-results"')
     expect(workflow).to include('run: ruby script/ci/startup_load_check.rb')
     expect(workflow).to include('LICH_CI_ARTIFACT_DIR: ${{ runner.temp }}/gtk-free-startup-loads')
     expect(workflow).to include("const headSha = context.eventName === 'pull_request'")

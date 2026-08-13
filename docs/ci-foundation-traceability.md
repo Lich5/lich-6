@@ -1,6 +1,6 @@
 # CI foundation traceability
 
-Implements `SPEC-CI-FOUNDATION` 1.5.0. REQ-CI-002 and REQ-CI-020 remain intentionally red forward acceptance gates until the core GTK migration is complete. REQ-CI-001 and REQ-CI-061 await confirmation from a published GitHub run. The branch-protection portions of REQ-CI-013 and REQ-CI-051 are owner-only.
+Implements `SPEC-CI-FOUNDATION` 1.5.0. REQ-CI-002 and REQ-CI-020 remain intentionally red forward acceptance gates until the core GTK migration is complete. REQ-CI-001 awaits confirmation from a published GitHub run. The branch-protection portions of REQ-CI-013 and REQ-CI-051 are owner-only.
 
 | Requirement | Implementation | Validation / observable |
 | --- | --- | --- |
@@ -18,6 +18,6 @@ Implements `SPEC-CI-FOUNDATION` 1.5.0. REQ-CI-002 and REQ-CI-020 remain intentio
 | REQ-CI-032 | `spec/fixtures/conformance/manifest.yml` | fixture provenance manifest |
 | REQ-CI-050 | custom RuboCop ASCII cop | planted non-ASCII source fails |
 | REQ-CI-051 | CI foundation RuboCop job | inherited configuration runs; required-check configuration remains owner-only |
-| REQ-CI-060 | security manifest | exactly ten required pending entries |
-| REQ-CI-061 | security registration workflow | twenty check runs target the push SHA or pull-request head SHA; live publication awaits owner publication |
+| REQ-CI-060 | security manifest and tagged negative specs | exactly ten required implemented entries backed by executable evidence |
+| REQ-CI-061 | security runner and registration workflow | matrix jobs execute the tagged evidence; twenty check runs publish each toolchain's actual result against the push SHA or pull-request head SHA |
 | REQ-CI-062 | bulk-leakage manifest entry | canary and four sinks specified |
