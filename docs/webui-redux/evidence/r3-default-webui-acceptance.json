@@ -1,0 +1,21 @@
+{
+  "verdict": "pass",
+  "authenticated_http": true,
+  "authenticated_websocket": true,
+  "page_address": "page-e6d7499bfe720a3211e44f682608b639",
+  "required_tabs": [
+    "Saved Entry",
+    "Manual Entry",
+    "Account Management"
+  ],
+  "interaction": "GUI Settings changed from hidden to visible",
+  "launcher_start_replaced": false,
+  "launcher_await_replaced": false,
+  "launcher_start_source": "/Users/doug/dev/Projects/lich-6/lib/common/webui_launcher.rb:91",
+  "launcher_await_source": "/Users/doug/dev/Projects/lich-6/lib/common/webui_launcher.rb:146",
+  "entrypoint_argv": [],
+  "gtk_family_loaded_features": [],
+  "clean_shutdown": true,
+  "exit_status": 0,
+  "term_signal": null
+}

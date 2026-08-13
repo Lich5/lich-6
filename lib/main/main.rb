@@ -183,9 +183,9 @@ reconnect_if_wanted = proc {
       raise SystemExit.new(1) # With abort_on_exception=true, this propagates to main thread
     end
 
-  ## GUI starts here
+  ## Native WebUI starts here
 
-  elsif @argv_options[:webui_dev]
+  elsif ARGV.empty? or @argv_options[:gui]
     require File.join(LIB_DIR, 'common', 'webui_launcher.rb')
     webui_launcher = Lich::Common::WebUILauncher.new(
       data_dir: DATA_DIR,
@@ -197,9 +197,6 @@ reconnect_if_wanted = proc {
     )
     @launch_data = webui_launcher.start.await_launch
     next unless @launch_data
-  elsif defined?(Gtk) and (ARGV.empty? or @argv_options[:gui])
-    require File.join(LIB_DIR, 'common', 'gui_login.rb')
-    gui_login
   end
 
   #
@@ -481,7 +478,6 @@ reconnect_if_wanted = proc {
         $_CLIENT_.close # rescue() # rubocop complaint, but is it even necessary?
         reconnect_if_wanted.call
         Lich.log "info: exiting..."
-        Lich::Common.shutdown_gtk_before_exit
         exit
       end
       #      if defined?(Win32)
@@ -506,7 +502,6 @@ reconnect_if_wanted = proc {
         $_CLIENT_.close rescue nil
         reconnect_if_wanted.call
         Lich.log "info: exiting..."
-        Lich::Common.shutdown_gtk_before_exit
         exit
       end
     end
@@ -1094,7 +1089,6 @@ reconnect_if_wanted = proc {
       Lich::Common::ShutdownLog.flush_user_exit_summary!
     end
     Lich::Common::ShutdownLog.info('exiting...')
-    Lich::Common.shutdown_gtk_before_exit
     exit
   ensure
     # Guarantee lifecycle stop even on abnormal exit (e.g. abort_on_exception).

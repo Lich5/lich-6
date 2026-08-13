@@ -7,7 +7,7 @@
 
 ## About
 
-Lich 5 is a GTK3 variant of Lich that is meant to replace the existing versions of Lich. Lich is an open source scripting engine for Simutronic's text-based games DragonRealms and Gemstone IV. It is not a complete front-end in and of itself: it operates much like a proxy server and communicates with the user through their chosen front-end (effectively giving the appearance of expanding the front-end's features with its own). It allows you to write and run scripts in the Ruby language.
+Lich 5 is an open source scripting engine for Simutronics' text-based games DragonRealms and GemStone IV. Its native login, account-management, and launcher surface is delivered through an authenticated loopback WebUI. Lich is not a complete game front-end: it operates as a proxy and communicates with the user through their chosen front-end while allowing Ruby scripts to extend the game experience.
 
 Lich was originally created by Shaelun, who brought it up from an idea to version 3.57. Starting with version 3.58, Lich was maintained by Tillmen until version 5. Starting with version 5 of Lich, a community effort started to maintain and expand upon Lich and is now home here under the Elanthia-Online team.
 

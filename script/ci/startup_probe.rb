@@ -29,7 +29,7 @@ module LichCiStartupProbe
   def install_tracepoint!
     @installer = TracePoint.new(:end) do |trace|
       install_cli_fixture(trace)
-      install_gui_fixture(trace)
+      install_webui_fixture(trace)
     end
     @installer.enable
   end
@@ -45,14 +45,16 @@ module LichCiStartupProbe
     Lich::Common::Authentication::CLI.singleton_class.prepend(fixture)
   end
 
-  def install_gui_fixture(trace)
-    return unless trace.path.end_with?('/common/gui_login.rb')
-    return unless defined?(Lich::Common)
-    return unless trace.self.equal?(Lich::Common)
+  def install_webui_fixture(trace)
+    return unless trace.path.end_with?('/common/webui_launcher.rb')
+    return unless defined?(Lich::Common::WebUILauncher)
+    return unless trace.self.equal?(Lich::Common::WebUILauncher)
 
-    Lich::Common.module_eval do
-      define_method(:gui_login) { @launch_data = LichCiStartupProbe.launch_data }
+    fixture = Module.new do
+      define_method(:start) { self }
+      define_method(:await_launch) { LichCiStartupProbe.launch_data }
     end
+    Lich::Common::WebUILauncher.prepend(fixture)
   end
 
   def launch_data

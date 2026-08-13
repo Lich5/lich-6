@@ -47,8 +47,10 @@ jobs:
           fi
       - name: Run RSpec
         run: bundle exec rspec
-      - name: Verify D4 shim boundary
-        run: ruby script/ci/check_shim_namespace.rb
+      - name: Verify D4 core and shim boundaries
+        run: |
+          ruby script/ci/check_shim_namespace.rb
+          ruby script/ci/check_core_gtk_boundary.rb
       - name: Verify ASCII-only Ruby source
         run: bundle exec rubocop --only Custom/AsciiOnlySource
       - name: Verify security registration manifest
@@ -70,6 +72,11 @@ jobs:
         env:
           LICH_CI_ARTIFACT_DIR: ${{ runner.temp }}/gtk-free-startup-loads
         run: ruby script/ci/startup_load_check.rb
+      - name: Verify real default WebUI acceptance
+        if: matrix.gtk == 'without-gtk3'
+        env:
+          LICH_CI_DEFAULT_WEBUI_ARTIFACT: ${{ runner.temp }}/gtk-free-startup-loads/default-webui-acceptance.json
+        run: ruby script/ci/default_webui_acceptance_check.rb
       - name: Upload startup load records
         if: always() && matrix.gtk == 'without-gtk3'
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3

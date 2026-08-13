@@ -1,0 +1,138 @@
+{
+  "delivery": "R3",
+  "target": "d952f2fd71549e44e16786191cd566933626195c + R3 working tree",
+  "proved_date": "2026-08-13",
+  "ruby": "ruby 4.0.5 (2026-05-20 revision 64336ffd0e) +PRISM [arm64-darwin25]",
+  "production_files_changed": [
+    "lich.rbw",
+    ".github/workflows/ci-foundation.yaml",
+    "lib/common/authentication/entry_store.rb",
+    "lib/common/cli/cli_conversion.rb",
+    "lib/common/front-end.rb",
+    "lib/common/gui/state.rb",
+    "lib/common/gui/utilities.rb",
+    "lib/common/webui_launcher.rb",
+    "lib/gemcheck.rb",
+    "lib/gemstone/combat/async_processor.rb",
+    "lib/init.rb",
+    "lib/lich.rb",
+    "lib/main/argv_options.rb",
+    "lib/main/help_text.rb",
+    "lib/main/main.rb",
+    "lib/main/startup_theme.rb",
+    "lib/util/memoryreleaser.rb",
+    "script/ci/check_core_gtk_boundary.rb",
+    "script/ci/default_webui_acceptance_check.rb",
+    "script/ci/default_webui_acceptance_probe.rb",
+    "script/ci/startup_probe.rb"
+  ],
+  "existing_product_files_deleted": [
+    "lib/common/authentication/gui.rb",
+    "lib/common/gtk.rb",
+    "lib/common/gui/accessibility.rb",
+    "lib/common/gui/account_manager_ui.rb",
+    "lib/common/gui/components.rb",
+    "lib/common/gui/conversion_ui.rb",
+    "lib/common/gui/encryption_mode_change.rb",
+    "lib/common/gui/favorites_manager.rb",
+    "lib/common/gui/frontend_selector.rb",
+    "lib/common/gui/game_selection.rb",
+    "lib/common/gui/login_tab_utils.rb",
+    "lib/common/gui/manual_login_tab.rb",
+    "lib/common/gui/master_password_change.rb",
+    "lib/common/gui/master_password_prompt.rb",
+    "lib/common/gui/master_password_prompt_ui.rb",
+    "lib/common/gui/parameter_objects.rb",
+    "lib/common/gui/password_change.rb",
+    "lib/common/gui/password_manager.rb",
+    "lib/common/gui/saved_login_tab.rb",
+    "lib/common/gui/tab_communicator.rb",
+    "lib/common/gui/theme_utils.rb",
+    "lib/common/gui/window_settings.rb",
+    "lib/common/gui_login.rb",
+    "lib/util/gtk_compaction.rb"
+  ],
+  "replacement_proof": {
+    "accepted_surface": "REQ-UI-094 and ADR-0015 are HUMAN_ACCEPTED at d952f2fd with docs/webui-redux/browser-structural-evidence.json",
+    "equivalent_workflows": "spec/lib/common/webui_launcher_redux_spec.rb, spec/lib/common/webui_launcher_workflows_spec.rb, and spec/lib/common/webui_launcher/catalog_integration_spec.rb pass in the full suite",
+    "default_and_cli_startup": "spec/lib/main/default_webui_acceptance_spec.rb, script/ci/default_webui_acceptance_check.rb, and script/ci/startup_load_check.rb pass",
+    "core_boundary": "script/ci/check_core_gtk_boundary.rb and script/ci/check_shim_namespace.rb pass"
+  },
+  "automated_gate": {
+    "focused": {
+      "command": "rspec spec/lib/main/webui_default_spec.rb spec/lib/main/startup_theme_spec.rb spec/lib/main/help_text_spec.rb spec/lib/gemcheck_spec.rb spec/lib/common/authentication/entry_store_spec.rb spec/lib/util/memoryreleaser_spec.rb spec/lib/gemstone/combat/async_processor_spec.rb spec/lib/common/ci_foundation_scripts_spec.rb",
+      "result": "207 examples, 0 failures",
+      "seed": 29330
+    },
+    "audit_focused": {
+      "command": "rspec spec/lib/main/default_webui_acceptance_spec.rb spec/lib/main/webui_default_spec.rb spec/lib/common/ci_foundation_scripts_spec.rb",
+      "result": "35 examples, 0 failures",
+      "seed": 26935
+    },
+    "full_rspec": {
+      "command": "rspec --seed 29996",
+      "result": "6263 examples, 0 failures",
+      "seed": 29996
+    },
+    "rubocop": {
+      "command": "rubocop",
+      "result": "1103 files inspected, no offenses detected"
+    },
+    "security_negatives": {
+      "commands": [
+        "ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json",
+        "ruby script/ci/run_security_checks.rb .github/ci/security-test-manifest.json /private/tmp/lich-r3-audit-security-results.json"
+      ],
+      "result": "10 registered checks succeeded",
+      "result_sha256": "0e80886f40cda00a0d60d81b254a198a9368cf12123026cb70b5dca35e5cbd3e"
+    },
+    "d4_ci_foundation": {
+      "commands": [
+        "ruby script/ci/check_shim_namespace.rb",
+        "ruby script/ci/check_core_gtk_boundary.rb"
+      ],
+      "result": "pass: no core-to-shim reference and no GTK runtime idiom in lich.rbw or lib outside lib/common/script_scope/gtk"
+    },
+    "startup_load_probe": {
+      "command": "LICH_CI_ARTIFACT_DIR=/private/tmp/lich-r3-audit-startup.J13y0Z ruby script/ci/startup_load_check.rb",
+      "summary_sha256": "9182e03bf5c058907d194d0c8e427b81c955045f16af836c4210e62ae7c52f8c",
+      "results": [
+        {"mode": "default", "verdict": "pass", "reached_startup": true, "gtk_family_loaded_features": 0},
+        {"mode": "saved-character-login", "verdict": "pass", "reached_startup": true, "gtk_family_loaded_features": 0},
+        {"mode": "headless-detachable-login", "verdict": "pass", "reached_startup": true, "gtk_family_loaded_features": 0},
+        {"mode": "direct-pipe-launch", "verdict": "pass", "reached_startup": true, "gtk_family_loaded_features": 0}
+      ]
+    },
+    "actual_consumer": {
+      "command": "LICH_CI_DEFAULT_WEBUI_ARTIFACT=/private/tmp/lich-r3-default-webui-acceptance-final.json ruby script/ci/default_webui_acceptance_check.rb",
+      "artifact": "docs/webui-redux/evidence/r3-default-webui-acceptance.json",
+      "artifact_sha256": "5b1259bedd76c89ed61e63a9dd1fe6afd3707f2cb85677341522f1267ffeb165",
+      "result": {
+        "verdict": "pass",
+        "authenticated_http": true,
+        "authenticated_websocket": true,
+        "required_tabs": ["Saved Entry", "Manual Entry", "Account Management"],
+        "interaction": "GUI Settings changed from hidden to visible",
+        "launcher_start_replaced": false,
+        "launcher_await_replaced": false,
+        "launcher_start_source": "/Users/doug/dev/Projects/lich-6/lib/common/webui_launcher.rb:91",
+        "launcher_await_source": "/Users/doug/dev/Projects/lich-6/lib/common/webui_launcher.rb:146",
+        "entrypoint_argv": [],
+        "gtk_family_loaded_features": [],
+        "clean_shutdown": true,
+        "exit_status": 0,
+        "term_signal": null
+      },
+      "notes": "The acceptance probe replaces only the external browser process opener with an authenticated HTTP/WebSocket client. WebUILauncher#start, page construction, Service#start, WebUILauncher#await_launch, runtime dispatch, and launcher close execute unchanged."
+    },
+    "structural_layout": {
+      "result": "R2 HUMAN_ACCEPTED evidence retained; R3 changes dispatch and removes the superseded GTK implementation without changing the accepted WebUI surface",
+      "artifact": "docs/webui-redux/browser-structural-evidence.json"
+    }
+  },
+  "human_gate": "NOT REQUIRED",
+  "live_gate": "NOT REQUIRED",
+  "failed_or_blocked_rows": [],
+  "unverified_claims": [],
+  "next_permitted_delivery": "R4"
+}

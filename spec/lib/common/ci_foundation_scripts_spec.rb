@@ -52,6 +52,29 @@ RSpec.describe 'CI foundation guard scripts' do
     expect(status).to be_success
   end
 
+  it 'rejects a GTK runtime constant from core' do
+    FileUtils.mkdir_p(File.join(root, 'lib'))
+    File.write(File.join(root, 'lib', 'violation.rb'), 'G' + 'tk.main')
+
+    _output, status = Open3.capture2e(
+      RbConfig.ruby, File.join(LIB_DIR, '..', 'script/ci/check_core_gtk_boundary.rb'), root
+    )
+
+    expect(status).not_to be_success
+  end
+
+  it 'permits GTK compatibility implementation only inside the script boundary' do
+    directory = File.join(root, 'lib', 'common', 'script_scope', 'gtk')
+    FileUtils.mkdir_p(directory)
+    File.write(File.join(directory, 'allowed.rb'), 'G' + 'tk.main')
+
+    _output, status = Open3.capture2e(
+      RbConfig.ruby, File.join(LIB_DIR, '..', 'script/ci/check_core_gtk_boundary.rb'), root
+    )
+
+    expect(status).to be_success
+  end
+
   it 'rejects non-ASCII Ruby source' do
     FileUtils.mkdir_p(File.join(root, 'lib'))
     File.binwrite(File.join(root, 'lib', 'violation.rb'), "# " + [0xC3, 0xA9].pack('C*') + "\n")
@@ -232,7 +255,7 @@ RSpec.describe 'CI foundation guard scripts' do
     expect(result['verdict']).to eq('pass')
   end
 
-  it 'installs deterministic saved-login and GUI fixtures in the preloaded helper' do
+  it 'installs deterministic saved-login and native WebUI fixtures in the preloaded helper' do
     require File.join(LIB_DIR, '..', 'script/ci/startup_probe')
     common = Module.new
     authentication = Module.new
@@ -245,12 +268,13 @@ RSpec.describe 'CI foundation guard scripts' do
     cli_trace = double('CLI trace', path: '/common/authentication/cli.rb', self: cli)
     LichCiStartupProbe.install_cli_fixture(cli_trace)
 
-    gui_trace = double('GUI trace', path: '/common/gui_login.rb', self: common)
-    LichCiStartupProbe.install_gui_fixture(gui_trace)
-    gui_host = Object.new.extend(common)
+    launcher_class = Class.new
+    common.const_set(:WebUILauncher, launcher_class)
+    webui_trace = double('WebUI trace', path: '/common/webui_launcher.rb', self: launcher_class)
+    LichCiStartupProbe.install_webui_fixture(webui_trace)
 
     expect(cli.execute('CiFixture')).to eq(['fixture-launch-data'])
-    expect(gui_host.gui_login).to eq(['fixture-launch-data'])
+    expect(launcher_class.new.start.await_launch).to eq(['fixture-launch-data'])
   end
 
   it 'rewrites direct mode to the local fixture server and emits complete launch data' do
@@ -287,7 +311,10 @@ RSpec.describe 'CI foundation guard scripts' do
     expect(workflow.scan('abort unless RUBY_VERSION == ARGV.fetch(0)').length).to eq(3)
     expect(workflow).not_to match(/rbenv|RBENV_VERSION/)
     expect(workflow).to include('run: bundle exec rspec')
-    expect(workflow).to include('run: ruby script/ci/check_shim_namespace.rb')
+    expect(workflow).to include('ruby script/ci/check_shim_namespace.rb')
+    expect(workflow).to include('ruby script/ci/check_core_gtk_boundary.rb')
+    expect(workflow).to include('ruby script/ci/default_webui_acceptance_check.rb')
+    expect(workflow).to include('gtk-free-startup-loads/default-webui-acceptance.json')
     expect(workflow).to include('run: bundle exec rubocop --only Custom/AsciiOnlySource')
     expect(workflow).to include('bundle exec ruby script/ci/run_security_checks.rb')
     expect(workflow).to include('security-results-${{ matrix.gtk }}.json')
