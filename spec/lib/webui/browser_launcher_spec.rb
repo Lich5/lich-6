@@ -114,12 +114,16 @@ RSpec.describe Lich::WebUI::BrowserLauncher do
   end
 
   it 'raises when Google Chrome is not installed' do
+    allow(described_class).to receive(:app_browser_path).with(platform: 'linux').and_return(nil)
+
     expect do
       described_class.command_for('http://127.0.0.1/', platform: 'linux')
     end.to raise_error(Lich::WebUI::Error, /Google Chrome is required/)
   end
 
   it 'raises a Windows-specific error when neither Chrome nor Edge is installed' do
+    allow(described_class).to receive(:app_browser_path).with(platform: 'mingw').and_return(nil)
+
     expect do
       described_class.command_for('http://127.0.0.1/', platform: 'mingw')
     end.to raise_error(Lich::WebUI::Error, /Google Chrome or Microsoft Edge is required/)

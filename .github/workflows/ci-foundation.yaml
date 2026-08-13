@@ -53,6 +53,18 @@ jobs:
         run: bundle exec rubocop --only Custom/AsciiOnlySource
       - name: Verify security registration manifest
         run: ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json
+      - name: Run implemented security checks
+        if: always()
+        run: >-
+          bundle exec ruby script/ci/run_security_checks.rb .github/ci/security-test-manifest.json
+          "$RUNNER_TEMP/security-results-${{ matrix.gtk }}.json"
+      - name: Upload security check results
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: security-results-${{ matrix.gtk }}
+          path: ${{ runner.temp }}/security-results-${{ matrix.gtk }}.json
+          if-no-files-found: error
       - name: Verify GTK-free startup modes
         if: matrix.gtk == 'without-gtk3'
         env:
@@ -86,6 +98,8 @@ jobs:
   security-registration:
     name: Security check registration
     runs-on: ubuntu-latest
+    needs: foundation
+    if: always()
     permissions:
       contents: read
       checks: write
@@ -98,10 +112,17 @@ jobs:
           ruby_path=$(command -v ruby)
           echo "ruby_path=$ruby_path"
           ruby -e 'puts "ruby_version=#{RUBY_VERSION}"; abort unless RUBY_VERSION == ARGV.fetch(0)' "$ruby_version"
+      - name: Download security results
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        continue-on-error: true
+        with:
+          pattern: security-results-*
+          path: ${{ runner.temp }}/security-results
+          merge-multiple: true
       - name: Generate check-run payloads
         run: |
           ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json
-          ruby script/ci/security_check_runs.rb .github/ci/security-test-manifest.json > "$RUNNER_TEMP/security-check-runs.json"
+          ruby script/ci/security_check_runs.rb .github/ci/security-test-manifest.json "$RUNNER_TEMP/security-results" > "$RUNNER_TEMP/security-check-runs.json"
       - name: Validate and publish reserved check runs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
@@ -120,6 +141,6 @@ jobs:
                   name: payload.name,
                   status: 'completed',
                   conclusion: payload.conclusion,
-                  output: { title: 'Security test registration', summary: 'SPEC-CI-FOUNDATION 1.4.0 registration.' }
+                  output: { title: 'Security test registration', summary: 'SPEC-CI-FOUNDATION 1.5.0 implemented result.' }
                 });
             }
