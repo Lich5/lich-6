@@ -252,6 +252,12 @@ RSpec.describe 'CI foundation guard scripts' do
     workflow = File.read(File.join(LIB_DIR, '..', '.github/workflows/ci-foundation.yaml'))
 
     expect(workflow).to include('gtk: [without-gtk3, with-gtk3]')
+    gtk_prerequisites = workflow.index('- name: Install GTK build prerequisites')
+    first_ruby_setup = workflow.index('- uses: ruby/setup-ruby@')
+    expect(gtk_prerequisites).to be < first_ruby_setup
+    expect(workflow).to include("if: matrix.gtk == 'with-gtk3'")
+    expect(workflow).to include('libgirepository1.0-dev')
+    expect(workflow).to include('libgtk-3-dev')
     expect(workflow.scan('ruby/setup-ruby@0dafeac902942906541bc140009cdbf32665b601').length).to eq(3)
     expect(workflow.scan('bundler-cache: true').length).to eq(2)
     expect(workflow).to include('echo "ruby_path=$ruby_path"')
