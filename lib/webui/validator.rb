@@ -66,6 +66,10 @@ module Lich
         validated
       end
 
+      def validate_placement!(name, shape, value, owner:, page_id:, cid:)
+        validate_shape(shape, value, Context.new(owner, page_id, cid), "placement.#{name}")
+      end
+
       def validate_property!(type, name, value, props:, owner:, page_id:, cid:)
         normalized_type = Contract.normalize_type(type)
         key = normalize_name(name)
@@ -260,8 +264,7 @@ module Lich
         value.each_with_object({}) do |(key, cell), result|
           key_string = key.to_s
           violation!('has invalid column key', context, "#{path}.#{key}") unless key_string.match?(Contract::IDENTIFIER)
-          validate_editor_scalar(cell, context, "#{path}.#{key}")
-          result[key_string.freeze] = cell
+          result[key_string.freeze] = validate_editor_scalar(cell, context, "#{path}.#{key}")
         end.freeze
       end
 

@@ -49,6 +49,23 @@ RSpec.describe Lich::WebUI::BrowserLauncher do
     expect(File.exist?(profile)).to be(false)
   end
 
+  it 'still reports exit and removes its profile when the child was already reaped' do
+    exited = []
+    profile = nil
+    spawn = lambda do |*arguments, **_options|
+      profile = arguments.find { |argument| argument.start_with?('--user-data-dir=') }.split('=', 2).last
+      74
+    end
+
+    expect(described_class.open(
+             'http://127.0.0.1:1234/', spawn: spawn, platform: 'darwin',
+             browser_path: '/Applications/Google Chrome', on_exit: -> { exited << true },
+             waitpid: ->(*) { raise Errno::ECHILD }, thread_factory: ->(&work) { work.call }
+           )).to be(true)
+    expect(exited).to eq([true])
+    expect(File.exist?(profile)).to be(false)
+  end
+
   it 'discovers Google Chrome without considering Chromium or a generic browser opener' do
     executable = lambda do |path|
       path == '/usr/bin/google-chrome-stable'

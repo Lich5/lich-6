@@ -5,25 +5,27 @@ require 'webui'
 require 'timeout'
 
 WebUIRuntimeSpecConnection = Class.new do
-  attr_reader :viewer_id, :sent
+  attr_reader :viewer_id
 
   def initialize(viewer_id)
     @viewer_id = viewer_id
     @sent = []
     @closed = false
+    @mutex = Mutex.new
   end
 
   def send_text(payload)
-    @sent << JSON.parse(payload)
+    @mutex.synchronize { @sent << JSON.parse(payload) }
     true
   end
 
   def close
-    @closed = true
+    @mutex.synchronize { @closed = true }
   end
 
-  def closed? = @closed
-  def alive? = !@closed
+  def sent = @mutex.synchronize { @sent.dup }
+  def closed? = @mutex.synchronize { @closed }
+  def alive? = !closed?
 end
 
 RSpec.describe Lich::WebUI::Runtime do
@@ -228,7 +230,7 @@ RSpec.describe Lich::WebUI::Runtime do
 
     expect(page.set(status_cid, :content, 'after')).to be_nil
     Timeout.timeout(2) do
-      Thread.pass until first_connection.sent.last.dig('tree', 'children', 0, 'props', 'content') == 'after'
+      sleep(0.001) until first_connection.sent.last.dig('tree', 'children', 0, 'props', 'content') == 'after'
     end
 
     expect(page.get(status_cid, :content)).to eq('after')
@@ -251,7 +253,7 @@ RSpec.describe Lich::WebUI::Runtime do
       generation: render['generation'], payload: { index: 1 },
     })
     Timeout.timeout(2) do
-      Thread.pass until first_connection.sent.last.dig('tree', 'children', 0, 'props', 'selected') == 1
+      sleep(0.001) until first_connection.sent.last.dig('tree', 'children', 0, 'props', 'selected') == 1
     end
 
     expect(first_connection.sent.last.dig('tree', 'children', 0, 'props', 'selected')).to eq(1)

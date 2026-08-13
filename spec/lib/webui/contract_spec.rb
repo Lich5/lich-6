@@ -32,6 +32,13 @@ RSpec.describe Lich::WebUI::Contract do
     expect(schema[:properties][:sensitive]).to include(default: true, forced: true)
   end
 
+  it 'keeps composite dimensions required after generic attributes are merged' do
+    properties = described_class.schema(:composite).fetch(:properties)
+
+    expect(properties.fetch(:width)).to include(required: true)
+    expect(properties.fetch(:height)).to include(required: true)
+  end
+
   it 'negotiates compatible versions and refuses unsupported majors' do
     expect(described_class.negotiate!('2.99.0')).to eq('2.5.0')
     expect { described_class.negotiate!('3.0.0') }

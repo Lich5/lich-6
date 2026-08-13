@@ -89,10 +89,11 @@ module Lich
               owner: owner_label, page_id: @page_id, cid: parent.cid, field: :children
             )
           end
-          @variable_parents[parent] = true
+          @variable_parents[parent] = @variable_parents.fetch(parent, 0) + 1
           yield item, index
         ensure
-          @variable_parents.delete(parent)
+          depth = @variable_parents.fetch(parent, 1) - 1
+          depth.zero? ? @variable_parents.delete(parent) : @variable_parents[parent] = depth
         end
         nil
       end
@@ -261,7 +262,9 @@ module Lich
             definition = definitions.fetch(name)
             shape = definition.fetch(:shape)
             shape = shape.merge(max: draft.props.fetch(shape[:max_property])) if shape[:max_property]
-            @validator.send(:validate_shape, shape, value, Validator::Context.new(owner_label, @page_id, child.cid), "placement.#{name}")
+            @validator.validate_placement!(
+              name, shape, value, owner: owner_label, page_id: @page_id, cid: child.cid
+            )
           end
         end
       end

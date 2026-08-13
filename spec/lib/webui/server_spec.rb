@@ -2,19 +2,20 @@
 
 require_relative '../../spec_helper'
 require 'socket'
+require 'timeout'
 require 'uri'
 require 'webui/server'
 
 RSpec.describe Lich::WebUI::Server do
   def request(server, target, headers = {})
     socket = TCPSocket.new(server.host, server.port)
-    request_headers = { 'Host' => "127.0.0.1:#{server.port}" }.merge(headers)
+    request_headers = { 'Host' => "127.0.0.1:#{server.port}", 'Connection' => 'close' }.merge(headers)
     lines = ["GET #{target} HTTP/1.1"]
     request_headers.each { |name, value| lines << "#{name}: #{value}" }
     socket.write(lines.join("\r\n") + "\r\n\r\n")
-    response = socket.read
-    socket.close
-    response
+    Timeout.timeout(2) { socket.read }
+  ensure
+    socket&.close
   end
 
   def authenticate(server)
@@ -57,7 +58,8 @@ RSpec.describe Lich::WebUI::Server do
     expect(server.port).to be_positive
     expect(auth_response).to start_with('HTTP/1.1 302 Found')
     expect(auth_response).to include('Location: /', 'HttpOnly', 'SameSite=Strict', 'Cache-Control: no-store', 'Referrer-Policy: no-referrer')
-    expect(auth_response).not_to include(uri.query.split('&').first.split('=').last)
+    token = URI.decode_www_form(uri.query).to_h.fetch('token')
+    expect(auth_response).not_to include(token)
     expect(logs.to_s).not_to include(uri.query)
     expect(request(server, uri.request_uri)).to start_with('HTTP/1.1 403 Forbidden')
 
@@ -104,7 +106,9 @@ RSpec.describe Lich::WebUI::Server do
       "Origin: http://127.0.0.1:#{server.port}", "Cookie: #{cookie}", '', '',
     ].join("\r\n"))
     response_head = +''
-    response_head << socket.read(1) until response_head.end_with?("\r\n\r\n")
+    Timeout.timeout(2) do
+      response_head << socket.read(1) until response_head.end_with?("\r\n\r\n")
+    end
     hello = Lich::WebUI::WebSocket.read_frame(socket, require_mask: false)
     socket.write(Lich::WebUI::WebSocket.encode_client_frame(JSON.generate(
                                                               type: 'attach', page: 'page-abc', version: '2.5.0'

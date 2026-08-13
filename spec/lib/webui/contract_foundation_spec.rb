@@ -47,9 +47,11 @@ RSpec.describe 'WebUI contract foundation' do
       canary = 'origin-b-7c96c297d33a4f36'
       value = described_class.server(canary)
 
-      rendered = [value.to_s, value.inspect, value.to_json, Marshal.dump(value)].join
+      rendered = [value.to_s, value.inspect, value.to_json].join
       expect(rendered).to include(described_class::REDACTION)
       expect(rendered).not_to include(canary)
+      expect(Marshal.dump(value)).to include(described_class::REDACTION)
+      expect(Marshal.dump(value)).not_to include(canary)
       expect(value.origin).to eq(:server)
     end
 

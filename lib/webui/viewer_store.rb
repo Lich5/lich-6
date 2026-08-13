@@ -146,7 +146,12 @@ module Lich
       end
 
       def serialize(attachment)
-        serialize_component(attachment.render.tree, attachment.values)
+        @mutex.synchronize do
+          render = attachment.render
+          raise Error, 'viewer has no delivered render' unless render
+
+          serialize_component(render.tree, attachment.values)
+        end
       end
 
       private

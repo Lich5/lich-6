@@ -46,6 +46,7 @@ module Lich
           position = geometry[:position] || geometry['position']
           return unless width&.between?(MIN_WIDTH, MAX_DIMENSION)
           return unless height&.between?(MIN_HEIGHT, MAX_DIMENSION)
+          return { width: width, height: height, position: nil } if position.nil?
           return unless position.is_a?(Array) && position.length == 2
 
           x = integer(position[0])

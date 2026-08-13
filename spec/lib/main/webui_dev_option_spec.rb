@@ -8,7 +8,11 @@ RSpec.describe 'WebUI development entry' do
     main = File.read(File.join(LIB_DIR, 'main', 'main.rb'))
 
     expect(source).to include("when /^--webui-dev$/i")
-    expect(main.index('elsif @argv_options[:webui_dev]')).to be < main.index('elsif defined?(Gtk)')
+    webui_branch = main.index('elsif @argv_options[:webui_dev]')
+    gtk_branch = main.index('elsif defined?(Gtk)')
+    expect(webui_branch).to be_a(Integer)
+    expect(gtk_branch).to be_a(Integer)
+    expect(webui_branch).to be < gtk_branch
     expect(main).to include("require File.join(LIB_DIR, 'common', 'gui_login.rb')")
     expect(main).to include("@launch_data = webui_launcher.start.await_launch\n    next unless @launch_data")
   end

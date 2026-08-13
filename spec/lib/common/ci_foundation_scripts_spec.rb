@@ -78,6 +78,20 @@ RSpec.describe 'CI foundation guard scripts' do
     expect(payloads.map { |payload| payload['conclusion'] }.uniq).to eq(['success'])
   end
 
+  it 'fails an implemented security check when its RSpec tag selects zero examples' do
+    require File.join(LIB_DIR, '..', 'script/ci/run_security_checks')
+    status = instance_double(Process::Status, success?: true)
+    allow(Open3).to receive(:capture3) do |*command, chdir:|
+      results_path = command.fetch(command.index('--out') + 1)
+      File.write(results_path, JSON.generate('summary' => { 'example_count' => 0 }))
+      expect(chdir).to eq(root)
+      ['', '', status]
+    end
+    entry = { 'id' => 'missing-tag', 'state' => 'implemented', 'spec' => 'spec/example_spec.rb', 'tag' => 'absent' }
+
+    expect(SecurityCheckRunner.run([entry], root: root)).to eq('missing-tag' => 'failure')
+  end
+
   it 'validates the complete security manifest and its leakage method' do
     manifest = File.join(LIB_DIR, '..', '.github/ci/security-test-manifest.json')
     _output, status = Open3.capture2e(

@@ -483,11 +483,13 @@ module Lich
             base[:events].merge!(deep_dup(PAGE_LIFECYCLE_EVENTS)) if type == :page
             base[:properties].merge!(TABLE_PROPERTIES) if type == :table
             base[:events].merge!(TABLE_EVENTS) if type == :table
-            base[:properties].merge!(COMPOSITE_PROPERTIES) if type == :composite
-            base[:events].merge!(COMPOSITE_EVENTS) if type == :composite
             ATTRIBUTE_APPLICABILITY.fetch(type).each do |attribute|
+              next if base[:properties].key?(attribute)
+
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
             end
+            base[:properties].merge!(COMPOSITE_PROPERTIES) if type == :composite
+            base[:events].merge!(COMPOSITE_EVENTS) if type == :composite
             base[:properties].merge!(deep_dup(ACCESSIBILITY_SCHEMAS))
             if type == :password_input
               base[:properties][:sensitive][:forced] = true

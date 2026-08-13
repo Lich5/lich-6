@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require 'tmpdir'
 require 'webui/file_service'
 
 RSpec.describe Lich::WebUI::FileService do
@@ -19,6 +20,9 @@ RSpec.describe Lich::WebUI::FileService do
         expect(service.register('images', application_root, owner: owner)).to eq('/files/images/')
         expect(service.resolve('images', 'inside.png')&.first).to eq(File.realpath(File.join(application_root, 'inside.png')))
         expect(service.resolve_url('/files/images/inside.png')&.first).to eq(File.realpath(File.join(application_root, 'inside.png')))
+        File.binwrite(File.join(application_root, 'plus+name.png'), 'plus')
+        expect(service.resolve_url('/files/images/plus+name.png')&.first)
+          .to eq(File.realpath(File.join(application_root, 'plus+name.png')))
         expect(service.resolve_url('https://example.com/inside.png')).to be_nil
         expect(service.resolve('images', '../outside.png')).to be_nil
         expect(service.resolve('images', 'escape.png')).to be_nil

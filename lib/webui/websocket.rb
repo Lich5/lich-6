@@ -81,8 +81,10 @@ module Lich
         head = [0x80 | opcode].pack('C')
         head << if data.bytesize < 126
                   [0x80 | data.bytesize].pack('C')
-                else
+                elsif data.bytesize <= 65_535
                   [0x80 | 126, data.bytesize].pack('Cn')
+                else
+                  [0x80 | 127, data.bytesize].pack('CQ>')
                 end
         head << mask_key << unmask(data, mask_key)
       end
