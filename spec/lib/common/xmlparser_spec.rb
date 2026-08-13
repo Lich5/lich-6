@@ -19,6 +19,7 @@
 require_relative '../../spec_helper'
 require 'rexml/document'
 require 'rexml/streamlistener'
+require_relative '../../../lib/common/gameobj'
 require_relative '../../../lib/common/xmlparser'
 
 RSpec.describe Lich::Common::XMLParser do
@@ -253,6 +254,399 @@ RSpec.describe Lich::Common::XMLParser do
       expect(parser.room_water).to eq(0)
       expect(parser.room_sanctuary).to eq(0)
       expect(parser.room_realm).to eq(57)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Staged registry refresh (atomic mid-stream reads)
+  #
+  # Drives tag_start / text / tag_end - the interface Ox's SAX bridge feeds in
+  # production - to assert a GameObj registry never appears empty or half-filled
+  # mid-stream: readers see the previous complete snapshot until the
+  # stream/component commits, then the new one.
+  # ---------------------------------------------------------------------------
+  describe 'staged registry refresh (atomic mid-stream reads)' do
+    let(:gameobj) { Lich::Common::GameObj }
+
+    before do
+      # Staged inv/reserve paths gate on a GS game; spec_helper resets game to
+      # 'rspec'. GameObj registry/staging resets also come from spec_helper.
+      XMLData.game = 'GSIV'
+    end
+
+    def feed_bold_a(exist, noun, name)
+      parser.tag_start('pushBold', {})
+      parser.tag_end('pushBold')
+      parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+      parser.text(name)
+      parser.tag_end('a')
+      parser.tag_start('popBold', {})
+      parser.tag_end('popBold')
+    end
+
+    # A non-bold <a> as the game sends ground loot in 'room objs'.
+    def feed_loot_a(exist, noun, name)
+      parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+      parser.text(name)
+      parser.tag_end('a')
+    end
+
+    describe "'room objs' component refresh" do
+      it 'keeps the previous npc list visible until the component closes' do
+        gameobj.new_npc('1', 'orc', 'an orc', 'standing') # previously published
+
+        parser.tag_start('component', { 'id' => 'room objs' }) # begin_room_objs
+        feed_bold_a('2', 'kobold', 'a kobold')
+
+        # Mid-stream: reader still sees the prior room, not the half-built buffer.
+        expect(gameobj.npcs.map(&:id)).to eq(['1'])
+
+        parser.tag_end('component') # commit_room_objs
+        expect(gameobj.npcs.map(&:id)).to eq(['2'])
+      end
+
+      it 'commits loot and npcs together and applies the deferred status line' do
+        parser.tag_start('component', { 'id' => 'room objs' })
+        feed_bold_a('2', 'kobold', 'a kobold')
+        feed_loot_a('3', 'gem', 'a ruby')
+        # Status arrives as text outside the <a>, in a later callback.
+        parser.text(' that is dead.')
+        parser.tag_end('component')
+
+        expect(gameobj.npcs.map(&:id)).to eq(['2'])
+        expect(gameobj.loot.map(&:id)).to eq(['3'])
+        expect(gameobj['2'].status).to eq('dead')
+      end
+
+      it 'clears a stale room when the new component carries no objects' do
+        gameobj.new_npc('1', 'orc', 'an orc', 'standing')
+        gameobj.new_loot('9', 'gem', 'a ruby')
+
+        parser.tag_start('component', { 'id' => 'room objs' })
+        parser.tag_end('component') # empty component -> commit empty
+
+        expect(gameobj.npcs).to be_nil
+        expect(gameobj.loot).to be_nil
+      end
+    end
+
+    describe "'room players' component refresh (GS)" do
+      it 'swaps the pc list atomically on close' do
+        gameobj.new_pc('-1', 'elf', 'an elf', 'standing')
+
+        parser.tag_start('component', { 'id' => 'room players' }) # begin_room_players
+        parser.tag_start('a', { 'exist' => '-2', 'noun' => 'dwarf' })
+        parser.text('a dwarf')
+        parser.tag_end('a')
+
+        expect(gameobj.pcs.map(&:id)).to eq(['-1'])
+
+        parser.tag_end('component') # commit_room_players
+        expect(gameobj.pcs.map(&:id)).to eq(['-2'])
+      end
+
+      # The annotation arrives in a later text callback, after </a>, while the
+      # refresh is still open. The staged pc has no published status entry, so
+      # reading it back through GameObj#status used to yield the frozen 'gone'
+      # sentinel and raise FrozenError on the in-place append.
+      def feed_pc(exist, noun, name)
+        parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+        parser.text(name)
+        parser.tag_end('a')
+      end
+
+      it 'annotates a newly staged pc without mutating the gone sentinel' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('-2', 'dwarf', 'a dwarf')
+
+        expect { parser.text(' who is sitting.') }.not_to raise_error
+
+        parser.tag_end('component')
+        expect(gameobj['-2'].status).to eq('sitting')
+      end
+
+      it 'replaces rather than appends to the previously published status' do
+        gameobj.new_pc('-2', 'dwarf', 'a dwarf', 'standing')
+
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('-2', 'dwarf', 'a dwarf')
+        parser.text(' who is sitting.')
+        parser.tag_end('component')
+
+        expect(gameobj['-2'].status).to eq('sitting')
+      end
+
+      it 'accepts the parenthetical form and combines both captures' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('-2', 'dwarf', 'a dwarf')
+        parser.text(' (kneeling) (hidden)')
+        parser.tag_end('component')
+
+        expect(gameobj['-2'].status).to eq('kneeling hidden')
+      end
+
+      it 'appends the annotation onto a status carried in from the name prefix' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        parser.instance_variable_set(:@player_status, 'dead')
+        feed_pc('-2', 'dwarf', 'a dwarf')
+        parser.text(' who is sitting.')
+        parser.tag_end('component')
+
+        expect(gameobj['-2'].status).to eq('dead sitting')
+      end
+
+      it 'does not annotate once the pc reference has been cleared' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('99', 'dwarf', 'a dwarf') # non-negative exist -> @pc = nil
+        parser.text(' who is sitting.')
+        parser.tag_end('component')
+
+        expect(gameobj.pcs).to be_nil
+      end
+    end
+
+    describe "'room players' DR 'Also here' rebuild" do
+      it 'swaps the pc list atomically within the single text callback' do
+        gameobj.new_pc('-1', 'elf', 'an elf', 'standing') # previously published
+        parser.instance_variable_set(:@game, 'DR')
+
+        parser.tag_start('component', { 'id' => 'room players' })
+        # Component open staged an (empty) refresh; published list still visible.
+        expect(gameobj.pcs.map(&:name)).to eq(['an elf'])
+
+        # The whole "Also here" line arrives in one callback: begin + fill + commit.
+        parser.text('Also here: Bob, Alice')
+        expect(gameobj.pcs.map(&:name)).to contain_exactly('Bob', 'Alice')
+
+        parser.tag_end('component') # trailing commit is a no-op
+        expect(gameobj.pcs.map(&:name)).to contain_exactly('Bob', 'Alice')
+      end
+    end
+
+    describe "'inv' stream refresh" do
+      def feed_inv_item(exist, noun, name)
+        parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+        parser.text(name)
+        parser.tag_end('a')
+      end
+
+      it 'keeps the previous inventory visible until the stream pops' do
+        gameobj.new_inv('1', 'cloak', 'a wool cloak') # previously published
+
+        parser.tag_start('pushStream', { 'id' => 'inv' }) # begin_inv
+        parser.tag_end('pushStream')
+        feed_inv_item('2', 'tunic', 'a linen tunic')
+
+        expect(gameobj.inv.map(&:id)).to eq(['1'])
+
+        parser.tag_start('popStream', { 'id' => 'inv' }) # commit_inv
+        expect(gameobj.inv.map(&:id)).to eq(['2'])
+      end
+    end
+
+    describe 'container refresh (clearContainer ... inv ... prompt)' do
+      # Replays one <inv id='CID'> ... </inv> container element with a single
+      # item <a>, matching the live stream shape.
+      def feed_container_item(cid, item_exist, item_noun, item_name)
+        parser.tag_start('inv', { 'id' => cid })
+        parser.tag_start('a', { 'exist' => item_exist, 'noun' => item_noun })
+        parser.text(item_name)
+        parser.tag_end('a')
+        parser.tag_end('inv')
+      end
+
+      it 'keeps prior contents visible until the prompt commits the refresh' do
+        cid = '2136851'
+        gameobj.new_inv('900', 'codex', 'an old codex', cid) # previously published
+
+        parser.tag_start('clearContainer', { 'id' => cid }) # begin_container
+        parser.tag_end('clearContainer')
+        feed_container_item(cid, '901', 'codex', 'a runic codex')
+
+        # Mid-refresh: reader still sees the previous container contents.
+        expect(gameobj.containers[cid].map(&:id)).to eq(['900'])
+
+        parser.tag_start('prompt', { 'time' => '1' }) # commit_all_containers
+        parser.tag_end('prompt')
+
+        expect(gameobj.containers[cid].map(&:id)).to eq(['901'])
+      end
+
+      it 'commits multiple containers refreshed before the same prompt' do
+        parser.tag_start('clearContainer', { 'id' => 'A' })
+        parser.tag_end('clearContainer')
+        feed_container_item('A', 'a1', 'gem', 'a ruby')
+        parser.tag_start('clearContainer', { 'id' => 'B' })
+        parser.tag_end('clearContainer')
+        feed_container_item('B', 'b1', 'gem', 'an emerald')
+
+        parser.tag_start('prompt', { 'time' => '1' })
+        parser.tag_end('prompt')
+
+        expect(gameobj.containers['A'].map(&:id)).to eq(['a1'])
+        expect(gameobj.containers['B'].map(&:id)).to eq(['b1'])
+      end
+
+      it 'does not publish a truncated fill when a reset intervenes' do
+        cid = '2136851'
+        gameobj.new_inv('900', 'codex', 'an old codex', cid) # previously published
+
+        parser.tag_start('clearContainer', { 'id' => cid })
+        parser.tag_end('clearContainer')
+        feed_container_item(cid, '901', 'codex', 'a runic codex')
+
+        # A malformed/truncated fragment forces the parser to resynchronize
+        # while the fill is still open.
+        parser.reset
+
+        parser.tag_start('prompt', { 'time' => '1' })
+        parser.tag_end('prompt')
+
+        # The incomplete listing is discarded, not published; the previous
+        # snapshot stays visible.
+        expect(gameobj.containers[cid].map(&:id)).to eq(['900'])
+      end
+    end
+  end
+
+  # DragonRealms now emits <nav rm='NNNN'/> on every arrival (a plain <nav/> with no rm for
+  # a room that has no UID). The parser takes room_id from that tag as the primary source, and
+  # falls back to the streamWindow subtitle's "(NNNNN)" only when nav did not supply a UID this
+  # arrival (never writing 0), so the UID is captured whether nav leads, lags, or is absent.
+  # These drive the real StreamListener pipeline the way REXML feeds it in production.
+  describe 'DragonRealms room id capture from the <nav> tag' do
+    def feed(parser, fragment)
+      REXML::Document.parse_stream("<root>#{fragment}</root>", parser)
+    end
+
+    before { XMLData.game = 'DR' }
+
+    it 'sets room_id from the rm attribute on arrival' do
+      feed(parser, "<nav rm='230008'/>")
+      expect(parser.room_id).to eq(230008)
+    end
+
+    it 'records the room being left in previous_nav_rm on the next arrival' do
+      feed(parser, "<nav rm='230007'/>")
+      feed(parser, "<nav rm='230008'/>")
+      expect(parser.previous_nav_rm).to eq(230007)
+    end
+
+    it 'sets room_id to 0 for a no-uid room (a bare <nav/> with no rm attribute)' do
+      feed(parser, "<nav rm='230008'/>")
+      feed(parser, "<nav/>")
+      expect(parser.room_id).to eq(0)
+    end
+
+    it 'parses the DR streamWindow subtitle into room_title (double-bracketed, no uid suffix)' do
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks]"/>))
+      expect(parser.room_title).to eq("[[Bosque Deriel, Hermit's Shacks]]")
+    end
+
+    it 'keeps the nav room_id when a ShowRoomID-off subtitle (no uid) arrives afterward' do
+      feed(parser, "<nav rm='230008'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks]"/>))
+      expect(parser.room_id).to eq(230008)
+    end
+
+    it 'keeps the nav room_id even when a ShowRoomID-on subtitle carries a uid suffix' do
+      feed(parser, "<nav rm='230008'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks] (230008)"/>))
+      expect(parser.room_id).to eq(230008)
+      expect(parser.room_title).to eq("[[Bosque Deriel, Hermit's Shacks]]")
+    end
+
+    # <nav> is authoritative within an arrival: a same-arrival subtitle marker must
+    # never overwrite a real nav UID, even when the two disagree (CodeRabbit #1491).
+    it 'keeps the nav uid when the same arrival subtitle marker carries a different uid' do
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54209)"/>))
+      expect(parser.room_id).to eq(54202)
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    # The <nav> tag is primary, but it can arrive late or not at all on some arrivals. When it
+    # does, a ShowRoomID-on subtitle is the only place the UID appears, so the subtitle acts as
+    # a fallback UID source (adopted only when it carries a real number; never writes 0).
+    it 'falls back to the subtitle uid when this arrival had no <nav> tag' do
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54202)"/>))
+      expect(parser.room_id).to eq(54202)
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    it 'corrects a stale room_id from the subtitle when the new arrival had no <nav>' do
+      # previous arrival: nav plus its own subtitle (which consumes the nav-uid flag)
+      feed(parser, "<nav rm='54200'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Old Room] (54200)"/>))
+      # new arrival streams no <nav>, but the subtitle carries the real uid
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54201)"/>))
+      expect(parser.room_id).to eq(54201)
+    end
+
+    it 'never clobbers a good nav uid with 0 from a ShowRoomID-off subtitle' do
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth]"/>))
+      expect(parser.room_id).to eq(54202)
+    end
+
+    it 'clears a stale uid when a no-uid room shows the "(**)" marker (nav delayed/absent)' do
+      # previous arrival: nav plus its own subtitle (which consumes the nav-uid flag)
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Lit Room] (54202)"/>))
+      # new arrival has no <nav>; a no-uid room shows "(**)" and must clear the stale uid
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave] (**)"/>))
+      expect(parser.room_id).to eq(0)
+      expect(parser.room_title).to eq('[[Dark Cave]]')
+    end
+
+    it 'ShowRoomID-off (no marker): the subtitle never touches room_id; nav stays authoritative' do
+      # no prior nav, no marker -> room_id left at its no-uid default, nothing written
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth]"/>))
+      expect(parser.room_id).to eq(0)
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    it 'a bare <nav/> clears the last uid and a following no-uid subtitle does not restore it' do
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, '<nav/>') # arrival at a no-uid room clears the id
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave]"/>))
+      expect(parser.room_id).to eq(0)
+    end
+
+    it 'leaves the prior title untouched and does not crash on a blank/identity-less subtitle' do
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54202)"/>))
+      expect { feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - "/>)) }.not_to raise_error
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    # show_room_id records whether the game itself displayed the RealID this arrival (a subtitle
+    # "(uid)"/"(**)" marker == ShowRoomID ON). It is what lets the outbound room-name/subtitle
+    # rewrite preserve the game's choice GS-style rather than second-guessing the flag.
+    describe 'show_room_id (did the game display the RealID this arrival?)' do
+      it 'defaults false before any room subtitle is seen' do
+        expect(parser.show_room_id).to be false
+      end
+
+      it 'is true when a ShowRoomID-on subtitle carries a numeric uid marker' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks] (230008)"/>))
+        expect(parser.show_room_id).to be true
+      end
+
+      it 'is true for a ShowRoomID-on no-uid room showing the "(**)" marker' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave] (**)"/>))
+        expect(parser.show_room_id).to be true
+      end
+
+      it 'is false when a ShowRoomID-off subtitle has no marker' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks]"/>))
+        expect(parser.show_room_id).to be false
+      end
+
+      it 'clears a stale true when the next arrival turns ShowRoomID off' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Lit Room] (230008)"/>))
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave]"/>))
+        expect(parser.show_room_id).to be false
+      end
     end
   end
 end

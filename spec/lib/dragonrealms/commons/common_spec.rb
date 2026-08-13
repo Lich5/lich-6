@@ -38,6 +38,15 @@ $ENC_MAP = {
 $box_regex = /((?:brass|copper|deobar|driftwood|iron|ironwood|mahogany|oaken|pine|steel|wooden) (?:box|caddy|casket|chest|coffer|crate|skippet|strongbox|trunk))/ unless defined?($box_regex)
 $fake_stormfront = false unless defined?($fake_stormfront)
 
+# Box vocabulary constants normally provided by drvariables.rb (not loaded here);
+# box_list_to_adj_and_noun builds its match regex from these.
+module Lich
+  module DragonRealms
+    BOX_WOODS = %w[brass copper deobar driftwood iron ironwood mahogany oaken pine steel wooden].freeze unless defined?(BOX_WOODS)
+    BOX_CONTAINERS = %w[box caddy casket chest coffer crate skippet strongbox trunk].freeze unless defined?(BOX_CONTAINERS)
+  end
+end
+
 # Load production code
 require File.join(LIB_DIR, 'dragonrealms', 'commons', 'common.rb')
 DRC = Lich::DragonRealms::DRC unless defined?(DRC)
@@ -45,6 +54,9 @@ DRC = Lich::DragonRealms::DRC unless defined?(DRC)
 RSpec.describe Lich::DragonRealms::DRC do
   before(:each) do
     Lich::Messaging.clear_messages!
+    # Rebuild memoized custom-substitution lists so a stub in one example does
+    # not leak its merged list into the next (see CustomSubstitutions.reset!).
+    Lich::DragonRealms::CustomSubstitutions.reset!
     # Stub GameObj with a temporary mock if not already defined by other specs
     stub_const('GameObj', DRC_MOCK_GAME_OBJ) unless defined?(::GameObj)
   end
@@ -91,23 +103,111 @@ RSpec.describe Lich::DragonRealms::DRC do
   end
 
   describe '.remove_flavor_text' do
+    def stub_flavor_patterns(patterns)
+      allow(Lich::DragonRealms::CustomSubstitutions)
+        .to receive(:get_settings)
+        .and_return(OpenStruct.new(custom_flavor_text_patterns: patterns))
+    end
+
     it('returns item unchanged when no flavor text') { expect(described_class.remove_flavor_text('a sword')).to eq('a sword') }
     it('strips "adorned with" flavor text') { expect(described_class.remove_flavor_text('a sword adorned with rubies of deep crimson')).to eq('a sword') }
     it('strips "decorated with" flavor text') { expect(described_class.remove_flavor_text('a shield decorated with a golden crest')).to eq('a shield') }
     it('strips "carved with" flavor text') { expect(described_class.remove_flavor_text('a staff carved with runes of ancient design')).to eq('a staff') }
+
+    it 'strips flavor the built-in pattern misses using a player-added pattern' do
+      # A marker the built-in FLAVOR_TEXT_PATTERN does not touch, so this isolates
+      # the user-pattern path.
+      stub_flavor_patterns(['\s?::.*'])
+      expect(described_class.remove_flavor_text('a sword ::soulbound::')).to eq('a sword')
+    end
+
+    it 'still applies the built-in pattern when a user pattern is invalid, and warns' do
+      stub_flavor_patterns(['(unclosed'])
+      expect(described_class.remove_flavor_text('a sword adorned with rubies of deep crimson')).to eq('a sword')
+      expect(Lich::Messaging.messages.map { |m| m[:message] }.join)
+        .to include('custom_flavor_text_patterns[0] skipped')
+    end
   end
 
   describe '.box_list_to_adj_and_noun' do
+    def stub_box_settings(**values)
+      allow(Lich::DragonRealms::CustomSubstitutions).to receive(:get_settings).and_return(OpenStruct.new(values))
+    end
+
     it('parses a single box') { expect(described_class.box_list_to_adj_and_noun('a wooden strongbox')).to eq(['wooden strongbox']) }
     it('converts ironwood to iron') { expect(described_class.box_list_to_adj_and_noun('an ironwood crate')).to eq(['iron crate']) }
     it('returns empty array for empty string') { expect(described_class.box_list_to_adj_and_noun('')).to eq([]) }
+
+    it 'recognizes a player-added box wood' do
+      stub_box_settings(custom_box_woods: ['faenor'])
+      expect(described_class.box_list_to_adj_and_noun('a polished faenor chest')).to eq(['faenor chest'])
+    end
+
+    it 'recognizes a player-added box container' do
+      stub_box_settings(custom_box_containers: ['reliquary'])
+      expect(described_class.box_list_to_adj_and_noun('a battered steel reliquary')).to eq(['steel reliquary'])
+    end
+
+    it 'applies a player-added box substitution to a recognized box' do
+      stub_box_settings(custom_box_woods: ['faenor'], custom_box_substitutions: [%w[faenor faewood]])
+      expect(described_class.box_list_to_adj_and_noun('a polished faenor chest')).to eq(['faewood chest'])
+    end
+
+    it 'still parses built-in boxes when a custom wood entry is malformed' do
+      stub_box_settings(custom_box_woods: [123])
+      expect(described_class.box_list_to_adj_and_noun('an ironwood crate')).to eq(['iron crate'])
+      expect(Lich::Messaging.messages.map { |m| m[:message] }.join).to include('custom_box_woods[0] skipped')
+    end
   end
 
   describe '.scroll_list_to_adj_and_noun' do
+    # Lets an example supply user additions the way get_settings would.
+    def stub_scroll_settings(additions)
+      allow(Lich::DragonRealms::CustomSubstitutions)
+        .to receive(:get_settings)
+        .and_return(OpenStruct.new(custom_scroll_substitutions: additions))
+    end
+
     it('removes article from single scroll') { expect(described_class.scroll_list_to_adj_and_noun(' a blue scroll')).to eq(['blue scroll']) }
     it('removes label text') { expect(described_class.scroll_list_to_adj_and_noun(' a blue scroll labeled with runes')).to eq(['blue scroll']) }
     it('converts papyrus roll to papyrus.roll') { expect(described_class.scroll_list_to_adj_and_noun(' a papyrus roll')).to eq(['papyrus.roll']) }
     it('simplifies icy blue to blue') { expect(described_class.scroll_list_to_adj_and_noun(' an icy blue parchment')).to eq(['blue parchment']) }
+
+    it 'reduces the built-in symbol-torn scale scroll to its gettable noun' do
+      expect(described_class.scroll_list_to_adj_and_noun(' a large midnight-blue scale torn with symbols'))
+        .to eq(['midnight-blue scale'])
+    end
+
+    it 'applies a user-added scroll substitution from settings' do
+      stub_scroll_settings([['weird prismatic scroll of doom', 'doom scroll']])
+      expect(described_class.scroll_list_to_adj_and_noun(' a weird prismatic scroll of doom'))
+        .to eq(['doom scroll'])
+    end
+
+    it 'applies a user addition before the keyword-collapse would mangle it' do
+      # Without a pre-collapse rewrite, "aqua blue vellum scroll" collapses on
+      # the "vellum" keyword to "aqua blue vellum"; the user rule fixes it.
+      stub_scroll_settings([['aqua blue vellum scroll', 'aqua scroll']])
+      expect(described_class.scroll_list_to_adj_and_noun(' an aqua blue vellum scroll'))
+        .to eq(['aqua scroll'])
+    end
+
+    it 'skips a malformed user entry, warns, and still applies the defaults' do
+      stub_scroll_settings([['only one element']])
+      expect(described_class.scroll_list_to_adj_and_noun(' a papyrus roll')).to eq(['papyrus.roll'])
+      warning = Lich::Messaging.messages.find { |m| m[:message].include?('custom_scroll_substitutions[0] skipped') }
+      expect(warning).not_to be_nil
+      expect(warning[:message]).to include('expected a [from, to] pair')
+    end
+
+    it 'falls back to defaults when the settings value is not a list' do
+      allow(Lich::DragonRealms::CustomSubstitutions)
+        .to receive(:get_settings)
+        .and_return(OpenStruct.new(custom_scroll_substitutions: 'not-a-list'))
+      expect(described_class.scroll_list_to_adj_and_noun(' an icy blue parchment')).to eq(['blue parchment'])
+      expect(Lich::Messaging.messages.map { |m| m[:message] }.join)
+        .to include('custom_scroll_substitutions ignored')
+    end
   end
 
   describe '.text2num' do

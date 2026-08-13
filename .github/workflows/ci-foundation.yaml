@@ -22,55 +22,42 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
-      - name: Resolve repository Ruby through rbenv
-        id: ruby
+      - name: Install GTK build prerequisites
+        if: matrix.gtk == 'with-gtk3'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgirepository1.0-dev \
+            libgtk-3-dev
+      - uses: ruby/setup-ruby@0dafeac902942906541bc140009cdbf32665b601 # v1.315.0
+        with:
+          bundler-cache: true
+      - name: Verify repository Ruby
         run: |
           ruby_version=$(tr -d '[:space:]' < .ruby-version)
-          echo "ruby_version=$ruby_version" >> "$GITHUB_OUTPUT"
-          rbenv install -s "$ruby_version"
-          test "$(RBENV_VERSION="$ruby_version" rbenv version-name)" = "$ruby_version"
-          rbenv_root=$(rbenv root)
-          export PATH="$rbenv_root/bin:$rbenv_root/shims:$PATH"
-          eval "$(rbenv init - bash)"
           ruby_path=$(command -v ruby)
           echo "ruby_path=$ruby_path"
-          test "$ruby_path" = "$rbenv_root/shims/ruby"
-          RBENV_VERSION="$ruby_version" ruby -e 'puts "ruby_version=#{RUBY_VERSION}"; abort unless RUBY_VERSION == ENV.fetch("RBENV_VERSION")'
-      - name: Install dependency configuration
-        env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
-        run: rbenv exec bundle install
+          ruby -e 'puts "ruby_version=#{RUBY_VERSION}"; abort unless RUBY_VERSION == ARGV.fetch(0)' "$ruby_version"
       - name: Verify GTK dependency configuration
-        env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
         run: |
           if [[ "${{ matrix.gtk }}" == "without-gtk3" ]]; then
-            rbenv exec ruby -e 'abort "gtk3 is installed in the GTK-free job" unless Gem::Specification.find_all_by_name("gtk3").empty?'
+            bundle exec ruby -e 'abort "gtk3 is available in the GTK-free bundle" if Gem.loaded_specs.key?("gtk3")'
           else
-            rbenv exec ruby -e 'abort "gtk3 is missing from the GTK-present job" if Gem::Specification.find_all_by_name("gtk3").empty?'
+            bundle exec ruby -e 'abort "gtk3 is missing from the GTK-present bundle" unless Gem.loaded_specs.key?("gtk3")'
           fi
       - name: Run RSpec
-        env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
-        run: rbenv exec rspec
+        run: bundle exec rspec
       - name: Verify D4 shim boundary
-        env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
-        run: rbenv exec ruby script/ci/check_shim_namespace.rb
+        run: ruby script/ci/check_shim_namespace.rb
       - name: Verify ASCII-only Ruby source
-        env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
-        run: rbenv exec rubocop --only Custom/AsciiOnlySource
+        run: bundle exec rubocop --only Custom/AsciiOnlySource
       - name: Verify security registration manifest
-        env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
-        run: rbenv exec ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json
+        run: ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json
       - name: Verify GTK-free startup modes
         if: matrix.gtk == 'without-gtk3'
         env:
-          RBENV_VERSION: ${{ steps.ruby.outputs.ruby_version }}
           LICH_CI_ARTIFACT_DIR: ${{ runner.temp }}/gtk-free-startup-loads
-        run: rbenv exec ruby script/ci/startup_load_check.rb
+        run: ruby script/ci/startup_load_check.rb
       - name: Upload startup load records
         if: always() && matrix.gtk == 'without-gtk3'
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
@@ -85,11 +72,17 @@ jobs:
       BUNDLE_WITHOUT: gtk:vscode:profanity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - run: |
+      - uses: ruby/setup-ruby@0dafeac902942906541bc140009cdbf32665b601 # v1.315.0
+        with:
+          bundler-cache: true
+      - name: Verify repository Ruby
+        run: |
           ruby_version=$(tr -d '[:space:]' < .ruby-version)
-          rbenv install -s "$ruby_version"
-          RBENV_VERSION="$ruby_version" rbenv exec bundle install
-          RBENV_VERSION="$ruby_version" rbenv exec rubocop
+          ruby_path=$(command -v ruby)
+          echo "ruby_path=$ruby_path"
+          ruby -e 'puts "ruby_version=#{RUBY_VERSION}"; abort unless RUBY_VERSION == ARGV.fetch(0)' "$ruby_version"
+      - name: Run RuboCop
+        run: bundle exec rubocop
   security-registration:
     name: Security check registration
     runs-on: ubuntu-latest
@@ -98,15 +91,17 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - name: Generate check-run payloads
+      - uses: ruby/setup-ruby@0dafeac902942906541bc140009cdbf32665b601 # v1.315.0
+      - name: Verify repository Ruby
         run: |
           ruby_version=$(tr -d '[:space:]' < .ruby-version)
-          rbenv_root=$(rbenv root)
-          export PATH="$rbenv_root/bin:$rbenv_root/shims:$PATH"
-          eval "$(rbenv init - bash)"
-          rbenv install -s "$ruby_version"
-          RBENV_VERSION="$ruby_version" rbenv exec ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json
-          RBENV_VERSION="$ruby_version" rbenv exec ruby script/ci/security_check_runs.rb .github/ci/security-test-manifest.json > "$RUNNER_TEMP/security-check-runs.json"
+          ruby_path=$(command -v ruby)
+          echo "ruby_path=$ruby_path"
+          ruby -e 'puts "ruby_version=#{RUBY_VERSION}"; abort unless RUBY_VERSION == ARGV.fetch(0)' "$ruby_version"
+      - name: Generate check-run payloads
+        run: |
+          ruby script/ci/check_security_manifest.rb .github/ci/security-test-manifest.json
+          ruby script/ci/security_check_runs.rb .github/ci/security-test-manifest.json > "$RUNNER_TEMP/security-check-runs.json"
       - name: Validate and publish reserved check runs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:

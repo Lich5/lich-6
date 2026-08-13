@@ -14,7 +14,9 @@ RSpec.describe Lich::Common::OrderlyShutdown do
       script_drain: overrides.fetch(:script_drain, script_drain),
       vars: overrides.fetch(:vars, vars),
       game: overrides.fetch(:game, game),
-      active_sessions_lifecycle: overrides.fetch(:active_sessions_lifecycle, active_sessions_lifecycle)
+      active_sessions_lifecycle: overrides.fetch(:active_sessions_lifecycle, active_sessions_lifecycle),
+      server_exit_command: overrides[:server_exit_command],
+      server_exit_timeout: overrides.fetch(:server_exit_timeout, described_class::SERVER_EXIT_TIMEOUT_SECONDS)
     )
   end
 
@@ -27,7 +29,9 @@ RSpec.describe Lich::Common::OrderlyShutdown do
       script_drain: overrides.fetch(:script_drain, script_drain),
       vars: overrides.fetch(:vars, vars),
       game: overrides.fetch(:game, game),
-      active_sessions_lifecycle: overrides.fetch(:active_sessions_lifecycle, active_sessions_lifecycle)
+      active_sessions_lifecycle: overrides.fetch(:active_sessions_lifecycle, active_sessions_lifecycle),
+      server_exit_command: overrides[:server_exit_command],
+      server_exit_timeout: overrides.fetch(:server_exit_timeout, described_class::SERVER_EXIT_TIMEOUT_SECONDS)
     )
   end
 
@@ -63,12 +67,30 @@ RSpec.describe Lich::Common::OrderlyShutdown do
     end.new([])
   end
 
+  let(:game_reader_thread) do
+    Struct.new(:calls, :join_result) do
+      def join(timeout)
+        calls << [:reader_join, timeout]
+        join_result
+      end
+    end.new([], true)
+  end
+
   let(:game) do
-    Struct.new(:calls) do
+    Struct.new(:calls, :reader_thread, :send_result, :remote_eof) do
+      def _puts(command)
+        calls << [:_puts, command]
+        send_result
+      end
+
+      def remote_eof?
+        remote_eof
+      end
+
       def close
         calls << :close
       end
-    end.new([])
+    end.new([], game_reader_thread, true, true)
   end
 
   let(:active_sessions_lifecycle) do
@@ -116,6 +138,56 @@ RSpec.describe Lich::Common::OrderlyShutdown do
     expect(game.calls).to eq([:close])
   end
 
+  it 'sends the game exit and waits for remote EOF before closing locally' do
+    result = run_orderly_shutdown(server_exit_command: '<c>exit')
+
+    expect(game.calls).to eq([[:_puts, '<c>exit'], :close])
+    expect(game_reader_thread.calls).to eq([[:reader_join, 10]])
+    expect(result).to be_completed
+  end
+
+  it 'hard-closes with a warning when the game server does not close in time' do
+    game_reader_thread.join_result = nil
+
+    result = run_orderly_shutdown(server_exit_command: '<c>exit', server_exit_timeout: 2)
+
+    expect(game.calls).to eq([[:_puts, '<c>exit'], :close])
+    expect(result).not_to be_completed
+    expect(result.failures).to eq(
+      ['Game exit: Lich::Common::OrderlyShutdown::ServerExitTimeout: game server did not close within 2s']
+    )
+    expect(Lich).to have_received(:log).with(
+      'warning: Game exit failed during orderly user shutdown: Lich::Common::OrderlyShutdown::ServerExitTimeout: game server did not close within 2s'
+    )
+  end
+
+  it 'hard-closes when the exit command cannot be sent' do
+    game.send_result = nil
+
+    result = run_orderly_shutdown(server_exit_command: '<c>exit')
+
+    expect(game.calls).to eq([[:_puts, '<c>exit'], :close])
+    expect(game_reader_thread.calls).to be_empty
+    expect(result).not_to be_completed
+    expect(result.failures).to eq(['Game exit: IOError: failed to send game server exit'])
+  end
+
+  it 'does not treat an unrelated reader stop as server exit acknowledgement' do
+    game.remote_eof = false
+
+    result = run_orderly_shutdown(server_exit_command: '<c>exit')
+
+    expect(game.calls).to eq([[:_puts, '<c>exit'], :close])
+    expect(result).not_to be_completed
+    expect(result.failures).to eq(['Game exit: IOError: game reader stopped without remote EOF'])
+  end
+
+  it 'rejects a non-exit server command before starting shutdown' do
+    expect {
+      request_user_exit(server_exit_command: '<c>look')
+    }.to raise_error(ArgumentError, 'invalid server exit command: "<c>look"')
+  end
+
   it 'requests user exit and excludes the calling script from the drain' do
     coordinator.reset!
     current_script = Struct.new(:name).new('shutdown-caller')
@@ -127,11 +199,35 @@ RSpec.describe Lich::Common::OrderlyShutdown do
       scripts_provider: proc { [current_script, other_script] }
     )
 
-    expect(result).to be_completed
+    expect(result).not_to be_completed
+    expect(result).not_to be_scripts_drained
     expect(coordinator.reason).to eq(:user_exit)
     expect(coordinator.current.source).to eq('script:shutdown-caller')
     expect(script_drain.calls.first[:initial_scripts]).to eq([other_script])
     expect(script_drain.calls.first[:remaining_scripts].call).to eq([other_script])
+  end
+
+  it 'closes script startup admission before the production drain snapshot' do
+    coordinator.reset!
+    current_script = Struct.new(:name).new('shutdown-caller')
+    other_script = Struct.new(:name).new('other')
+    allow(Script).to receive(:begin_shutdown).and_return([current_script, other_script])
+    allow(Script).to receive(:progress_shutdown).and_return([current_script, other_script])
+
+    result = described_class.request_user_exit(
+      source: 'script:shutdown-caller',
+      current_script: current_script,
+      coordinator: coordinator,
+      script_drain: script_drain,
+      vars: vars,
+      game: game,
+      active_sessions_lifecycle: active_sessions_lifecycle
+    )
+
+    expect(result).not_to be_completed
+    expect(result).not_to be_scripts_drained
+    expect(Script).to have_received(:begin_shutdown).once
+    expect(script_drain.calls.first[:initial_scripts]).to eq([other_script])
   end
 
   it 'continues later cleanup steps when one step fails' do
