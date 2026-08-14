@@ -221,7 +221,7 @@ module Lich
             --bind-address=HOST
 
           Notes:
-            The native WebUI launcher starts by default when no login arguments are given.
+            The native WebUI launcher starts by default when no command-line arguments are given.
             To suppress it, pass --no-gui (or the legacy --no-gtk alias), including when
             using --headless.
             Prefer --headless PORT or --headless auto for new headless launches.

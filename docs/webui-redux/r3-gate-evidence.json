@@ -94,8 +94,8 @@
       "result": "pass: no core-to-shim reference and no GTK runtime idiom in lich.rbw or lib outside lib/common/script_scope/gtk"
     },
     "startup_load_probe": {
-      "command": "LICH_CI_ARTIFACT_DIR=/private/tmp/lich-r3-audit-startup.J13y0Z ruby script/ci/startup_load_check.rb",
-      "summary_sha256": "9182e03bf5c058907d194d0c8e427b81c955045f16af836c4210e62ae7c52f8c",
+      "command": "LICH_CI_ARTIFACT_DIR=/private/tmp/lich-r3-rar-startup ruby script/ci/startup_load_check.rb",
+      "summary_sha256": "8e615d91a347ac1f63423bb6d2deb65f7cce19c49a3452b147257d561466fbcc",
       "results": [
         {"mode": "default", "verdict": "pass", "reached_startup": true, "gtk_family_loaded_features": 0},
         {"mode": "saved-character-login", "verdict": "pass", "reached_startup": true, "gtk_family_loaded_features": 0},
@@ -104,9 +104,9 @@
       ]
     },
     "actual_consumer": {
-      "command": "LICH_CI_DEFAULT_WEBUI_ARTIFACT=/private/tmp/lich-r3-default-webui-acceptance-final.json ruby script/ci/default_webui_acceptance_check.rb",
+      "command": "LICH_CI_DEFAULT_WEBUI_ARTIFACT=/private/tmp/lich-r3-rar-default-webui.json ruby script/ci/default_webui_acceptance_check.rb",
       "artifact": "docs/webui-redux/evidence/r3-default-webui-acceptance.json",
-      "artifact_sha256": "5b1259bedd76c89ed61e63a9dd1fe6afd3707f2cb85677341522f1267ffeb165",
+      "artifact_sha256": "5985d5c2d61542d5bdac8aa14dc3c597bdb59eb0add13f6f7065a7e7e33631d2",
       "result": {
         "verdict": "pass",
         "authenticated_http": true,
@@ -115,8 +115,8 @@
         "interaction": "GUI Settings changed from hidden to visible",
         "launcher_start_replaced": false,
         "launcher_await_replaced": false,
-        "launcher_start_source": "/Users/doug/dev/Projects/lich-6/lib/common/webui_launcher.rb:91",
-        "launcher_await_source": "/Users/doug/dev/Projects/lich-6/lib/common/webui_launcher.rb:146",
+        "launcher_start_source": "lib/common/webui_launcher.rb:91",
+        "launcher_await_source": "lib/common/webui_launcher.rb:146",
         "entrypoint_argv": [],
         "gtk_family_loaded_features": [],
         "clean_shutdown": true,

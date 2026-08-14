@@ -174,7 +174,7 @@ module LichCiDefaultWebUIAcceptance
     path, line = Lich::Common::WebUILauncher.instance_method(method_name).source_location
     raise "launcher #{method_name} was replaced" unless path&.end_with?('/lib/common/webui_launcher.rb')
 
-    "#{path}:#{line}"
+    "lib/common/webui_launcher.rb:#{line}"
   end
 
   def report(result)

@@ -10,9 +10,9 @@ RSpec.describe 'default WebUI entrypoint acceptance' do
     root = File.expand_path('../../..', __dir__)
     script = File.join(root, 'script/ci/default_webui_acceptance_check.rb')
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, script, chdir: root)
-    result = JSON.parse(stdout)
 
     expect(status).to be_success, stderr
+    result = JSON.parse(stdout)
     expect(result).to include(
       'verdict'                    => 'pass',
       'authenticated_http'         => true,
@@ -26,7 +26,7 @@ RSpec.describe 'default WebUI entrypoint acceptance' do
       'exit_status'                => 0,
       'gtk_family_loaded_features' => []
     )
-    expect(result.fetch('launcher_start_source')).to match(%r{/lib/common/webui_launcher\.rb:\d+\z})
-    expect(result.fetch('launcher_await_source')).to match(%r{/lib/common/webui_launcher\.rb:\d+\z})
+    expect(result.fetch('launcher_start_source')).to match(%r{\Alib/common/webui_launcher\.rb:\d+\z})
+    expect(result.fetch('launcher_await_source')).to match(%r{\Alib/common/webui_launcher\.rb:\d+\z})
   end
 end

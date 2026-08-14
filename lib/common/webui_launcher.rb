@@ -108,7 +108,7 @@ module Lich
         close(reason: :browser_failure)
         raise
       rescue StandardError => error
-        @recovery.call("WebUI launcher unavailable: #{error.class}. Retry after correcting the browser failure or abort safely.")
+        @recovery.call("WebUI launcher unavailable: #{error.class}. Retry after correcting the failure or abort safely.")
         close(reason: :browser_failure)
         raise
       end
