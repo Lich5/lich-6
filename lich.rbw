@@ -36,14 +36,6 @@ require File.join(LIB_DIR, 'version.rb')
 require File.join(LIB_DIR, 'gemcheck.rb')
 Lich::GemCheck.verify!(*Lich::GemCheck.startup_groups)
 
-# Must run before lib/init.rb's `require 'gtk3'` -- install! sets up a
-# wrapper around gobject-introspection's converter registration that has to
-# be in place before gdk3/pango's own loaders run, or it can't do its job.
-# Requiring the file alone does not install anything (deliberately -- see
-# lib/util/gtk_compaction.rb); install! has to be called explicitly.
-require File.join(LIB_DIR, 'util', 'gtk_compaction.rb')
-Lich::Util::GtkCompaction.install!
-
 # TODO: Move all local requires to top of file
 require 'base64'
 require 'digest/md5'
@@ -74,8 +66,6 @@ require File.join(LIB_DIR, 'api', 'active_sessions.rb')
 require File.join(LIB_DIR, 'update.rb')
 
 # TODO: Need to split out initiatilzation functions to move require to top of file
-require File.join(LIB_DIR, 'common', 'gtk.rb')
-# require File.join(LIB_DIR, 'common','gui-login.rb')
 require File.join(LIB_DIR, 'common', 'db_store.rb')
 # 2025-03-14 added extensions
 require File.join(LIB_DIR, 'common', 'class_exts', 'hash.rb')
@@ -146,15 +136,5 @@ require File.join(LIB_DIR, 'common', 'uservars.rb')
 
 ## was here ##
 
-if defined?(Gtk) && !@argv_options[:webui_dev]
-  Thread.current.priority = -10
-  Gtk.main
-  # Terminal teardown backstop: Gtk.main has returned, so we are on the GTK
-  # thread with the loop unwound. Sweep any widgets a route that bypassed the
-  # orchestrated exits left alive, before the interpreter finalizer disposes
-  # them in an unsafe order and segfaults. Idempotent after a clean shutdown.
-  Lich::Common.shutdown_gtk_before_exit(direct: true)
-else
-  @main_thread.join
-end
+@main_thread.join
 exit

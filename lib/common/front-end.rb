@@ -548,16 +548,10 @@ module Lich
         end
       end
 
-      # Create a callback for GTK windows to refocus on click
+      # Create a callback for UI surfaces to refocus the frontend on click.
       # @return [Proc] A proc that can be called to refocus the frontend
       def self.refocus_callback
-        proc {
-          if defined?(GLib) && GLib.respond_to?(:Idle)
-            GLib::Idle.add(50) { self.refocus; false }
-          else
-            self.refocus
-          end
-        }
+        proc { refocus }
       end
 
       # Detect the current platform

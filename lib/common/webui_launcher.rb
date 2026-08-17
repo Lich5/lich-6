@@ -15,8 +15,7 @@ require_relative 'webui_launcher/window_geometry_store'
 
 module Lich
   module Common
-    # Native launcher built directly on the WebUI author API. GTK remains the default
-    # entry path until the R2 human gate is accepted.
+    # Default native launcher built directly on the WebUI author API.
     class WebUILauncher
       TABS = ['Saved Entry', 'Manual Entry', 'Account Management'].freeze
       ACCOUNT_TABS = ['Accounts', 'Add Character', 'Add Account', 'Encryption Management'].freeze
@@ -109,7 +108,7 @@ module Lich
         close(reason: :browser_failure)
         raise
       rescue StandardError => error
-        @recovery.call("WebUI launcher unavailable: #{error.class}. Retry with the GTK launcher or abort safely.")
+        @recovery.call("WebUI launcher unavailable: #{error.class}. Retry after correcting the failure or abort safely.")
         close(reason: :browser_failure)
         raise
       end

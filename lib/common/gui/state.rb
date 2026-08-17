@@ -51,15 +51,6 @@ module Lich
         rescue
           false
         end
-
-        # Applies theme settings to GTK
-        # Sets the GTK dark theme preference based on the provided state
-        #
-        # @param theme_state [Boolean] Whether dark theme is enabled
-        # @return [void]
-        def self.apply_theme_settings(theme_state)
-          Gtk::Settings.default.gtk_application_prefer_dark_theme = true if theme_state == true
-        end
       end
     end
   end

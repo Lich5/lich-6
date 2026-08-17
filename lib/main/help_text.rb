@@ -210,8 +210,8 @@ module Lich
           Lich Help: advanced
 
           Compatibility / advanced options:
-            --gui
-            --no-gui, --no-gtk  Run without the GTK GUI (aliases)
+            --gui                  Open the native WebUI launcher
+            --no-gui, --no-gtk    Do not open the WebUI launcher (--no-gtk is a legacy alias)
             --without-frontend
             --detachable-client=PORT|auto|HOST:PORT
             --pipe
@@ -221,8 +221,9 @@ module Lich
             --bind-address=HOST
 
           Notes:
-            The GTK GUI starts by default. To suppress it, pass --no-gui or --no-gtk,
-            including when using --headless.
+            The native WebUI launcher starts by default when no command-line arguments are given.
+            To suppress it, pass --no-gui (or the legacy --no-gtk alias), including when
+            using --headless.
             Prefer --headless PORT or --headless auto for new headless launches.
             --pipe uses stdin/stdout as the client transport instead of a front-end socket.
             --bind-address=HOST sets the local address Lich binds its listen sockets to

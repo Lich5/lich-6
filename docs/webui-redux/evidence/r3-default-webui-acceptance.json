@@ -1,0 +1,21 @@
+{
+  "verdict": "pass",
+  "authenticated_http": true,
+  "authenticated_websocket": true,
+  "page_address": "page-049ec01ecf320245ec19c8e152d50e5f",
+  "required_tabs": [
+    "Saved Entry",
+    "Manual Entry",
+    "Account Management"
+  ],
+  "interaction": "GUI Settings changed from hidden to visible",
+  "launcher_start_replaced": false,
+  "launcher_await_replaced": false,
+  "launcher_start_source": "lib/common/webui_launcher.rb:91",
+  "launcher_await_source": "lib/common/webui_launcher.rb:146",
+  "entrypoint_argv": [],
+  "gtk_family_loaded_features": [],
+  "clean_shutdown": true,
+  "exit_status": 0,
+  "term_signal": null
+}

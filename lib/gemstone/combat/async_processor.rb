@@ -5,7 +5,6 @@
 #
 
 require 'concurrent'
-require_relative '../../util/gtk_compaction'
 
 module Lich
   module Gemstone
@@ -64,10 +63,8 @@ module Lich
           @thread_pool.clear
 
           # Force GC after shutdown to help with memory fragmentation.
-          # Compaction is routed through Lich::Util::GtkCompaction, which
-          # keeps it safe to use alongside gtk3.
           GC.start
-          Lich::Util::GtkCompaction.safe_compact!
+          GC.compact if GC.respond_to?(:compact)
         end
 
         def stats
@@ -103,7 +100,7 @@ module Lich
           # Periodic heap compaction to reduce fragmentation (every hour)
           if GC.respond_to?(:compact) && (Time.now - @last_compact) > 3600
             GC.start
-            Lich::Util::GtkCompaction.safe_compact!
+            GC.compact
             @last_compact = Time.now
             respond "[Combat] Triggered hourly GC compaction" if Tracker.debug?
           end

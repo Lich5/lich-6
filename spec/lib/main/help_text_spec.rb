@@ -32,12 +32,13 @@ RSpec.describe Lich::Main::HelpText do
       expect(output).to include('--session-info NAME')
     end
 
-    it 'requires an explicit flag to suppress the default GTK GUI' do
+    it 'describes the native WebUI default and legacy headless alias' do
       output = described_class.render('advanced')
 
-      expect(output).to include('--no-gui, --no-gtk  Run without the GTK GUI (aliases)')
-      expect(output).to include('The GTK GUI starts by default. To suppress it, pass --no-gui or --no-gtk,')
-      expect(output).to include('including when using --headless.')
+      expect(output).to include('--gui                  Open the native WebUI launcher')
+      expect(output).to include('--no-gui, --no-gtk    Do not open the WebUI launcher')
+      expect(output).to include('The native WebUI launcher starts by default')
+      expect(output).to match(/including when\s+using --headless\./)
     end
 
     it 'documents multi-client detachable behavior' do
