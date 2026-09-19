@@ -17,7 +17,7 @@ RSpec.describe 'default WebUI entrypoint acceptance' do
       'verdict'                    => 'pass',
       'authenticated_http'         => true,
       'authenticated_websocket'    => true,
-      'required_tabs'              => ['Saved Entry', 'Manual Entry', 'Account Management'],
+      'required_tabs'              => ['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'],
       'interaction'                => 'GUI Settings changed from hidden to visible',
       'launcher_start_replaced'    => false,
       'launcher_await_replaced'    => false,

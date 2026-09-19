@@ -10,7 +10,10 @@ RSpec.describe Lich::Common::WebUILauncher do
   Entry = Lich::Common::WebUILauncher::Catalog::Entry
 
   class ReduxFrontendLocator
-    Resolution = Data.define(:frontend_id)
+    Resolution = Data.define(:frontend_id) do
+      def executable_path = '/fixture/frontend'
+      def source = :detected
+    end
 
     def self.available(gui_selectable:, refresh:)
       raise unless gui_selectable && refresh
@@ -70,9 +73,9 @@ RSpec.describe Lich::Common::WebUILauncher do
     tabs = find(tree, 'tabs:launcher-tabs')
 
     expect(tabs.type).to eq(:tabs)
-    expect(tabs.props[:names]).to eq(['Saved Entry', 'Manual Entry', 'Account Management'])
+    expect(tabs.props[:names]).to eq(['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'])
     expect(tabs.props[:selected]).to eq(0)
-    expect(tabs.children.map(&:slot)).to eq(['Saved Entry', 'Manual Entry', 'Account Management'])
+    expect(tabs.children.map(&:slot)).to eq(['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'])
   end
 
   it 'preserves favorites/account navigation and keeps row actions beside each saved row' do
@@ -165,17 +168,17 @@ RSpec.describe Lich::Common::WebUILauncher do
       .to contain_exactly(hash_including(keys: 'enter', target: a_string_ending_with('button:manual-connect')))
   end
 
-  it 'uses only dynamically discovered frontends, hides custom fields, and right-aligns disabled Play' do
+  it 'offers catalog frontends with detection status, hides custom fields, and right-aligns disabled Play' do
     manual = find(tree, 'stack:manual-panel')
     frontend = find(manual, 'select:manual-frontend')
     custom_fields = find(manual, 'stack:manual-custom-fields')
     play = find(manual, 'button:manual-play')
     play_columns = find(manual, 'columns:manual-play-actions')
 
-    expect(frontend.props[:options]).to eq([
-                                             { value: 'stormfront', label: 'Wrayth' }, { value: 'saga', label: 'Saga' }
-                                           ])
-    expect(frontend.props[:options].map { |option| option[:value] }).not_to include('wizard', 'avalon')
+    expect(frontend.props[:options]).to include(
+      { value: 'stormfront', label: 'Wrayth (detected)' }, { value: 'saga', label: 'Saga (detected)' },
+      { value: 'wizard', label: 'Wizard (unavailable)' }
+    )
     expect(custom_fields.props[:hidden]).to be(true)
     expect(play.props[:disabled]).to be(true)
     expect(play.slot).to eq('1')
@@ -199,14 +202,13 @@ RSpec.describe Lich::Common::WebUILauncher do
     expect(account_actions.children.map { |button| button.props[:label] }).to eq(['Back to Accounts', 'Add Account'])
   end
 
-  it 'uses the same dynamically discovered frontend choices in account-management forms' do
+  it 'uses the same catalog frontend choices in account-management forms' do
     character_frontend = find(tree, 'select:character-frontend')
     account_frontend = find(tree, 'select:account-frontend')
 
-    expect(character_frontend.props[:options]).to eq([
-                                                       { value: 'stormfront', label: 'Wrayth' },
-                                                       { value: 'saga', label: 'Saga' }
-                                                     ])
+    expect(character_frontend.props[:options]).to include(
+      { value: 'stormfront', label: 'Wrayth (detected)' }, { value: 'wizard', label: 'Wizard (unavailable)' }
+    )
     expect(account_frontend.props[:options]).to eq(character_frontend.props[:options])
   end
 

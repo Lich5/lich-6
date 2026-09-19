@@ -15,7 +15,10 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   end
 
   class WorkflowFrontendLocator
-    Resolution = Data.define(:frontend_id)
+    Resolution = Data.define(:frontend_id) do
+      def executable_path = '/fixture/frontend'
+      def source = :detected
+    end
 
     class << self
       attr_accessor :resolved
