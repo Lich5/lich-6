@@ -1116,6 +1116,32 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
       expect(script.join(0.01)).to be_nil
     end
 
+    it 'does not execute statements after a worker kills its own script' do
+      script = build_script('self-kill')
+      script_class.class_variable_set(:@@running, [script])
+      start = Queue.new
+      cleanup = Queue.new
+      continued = Queue.new
+      allow(script).to receive(:__run_kill_cleanup).and_wrap_original do |original, **options|
+        cleanup.pop
+        original.call(**options)
+      end
+      worker = Thread.new do
+        start.pop
+        script.kill
+        continued << true
+      end
+      script.thread_group.add(worker)
+      start << true
+
+      expect(worker.join(1)).to equal(worker)
+      expect(continued).to be_empty
+    ensure
+      cleanup << true if cleanup
+      script&.join(1)
+      worker&.kill
+    end
+
     it 'rejects joining from one of the script workers' do
       script = build_script('self-join')
       script_class.class_variable_set(:@@running, [script])

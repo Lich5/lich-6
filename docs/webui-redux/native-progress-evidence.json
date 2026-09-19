@@ -1,0 +1,162 @@
+{
+  "status": "LOCAL_IMPLEMENTATION_AND_FIXTURE_PATHS_COMPLETE",
+  "independent_acceptance": false,
+  "scripts": {
+    "BlackArts": {
+      "sha256": "68990ae02890939c8b9bb08e39f56abe90e112628db197d61bde0dcb5454e234",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "bardwag": {
+      "sha256": "aa1c8c5a1e3d2b75573ee035d98405889fe166a5a660aaa7cb0f5805e13e79c9",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "bigshot": {
+      "sha256": "5456f3851d7efa767bfbc05d0678a19aeb9db68b6e9e36f6a5ab23c881cf0559",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "calibrate_creaturebar": {
+      "sha256": "7694c27f8e41dc3da1880bfcddbcb8bdb6f803c728340e2e6cb14ff03817b48d",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "creaturebar": {
+      "sha256": "c8be9cfec3a0f57ba3b29cf5af88bd0b9540ec6474bdeeb12a9db2c22bb7145d",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "ebounty": {
+      "sha256": "fc8dae74a8525ad773685f1ed19653be8d7b49369f2678fae7de098e686544bd",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "ecleanse": {
+      "sha256": "09329a1b087b6343e5dadd900a611178a730ef301a7c86e00e1f463ff08809bd",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "eherbs": {
+      "sha256": "2b97f6ea63f4d338abaa5caa39d1dd2bca5cd7d0cc036f252fda996e5ea2700f",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "eloot": {
+      "sha256": "8be011cbe8b8612fc838d684856d6049b4994f7b15609fefba9ecf0927bac59b",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "ewaggle": {
+      "sha256": "928a48ab8ebbfd19bab801cb2cf36de2c74d7c200354ed9146668d3ca795edac",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "go2": {
+      "sha256": "a87677b0788e03ebaebc217d074ecb87133a6231f01fd5cf96d4f4120e2b0e3d",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "jinx": {
+      "sha256": "1c6b332b8d2e4c7680d60e54d83c6ff2dc6fa48a31c15732edc5ee2284694c41",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "map": {
+      "sha256": "c14a99dc9bdab475d97c9c201e43771e86b341393bdd389d0019310d5ed88269",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "repository": {
+      "sha256": "08f9bc42a1105b0fcc493c4572ebb2cdfbec9f6c6e3e09d7f66980038d35a88f",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    },
+    "soundfx": {
+      "sha256": "11896b32a5a9320bfd9c26f36a9a35be579f8bdef96dabbdb6f27f80e6302ebf",
+      "fixture_browser_path": true,
+      "all_branches_accepted": false
+    }
+  },
+  "note": "All fifteen controllers have local implementations and at least one passing fixture browser path. Hashes identify current working files, not independently accepted releases. Browser runs are staggered; the final Eloot helper-text addition has affected-suite coverage after its browser run. Live-game, platform and full feature-branch acceptance remain pending.",
+  "contract_version": "2.7.0",
+  "native_typography": {
+    "validator_examples": 59,
+    "renderer_tests": 19,
+    "browser_seed": 19449,
+    "shim_source_examples": 32,
+    "shim_source_seed": 61188,
+    "full_examples": 7188,
+    "full_failures": 0,
+    "full_seed": 58877
+  },
+  "generated_date": "2026-09-18",
+  "validation": {
+    "ruby": "rubystd Ruby 4.0.5 in owner persistent interactive host zsh",
+    "core": {
+      "examples": 7188,
+      "failures": 0,
+      "seed": 58877
+    },
+    "native_source": {
+      "examples": 73,
+      "failures": 0,
+      "pending_browser_cases": 15,
+      "seed": 33812
+    },
+    "shim_source": {
+      "examples": 32,
+      "failures": 0,
+      "seed": 61188
+    },
+    "renderer": {
+      "tests": 19,
+      "failures": 0
+    },
+    "rubocop": {
+      "files": 1198,
+      "offenses": 0
+    },
+    "complete_native_script_compile_count": 15,
+    "core_gtk_boundary": "PASS",
+    "shim_namespace_boundary": "PASS",
+    "latest_browser_reruns": {
+      "map": {
+        "examples": 1,
+        "failures": 0,
+        "seed": 13389
+      },
+      "jinx": {
+        "examples": 7,
+        "failures": 0,
+        "seed": 62851
+      },
+      "creaturebar": {
+        "examples": 1,
+        "failures": 0,
+        "seed": 31057
+      },
+      "eloot": {
+        "examples": 1,
+        "failures": 0,
+        "seed": 44530
+      },
+      "BlackArts": {
+        "examples": 3,
+        "failures": 0,
+        "seed": 20728
+      },
+      "bigshot": {
+        "examples": 5,
+        "failures": 0,
+        "seed": 50641
+      }
+    },
+    "final_combined": {
+      "examples": 108,
+      "failures": 0,
+      "pending_browser_cases": 15,
+      "seed": 13189
+    }
+  }
+}

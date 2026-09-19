@@ -19,14 +19,15 @@ module Lich
       end
       private_constant :Handle
 
-      Node = Struct.new(:type, :props, :children, :parent, :slot, :bindings, :page, keyword_init: true)
+      Node = Struct.new(:type, :props, :placement, :children, :parent, :slot, :bindings, :page, :cid, :published, keyword_init: true)
       private_constant :Node
 
-      def initialize(owner:, service:, viewer: nil, validator: Validator.new)
+      def initialize(owner:, service:, viewer: nil, validator: Validator.new, on_publish: nil)
         @owner = owner
         @service = service
         @viewer = viewer
         @validator = validator
+        @on_publish = on_publish
         @nodes = {}.compare_by_identity
         @destroyed = {}.compare_by_identity
         @bindings = {}
@@ -41,12 +42,16 @@ module Lich
         raise ArgumentError, 'props must be a Hash' unless props.is_a?(Hash)
 
         handle = Handle.new.freeze
+        props = symbolize(props)
+        placement = props.delete(:placement) || {}
+        raise ArgumentError, 'placement must be a Hash' unless placement.is_a?(Hash)
+
         validated = @validator.validate_component!(
-          normalized, symbolize(props), owner: owner_label, page_id: adapter_page_id,
+          normalized, props, owner: owner_label, page_id: adapter_page_id,
           cid: handle_label(handle)
         )
         node = Node.new(
-          type: normalized, props: validated, children: [], parent: nil, slot: nil,
+          type: normalized, props: validated, placement: symbolize(placement).freeze, children: [], parent: nil, slot: nil,
           bindings: {}, page: nil
         )
         @mutex.synchronize do
@@ -91,14 +96,37 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
+            if (page = root_for(node).page) && node.cid
+              page.set(node.cid, name, value, viewer: @viewer)
+              return nil
+            end
             viewer = viewer!
             validated = validate_property(node, handle, name, value)
             @viewer_values[[viewer, handle, name]] = validated
           else
-            node.props = @validator.validate_component!(
-              node.type, node.props.merge(name => value), owner: owner_label,
+            candidate = node.props.merge(name => value)
+            # A select's option list and default must remain one valid schema.
+            # sbounty replaces its choices; use the first declared choice only
+            # when the old default was removed, after validating the list.
+            if node.type == :select && name == :options
+              candidate[:options] = @validator.validate_component!(
+                :select, { options: value }, owner: owner_label,
+                page_id: adapter_page_id, cid: handle_label(handle)
+              ).fetch(:options)
+              unless candidate[:options].any? { |option| option[:value] == candidate[:value] }
+                candidate[:value] = candidate[:options].first&.fetch(:value)
+              end
+            end
+            validated = @validator.validate_component!(
+              node.type, candidate, owner: owner_label,
               page_id: adapter_page_id, cid: handle_label(handle)
             )
+            # Parent geometry and existing child placements are one mutation.
+            # Reject a narrowed grid before publishing any invalid shadow tree.
+            proposed = node.dup
+            proposed.props = validated
+            node.children.each { |child| validate_placement!(proposed, node!(child), child) }
+            node.props = validated
             assign_child_slots!(node) if named_children?(node)
           end
           dirty!(root_for(node))
@@ -121,6 +149,7 @@ module Lich
             raise attributed_error('child index is out of range', parent, :index)
           end
           validate_child_capacity!(parent, parent_node)
+          validate_placement!(parent_node, child_node, child)
           parent_node.children.insert(position, child)
           child_node.parent = parent
           assign_child_slots!(parent_node)
@@ -165,6 +194,7 @@ module Lich
             )
           end
           binding_id = "binding-#{SecureRandom.hex(16)}".freeze
+          @bindings.delete(node.bindings[name])
           @bindings[binding_id] = [handle, name, callable]
           node.bindings[name] = binding_id
           dirty!(root_for(node))
@@ -205,6 +235,7 @@ module Lich
       def modal(props)
         raise ArgumentError, 'props must be a Hash' unless props.is_a?(Hash)
 
+        flush!
         options = symbolize(props)
         id = options.delete(:id) || "adapter-modal-#{SecureRandom.hex(8)}"
         @service.modal(owner: @owner, id: id, **options)
@@ -221,20 +252,31 @@ module Lich
       private
 
       def flush!
-        @mutex.synchronize do
+        pages = @mutex.synchronize do
           selected = @dirty_roots.keys.filter_map do |candidate|
             root_for(candidate) if handle_for(candidate)
           end.uniq
           @dirty_roots.clear
-          selected.each do |root|
+          selected.filter_map do |root|
             next unless handle_for(root)
 
             ensure_page!(root)
             root.page.refresh_definition(
               title: root.props.fetch(:title), props: root.props.except(:title), on: callbacks_for(root)
             )
-            @service.refresh(root.page)
+            root
           end
+        end
+        # Page rendering calls back into the adapter to snapshot its tree. Never
+        # hold the adapter monitor while waiting for a page's render mutex.
+        pages.each do |root|
+          @service.refresh(root.page)
+          publish = @mutex.synchronize do
+            next false if root.published || !handle_for(root)
+
+            root.published = true
+          end
+          @on_publish&.call(root.page) if publish
         end
         nil
       end
@@ -256,32 +298,59 @@ module Lich
       end
 
       def render_children(builder, node)
-        @mutex.synchronize do
-          adapter = self
-          node.children.each do |child_handle|
-            child = @nodes.fetch(child_handle)
-            props = effective_props(child, child_handle)
-            bindings = child.bindings.to_h do |event, binding_id|
-              [event, @bindings.fetch(binding_id).last]
-            end
-            builder.component(child.type, slot: child.slot, on: bindings, **props) do
-              adapter.send(:render_children, self, child)
-            end
-          end
+        snapshot = @mutex.synchronize { snapshot_children(node) }
+        scope = input_cids(snapshot, "page:#{adapter_page_id(node)}")
+        render_snapshot(builder, snapshot, scope)
+      end
+
+      def snapshot_children(node)
+        node.children.map do |handle|
+          child = @nodes.fetch(handle)
+          bindings = child.bindings.to_h { |event, id| [event, @bindings.fetch(id).last] }
+          [child, child.props.merge(key: handle_label(handle)), child.slot, bindings, snapshot_children(child)]
         end
       end
 
-      def effective_props(node, handle)
-        Contract.schema(node.type)[:properties].each_with_object(node.props.dup) do |(name, definition), result|
-          next unless definition[:scope] == :viewer && @viewer
+      # An imperative page is a legacy form. Each terminal control declares the
+      # page's input scope server-side, so Save captures current DOM values even
+      # when a change/blur event has not arrived. Values remain viewer-local.
+      def input_cids(snapshot, parent_cid)
+        snapshot.flat_map do |child, props, _slot, _bindings, children|
+          cid = "#{parent_cid}/#{child.type}:#{props.fetch(:key)}"
+          own = Contract.schema(child.type)[:value] ? [cid] : []
+          own + input_cids(children, cid)
+        end
+      end
 
-          key = [@viewer, handle, name]
-          result[name] = @viewer_values[key] if @viewer_values.key?(key)
+      def render_snapshot(builder, snapshot, scope)
+        adapter = self
+        snapshot.each do |child, props, slot, bindings, children|
+          terminal = (Contract.schema(child.type)[:events].keys & %i[activate submit response]).any?
+          draft = builder.component(child.type, slot: slot, placement: child.placement, on: bindings, submit: terminal ? scope : nil, **props) do
+            adapter.send(:render_snapshot, self, children, scope)
+          end
+          @mutex.synchronize { child.cid = draft.cid }
         end
       end
 
       def callbacks_for(node)
         node.bindings.to_h { |event, binding_id| [event, @bindings.fetch(binding_id).last] }
+      end
+
+      # Child layout belongs to its parent schema. Validate before attaching so
+      # an invalid span cannot corrupt the tree or fail later in a render job.
+      def validate_placement!(parent, child, handle)
+        definitions = Contract.schema(parent.type)[:child_properties] || {}
+        child.placement.each do |name, value|
+          definition = definitions[name] || raise(attributed_error('unknown child placement', handle, name))
+          shape = definition.fetch(:shape).dup
+          shape[:max] = parent.props.fetch(shape.delete(:max_property)) if shape[:max_property]
+          @validator.validate_placement!(name, shape, value, owner: owner_label,
+                                        page_id: adapter_page_id, cid: handle_label(handle))
+        end
+        if parent.type == :grid && child.placement.fetch(:column, 1) + child.placement.fetch(:span, 1) - 1 > parent.props[:cols]
+          raise attributed_error('child placement exceeds grid columns', handle, :span)
+        end
       end
 
       def validate_property(node, handle, name, value)
@@ -312,6 +381,10 @@ module Lich
       end
 
       def viewer_value(node, handle, name)
+        if (page = root_for(node).page) && node.cid
+          return deep_copy(page.get(node.cid, name, viewer: @viewer))
+        end
+
         viewer = viewer!
         deep_copy(@viewer_values.fetch([viewer, handle, name], node.props[name]))
       end
@@ -380,7 +453,10 @@ module Lich
       end
 
       def dirty!(root)
+        return unless root.type == :page
+
         @dirty_roots[root] = true
+        @service.runtime.schedule_render(self, owner: @owner) { flush! }
       end
 
       def handle_for(node)

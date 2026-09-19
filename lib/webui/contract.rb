@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.5.0'
+      VERSION = '2.7.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -99,6 +99,7 @@ module Lich
       BOOL = scalar(:boolean).freeze
       ANY_NUMBER = number.freeze
       GEOMETRY = integer(min: BOUNDS[:geometry].begin, max: BOUNDS[:geometry].end).freeze
+      SCROLL_PIXELS = integer(min: 0, max: BOUNDS[:geometry].end).freeze
 
       OPTION = record(
         value: property(string(:input_text), required: true),
@@ -124,7 +125,7 @@ module Lich
         overlay: %i[key hidden align margin width height],
         scroll: %i[key hidden align margin width height],
         divider: %i[key hidden margin width tone],
-        text: %i[key tooltip hidden align margin width emphasis tone],
+        text: %i[key tooltip hidden align margin width height emphasis tone],
         markdown: %i[key hidden align margin width],
         log: %i[key hidden align margin width height],
         progress: %i[key tooltip hidden align margin width tone],
@@ -150,7 +151,12 @@ module Lich
         disabled: property(BOOL),
         hidden: property(BOOL),
         align: property(enum(*ALIGNS)),
-        margin: property(integer(min: 0, max: 512)),
+        margin: property(union(integer(min: 0, max: 512), record(
+                                                            top: property(integer(min: 0, max: 512)),
+                                                            right: property(integer(min: 0, max: 512)),
+                                                            bottom: property(integer(min: 0, max: 512)),
+                                                            left: property(integer(min: 0, max: 512))
+                                                          ))),
         width: property(GEOMETRY),
         height: property(GEOMETRY),
         emphasis: property(enum(*EMPHASES)),
@@ -192,7 +198,10 @@ module Lich
             cols: property(integer(min: 1, max: 24), required: true),
             cells: property(integer(min: 0, max: BOUNDS[:children])),
             gap: property(integer(min: 0, max: 64), default: 8),
+            row_gap: property(integer(min: 0, max: 64)), column_gap: property(integer(min: 0, max: 64)),
           }, children: :many, child_properties: {
+            column: property(integer(min: 1, max_property: :cols)),
+            row: property(integer(min: 1, max: BOUNDS[:children])),
             span: property(integer(min: 1, max_property: :cols)),
             row_span: property(integer(min: 1, max: 24)),
           }, events: {}, value: nil,
@@ -220,8 +229,16 @@ module Lich
           child_properties: { z: property(integer(min: 0, max: 99)) }, events: {}, value: nil,
         },
         scroll: {
-          properties: { max_height: property(GEOMETRY), scroll_to: property(IDENT, scope: :viewer) },
-          children: :many, events: { scrolled: event(record(position: property(GEOMETRY, required: true))) }, value: nil,
+          properties: {
+            max_height: property(GEOMETRY), scroll_to: property(IDENT, scope: :viewer),
+            scroll_position: property(SCROLL_PIXELS, scope: :viewer),
+          },
+          children: :many,
+          events: { scrolled: event(record(
+                                      position: property(SCROLL_PIXELS, required: true),
+                                      upper: property(SCROLL_PIXELS),
+                                      page_size: property(SCROLL_PIXELS)
+                                    )) }, value: nil,
         },
         divider: { properties: { label: property(SHORT) }, children: :none, events: {}, value: nil },
         text: {
@@ -280,6 +297,8 @@ module Lich
           }, children: :none,
           events: {
             change: event(record(value: property(string(:input_text), required: true))),
+            # Focus changes can execute source logic; never coalesce them.
+            focus: event(nil, lifecycle: true),
             submit: event(nil, terminal: true),
           }, value: string(:input_text), value_scope: :viewer,
         },
@@ -383,6 +402,12 @@ module Lich
         b: property(integer(min: 0, max: 255), required: true),
         a: property(number(min: 0.0, max: 1.0), required: true)
       ).freeze
+      # Native typography uses literal text and the existing bounded color
+      # shape. This does not admit Pango markup or add GTK style translation.
+      TEXT_STYLE_PROPERTIES = {
+        font_size: property(number(min: 6, max: 48)),
+        foreground: property(RGBA), background: property(RGBA),
+      }.freeze
       TINT = union(record(tone: property(enum(*TONES), required: true)), RGBA).freeze
       POINT_FIELDS = {
         x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
@@ -406,6 +431,7 @@ module Lich
           text: property(SHORT, required: true), emphasis: property(enum(*EMPHASES), default: 'normal'),
           tone: property(enum(*TONES), default: 'neutral'),
           align: property(enum(:start, :center, :end), default: 'start'),
+          **TEXT_STYLE_PROPERTIES,
         }),
         record(
           kind: property(enum(:region), required: true), key: property(IDENT, required: true),
@@ -489,6 +515,7 @@ module Lich
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
             end
             base[:properties].merge!(COMPOSITE_PROPERTIES) if type == :composite
+            base[:properties].merge!(TEXT_STYLE_PROPERTIES) if type == :text
             base[:events].merge!(COMPOSITE_EVENTS) if type == :composite
             base[:properties].merge!(deep_dup(ACCESSIBILITY_SCHEMAS))
             if type == :password_input

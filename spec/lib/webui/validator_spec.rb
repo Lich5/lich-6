@@ -60,7 +60,7 @@ RSpec.describe Lich::WebUI::Validator do
       .to raise_error(Lich::WebUI::UnknownPropertyError, /owner=spec-owner page=spec-page cid=test:component field=css/)
   end
 
-  it 'refuses raw colors and accepts structured RGBA only in composite tint and bar tone' do
+  it 'refuses raw colors and accepts structured RGBA in composite tint and bar tone' do
     expect { validator.validate_component!(:button, { label: 'Go', tone: '#ff0000' }, **context) }
       .to raise_error(Lich::WebUI::SchemaViolationError, /must be one of/)
 

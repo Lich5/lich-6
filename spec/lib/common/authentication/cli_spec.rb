@@ -198,6 +198,14 @@ RSpec.describe Lich::Common::Authentication::CLI do
         expect(result).to be_nil
         expect(Lich).to have_received(:log).with(/valid game code is required/i)
       end
+
+      it 'returns nil for retired and nonexistent GemStone game codes' do
+        %w[GSX GS4].each do |game_code|
+          expect(described_class.execute_new_character('TESTUSER', game_code: game_code, data_dir: data_dir)).to be_nil
+        end
+
+        expect(Lich).to have_received(:log).with(/valid game code is required/i).twice
+      end
     end
 
     context 'with missing YAML file' do
@@ -246,7 +254,8 @@ RSpec.describe Lich::Common::Authentication::CLI do
           password: 'testpass',
           character: 'NEW',
           game_code: 'DR',
-          generator: true
+          generator: true,
+          auth_provider: :eaccess
         ).and_return({ 'key' => 'abc' })
 
         result = described_class.execute_new_character('testuser', game_code: 'DR', data_dir: data_dir)
@@ -263,7 +272,8 @@ RSpec.describe Lich::Common::Authentication::CLI do
           password: 'testpass',
           character: 'NEW',
           game_code: 'DR',
-          generator: true
+          generator: true,
+          auth_provider: :eaccess
         ).and_return({ 'key' => 'abc' })
 
         described_class.execute_new_character('TESTUSER', game_code: 'DR', data_dir: data_dir)

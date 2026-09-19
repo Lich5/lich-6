@@ -17,7 +17,7 @@ FileUtils.mkdir_p(TEMP_DIR)
 module LichCiDefaultWebUIAcceptance
   module_function
 
-  REQUIRED_TABS = ['Saved Entry', 'Manual Entry', 'Account Management'].freeze
+  REQUIRED_TABS = ['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'].freeze
   GTK_FAMILY_PATTERN = /(?:gtk|gdk|gobject|glib)/i
 
   def install!
@@ -68,7 +68,7 @@ module LichCiDefaultWebUIAcceptance
 
     socket = websocket(uri, cookie)
     hello = read_message(socket)
-    raise 'authenticated WebSocket hello missing' unless hello['type'] == 'hello' && hello['contract_version'] == '2.5.0'
+    raise 'authenticated WebSocket hello missing' unless hello['type'] == 'hello' && hello['contract_version'] == '2.7.0'
 
     address = hello.fetch('pages').first.fetch('address')
     send_message(socket, type: 'attach', page: address, version: '2.5.0')

@@ -8,6 +8,8 @@ require_relative 'authentication/authenticator'
 require_relative 'authentication/launch_data'
 require_relative 'front-end'
 require_relative 'frontend_locator'
+require_relative 'frontend_choices'
+require_relative 'webui_launcher/frontend_tab'
 require_relative 'session_launcher'
 require_relative 'webui_launcher/catalog'
 require_relative 'webui_launcher/serial_executor'
@@ -17,16 +19,12 @@ module Lich
   module Common
     # Default native launcher built directly on the WebUI author API.
     class WebUILauncher
-      TABS = ['Saved Entry', 'Manual Entry', 'Account Management'].freeze
+      TABS = ['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'].freeze
       ACCOUNT_TABS = ['Accounts', 'Add Character', 'Add Account', 'Encryption Management'].freeze
-      GAMES = %w[GS3 GSF GSX GST DR DRF DRT].map { |code| { value: code, label: code } }.freeze
-      GAME_NAMES = {
-        'GS3' => 'GemStone IV', 'GSF' => 'GemStone IV Shattered', 'GSX' => 'GemStone IV Platinum',
-        'GST' => 'GemStone IV Prime Test', 'DR' => 'DragonRealms', 'DRF' => 'DragonRealms The Fallen',
-        'DRT' => 'DragonRealms Prime Test',
-      }.freeze
+      GAMES = Authentication::LoginHelpers::VALID_GAME_CODES.map { |code| { value: code, label: code } }.freeze
+      GAME_NAMES = Authentication::LoginHelpers::GAME_NAMES
       GAME_REALMS = {
-        'GS3' => 'GS Prime', 'GSF' => 'GS Shattered', 'GSX' => 'GS Platinum', 'GST' => 'GS Test',
+        'GS3' => 'GS Prime', 'GSF' => 'GS Shattered', 'GSX' => 'GS Platinum', 'DRX' => 'DR Platinum', 'GST' => 'GS Test',
         'DR' => 'DR Prime', 'DRF' => 'DR Fallen', 'DRT' => 'DR Test',
       }.freeze
       Operation = Data.define(:id, :kind, :viewer_id)
@@ -84,6 +82,14 @@ module Lich
         @manual_credentials = {}
         @draft_entry_key = nil
         reload_catalog
+        @frontend_tab = FrontendTab.new(
+          data_dir: @data_dir, locator: @frontend_locator, executor: @executor,
+          on_change: -> { refresh },
+          on_catalog_change: lambda {
+            choices = discover_frontends(refresh: false)
+            @mutex.synchronize { @frontend_options = choices }
+          }
+        )
       end
 
       def webui_owner_id = 'core.launcher'
@@ -129,6 +135,7 @@ module Lich
         return false unless accepted
 
         terminate_browser(browser_pid) if browser_pid
+        @frontend_tab.close
         @service.terminate_owner(self)
         @service.stop
         @executor.stop(wait: false)
@@ -175,6 +182,7 @@ module Lich
               manual_controls = launcher.__send__(:render_manual, self, state)
             end
             stack(slot: TABS[2], key: 'accounts-panel') { launcher.__send__(:render_accounts, self, state) }
+            stack(slot: TABS[3], key: 'frontends-panel') { launcher.__send__(:render_frontends, self) }
           end
           manual_default = state[:manual][:phase] == :editing ? manual_controls[:connect] : manual_controls[:play]
           accelerators([{ keys: 'enter', target: manual_default.cid, event: 'activate' }])
@@ -191,6 +199,11 @@ module Lich
           geometry(**geometry_options)
           presentation(always_on_top: false, scrollbars: true)
         end
+      end
+
+      # The tab owns frontend editing; the launcher only composes its surface.
+      def render_frontends(ui)
+        @frontend_tab.render(ui)
       end
 
       def render_state
@@ -958,17 +971,25 @@ module Lich
       end
 
       def discover_frontends(refresh: false)
-        @frontend_locator.available(gui_selectable: true, refresh: refresh).map do |resolution|
-          { value: resolution.frontend_id.to_s, label: Frontend.display_name(resolution.frontend_id) }
+        FrontendChoices.all(refresh: refresh, locator: @frontend_locator).map do |choice|
+          { value: choice.id, label: choice.label }
         end.freeze
       rescue StandardError => error
         @logger&.call(:warning, "frontend discovery failed error=#{error.class}")
         [].freeze
       end
 
+      # Whether this frontend can actually be launched now. A configured
+      # custom frontend counts even when the locator cannot resolve it: the
+      # player gave it a launch command, and that is what will be run.
+      # @api private
       def frontend_available?(frontend, refresh: false)
         return false if frontend.to_s.empty?
         return false unless @frontend_options.any? { |option| option[:value] == frontend }
+
+        choice = FrontendChoices.all(refresh: refresh, locator: @frontend_locator)
+                                .find { |candidate| candidate.id == Frontend.canonical_name(frontend) }
+        return true if choice&.state == :configured
 
         !@frontend_locator.resolve(frontend, refresh: refresh).nil?
       rescue StandardError => error

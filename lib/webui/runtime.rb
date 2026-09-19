@@ -26,6 +26,8 @@ module Lich
         @connections_mutex = Mutex.new
         @refresh_mutex = Mutex.new
         @refresh_state = {}.compare_by_identity
+        @closed_owners = ObjectSpace::WeakMap.new
+        @stopping = false
         @degradation_mutex = Mutex.new
         @degradations = {}.compare_by_identity
       end
@@ -47,13 +49,18 @@ module Lich
       rescue Protocol::Refusal => error
         log(:warning, "WebUI event refusal=#{error.reason}")
         connection.send_text(
-          Protocol.refusal(reason: error.reason, message: 'Message refused', page: message[:page], cid: message[:cid])
+          Protocol.refusal(reason: error.reason, message: 'Message refused', page: message[:page], cid: message[:cid],
+                           event: message[:event], request: message[:request])
         )
+        # Refusal must precede the replacement tree so the browser can associate
+        # its one permitted retry with the exact rejected intent.
+        send_render(connection, fetch_attachment(connection, message[:page])) if error.reason == :stale_generation
         :refused
       rescue Error => error
         log(:warning, "WebUI event refusal=#{error.class}")
         connection.send_text(
-          Protocol.refusal(reason: :contract, message: 'Message refused', page: message[:page], cid: message[:cid])
+          Protocol.refusal(reason: :contract, message: 'Message refused', page: message[:page], cid: message[:cid],
+                           event: message[:event], request: message[:request])
         )
         :refused
       end
@@ -131,6 +138,7 @@ module Lich
       end
 
       def terminate_owner(owner)
+        cancel_renders(owner)
         pages = @registry.pages_for(owner)
         @dispatcher.shutdown_owner(owner)
         pages.each do |page|
@@ -161,8 +169,27 @@ module Lich
 
       def shutdown
         @dispatcher.shutdown
-        threads = @refresh_mutex.synchronize { @refresh_state.values.filter_map { |state| state[:thread] } }
-        threads.each(&:join)
+        cancel_renders
+      end
+
+      # Internal core render scheduling, shared by native page updates and the
+      # imperative adapter. A key has at most one worker, with changes coalesced
+      # until its next render. The adapter's public port stays at ten operations.
+      # The short adapter delay batches construction without blocking its caller.
+      def schedule_render(key, owner:, delay: 0.01, &render)
+        @refresh_mutex.synchronize do
+          raise Error, 'render owner is terminated' if @stopping || @closed_owners[owner]
+
+          state = (@refresh_state[key] ||= {
+            dirty: false, thread: nil, owner: owner, work: render, delay: delay, cancelled: false
+          })
+          if state[:thread]&.alive?
+            state[:dirty] = true
+            return
+          end
+          state[:thread] = Thread.new { refresh_loop(key, state) }
+        end
+        nil
       end
 
       private
@@ -217,7 +244,10 @@ module Lich
         ensure
           snapshot&.discard_sensitive!
         end
-        schedule_refresh(attachment.page) if viewer_state_event?(component, context.event)
+        # A control already displays its own draft. Redrawing on blur needlessly
+        # changes generation before the following Save arrives. Structural
+        # choices still need a render; callbacks schedule their own other edits.
+        schedule_refresh(attachment.page) if event_schema[:structural]
         clear_sensitive_client(connection, snapshot)
         :queued
       rescue Dispatcher::OverflowError
@@ -227,8 +257,14 @@ module Lich
       end
 
       def build_submission(attachment, terminal, message)
-        scope = attachment.render.submissions.fetch(terminal.cid, [])
         raw_values = message.fetch(:submission, [])
+        event_schema = Contract.schema(terminal.type)[:events].fetch(message[:event].to_sym)
+        unless event_schema[:terminal]
+          raise Protocol::Refusal.new(:submission_scope, 'submission requires a terminal event') unless raw_values.empty?
+
+          return nil
+        end
+        scope = attachment.render.submissions.fetch(terminal.cid, [])
         unless raw_values.length == scope.length
           raise Protocol::Refusal.new(:submission_scope, 'submission value count does not match server scope')
         end
@@ -271,8 +307,7 @@ module Lich
         connection.send_text(JSON.generate(type: 'clear_sensitive', cids: sensitive_cids))
       end
 
-      def stale!(connection, attachment)
-        send_render(connection, attachment)
+      def stale!(_connection, _attachment)
         raise Protocol::Refusal.new(:stale_generation, 'stale generation')
       end
 
@@ -314,19 +349,6 @@ module Lich
 
       def sensitive?(component)
         component.type == :password_input || component.props[:sensitive] == true
-      end
-
-      def viewer_state_event?(component, event)
-        case [component.type, event]
-        when [:toggle, :change], [:checkbox, :change], [:radio, :change],
-             [:text_input, :change], [:textarea, :change], [:number_input, :change],
-             [:slider, :change], [:select, :change], [:tabs, :select],
-             [:expander, :toggle], [:split, :move], [:table, :selection_change],
-             [:table, :sort_change], [:table, :row_toggle]
-          true
-        else
-          false
-        end
       end
 
       def owner_label(owner)
@@ -436,7 +458,8 @@ module Lich
       end
 
       def contextual_attachment(page, component, viewer)
-        viewer_id = viewer || @dispatcher.current_context&.viewer_id
+        selected = @dispatcher.current_context&.viewer_id || viewer
+        viewer_id = selected.respond_to?(:viewer_id) ? selected.viewer_id : selected
         unless viewer_id
           raise AmbiguousViewerError.new(
             'viewer-local access requires callback context or an explicit viewer',
@@ -444,34 +467,48 @@ module Lich
           )
         end
 
-        @viewers.attachment_for_viewer(page, viewer_id.respond_to?(:viewer_id) ? viewer_id.viewer_id : viewer_id.to_s)
+        @viewers.attachment_for_viewer(page, viewer_id.to_s)
       end
 
       def schedule_refresh(page)
-        @refresh_mutex.synchronize do
-          state = (@refresh_state[page] ||= { dirty: false, thread: nil })
-          if state[:thread]&.alive?
-            state[:dirty] = true
-            return
-          end
-          state[:thread] = Thread.new { refresh_loop(page, state) }
-        end
+        schedule_render(page, owner: page.owner, delay: 0) { refresh(page) }
       end
 
-      def refresh_loop(page, state)
+      def refresh_loop(key, state)
         loop do
-          refresh(page)
+          sleep(state[:delay]) if state[:delay].positive?
+          break if @refresh_mutex.synchronize { state[:cancelled] }
+
+          state[:work].call
           repeat = @refresh_mutex.synchronize do
             dirty = state[:dirty]
             state[:dirty] = false
-            @refresh_state.delete(page) unless dirty
+            @refresh_state.delete(key) unless dirty
             dirty
           end
           break unless repeat
         end
       rescue StandardError => error
-        log(:error, "WebUI refresh failed owner=#{owner_label(page.owner)} error=#{error.class}")
-        @refresh_mutex.synchronize { @refresh_state.delete(page) }
+        log(:error, "WebUI refresh failed owner=#{owner_label(state[:owner])} error=#{error.class}")
+      ensure
+        @refresh_mutex.synchronize do
+          @refresh_state.delete(key) if @refresh_state[key].equal?(state)
+        end
+      end
+
+      # Join already admitted renders before unregistering pages. Otherwise an
+      # adapter could publish a page immediately after its owner was removed.
+      def cancel_renders(owner = nil)
+        threads = @refresh_mutex.synchronize do
+          owner ? @closed_owners[owner] = true : @stopping = true
+          @refresh_state.values.filter_map do |state|
+            next if owner && !state[:owner].equal?(owner)
+
+            state[:cancelled] = true
+            state[:thread]
+          end
+        end
+        threads.each { |thread| thread.join unless thread.equal?(Thread.current) }
       end
 
       def log(level, message)

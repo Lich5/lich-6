@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 # encoding: US-ASCII
 
-######
+#######
 # Lich - https://github.com/elanthia-online/lich-5
 # Licensed under BSD 3-Clause License (see LICENSE file)
-######
+#######
 
 # process ARGV for constants before loading constants.rb: issue #304
 for arg in ARGV
@@ -24,6 +24,8 @@ for arg in ARGV
     DATA_DIR = $1
   elsif arg =~ /^--(?:lib|lib-dir)=(.+)[\\\/]?$/i
     LIB_DIR = $1
+  elsif arg =~ /^--(?:active-session-dir)=(.+)[\\\/]?$/i
+    ACTIVE_SESSION_DIR = $1
   end
 end
 
@@ -33,6 +35,14 @@ else
   require_relative('./lib/constants.rb')
 end
 require File.join(LIB_DIR, 'version.rb')
+
+# --help and --version print to stdout and exit. They read ARGV, and they touch
+# no gem, no directory, and no database. Dispatch them here, before the gem
+# check and application initialization, so missing runtime dependencies do not
+# prevent basic launch guidance.
+require File.join(LIB_DIR, 'main', 'early_exit.rb')
+Lich::Main::EarlyExit.dispatch!
+
 require File.join(LIB_DIR, 'gemcheck.rb')
 Lich::GemCheck.verify!(*Lich::GemCheck.startup_groups)
 
@@ -58,8 +68,10 @@ require 'zlib'
 
 require File.join(LIB_DIR, 'lich.rb')
 require File.join(LIB_DIR, 'init.rb')
-require File.join(LIB_DIR, 'common', 'front-end.rb')
+require File.join(LIB_DIR, 'common', 'frontend.rb')
 require File.join(LIB_DIR, 'common', 'frontend_locator.rb')
+require File.join(LIB_DIR, 'common', 'frontend_settings.rb')
+Lich::Common::FrontendSettings.load!(data_dir: DATA_DIR)
 require File.join(LIB_DIR, 'common', 'frontend_launcher.rb')
 require File.join(LIB_DIR, 'internal_api', 'active_sessions.rb')
 require File.join(LIB_DIR, 'api', 'active_sessions.rb')
@@ -111,6 +123,7 @@ require File.join(LIB_DIR, 'common', 'socketconfigurator.rb')
 require File.join(LIB_DIR, 'common', 'reusable_tcp_server.rb')
 require File.join(LIB_DIR, 'games.rb')
 require File.join(LIB_DIR, 'common', 'gameobj.rb')
+require File.join(LIB_DIR, 'common', 'inventory.rb')
 require File.join(LIB_DIR, 'common', 'arg_parser.rb')
 require File.join(LIB_DIR, 'common', 'setup_files.rb')
 require File.join(LIB_DIR, 'common', 'settings_transformer.rb')

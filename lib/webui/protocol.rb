@@ -12,7 +12,7 @@ module Lich
       FIELDS = {
         'attach' => %i[type page version resume],
         'detach' => %i[type page generation],
-        'event'  => %i[type page cid event generation payload submission],
+        'event'  => %i[type page cid event generation payload submission request],
       }.freeze
       REQUIRED = {
         'attach' => %i[type page version],
@@ -47,8 +47,9 @@ module Lich
         JSON.generate(payload)
       end
 
-      def refusal(reason:, message:, page: nil, cid: nil)
-        JSON.generate(type: 'refusal', reason: reason.to_s, message: message, page: page, cid: cid)
+      def refusal(reason:, message:, page: nil, cid: nil, event: nil, request: nil)
+        JSON.generate(type: 'refusal', reason: reason.to_s, message: message, page: page, cid: cid,
+                      event: event, request: request)
       end
 
       def page_closed(address:, reason:)
@@ -108,6 +109,9 @@ module Lich
             raise Refusal.new(:malformed, 'resume token has invalid syntax')
           end
         when 'event'
+          if message.key?(:request) && !(message[:request].is_a?(Integer) && message[:request].between?(1, 9_007_199_254_740_991))
+            raise Refusal.new(:malformed, 'request must be a positive safe integer')
+          end
           unless message[:cid].is_a?(String) && message[:cid].match?(Contract::CID_PATTERN)
             raise Refusal.new(:malformed, 'cid has invalid syntax')
           end

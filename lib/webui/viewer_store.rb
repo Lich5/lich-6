@@ -163,6 +163,12 @@ module Lich
 
           key = [component.cid, name]
           attachment.values[key] = component.props[name] unless attachment.values.key?(key)
+          # Option removal invalidates only viewers selecting the removed item.
+          # Other viewers retain their own choice; no callback is fabricated.
+          if component.type == :select && name == :value &&
+             component.props[:options].none? { |option| option[:value] == attachment.values[key] }
+            attachment.values[key] = component.props[name]
+          end
         end
         component.children.each { |child| seed_values!(attachment, child) }
       end
