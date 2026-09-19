@@ -2,7 +2,10 @@
 
 require 'rspec'
 
+# The CLI and launcher share the authentication game catalog.
+require_relative '../../login_spec_helper'
 require_relative '../../../lib/main/help_text'
+require_relative '../../../lib/common/authentication/login_helpers'
 
 RSpec.describe Lich::Main::HelpText do
   describe '.render' do
@@ -24,12 +27,38 @@ RSpec.describe Lich::Main::HelpText do
       expect(output).to include('require the matching account credentials to be saved in Saga.')
     end
 
+    it 'documents the refresh-characters and add-character account commands' do
+      output = described_class.render('accounts')
+
+      expect(output).to include('--refresh-characters ACCOUNT [--frontend FRONTEND]')
+      expect(output).to include('--add-character ACCOUNT CHAR_NAME')
+    end
+
+    it 'lists every game code --game-code accepts' do
+      output = described_class.render('accounts')
+
+      Lich::Common::Authentication::LoginHelpers::VALID_GAME_CODES.each do |code|
+        name = Lich::Common::Authentication::LoginHelpers::GAME_NAMES.fetch(code)
+        expect(output).to match(/\b#{code}\s+#{Regexp.escape(name)}/)
+      end
+    end
+
+    it 'does not document game codes the login validator rejects' do
+      output = described_class.render('accounts')
+
+      %w[GS4 GSX].each do |retired_code|
+        expect(Lich::Common::Authentication::LoginHelpers.valid_game_code?(retired_code)).to be(false)
+        expect(output).not_to include(retired_code)
+      end
+    end
+
     it 'maps diagnostics requests to automation help' do
       output = described_class.render('diagnostics')
 
       expect(output).to include('Lich Help: automation')
       expect(output).to include('--active-sessions')
       expect(output).to include('--session-info NAME')
+      expect(output).to include('--active-session-dir=PATH')
     end
 
     it 'describes the native WebUI default and legacy headless alias' do
@@ -61,6 +90,7 @@ RSpec.describe Lich::Main::HelpText do
       expect(output).to include('--lib-dir=PATH')
       expect(output).to include('--hosts-dir=PATH')
       expect(output).to include('--hosts-file=PATH')
+      expect(output).to include('--active-session-dir=PATH')
     end
   end
 

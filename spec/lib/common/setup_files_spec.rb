@@ -13,6 +13,9 @@ RSpec.describe Lich::Common::SetupFiles do
 
   before do
     stub_const('SCRIPT_DIR', tmpdir)
+    # Authentication specs can leave Account.character set. Keep fixture lookup
+    # independent of that state; RSpec restores the original constant afterward.
+    stub_const('Lich::Common::Account', double(character: 'TestChar'))
     FileUtils.mkdir_p(profiles_dir)
     FileUtils.mkdir_p(data_dir)
     allow(setup_files).to receive(:echo)

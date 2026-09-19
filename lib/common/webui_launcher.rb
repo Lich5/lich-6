@@ -19,14 +19,10 @@ module Lich
     class WebUILauncher
       TABS = ['Saved Entry', 'Manual Entry', 'Account Management'].freeze
       ACCOUNT_TABS = ['Accounts', 'Add Character', 'Add Account', 'Encryption Management'].freeze
-      GAMES = %w[GS3 GSF GSX GST DR DRF DRT].map { |code| { value: code, label: code } }.freeze
-      GAME_NAMES = {
-        'GS3' => 'GemStone IV', 'GSF' => 'GemStone IV Shattered', 'GSX' => 'GemStone IV Platinum',
-        'GST' => 'GemStone IV Prime Test', 'DR' => 'DragonRealms', 'DRF' => 'DragonRealms The Fallen',
-        'DRT' => 'DragonRealms Prime Test',
-      }.freeze
+      GAMES = Authentication::LoginHelpers::VALID_GAME_CODES.map { |code| { value: code, label: code } }.freeze
+      GAME_NAMES = Authentication::LoginHelpers::GAME_NAMES
       GAME_REALMS = {
-        'GS3' => 'GS Prime', 'GSF' => 'GS Shattered', 'GSX' => 'GS Platinum', 'GST' => 'GS Test',
+        'GS3' => 'GS Prime', 'GSF' => 'GS Shattered', 'GSX' => 'GS Platinum', 'DRX' => 'DR Platinum', 'GST' => 'GS Test',
         'DR' => 'DR Prime', 'DRF' => 'DR Fallen', 'DRT' => 'DR Test',
       }.freeze
       Operation = Data.define(:id, :kind, :viewer_id)

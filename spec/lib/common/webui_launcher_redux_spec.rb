@@ -113,7 +113,7 @@ RSpec.describe Lich::Common::WebUILauncher do
     realms = described_class::GAME_REALMS
 
     expect(realms).to eq(
-      'GS3' => 'GS Prime', 'GSF' => 'GS Shattered', 'GSX' => 'GS Platinum', 'GST' => 'GS Test',
+      'GS3' => 'GS Prime', 'GSF' => 'GS Shattered', 'GSX' => 'GS Platinum', 'DRX' => 'DR Platinum', 'GST' => 'GS Test',
       'DR' => 'DR Prime', 'DRF' => 'DR Fallen', 'DRT' => 'DR Test'
     )
   end

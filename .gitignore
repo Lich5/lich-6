@@ -38,6 +38,7 @@ fly64.ico
 doc/yard/
 *.md
 !docs/*.md
+!docs/webui-redux/*.md
 !spec/README.md
 !spec/fixtures/README.md
 !bench/README.md
