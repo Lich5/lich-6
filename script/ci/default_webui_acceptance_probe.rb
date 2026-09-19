@@ -17,7 +17,7 @@ FileUtils.mkdir_p(TEMP_DIR)
 module LichCiDefaultWebUIAcceptance
   module_function
 
-  REQUIRED_TABS = ['Saved Entry', 'Manual Entry', 'Account Management'].freeze
+  REQUIRED_TABS = ['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'].freeze
   GTK_FAMILY_PATTERN = /(?:gtk|gdk|gobject|glib)/i
 
   def install!
