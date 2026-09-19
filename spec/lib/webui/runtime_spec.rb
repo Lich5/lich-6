@@ -92,8 +92,10 @@ RSpec.describe Lich::WebUI::Runtime do
 
     stale = runtime.handle(first_connection, {
       type: 'event', page: address, cid: button_cid, event: 'activate',
-      generation: render['generation'] + 1, payload: {},
+      generation: render['generation'] + 1, payload: {}, request: 42,
     })
+    expect(first_connection.sent.last(2).map { |message| message['type'] }).to eq(%w[refusal render])
+    expect(first_connection.sent[-2]).to include('request' => 42, 'event' => 'activate')
     fabricated = runtime.handle(first_connection, {
       type: 'event', page: address, cid: 'page:actions/button:forged', event: 'activate',
       generation: render['generation'], payload: {},
@@ -159,6 +161,22 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(first_connection.sent.last['reason']).to eq('submission_scope')
   end
 
+  it 'refuses submission values on a nonterminal input change' do
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'submit-event', title: 'Submit') do
+      text_input(key: 'name', value: '', on: { change: proc {} })
+    end)
+    address, render = attach(first_connection, page)
+    input_cid = render.dig('tree', 'children', 0, 'cid')
+
+    result = runtime.handle(first_connection, {
+      type: 'event', page: address, cid: input_cid, event: 'change',
+      generation: render['generation'], payload: { value: 'draft' }, submission: ['unrequested'],
+    })
+
+    expect(result).to eq(:refused)
+    expect(first_connection.sent.last['reason']).to eq('submission_scope')
+  end
+
   it 'removes pages and attachments when their owner terminates' do
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'page', title: 'Page') {})
     address, = attach(first_connection, page)
@@ -217,6 +235,23 @@ RSpec.describe Lich::WebUI::Runtime do
     expect { page.get(input_cid) }.to raise_error(Lich::WebUI::AmbiguousViewerError, /explicit viewer/)
     attachment = viewers.attachments_for(page).first
     expect(page.get(input_cid, viewer: attachment.viewer_id)).to eq('Alice')
+  end
+
+  it 'accepts Save immediately after blur without invalidating the delivered form' do
+    allow(runtime).to receive(:schedule_render) { |_key, **_options, &render| render.call }
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'blur-save', title: 'Form') do
+      input = text_input(key: 'name', value: '', on: { change: proc {} })
+      button(key: 'save', label: 'Save', submit: [input], on: { activate: proc {} })
+    end)
+    address, render = attach(first_connection, page)
+    input, save = render.fetch('tree').fetch('children')
+    runtime.handle(first_connection, type: 'event', page: address, cid: input['cid'],
+                                     generation: render['generation'], event: 'change', payload: { value: 'draft' })
+
+    result = runtime.handle(first_connection, type: 'event', page: address, cid: save['cid'],
+                                             generation: render['generation'], event: 'activate', payload: {}, submission: ['draft'])
+
+    expect(result).to eq(:queued)
   end
 
   it 'writes shared state asynchronously and delivers it without changing viewer drafts' do

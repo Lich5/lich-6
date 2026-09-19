@@ -415,6 +415,10 @@ module Lich
       def validate_event_invariants!(type, event_name, payload, props, context)
         normalized_props = props.transform_keys { |key| normalize_name(key) }
         case [type, event_name]
+        when [:scroll, :scrolled]
+          if payload[:upper] && payload[:page_size] && payload[:upper] < payload[:page_size]
+            violation!('scroll extent must cover its viewport', context, event_name)
+          end
         when [:tabs, :select]
           violation!('selected tab index is out of range', context, event_name) if payload[:index] >= normalized_props[:names].length
         when [:table, :row_activate], [:table, :row_toggle]

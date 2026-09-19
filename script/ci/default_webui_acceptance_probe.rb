@@ -68,7 +68,7 @@ module LichCiDefaultWebUIAcceptance
 
     socket = websocket(uri, cookie)
     hello = read_message(socket)
-    raise 'authenticated WebSocket hello missing' unless hello['type'] == 'hello' && hello['contract_version'] == '2.5.0'
+    raise 'authenticated WebSocket hello missing' unless hello['type'] == 'hello' && hello['contract_version'] == '2.7.0'
 
     address = hello.fetch('pages').first.fetch('address')
     send_message(socket, type: 'attach', page: address, version: '2.5.0')

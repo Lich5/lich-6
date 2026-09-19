@@ -1,0 +1,11 @@
+--- a/status-monitor.lic
++++ b/status-monitor.lic
+@@ -281,7 +281,7 @@
+   if hp >= 75
+     entry.override_background_color(:normal, Gdk::RGBA.parse('green'))
+   else
+-    entry.override_background_color(:normal, Gdk::RBGA.parse('red'))
++    entry.override_background_color(:normal, Gdk::RGBA.parse('red'))
+   end
+   entry.text = "#{hp}%"
+ end

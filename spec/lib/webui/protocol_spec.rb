@@ -4,6 +4,14 @@ require_relative '../../spec_helper'
 require 'webui/protocol'
 
 RSpec.describe Lich::WebUI::Protocol do
+  it 'accepts a bounded request correlation number, never client routing authority' do
+    event = { type: 'event', page: 'page-abc', cid: 'page:form/button:save', event: 'activate', generation: 1, request: 42 }
+    expect(described_class.parse_client_message(JSON.generate(event))[:request]).to eq(42)
+    expect { described_class.parse_client_message(JSON.generate(event.merge(request: -1))) }
+      .to raise_error(Lich::WebUI::Protocol::Refusal)
+    expect { described_class.parse_client_message(JSON.generate(event.merge(request: 'callback'))) }
+      .to raise_error(Lich::WebUI::Protocol::Refusal)
+  end
   it 'accepts only the strict attach and event shapes' do
     attach = described_class.parse_client_message(
       JSON.generate(type: 'attach', page: 'page-abc', version: '2.5.0')

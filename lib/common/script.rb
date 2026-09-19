@@ -9,13 +9,15 @@
 
 require 'weakref'
 require_relative 'script_death'
+require_relative 'script_scope'
 
 module Lich
   module Common
     # module Gemstone
     class Scripting
       def script
-        Proc.new {}.binding
+        ScriptScope.activate!
+        ScriptScope.untrusted_binding
       end
     end
 
@@ -23,7 +25,10 @@ module Lich
       Proc.new {}.binding
     end
 
-    TRUSTED_SCRIPT_BINDING = proc { _script }
+    TRUSTED_SCRIPT_BINDING = proc do
+      ScriptScope.activate!
+      ScriptScope.script_binding
+    end
 
     class Script
       VALID_KILL_CONTEXTS = [:runtime, :shutdown].freeze
@@ -1835,6 +1840,7 @@ module Lich
         unless VALID_KILL_CONTEXTS.include?(context)
           raise ArgumentError, "invalid script kill context: #{context.inspect}"
         end
+        self_worker = has_thread?(Thread.current) && !Thread.current.thread_variable_get(CLEANUP_SCRIPT_THREAD_KEY)
 
         if async.nil?
           shutdown_cleanup = Thread.current.thread_variable_get(CLEANUP_SCRIPT_THREAD_KEY)
@@ -1866,7 +1872,10 @@ module Lich
                 true
               end
             end
-            return @name unless start_cleanup
+            unless start_cleanup
+              Thread.exit if self_worker && stopping?
+              return @name
+            end
 
             if async
               cleanup_thread = Thread.new {
@@ -1916,6 +1925,10 @@ module Lich
           end
         end
 
+        # External callers retain asynchronous teardown. A worker stopping its
+        # own script must not race ahead into more script commands while that
+        # teardown starts (for example, leaving setup and entering gameplay).
+        Thread.exit if self_worker
         @name
       end
 

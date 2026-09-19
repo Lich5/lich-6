@@ -1,0 +1,33 @@
+{
+  "status": "IN_PROGRESS",
+  "independent_acceptance": false,
+  "browser_command": "NATIVE_BROWSER=1 NATIVE_SCRIPTS_ROOT=/Users/doug/dev/Projects/scripts rspec script/support/native_conversion_spec.rb --example browser --order defined --format documentation",
+  "browser_examples": 6,
+  "browser_failures": 0,
+  "scripts": {
+    "go2": {
+      "sha256": "7cfe09fa2a8a2c40e14115d221ce6c7dcfbc2e1bab61c49821b7e0ccff02d7f5",
+      "browser_path": true
+    },
+    "ecleanse": {
+      "sha256": "b71a5e44700477cee02df067fce9897ab1582bd2a76137b0c575c913ef9876cf",
+      "browser_path": true
+    },
+    "ewaggle": {
+      "sha256": "da82890a8e5c88e394e72915564e4906a75bbae7d0e8c4f5033298e71d538e2c",
+      "browser_path": true
+    },
+    "eherbs": {
+      "sha256": "60f24319012647dd00c6295e0f83f21c3706b0e131e034f2c55f5dfce19bed9c",
+      "browser_path": true
+    },
+    "bardwag": {
+      "sha256": "aa1c8c5a1e3d2b75573ee035d98405889fe166a5a660aaa7cb0f5805e13e79c9",
+      "browser_path": true
+    },
+    "soundfx": {
+      "sha256": "5982531981cad7066d7082ed67e488705d48d845ba1e75c0e4c44a391b694009",
+      "browser_path": true
+    }
+  }
+}

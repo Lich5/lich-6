@@ -35,6 +35,26 @@ RSpec.describe Lich::WebUI::ViewerStore do
     expect { store.serialize(attachment) }.to raise_error(Lich::WebUI::Error, /no delivered render/)
   end
 
+  it 'clears a removed select choice for each viewer while retaining other valid choices' do
+    options = [{ value: 'none', label: '' }, { value: 'old', label: 'Old' }, { value: 'keep', label: 'Keep' }]
+    page = Lich::WebUI::Page.new(owner: owner, id: 'choices', title: 'Choices') do
+      select(key: 'choice', options: options, value: 'none')
+    end
+    store = described_class.new
+    first = store.attach(connection_id: 'one', address: 'choices', page: page)
+    second = store.attach(connection_id: 'two', address: 'choices', page: page)
+    render = page.render
+    [first, second].each { |viewer| store.deliver(viewer, render) }
+    input = render.tree.each.find { |node| node.type == :select }
+    store.update(first, input, :change, value: 'old')
+    store.update(second, input, :change, value: 'keep')
+    options.delete_at(1)
+    render = page.render
+    [first, second].each { |viewer| store.deliver(viewer, render) }
+    expect(store.serialize(first).dig(:children, 0, :props, :value)).to eq('none')
+    expect(store.serialize(second).dig(:children, 0, :props, :value)).to eq('keep')
+  end
+
   it 'resumes within the transient window and destroys values after expiry' do
     now = 100.0
     store = described_class.new(clock: -> { now })

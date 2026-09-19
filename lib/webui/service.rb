@@ -17,6 +17,7 @@ module Lich
       def initialize(registry: Registry.new, application_roots: [ASSETS_DIR], user_allowlist: [],
                      host: '127.0.0.1', port: 0, logger: nil)
         @registry = registry
+        @stopped = false
         @logger = logger || proc { |_level, _message| }
         @file_service = FileService.new(
           application_roots: application_roots, user_allowlist: user_allowlist, logger: @logger
@@ -35,15 +36,20 @@ module Lich
       end
 
       def start
+        raise Error, 'stopped services cannot be restarted; create a fresh service' if @stopped
+
         server.start
         self
       end
 
       def stop
+        @stopped = true
         server.stop
         runtime.shutdown
         self
       end
+
+      def stopped? = @stopped
 
       def launch_url(page: nil)
         target = page ? "/?page=#{registry.address_for(page)}" : '/'
