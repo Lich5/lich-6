@@ -2,10 +2,28 @@
 
 require_relative '../../spec_helper'
 require 'webui'
+require 'api/webui'
 require 'timeout'
 
 RSpec.describe 'core-owned adapter hosting' do
   after { Lich::WebUI.reset! }
+
+  it 'hosts and opens a page published through the author API' do
+    owner = Object.new
+    host = Lich::WebUI.service
+    opened = Queue.new
+    allow(Lich::WebUI::BrowserLauncher).to receive(:open) { |url, **| opened << url; true }
+    expect(Lich::WebUI).to receive(:adapter).with(owner: owner, viewer: 'viewer-api').and_call_original
+    expect(host.server).to receive(:broadcast).with(hash_including(type: 'pages')).and_call_original
+
+    adapter = Lich::API.webui_adapter(owner: owner, viewer: 'viewer-api')
+    adapter.create(:page, title: 'API setup')
+
+    url = Timeout.timeout(2) { opened.pop }
+    expect(host.server).to be_running
+    page = host.registry.pages_for(owner).fetch(0)
+    expect(url).to include(host.registry.address_for(page))
+  end
 
   it 'opens the published page and creates a fresh service after launcher shutdown' do
     previous = Lich::WebUI.service

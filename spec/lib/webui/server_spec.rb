@@ -71,6 +71,30 @@ RSpec.describe Lich::WebUI::Server do
     server&.stop
   end
 
+  it 'does not retain clients that finish before the accept loop records them' do
+    listener = double('listener')
+    socket = double('client socket')
+    server = described_class.new(
+      assets_dir: @assets_dir, pages_provider: -> { [] }, message_handler: proc {},
+      thread_factory: ->(*args, &block) { Thread.new(*args, &block).tap(&:join) }
+    )
+    server.instance_variable_set(:@server, listener)
+    server.instance_variable_set(:@stopping, true)
+    server.instance_variable_get(:@client_threads) << Thread.new {}.tap(&:join)
+    allow(server).to receive(:handle_client).with(socket)
+    accepted = false
+    allow(listener).to receive(:accept) do
+      raise IOError if accepted
+
+      accepted = true
+      socket
+    end
+
+    server.send(:accept_loop)
+
+    expect(server.instance_variable_get(:@client_threads)).to be_empty
+  end
+
   it 'refuses any configured non-loopback host before binding' do
     expect do
       described_class.new(

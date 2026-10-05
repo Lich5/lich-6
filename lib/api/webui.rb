@@ -19,8 +19,8 @@ module Lich
       Lich::WebUI::Contract::VERSION
     end
 
-    def self.webui_adapter(owner:, viewer: nil, service: Lich::WebUI.service)
-      Lich::WebUI::Adapter.new(owner: owner, viewer: viewer, service: service)
+    def self.webui_adapter(owner:, viewer: nil)
+      Lich::WebUI.adapter(owner: owner, viewer: viewer)
     end
 
     def self.webui_start

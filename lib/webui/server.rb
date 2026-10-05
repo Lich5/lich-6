@@ -219,7 +219,10 @@ module Lich
 
           socket = listener.accept
           thread = @thread_factory.call(socket) { |client| handle_client_thread(client) }
-          @mutex.synchronize { @client_threads << thread }
+          @mutex.synchronize do
+            @client_threads.reject! { |client| !client.alive? }
+            @client_threads << thread if thread.alive?
+          end
         rescue IOError, Errno::EBADF
           break if stopping?
           raise
