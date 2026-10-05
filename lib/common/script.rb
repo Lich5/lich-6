@@ -10,13 +10,15 @@
 require 'weakref'
 require_relative 'script_death'
 require_relative 'script_execution_guard'
+require_relative 'script_scope'
 
 module Lich
   module Common
     # module Gemstone
     class Scripting
       def script
-        Proc.new {}.binding
+        ScriptScope.activate!
+        ScriptScope.untrusted_binding
       end
     end
 
@@ -24,7 +26,10 @@ module Lich
       Proc.new {}.binding
     end
 
-    TRUSTED_SCRIPT_BINDING = proc { _script }
+    TRUSTED_SCRIPT_BINDING = proc do
+      ScriptScope.activate!
+      ScriptScope.script_binding
+    end
 
     class Script
       VALID_KILL_CONTEXTS = [:runtime, :shutdown].freeze

@@ -19,7 +19,7 @@ jobs:
   check_syntax:
     runs-on: ubuntu-latest
     env:
-      BUNDLE_WITHOUT: 'gtk:vscode:profanity'
+      BUNDLE_WITHOUT: 'vscode:profanity'
     name: Run tests on Ruby
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

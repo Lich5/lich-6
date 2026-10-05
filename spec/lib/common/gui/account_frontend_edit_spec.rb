@@ -2,6 +2,7 @@
 
 require 'tmpdir'
 require_relative '../../../login_spec_helper'
+require_relative '../../../../lib/common/gui/utilities'
 
 RSpec.describe Lich::Common::GUI::AccountManager, '.update_launch_settings' do
   around do |example|

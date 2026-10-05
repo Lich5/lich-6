@@ -295,45 +295,8 @@ module Lich
       else
         return nil
       end
-    elsif defined?(Gtk)
-      if args[:buttons] == :ok_cancel
-        buttons = :ok_cancel
-      elsif args[:buttons] == :yes_no
-        buttons = :yes_no
-      else
-        buttons = :ok
-      end
-      if args[:icon] == :error
-        type = :error
-      elsif args[:icon] == :question
-        type = :question
-      elsif args[:icon] == :warning
-        type = :warning
-      else
-        type = :info
-      end
-      dialog = Gtk::MessageDialog.new(parent: nil, flags: :modal, type: type, buttons: buttons, message: args[:message])
-      args[:title] ||= "Lich v#{LICH_VERSION}"
-      dialog.title = args[:title]
-      begin
-        # GTK3 returns the response; it does not yield to a block passed to run.
-        response = dialog.run
-      ensure
-        dialog.destroy
-      end
-      if response == Gtk::ResponseType::OK
-        return :ok
-      elsif response == Gtk::ResponseType::CANCEL
-        return :cancel
-      elsif response == Gtk::ResponseType::YES
-        return :yes
-      elsif response == Gtk::ResponseType::NO
-        return :no
-      else
-        return nil
-      end
-    elsif $stdout.isatty
-      $stdout.puts(args[:message])
+    else
+      $stderr.puts(args[:message])
       return nil
     end
   end

@@ -15,6 +15,14 @@ module Lich
         # Game codes accepted for login and character creation.
         VALID_GAME_CODES = %w[GS3 GST GSF DR DRX DRT DRF].freeze
 
+        # Shared realm labels for CLI and WebUI without loading a GUI toolkit.
+        GAME_NAMES = {
+          'GS3' => 'GemStone IV', 'GST' => 'GemStone IV Prime Test',
+          'GSF' => 'GemStone IV Shattered', 'DR' => 'DragonRealms',
+          'DRX' => 'DragonRealms Platinum', 'DRT' => 'DragonRealms Prime Test',
+          'DRF' => 'DragonRealms Fallen',
+        }.freeze
+
         # Returns whether a game code is accepted for login and character creation.
         # Callers remain responsible for any input normalization they require.
         #
