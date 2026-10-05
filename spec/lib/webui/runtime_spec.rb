@@ -116,6 +116,38 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(callback.component.cid).to eq(button_cid)
   end
 
+  it 'accepts actions after concurrent refreshes deliver in reverse generation order' do
+    callbacks = Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'actions', title: 'Actions') do
+      button(key: 'save', label: 'Save', on: { activate: ->(_event) { callbacks << :saved } })
+    end)
+    address, initial = attach(first_connection, page)
+    waiting = Queue.new
+    release = Queue.new
+    allow(viewers).to receive(:deliver).and_wrap_original do |original, attachment, render|
+      if render.generation == initial['generation'] + 1
+        waiting << true
+        release.pop
+      end
+      original.call(attachment, render)
+    end
+    delayed = Thread.new { runtime.refresh(page) }
+    Timeout.timeout(2) { waiting.pop }
+    runtime.refresh(page)
+    newest = first_connection.sent.last
+    release << true
+    Timeout.timeout(2) { delayed.value }
+
+    expect(first_connection.sent.last['generation']).to eq(newest['generation'])
+    result = runtime.handle(first_connection, type: 'event', page: address,
+                            generation: newest['generation'], cid: newest.dig('tree', 'children', 0, 'cid'),
+                            event: 'activate', payload: {})
+    expect(result).to eq(:queued)
+    expect(Timeout.timeout(2) { callbacks.pop }).to eq(:saved)
+  ensure
+    delayed&.kill&.join
+  end
+
   it 'reports presentation support and records refused requests as declared degradations' do
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'presentation', title: 'Presentation') do
       presentation(always_on_top: true, borderless: true, opacity: 0.8, scrollbars: false)

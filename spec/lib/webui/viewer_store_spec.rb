@@ -35,6 +35,29 @@ RSpec.describe Lich::WebUI::ViewerStore do
     expect { store.serialize(attachment) }.to raise_error(Lich::WebUI::Error, /no delivered render/)
   end
 
+  it 'ignores an older delivery without reverting the tree or viewer selections' do
+    choices = [{ value: 'old', label: 'Old' }]
+    target = Lich::WebUI::Page.new(owner: owner, id: 'choices', title: 'Choices') do
+      select(key: 'choice', options: choices, value: choices.first[:value])
+    end
+    store = described_class.new
+    attachment = store.attach(connection_id: 'one', address: 'choices', page: target)
+    older = target.render
+    choices.replace([{ value: 'new', label: 'New' }])
+    newer = target.render
+    store.deliver(attachment, newer)
+    values = attachment.values.dup
+
+    store.deliver(attachment, older)
+
+    expect(attachment.delivered_generation).to eq(newer.generation)
+    expect(attachment.render).to equal(newer)
+    expect(attachment.values).to eq(values)
+    expect(store.serialize(attachment).dig(:children, 0, :props, :value)).to eq('new')
+    store.deliver(attachment, newer)
+    expect(attachment.render).to equal(newer)
+  end
+
   it 'retains a moved divider whose initial position was naturally sized, isolated by viewer' do
     target = Lich::WebUI::Page.new(owner: owner, id: 'split', title: 'Split') do
       split(key: 'row', orientation: :horizontal) do

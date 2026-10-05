@@ -113,8 +113,19 @@ module Lich
         @mutex.synchronize { attachment.values[[component.cid, name]] = value }
       end
 
+      # Records the newest render accepted for one viewer and seeds its values.
+      # Refresh and attach can finish out of order. An older render must not
+      # replace the tree, lower the event generation, or invalidate selections.
+      # Equal generations may be redelivered; existing viewer values survive.
+      #
+      # @param attachment [Attachment] viewer receiving the page render
+      # @param render [Page::Render] validated render for the attachment's page
+      # @return [void]
       def deliver(attachment, render)
         @mutex.synchronize do
+          current = attachment.delivered_generation
+          next if current && render.generation < current
+
           attachment.render = render
           attachment.delivered_generation = render.generation
           seed_values!(attachment, render.tree)

@@ -8,6 +8,24 @@ module Lich
     class SettingsForm
       attr_reader :page
 
+      # Prepares a settings editor without displaying it or persisting values.
+      # Hashes, arrays and strings in the initial values and fields are copied.
+      # The owning script supplies any normalization and persistence policy.
+      #
+      # @param owner [Object] lifetime identity for the form's page
+      # @param id [String] page identifier unique within the owner
+      # @param title [String] window title
+      # @param values [Hash] initial settings keyed by field key
+      # @param fields [Array<Hash>] field definitions with unique :key, component
+      #   :type, optional :group and component properties
+      # @param normalize [Proc, nil] receives a copied submitted Hash and must
+      #   return a Hash; ArgumentError displays validation feedback and keeps
+      #   the form open; nil uses the submitted values unchanged
+      # @param tabbed [Boolean] whether the default layout puts groups in tabs
+      # @param layout [Proc, nil] custom layout called with the tree builder,
+      #   a field-rendering callable and a save-button-rendering callable
+      # @param props [Hash] page properties overriding the form defaults
+      # @raise [ArgumentError] if field keys are duplicated
       def initialize(owner:, id:, title:, values:, fields:, normalize: nil, tabbed: false, layout: nil, props: {})
         @owner, @id, @title = owner, id, title
         @values = copy(values)
@@ -23,10 +41,19 @@ module Lich
         raise ArgumentError, 'form field keys must be unique' unless keys.uniq == keys
       end
 
+      # Displays a form and waits on the calling script thread for completion.
+      # Does not save settings to disk or change the caller's settings object.
+      #
+      # @param options [Hash] arguments accepted by #initialize
+      # @return [Hash, nil] normalized settings on Save, or nil on cancellation
+      # @raise [Dispatcher::ReentryError] if called from a WebUI callback
       def self.edit(**options)
         new(**options).show.wait
       end
 
+      # Registers, renders and opens the form without waiting for completion.
+      # @return [SettingsForm] this form, ready for #wait
+      # @raise [ArgumentError] if this instance has already been shown
       def show
         raise ArgumentError, 'form is already shown' if @page
 
@@ -44,12 +71,19 @@ module Lich
       end
 
       # Called on the owning script thread, never from an event callback.
+      # Always closes the page when the wait ends, including interruption.
+      #
+      # @return [Hash, nil] normalized settings on Save, or nil on cancellation
+      # @raise [Dispatcher::ReentryError] if called from a WebUI callback
       def wait
         @completion.await.button
       ensure
         close
       end
 
+      # Cancels an unresolved form and releases its page. A completed Save
+      # retains its result; closing again does not change that completion.
+      # @return [nil]
       def close
         @completion.cancel
         WebUI.close(@page) if @page
