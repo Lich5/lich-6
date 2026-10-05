@@ -211,6 +211,52 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(catalog.calls).to be_empty
   end
 
+  context 'manual favorites with the persisted catalog' do
+    let(:data_dir) { Dir.mktmpdir('webui-manual-favorites') }
+    let(:catalog) do
+      described_class::Catalog.new(data_dir: data_dir,
+                                   master_password_manager: double(keychain_available?: false))
+    end
+
+    before do
+      catalog.upsert_manual_entry(entry.to_h, 'synthetic-password')
+      catalog.upsert_manual_entry(entry.to_h.merge(custom_launch: '/fixture/custom'), 'synthetic-password')
+      catalog.toggle_favorite(catalog.entries.first.key)
+    end
+
+    after { FileUtils.remove_entry(data_dir) }
+
+    def play_manual_favorite(custom: nil)
+      launcher.manual_connect(event({ 'account' => 'doug', 'password' => viewer_secret('manual-canary') }),
+                              'account', 'password')
+      launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
+      launcher.manual_play(event({
+        'select:manual-frontend' => 'stormfront', 'checkbox:manual-custom-enabled' => !custom.nil?,
+        'text_input:manual-custom' => custom, 'text_input:manual-custom-dir' => '',
+        'checkbox:manual-save' => true, 'checkbox:manual-favorite' => true,
+      }))
+    end
+
+    it 'keeps an existing favorite and its ordering when played again' do
+      before = catalog.entries.first
+
+      play_manual_favorite
+
+      expect(launches.last.first).to eq(:manual)
+      expect(catalog.entries.first.favorite).to be(true)
+      expect(catalog.entries.first.favorite_order).to eq(before.favorite_order)
+      expect(catalog.entries.last.favorite).to be(false)
+    end
+
+    it 'marks only the matching custom-launch variant as a favorite' do
+      play_manual_favorite(custom: '/fixture/custom')
+
+      expect(launches.last.first).to eq(:manual)
+      expect(catalog.entries.map(&:favorite)).to eq([true, true])
+      expect(catalog.entries.map(&:custom_launch)).to eq([nil, '/fixture/custom'])
+    end
+  end
+
   it 'refuses manual Play unless credentials, character, and an available frontend are selected' do
     rendered = launcher.send(:build_page).render.tree
     play = rendered.each.find { |component| component.cid.end_with?('button:manual-play') }

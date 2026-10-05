@@ -317,6 +317,7 @@ module Lich
               account_data['password'] = @entry_store.encrypt_password(
                 plaintext, mode: :enhanced, account_name: name, master_password: new_password
               )
+            ensure
               scrub!(plaintext)
             end
             data['master_password_validation_test'] = @master_password_manager.create_validation_test(new_password)
@@ -325,8 +326,6 @@ module Lich
             written = write_yaml(data)
             @master_password_manager.store_master_password(current_password) unless written
             written
-          ensure
-            scrub!(plaintext)
           end
         end
 

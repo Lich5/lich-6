@@ -63,6 +63,80 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     expect(catalog.toggle_favorite(entry.key)).to be_nil
   end
 
+  describe 'master-password changes' do
+    let(:current_password) { 'synthetic-current-master' }
+    let(:new_password) { 'synthetic-new-master' }
+    let(:entry_store) { Lich::Common::Authentication::EntryStore }
+    let(:manager) do
+      double('master password manager', validate_master_password: true,
+                                       create_validation_test: 'new-validation', store_master_password: true)
+    end
+    let(:plaintexts) { [] }
+    let(:path) { File.join(data_dir, 'entry.yaml') }
+
+    before do
+      data = YAML.load_file(path)
+      data['encryption_mode'] = 'enhanced'
+      data['master_password_validation_test'] = 'old-validation'
+      data['accounts']['OTHER'] = { 'password' => 'second-account-canary', 'characters' => [] }
+      data['accounts'].each do |name, account|
+        account['password'] = entry_store.encrypt_password(
+          account['password'], mode: :enhanced, account_name: name, master_password: current_password
+        )
+      end
+      File.write(path, YAML.dump(data))
+      allow(entry_store).to receive(:decrypt_password).and_wrap_original do |original, *args, **kwargs|
+        original.call(*args, **kwargs).tap { |plaintext| plaintexts << plaintext }
+      end
+    end
+
+    it 'persists re-encrypted accounts and clears each temporary plaintext' do
+      expect(catalog.change_master_password(current_password, new_password)).to be(true)
+      expect(plaintexts.size).to eq(2)
+      expect(plaintexts).to all(eq(''))
+      saved = YAML.load_file(path)
+      expect(saved['master_password_validation_test']).to eq('new-validation')
+      expect(manager).to have_received(:store_master_password).with(new_password).once
+      expected = { 'DOUG' => 'server-origin-canary', 'OTHER' => 'second-account-canary' }
+      expected.each do |name, password|
+        expect(entry_store.decrypt_password(saved['accounts'][name]['password'], mode: :enhanced,
+                                                                               account_name: name, master_password: new_password)).to eq(password)
+      end
+    end
+
+    it 'returns false without changing persisted data when validation fails' do
+      allow(manager).to receive(:validate_master_password).and_return(false)
+      before = File.binread(path)
+
+      expect(catalog.change_master_password(current_password, new_password)).to be(false)
+      expect(File.binread(path)).to eq(before)
+      expect(manager).not_to have_received(:store_master_password)
+      expect(plaintexts).to be_empty
+    end
+
+    it 'clears temporary plaintext and preserves the original encryption exception' do
+      allow(entry_store).to receive(:encrypt_password).and_raise(IOError, 'synthetic encryption failure')
+      before = File.binread(path)
+
+      expect { catalog.change_master_password(current_password, new_password) }
+        .to raise_error(IOError, 'synthetic encryption failure')
+      expect(plaintexts).to eq([''])
+      expect(File.binread(path)).to eq(before)
+      expect(manager).not_to have_received(:store_master_password)
+    end
+
+    it 'restores the previous keychain value when persistence fails' do
+      allow(catalog).to receive(:write_yaml).and_return(false)
+      expect(manager).to receive(:store_master_password).with(new_password).ordered.and_return(true)
+      expect(manager).to receive(:store_master_password).with(current_password).ordered.and_return(true)
+      before = File.binread(path)
+
+      expect(catalog.change_master_password(current_password, new_password)).to be(false)
+      expect(File.binread(path)).to eq(before)
+      expect(plaintexts).to all(eq(''))
+    end
+  end
+
   it 'rejects a legacy payload containing nested objects' do
     legacy_dir = Dir.mktmpdir('webui-legacy-catalog')
     payload = [{ 'user_id' => 'DOUG', 'password' => { 'nested' => 'not allowed' } }]

@@ -838,7 +838,10 @@ module Lich
           if save || favorite
             entry = character.merge(user_id: account, frontend: frontend, custom_launch: custom, custom_launch_dir: custom_dir)
             saved = @catalog.upsert_manual_entry(entry, password)
-            @catalog.toggle_favorite(find_entry_key(entry)) if favorite && saved
+            if favorite && saved
+              saved_entry = find_entry(entry)
+              @catalog.toggle_favorite(saved_entry.key) if saved_entry && !saved_entry.favorite
+            end
           end
         end
         complete(operation) { @manual_credentials.delete(viewer_id)&.discard! }
@@ -1063,11 +1066,12 @@ module Lich
         end
       end
 
-      def find_entry_key(entry)
+      def find_entry(entry)
         @catalog.entries.find do |candidate|
           candidate.user_id == entry[:user_id] && candidate.char_name == entry[:char_name] &&
-            candidate.game_code == entry[:game_code] && candidate.frontend == entry[:frontend]
-        end&.key
+            candidate.game_code == entry[:game_code] && candidate.frontend == entry[:frontend] &&
+            candidate.custom_launch == entry[:custom_launch]
+        end
       end
     end
   end

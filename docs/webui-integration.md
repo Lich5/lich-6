@@ -20,7 +20,7 @@ Updated October 5, 2026. This describes the WebUI integration onto the proposed
 | Slice | Scope | Branch | Publication |
 | --- | --- | --- | --- |
 | 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Merged: PR #10, `2ceb2fc0` |
-| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Working-tree implementation; review pending |
+| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Initial owner commit `1c40c044`; review corrections pending |
 | 3 | Repeated viewer attachment and canceled sensitive-submission cleanup; document service-wide viewer trust | To be assigned | Separate follow-up PR |
 | 4 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | To be assigned | Subsequent PR |
 
@@ -83,9 +83,10 @@ Proposed PR title: **Make native WebUI the default launcher and remove GTK**.
 Implementation base: `e9d8feebf1fa9220a4f15b84e7416c092ab542a6`.
 Preserved implementation source: `14c5d16bbbcc60693686620a223d556035cb0650`.
 The launcher and its tests are ported from that source; existing 5.22 files
-receive only the required integration changes. No feature commit or PR has yet
-been created for this working-tree slice. Record the reviewed feature head and
-Lich5/EO PR URLs when the owner publishes it.
+receive only the required integration changes. The owner committed the initial
+cutover as `1c40c04459def1dca4aedf829d519fd8a19f1a24`. CodeRabbit follow-up corrections
+remain in the working tree. Record the final reviewed feature head and Lich5/EO
+PR URLs when the owner publishes them.
 
 Default graphical startup now opens the native launcher, including saved/manual
 login, account management, Frontends and GUI Settings. Script execution activates
@@ -110,13 +111,24 @@ files are outside the repository.
 
 ### Validation
 
+CodeRabbit follow-up reproduced both reported defects in six failing-before
+examples. The master-password loop now scrubs each temporary plaintext in its
+own ensure block, preserving success, validation failure, encryption exceptions
+and keychain rollback on write failure. Manual favorite marking preserves an
+existing favorite and matches the custom-launch variant. Regressions use the
+real catalog and disposable YAML; encryption runs locally with synthetic values
+and the keychain boundary is a double. All 21 focused examples pass after repair.
+
+- After CodeRabbit corrections, full bare `rspec`: **8,598 examples, zero
+  failures, two existing browser-gated pending cases** (seed 49493). The owner
+  selected GitHub for the next CodeRabbit review; no local rerun was started.
 - Full bare `rspec` before restoring the persistence spec: **8,586 examples,
   zero failures, two existing browser-gated pending cases** (seed 51129).
 - Restored the six `account_frontend_edit_spec.rb` persistence examples that
   had been incorrectly grouped with GTK-only removals. Their assertions are
   unchanged; an explicit Utilities require replaces the former indirect GTK
   launcher load. Focused run: six examples, zero failures; RuboCop clean.
-- Bare `rubocop`: 1,264 files inspected, no offenses.
+- Final bare `rubocop`: 1,265 files inspected, no offenses.
 - Entrypoint-focused checks: five examples, zero failures. They run actual
   `lich.rbw` with empty arguments, authenticate HTTP/WebSocket access, render
   all four launcher tabs, toggle GUI Settings and close cleanly without GTK.
@@ -160,8 +172,8 @@ checks if EO advances. Publication remains human-only.
 ### Exact native-cutover files
 
 102 paths: 18 additions, 40 modifications (including this record), and 44
-removals. Status letters below are relative to the implementation base; the
-working tree is unstaged.
+removals. Status letters below describe the complete slice relative to its implementation
+base, including the committed import and unstaged review corrections.
 
 ```text
 M .github/workflows/curate-pre-branch.yaml
