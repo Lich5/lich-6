@@ -91,8 +91,9 @@ PR URLs when the owner publishes them.
 Default graphical startup now opens the native launcher, including saved/manual
 login, account management, Frontends and GUI Settings. Script execution activates
 the existing script-local shim. GTK UI modules, their obsolete tests, the gem
-and its orphaned locked dependencies are removed. CI no longer excludes a
-nonexistent GTK dependency group. Native authentication calls the retained
+and its orphaned locked dependencies are removed. The five existing CI workflow
+exclusion lists are unchanged to keep this PR within the review file limit; their
+obsolete `gtk` entries will be removed in the security-hardening PR. Native authentication calls the retained
 account, encryption and persistence services; it owns the interactive unlock
 workflow previously embedded in GTK helpers. On non-Windows hosts, the generic
 `Lich.msgbox` fallback writes to stderr without loading a toolkit.
@@ -171,16 +172,11 @@ checks if EO advances. Publication remains human-only.
 
 ### Exact native-cutover files
 
-102 paths: 18 additions, 40 modifications (including this record), and 44
+97 paths: 18 additions, 35 modifications (including this record), and 44
 removals. Status letters below describe the complete slice relative to its implementation
 base, including the committed import and unstaged review corrections.
 
 ```text
-M .github/workflows/curate-pre-branch.yaml
-M .github/workflows/rspec_tests.yaml
-M .github/workflows/rubocop.yaml
-M .github/workflows/ruby_syntax.yaml
-M .github/workflows/windows_active_sessions.yaml
 M Gemfile
 M Gemfile.lock
 M docs/webui-integration.md
@@ -350,6 +346,13 @@ selected a separate security-hardening PR after native cutover. Both cleanup
 findings and the service-wide trust decision remain open for that PR; they are
 not fixes included in this cutover. Recording the review does not authorize a
 capability redesign or mark a finding fixed.
+
+- **Deferred CI cleanup (owner-approved):** remove `gtk:` from `BUNDLE_WITHOUT`
+  in `.github/workflows/curate-pre-branch.yaml`, `rspec_tests.yaml`,
+  `rubocop.yaml`, `ruby_syntax.yaml`, and `windows_active_sessions.yaml`.
+  These five one-line edits were withdrawn from native cutover solely to fit
+  CodeRabbit's 100-file review limit. GTK is already absent from the runtime
+  and Gemfile; keeping an unused exclusion group does not reinstall it.
 
 - **Medium, reported observed: repeated attachment retains viewer state.** An
   authenticated connection can repeatedly attach to one page without a resume
