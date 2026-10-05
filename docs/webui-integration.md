@@ -131,6 +131,51 @@ A first browser harness run used the wrong `hr` selector for the existing
 `div.webui-divider`; correcting the disposable harness yielded the passing
 browser run above. Neither issue required a product rendering change.
 
+## Security review carried into native cutover
+
+Owner-supplied security architecture review, recorded October 5, 2026, covering
+PR #10 through `9a8d378e949b7da41f9f3119160a45da85130e50`. Overall assessment:
+**Moderate**. The findings below are reported observations from that review,
+not independently revalidated by recording them here. Keep them open and revisit
+them at the start of slice 2, before native authentication integration. Recording
+the review does not authorize a capability redesign or mark a finding fixed.
+
+- **Medium, reported observed: repeated attachment retains viewer state.** An
+  authenticated connection can repeatedly attach to one page without a resume
+  token. Each attachment remains in the resume index while the connection index
+  is overwritten. Disconnect/detach cleans only the latest mapping; older
+  entries have no expiry, retain values, participate in refresh delivery, and
+  can make an owner appear to have viewers after disconnection. Ordinary resume
+  expiry and page destruction do not repair this repeated-attach path.
+- **Inferred impact:** repetition permits persistent memory and render-work
+  amplification affecting other pages in the shared host. This requires
+  authenticated local access; it is not an unauthenticated remote attack.
+- **Low, reported observed: canceled sensitive submissions bypass disposal.**
+  Explicit disposal currently belongs to the callback's ensure block. Owner
+  shutdown removes queued callbacks without running that block, and enqueue
+  refusal after snapshot construction has no snapshot-disposal path. Both
+  bypass SensitiveValue's overwrite-and-clear operation. Normal callback
+  completion and raw-input scrubbing are countercontrols. This is a cleanup
+  gap, not evidence of serialization leakage or externally accessible plaintext.
+- **Reported trust boundary:** authentication grants service-wide visibility,
+  not a page-specific capability. WebSocket greetings expose registered page
+  descriptors, attachments resolve supplied page addresses, and file requests
+  use the shared session cookie. Callbacks retain the selected page owner's
+  authority. Owner attribution governs lifecycle, not viewer-to-owner access.
+- **Existing controls reported by the review:** single-use launch tokens expire
+  after 60 seconds; port-named cookies are HttpOnly and SameSite=Strict; Host and
+  Fetch Metadata checks apply, with loopback Origin checks for WebSockets. File
+  access requires authentication, image-extension filtering, permitted roots
+  and realpath containment. Missing Origin on an authenticated file GET alone
+  does not demonstrate a cross-origin bypass. Ordinary disconnect has a
+  60-second resume window; page destruction clears viewer indexes and values.
+  Owner termination cancels modals, revokes file routes, shuts down dispatch,
+  unregisters pages and destroys viewer state. Normal startup is unchanged.
+- **Proposed decision before native authentication:** document whether every
+  authenticated viewer is trusted across all owners and registered file roots.
+  If page-specific trust is required, assess explicit capabilities; opaque page
+  addresses and owner attribution must not be represented as authorization.
+
 ## Publishing the same feature for EO review
 
 Proposed PR title: **Add WebUI foundation and bounded script compatibility**.
