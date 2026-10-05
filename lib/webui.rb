@@ -34,8 +34,9 @@ module Lich
       end
 
       def page(owner:, id:, title:, props: {}, on: {}, &render_block)
-        page = registry.register(Page.new(owner: owner, id: id, title: title, props: props, on: on, &render_block))
-        page.bind_runtime(service.runtime)
+        host = service
+        page = host.registry.register(Page.new(owner: owner, id: id, title: title, props: props, on: on, &render_block))
+        page.bind_runtime(host.runtime)
       end
 
       def service

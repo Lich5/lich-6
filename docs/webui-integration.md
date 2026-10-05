@@ -1,14 +1,13 @@
 # WebUI integration onto proposed 5.22
 
-Updated October 5, 2026. This replaces the initial preparation notes in the
-separate `lich-6-webui-5.22` worktree. Work takes place in the normal `lich-6`
-checkout. Proposed 5.22 is a snapshot, not a released upstream tag.
+Updated October 5, 2026. This describes the WebUI integration onto the proposed
+5.22 baseline. Proposed 5.22 is a snapshot, not a released upstream tag.
 
 ## Baseline and sequence
 
-- Active checkout: `/Users/doug/dev/Projects/lich-6`.
+- Integration repository: `Lich5/lich-6`. Paths below are repository-relative.
 - EO main incorporated: `58ffd5f19b609df0a22c9060f8ad72781a2bc559`.
-- Local and origin main aligned by the owner:
+- Integration baseline:
   `b95e324823a2db71af72329236d556a47b28e4df`.
 - The only baseline difference from that EO snapshot is `lib/version.rb`:
   `LICH_VERSION = '5.22.0'` instead of `5.21.0`.
@@ -17,7 +16,7 @@ checkout. Proposed 5.22 is a snapshot, not a released upstream tag.
 
 | Slice | Scope | Branch | Publication |
 | --- | --- | --- | --- |
-| 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Working-tree changes only |
+| 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Initial import: `31158733` |
 | 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Not started |
 | 3 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | `webui/03-theme-helpers` | Not started |
 
@@ -34,10 +33,8 @@ alone does not update this implementation. No daily automation is configured.
 
 The preserved source is `test/integration` at
 `14c5d16bbbcc60693686620a223d556035cb0650`, together with its then-uncommitted
-40 modified tracked files and 36 untracked files. The original checkout is no
-longer on that branch. Recovery remains available through its local refs,
-the owner's stash, and `backup/webui-before-5.22-2026-10-05/` (Git bundle,
-patches, copied working files and full source SHA-256 manifest).
+40 modified tracked files and 36 untracked files. The imported snapshot is
+recorded in commit `3115873349912ae5a9c6c5e220fa918fc83c0a0a`.
 
 PR 1 imports 86 files from that preserved state, with every imported source
 hash checked before writing. It adds the existing contract 2.9.0, 29 component
@@ -61,9 +58,11 @@ Corrections made after import, each demonstrated by a failing-before regression:
 | `lib/webui/service.rb` | Use Lich's logger by default when available |
 | `lib/webui/server.rb` | Port-specific authentication cookies; bounded nonblocking WebSocket writes, including waiting for the writer mutex |
 | `lib/webui/modal_coordinator.rb` | Resolve a modal on user close; remove a registration when opening fails before completion cleanup is installed |
+| `lib/webui/adapter.rb` | Preserve distinct root identities in handle lookup and render batching, even when their properties are equal |
+| `lib/webui.rb` | Resolve the active service before registering a native page after service shutdown |
 
 These are changes to the imported core foundation, not script-specific
-workarounds. Eleven added regression examples cover them, including identity-based
+workarounds. Fourteen added regression examples cover them, including identity-based
 termination for distinct-but-equal owners and support for symbol owners. The imported shim test
 also now permits real GTK already loaded by 5.22's tests while verifying that
 the script-local shim neither creates nor replaces GTK constants in core.
@@ -87,8 +86,8 @@ They are reference proposals, not a second stack to import wholesale.
 | #1657 | Logger delivery and close/detach race corrected here; launcher password/favorite handling belongs to slice 2; window-discovery changes target a different host implementation |
 | #1658, #1659 | YARD expansion and chips/contract expansion are not included |
 
-Other #1648 proposals have not been adopted: queue/reverse-map performance
-changes, a maximum served-file size, timed cancellation after a transient modal
+Other #1648 proposals have not been adopted: queue performance changes,
+a maximum served-file size, timed cancellation after a transient modal
 disconnect, and Windows presentation/adoption changes. Revisit relevant lifecycle
 cases during slice 2's actual launcher integration; do not represent PR 1 as the
 whole of #1648 or all platform acceptance. A modal user-close now cancels it;
@@ -97,7 +96,13 @@ behavior. No new reconnect grace policy is introduced in this slice.
 
 ## Validation and limits
 
-Validation results are recorded below. Browser-content checks
+CodeRabbit follow-up: three regressions reproduced the root-identity and service
+restart defects before correction. After correction, the foundation/shim suite
+passed 279 examples with zero failures and two browser-gated cases (seed 31271).
+RuboCop found no offenses in the four changed Ruby files. The native restart
+test stubs browser process creation; it does not claim OS-window acceptance.
+
+The initial import at `31158733` had the validation results below. Browser-content checks
 are distinct from OS-window geometry, restoration, independent-window cleanup,
 GTK visual comparisons and live game acceptance. Those later acceptance steps
 are not closed by these tests.
@@ -115,7 +120,7 @@ are not closed by these tests.
   this host's module paths. No dependencies were installed.
 - RuboCop: all 69 added Ruby files inspected, no offenses.
 - Ruby compilation and whitespace checks: all added Ruby files compile; all
-  87 additions pass whitespace checks. No baseline file or index changes.
+  87 additions pass whitespace checks.
 - Final full 5.22 suite: **8,750 examples, zero failures, two browser-gated
   cases**, seed 63710, Ruby 4.0.5. Both gated cases passed separately above.
 
@@ -138,9 +143,11 @@ focused regressions. Normal startup remains unchanged until the subsequent
 native cutover PR. Validation and remaining platform/browser limits are recorded
 in this document.
 
-Git staging, commits and pushes are human-only. No new PR has been created.
-This feature's implementation base is the full `b95e3248` SHA above; there is no
-reviewed feature commit/head SHA yet because these are uncommitted changes.
+This feature's implementation base is the full `b95e3248` SHA above. CodeRabbit
+reviewed initial import `3115873349912ae5a9c6c5e220fa918fc83c0a0a` and identified
+the adapter identity, service restart and documentation issues corrected here.
+PR descriptions should record the publication URLs and subsequent reviewed
+commit range.
 
 `Lich5/lich-6` shares history with EO but is **not registered as a GitHub fork**.
 Do not assume GitHub will accept a cross-repository PR from it. The owner has
@@ -154,11 +161,6 @@ fork's version bump or future daily synchronization commits in the feature PR.
 Compare the resulting feature diff; rebasing/squashing may change commit IDs.
 While an EO predecessor is unmerged, retain an explicit dependency or target its
 review branch. Record and retest any adjustment required by newer EO code.
-
-No staging, commits, pushes, script installation or release actions were
-performed by the assistant. Scope used: lich-6 implementation, its preserved
-source and the earlier authorized integration-plan reference. No changes were
-made to EO's reference checkout or to unrelated working trees.
 
 ## Exact added files
 

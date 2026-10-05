@@ -126,6 +126,36 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(service.registry.pages_for(owner)).to be_empty
   end
 
+  it 'publishes equal page roots independently in the same render batch' do
+    scheduled = []
+    published = []
+    allow(service.runtime).to receive(:schedule_render) { |_key, **_options, &render| scheduled << render }
+    port = described_class.new(owner: owner, service: service, on_publish: ->(page) { published << page })
+    first = port.create(:page, title: '')
+    second = port.create(:page, title: '')
+
+    scheduled.shift.call
+
+    expect(published.length).to eq(2)
+    expect(published.map(&:id).uniq.length).to eq(2)
+    expect(service.registry.pages_for(owner)).to match_array(published)
+    port.destroy(first)
+    expect(service.registry.pages_for(owner)).to eq([published.last])
+    port.set(second, :title, 'Still open')
+    scheduled.shift.call
+    expect(published.last.last_render.tree.props[:title]).to eq('Still open')
+  end
+
+  it 'resolves equal unrendered roots to their own handles' do
+    allow(service.runtime).to receive(:schedule_render)
+    first = adapter.create(:page, title: '')
+    second = adapter.create(:page, title: '')
+    nodes = adapter.instance_variable_get(:@nodes)
+
+    expect(adapter.send(:handle_for, nodes.fetch(first))).to equal(first)
+    expect(adapter.send(:handle_for, nodes.fetch(second))).to equal(second)
+  end
+
   it 'batches mutations into one generation at the runtime render boundary' do
     scheduled = []
     allow(service.runtime).to receive(:schedule_render) { |_key, **_options, &render| scheduled << render }

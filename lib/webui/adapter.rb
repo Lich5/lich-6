@@ -19,7 +19,8 @@ module Lich
       end
       private_constant :Handle
 
-      Node = Struct.new(:type, :props, :placement, :children, :parent, :slot, :bindings, :page, :cid, :published, keyword_init: true)
+      Node = Struct.new(:type, :props, :placement, :children, :parent, :slot, :bindings, :page, :cid, :published, :handle,
+                        keyword_init: true)
       private_constant :Node
 
       def initialize(owner:, service:, viewer: nil, validator: Validator.new, on_publish: nil)
@@ -52,7 +53,7 @@ module Lich
         )
         node = Node.new(
           type: normalized, props: validated, placement: symbolize(placement).freeze, children: [], parent: nil, slot: nil,
-          bindings: {}, page: nil
+          bindings: {}, page: nil, handle: handle
         )
         @mutex.synchronize do
           @nodes[handle] = node
@@ -263,7 +264,7 @@ module Lich
         pages = @mutex.synchronize do
           selected = @dirty_roots.keys.filter_map do |candidate|
             root_for(candidate) if handle_for(candidate)
-          end.uniq
+          end.uniq(&:object_id)
           @dirty_roots.clear
           selected.filter_map do |root|
             next unless handle_for(root)
@@ -468,7 +469,8 @@ module Lich
       end
 
       def handle_for(node)
-        @nodes.key(node)
+        handle = node.handle
+        handle if @nodes[handle].equal?(node)
       end
 
       def adapter_page_id(root = nil)
