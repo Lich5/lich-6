@@ -1,0 +1,394 @@
+:root {
+  color-scheme: light dark;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --surface: Canvas;
+  --surface-raised: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+  --border: color-mix(in srgb, CanvasText 26%, transparent);
+  --accent: #2468b4;
+  --danger: #b12a2a;
+  --gap: 12px;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; color: CanvasText; background: var(--surface); }
+.webui-image { display: block; }
+.webui-composite { position: relative; flex: none; }
+.composite-surface { overflow: hidden; touch-action: none; user-select: none; }
+.composite-image { -webkit-user-drag: none; }
+.composite-label { white-space: pre; pointer-events: none; }
+.composite-bar { border: 1px solid var(--border); overflow: hidden; pointer-events: none; }
+.composite-region { padding: 0; min-height: 0; background: transparent; border: 0; }
+.composite-region:focus-visible { outline: 2px solid var(--accent); }
+button, input, select, textarea { font: inherit; }
+button { min-height: 32px; padding: 5px 12px; }
+button.primary { background: var(--accent); color: white; border: 1px solid var(--accent); border-radius: 4px; }
+button.danger { color: white; background: var(--danger); border: 1px solid var(--danger); border-radius: 4px; }
+
+#pages { width: min(100%, 880px); margin: 0 auto; padding: 16px; }
+.webui-page { max-width: 100%; }
+.webui-page > h1 { margin: 0 0 12px; font-size: 1.25rem; }
+.webui-stack { display: flex; flex-direction: column; }
+.webui-group { min-width: 0; margin: 0 0 14px; padding: 12px; border: 1px solid var(--border); border-radius: 5px; }
+.webui-group > legend { font-weight: 600; padding: 0 5px; }
+.webui-columns { display: grid; align-items: end; }
+.webui-grid { display: grid; align-items: center; }
+.webui-grid > .webui-group { align-self: stretch; }
+.webui-split { display: grid; min-width: 0; min-height: 0; align-items: stretch; }
+.split-pane { min-width: 0; min-height: 0; overflow: hidden; display: grid; align-items: center; }
+.webui-split[data-fill="true"] > .split-pane { display: flex; flex-direction: column; align-items: stretch; }
+.webui-split[data-fill="true"] > .split-pane > .webui-group { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; }
+.webui-page[data-theme="light"] .webui-log { background: #fff; min-height: 100%; overflow-wrap: anywhere; }
+.split-handle { position: relative; background: var(--border); touch-action: none; cursor: col-resize; }
+.webui-split[data-orientation="vertical"] > .split-handle { cursor: row-resize; }
+.split-handle::after { content: ""; position: absolute; inset: 0 -3px; }
+.webui-split[data-orientation="vertical"] > .split-handle::after { inset: -3px 0; }
+.split-handle:focus-visible { outline: 2px solid var(--accent); z-index: 1; }
+.webui-overlay > .webui-text { align-self: center; }
+.align-center { text-align: center; }
+.align-start { text-align: left; }
+.align-end { text-align: right; }
+
+/* Compact, explicitly themed pages provide stable meter/text presentation.
+   These are bounded core styles, independent of any compatibility library. */
+.webui-page[data-theme="light"] { color-scheme: light; color: #2e3436; background: #f6f5f4; --surface: #f6f5f4; --border: #cdc7c2; }
+.webui-page[data-theme="dark"] { color-scheme: dark; color: #eeeeec; background: #353535; --surface: #353535; --border: #1b1b1b; }
+.webui-page[data-density="compact"] { font-size: 12px; line-height: normal; min-height: 100vh; display: flex; flex-direction: column; }
+.webui-page[data-density="compact"] > .webui-stack { flex: 1; }
+.webui-page[data-density="compact"] .webui-group { margin-bottom: 6px; padding: 6px; }
+.webui-page[data-density="compact"] .tab-panel { padding-top: 6px; }
+.webui-page[data-density="compact"] .field.inline { white-space: nowrap; }
+/* Native setup forms retain the original light notebook and frame treatment.
+   These styles are confined to compact light pages, not launcher forms or meters. */
+.webui-page[data-density="compact"][data-theme="light"] { line-height: 15px; }
+/* GtkFrame contributes its frame/legend, not an additional content inset.
+   The converted layouts already carry original child margins and box padding. */
+.webui-page[data-density="compact"][data-theme="light"] .webui-group { border-radius: 0; padding: 0; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-group > legend { font-weight: normal; padding: 0; }
+/* GtkFrame keeps its 15px label line when the label widget is empty. */
+.webui-page[data-density="compact"][data-theme="light"] .webui-group:not(:has(> legend))::before {
+  content: "";
+  display: block;
+  height: 15px;
+}
+/* Match the original theme's control padding; widths still come from each
+   label and its parent's packing, rather than a captured window allocation. */
+.webui-page[data-density="compact"][data-theme="light"] button { min-height: 34px; padding: 6px 16px; border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; }
+/* GtkButton's default Adwaita paint, shared by native and bounded shim pages. */
+.webui-page[data-density="compact"][data-theme="light"] button.default {
+  color: #2e3436; border-radius: 5px; border-bottom-color: #bfb8b1;
+  background: linear-gradient(to top, #edebe9 2px, #f6f5f4);
+  box-shadow: inset 0 1px #fff, 0 1px 2px #00000012;
+  text-shadow: 0 1px #ffffffc4;
+}
+.webui-page[data-density="compact"][data-theme="light"] button.default:hover:not(:disabled) {
+  background: linear-gradient(to top, #f6f5f4, #f8f8f7 1px);
+}
+.webui-page[data-density="compact"][data-theme="light"] button.default:active:not(:disabled) {
+  background: #d6d1cd; border-bottom-color: var(--border); box-shadow: none; text-shadow: none;
+}
+.webui-page[data-density="compact"][data-theme="light"] button.default:disabled {
+  color: #929595; background: #faf9f8; border-bottom-color: var(--border); box-shadow: none; text-shadow: none;
+}
+.webui-page[data-density="compact"][data-theme="light"] .webui-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.webui-page[data-density="compact"][data-theme="light"] .tab-list { background: #dedcd9; gap: 0; min-height: 38px; }
+.webui-page[data-density="compact"][data-theme="light"] .tab-list > button { font-weight: normal; border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 12px; }
+.webui-page[data-density="compact"][data-theme="light"] .tab-list > button[aria-selected="true"] { border-bottom-color: #3584e4; }
+.webui-page[data-density="compact"][data-theme="light"] .tab-panel { background: #fff; border: 1px solid var(--border); padding: 0; flex: 1; min-height: 0; }
+.webui-page[data-density="compact"][data-theme="light"] input:not([type="checkbox"]):not([type="radio"]),
+.webui-page[data-density="compact"][data-theme="light"] textarea,
+.webui-page[data-density="compact"][data-theme="light"] select { background: #fff; color: #2e3436; border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; min-height: 34px; }
+/* GtkTextView's six- and three-line requisitions each include four more
+   vertical pixels than the matching browser textarea with entry padding. */
+.webui-page[data-density="compact"][data-theme="light"] textarea { padding-block: 8px; }
+/* Gtk::Entry without a width request keeps its natural 20-character
+   requisition. Explicit script widths and character caps take precedence. */
+.webui-page[data-density="compact"][data-theme="light"] input[data-natural-entry="true"] {
+  min-width: calc(20ch + 2 * var(--entry-padding, 8px) + 2px);
+}
+.webui-page[data-density="compact"][data-theme="light"] .field:has(> input[type="checkbox"]) { min-height: 20px; }
+.webui-page[data-density="compact"][data-theme="light"] input:disabled,
+.webui-page[data-density="compact"][data-theme="light"] select:disabled { color: #92908e; }
+.webui-page[data-density="compact"][data-theme="light"] .field:has(input:disabled),
+.webui-page[data-density="compact"][data-theme="light"] .field:has(select:disabled) { color: #92908e; }
+.webui-page[data-viewport="true"] { height: 100vh; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.webui-context-menu { position: fixed; z-index: 100; padding: 4px 0; min-width: 190px; max-height: 100vh; overflow-y: auto;
+  background: #f6f5f4; color: #2e3436; border: 1px solid #b6b1ac; box-shadow: 0 3px 8px #0005; font: 12px/1.4 -apple-system, sans-serif; }
+.webui-context-menu button, .webui-context-menu .field { display: flex; align-items: center;
+  width: 100%; min-height: 23px; padding: 2px 12px; margin: 0; border: 0; border-radius: 0; background: transparent; text-align: left; cursor: default; }
+.webui-context-menu button:hover, .webui-context-menu .field:hover { background: #3584e4; color: white; }
+.webui-context-menu button:disabled { color: #92908e; }
+.submenu-trigger::after { content: "▸"; margin-left: auto; }
+.submenu-items { position: fixed; min-width: 180px; max-height: 100vh; overflow-y: auto; background: #f6f5f4;
+  color: #2e3436; border: 1px solid #b6b1ac; padding: 4px 0; box-shadow: 0 3px 8px #0005; }
+.webui-context-menu .webui-divider { margin-block: 4px; }
+.webui-context-menu [data-indicator]::before { content: ""; display: inline-block; width: 16px; flex: none; }
+.webui-context-menu [data-indicator="check"][aria-checked="true"]::before { content: "✓"; }
+.webui-context-menu [data-indicator="radio"][aria-checked="true"]::before { content: "●"; }
+.webui-progress-colored { display: block; min-width: 0; line-height: 0; }
+.webui-progress-colored progress { display: block; appearance: none; width: 100%; height: 100%; border: 0; background: transparent; }
+.webui-progress-colored progress::-webkit-progress-bar { background: #deddda; border: 1px solid #cdc7c2; border-radius: 3px; }
+.webui-progress-colored progress::-webkit-progress-value { background: var(--progress-fill); border: 1px solid #0078d7; border-radius: 2px; }
+.webui-progress-colored progress::-moz-progress-bar { background: var(--progress-fill); border: 1px solid #0078d7; border-radius: 2px; }
+.webui-divider { border-top: 1px solid var(--border); margin-block: 8px; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-divider { margin-block: 0; }
+
+.webui-tabs > .tab-list { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.webui-tabs > .tab-list > button { border: 1px solid transparent; border-radius: 4px 4px 0 0; background: transparent; }
+.webui-tabs > .tab-list > button[aria-selected="true"] { border-color: var(--border); border-bottom-color: var(--surface); font-weight: 600; }
+.tab-panel { padding-top: 14px; }
+.webui-tabs.nested > .tab-list { padding-left: 12px; }
+.webui-tabs.account-tabs-left { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); align-items: start; }
+.webui-tabs.account-tabs-left > .tab-list {
+  grid-column: 1;
+  grid-row: 1;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  border-bottom: 0;
+}
+.webui-tabs.account-tabs-left > .tab-list > button { text-align: left; border-radius: 4px 0 0 4px; }
+.webui-tabs.account-tabs-left > .tab-list > button[aria-selected="true"] {
+  border-right-color: var(--surface);
+  border-bottom-color: var(--border);
+}
+.webui-tabs.account-tabs-left > .tab-panel { grid-column: 2; grid-row: 1; padding: 0 0 0 14px; }
+
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field.inline { flex-direction: row; align-items: center; }
+.field-label { font-weight: 500; }
+.webui-number-stepper { display: inline-grid; grid-template-columns: minmax(0, 1fr) 32px 32px; min-width: 0; }
+.webui-number-stepper input { appearance: textfield; -moz-appearance: textfield; }
+.webui-number-stepper input::-webkit-inner-spin-button { appearance: none; }
+.webui-number-stepper button { min-height: 32px; padding: 0; font-size: 20px; background: #fff; border: 1px solid var(--border); border-left: 0; }
+.webui-number-stepper button:last-child { border-radius: 0 4px 4px 0; }
+.webui-number-stepper input { border-radius: 4px 0 0 4px !important; }
+.field input:not([type="checkbox"]):not([type="radio"]), .field select, .field textarea { width: 100%; min-height: 32px; }
+.radio-options { display: flex; flex-wrap: wrap; gap: 12px; }
+[data-cid$="button:refresh-entries"] { align-self: flex-start; margin-block: 8px; }
+[data-cid$="toggle:gui-settings-toggle"] {
+  width: 100%;
+  min-height: 34px;
+  justify-content: center;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+[data-cid$="toggle:gui-settings-toggle"] input { position: absolute; opacity: 0; pointer-events: none; }
+[data-cid$="toggle:gui-settings-toggle"]:has(input:checked) { box-shadow: inset 0 0 0 2px var(--accent); }
+
+[data-cid*="group:entry-"] { padding: 0; border: 0; margin-bottom: 4px; }
+[data-cid*="group:entry-"] > legend { display: none; }
+[data-cid*="button:play-entry-"] {
+  min-height: 28px;
+  width: 100%;
+  padding: 2px 10px;
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.entry-launch {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  min-height: 36px;
+  padding: 0;
+  align-items: stretch;
+}
+.entry-launch-part {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  padding-inline: 12px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.entry-launch-part + .entry-launch-part { border-left: 1px solid color-mix(in srgb, white 38%, transparent); }
+[data-cid*="button:remove-entry-"] { min-height: 28px; padding-block: 2px; }
+[data-cid*="button:favorite-entry-"] {
+  min-width: 32px;
+  min-height: 28px;
+  padding: 2px 6px;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+[data-cid*="group:entry-"] > .webui-columns:has(.entry-launch) > [data-cid*="button:remove-entry-"],
+[data-cid*="group:entry-"] > .webui-columns:has(.entry-launch) > [data-cid*="button:favorite-entry-"] {
+  min-height: 36px;
+}
+
+.webui-table-wrap { overflow: auto; border: 1px solid var(--border); }
+.webui-table { width: 100%; border-collapse: collapse; }
+.webui-table th, .webui-table td { padding: 7px 9px; border-bottom: 1px solid var(--border); text-align: left; }
+.webui-page[data-density="compact"] .webui-table th, .webui-page[data-density="compact"] .webui-table td { padding: 3px 6px; }
+.webui-table tbody tr[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+/* GTK's light TreeView selection pairs its blue fill with white text, whether
+   the row has keyboard focus or not. Keep this on compact GTK-like pages;
+   launcher tables retain their existing selection treatment. */
+.webui-page[data-density="compact"][data-theme="light"] .webui-table tbody tr[aria-selected="true"] {
+  background: #3584e4;
+  color: #fff;
+}
+.row-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.workflow-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.validation-message { color: var(--danger); margin-top: 5px; }
+
+.webui-dialog { width: min(92vw, 520px); border: 1px solid var(--border); border-radius: 6px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.notification { margin: 8px; padding: 10px; border: 1px solid var(--border); background: var(--surface-raised); }
+.tone-danger { color: var(--danger); }
+.emphasis-strong { font-weight: 700; }
+.emphasis-subtle { opacity: .72; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+[hidden] { display: none !important; }
+/* Native notebooks can retain the largest page's natural requisition, as GTK
+   does. Inactive content participates in sizing only, never focus or input. */
+.webui-tabs[data-size-to-all="true"] { display: grid; grid-template-rows: auto auto; min-width: min-content; }
+.webui-tabs[data-size-to-all="true"] > .tab-list { grid-area: 1 / 1; }
+.webui-tabs[data-size-to-all="true"] > .tab-panel { grid-area: 2 / 1; }
+.webui-tabs[data-size-to-all="true"] > .tab-panel[hidden] { display: flex !important; visibility: hidden; pointer-events: none; }
+
+@media (max-width: 620px) {
+  #pages { padding: 8px; }
+  .webui-columns:not([data-compact="true"]):not(.webui-overlay .webui-columns) { grid-template-columns: 1fr !important; }
+  .webui-columns:not([data-compact="true"]):not(.webui-overlay .webui-columns) > * { grid-column: 1 !important; }
+  [data-cid*="group:entry-"] > .webui-columns {
+    grid-template-columns: minmax(0, 8fr) minmax(72px, 1fr) !important;
+  }
+  [data-cid*="group:entry-"] > .webui-columns:has(.entry-launch) {
+    grid-template-columns: minmax(0, 7fr) minmax(72px, 2fr) minmax(44px, 1fr) !important;
+  }
+  [data-cid*="group:entry-"] > .webui-columns > :nth-child(1) { grid-column: 1 !important; }
+  [data-cid*="group:entry-"] > .webui-columns > :nth-child(2) { grid-column: 2 !important; }
+  [data-cid*="group:entry-"] > .webui-columns > :nth-child(3) { grid-column: 3 !important; }
+  .webui-tabs:not(.account-tabs-left) > .tab-list { overflow-x: auto; }
+  .row-actions, .workflow-actions { flex-wrap: wrap; }
+}
+
+/* The frontend editor is a labelled form: GTK draws a fixed-width label in a
+   left column with the field filling the rest, and stacking each label above
+   its field roughly doubled the height of the form. `field` is a flex column
+   whose label span and control are siblings, so turning the row sideways is a
+   container-scoped override rather than a contract property. Scoped to this
+   one group so no other tab, and no script window, is affected. */
+[data-cid$="group:frontend-editor-section"] > .field {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+[data-cid$="group:frontend-editor-section"] > .field > .field-label {
+  text-align: right;
+  font-weight: 400;
+}
+/* The capability rows are their own grid; their checkboxes keep the inline
+   box-then-label shape rather than inheriting the two-column rule above. */
+[data-cid*="frontend-capability-row-"] { margin-bottom: 4px; }
+[data-cid*="frontend-capability-row-"] .field.inline { gap: 6px; }
+[data-cid$="text:frontend-detected"] {
+  margin: -2px 0 8px 158px;
+  opacity: .75;
+  font-size: .92em;
+}
+
+/* Bare instrument panels own their spacing. Fixed overlay labels must retain
+   their column alignment even in a window narrower than the form breakpoint. */
+#pages:has(> .webui-page-bare:only-child) { width: 100%; margin: 0; padding: 0; }
+
+/* Meter panels center artwork without changing the configured pixel sizes. */
+.webui-stack.align-center { align-items: center; }
+.webui-composite.align-center { margin-inline: auto; }
+/* Native package browsers retain the original draggable column boundaries. */
+.webui-table th { position: relative; }
+.webui-column-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; cursor: col-resize; touch-action: none; }
+.webui-editable-select { display: flex; min-width: 0; }
+.webui-editable-select > input { min-width: 0; border-radius: 4px 0 0 4px !important; }
+.webui-editable-select > input::-webkit-calendar-picker-indicator { display: none; }
+.webui-choice-picker { position: relative; flex: 0 0 34px; display: grid; place-items: center; border: 1px solid var(--border); border-left: 0; border-radius: 0 4px 4px 0; background: var(--surface); }
+.webui-choice-picker > select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: default; }
+.webui-choice-picker:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* A notebook's viewport expands with its host; its scrolled contents retain
+   their own natural/minimum sizes. Keep the original footer outside that scroll. */
+.webui-page[data-viewport="true"] > .webui-stack { min-height: 0; }
+.webui-page[data-viewport="true"] .tab-panel { display: flex; flex-direction: column; }
+.webui-page[data-viewport="true"] .tab-panel > .webui-scroll { flex: 1; min-height: 0; }
+
+/* GTK list views have a white data surface. Headerless selection lists do not
+   draw row rules; keep headers/data grids governed by their existing styles. */
+.webui-page[data-density="compact"][data-theme="light"] .webui-table-wrap { background: #fff; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table th > button { min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-weight: inherit; color: inherit; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table:not(:has(thead)) td { border-bottom: 0; padding-inline: 3px; }
+
+/* GTK paints the check indicator six pixels inside the CheckButton allocation;
+   its label already starts at the correct natural offset. */
+.webui-page[data-density="compact"][data-theme="light"] .field > input[type="checkbox"] {
+  width: 16px; height: 16px; margin: 0; transform: translateX(6px);
+}
+
+/* Compact dark controls retain the original CreatureBar CSS metrics. Their
+   character widths and packing remain supplied by the script, not fixed here. */
+.webui-page[data-density="compact"][data-theme="dark"] { background: #2e2e2e; color: #b0b0b0; --surface: #2e2e2e; --border: #555; --entry-padding: 4px; }
+.webui-page[data-density="compact"][data-theme="dark"] button { min-height: 26px; min-width: 64px; padding: 3px 6px; background: #3a3a3a; color: #e0e0e0; border: 1px solid #555; border-radius: 3px; font-size: 11px; }
+.webui-page[data-density="compact"][data-theme="dark"] button:hover { background: #4a4a4a; border-color: #666; }
+.webui-page[data-density="compact"][data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]),
+.webui-page[data-density="compact"][data-theme="dark"] select { min-height: 26px; padding: 2px 4px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #555; border-radius: 3px; }
+.webui-page[data-density="compact"][data-theme="dark"] .field.inline { gap: 12px; }
+.webui-page[data-density="compact"][data-theme="dark"] .field-label { font-weight: normal; }
+.webui-page[data-density="compact"][data-theme="dark"] .field.inline > select { width: auto; flex: 1; }
+.webui-page[data-density="compact"][data-theme="dark"] .field:has(> input[type="checkbox"]),
+.webui-page[data-density="compact"][data-theme="dark"] .radio-options > .field { min-height: 20px; gap: 4px; }
+.webui-page[data-density="compact"][data-theme="dark"] input[type="checkbox"],
+.webui-page[data-density="compact"][data-theme="dark"] input[type="radio"] { width: 16px; height: 16px; margin: 0; }
+.webui-page[data-density="compact"][data-theme="dark"] fieldset.field { border: 0; padding: 0; }
+.webui-page[data-density="compact"][data-theme="dark"] fieldset.field > legend:empty { display: none; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-list { gap: 0; min-height: 40px; align-items: stretch; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-list > button { min-width: 0; padding: 4px 8px; border: 1px solid #555; border-radius: 0; background: #3a3a3a; font: inherit; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-list > button[aria-selected="true"] { background: #2e2e2e; font-weight: normal; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-panel { padding: 0; border: 1px solid #555; }
+/* GtkCheckButton includes eight pixels before its label and a four-pixel
+   trailing label margin. Keep that natural width in compact dark settings. */
+.webui-page[data-density="compact"][data-theme="dark"] { line-height: 1.25; }
+.webui-page[data-density="compact"][data-theme="dark"] .field:has(> input[type="checkbox"]),
+.webui-page[data-density="compact"][data-theme="dark"] .radio-options > .field { gap: 8px; }
+.webui-page[data-density="compact"][data-theme="dark"] .field > input[type="checkbox"] + span,
+.webui-page[data-density="compact"][data-theme="dark"] .radio-options > .field > span { margin-right: 4px; }
+.webui-page[data-density="compact"][data-theme="dark"] .webui-tabs { border: 1px solid #b6b1ac; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-list { padding-inline: 8px; gap: 8px; border: 0; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-panel { border: 0; }
+.webui-page[data-density="compact"][data-theme="dark"] .tab-list > button[aria-selected="true"] { box-shadow: inset 0 -3px #3584e4; }
+
+/* Tree views explicitly select their original grid treatment. Sort buttons
+   reserve the theme's arrow space even when another column is selected. */
+.webui-table[data-grid-lines] tbody td { border: 0; }
+.webui-table[data-grid-lines="horizontal"] tbody td,
+.webui-table[data-grid-lines="both"] tbody td { border-bottom: 1px dotted var(--border); }
+.webui-table[data-grid-lines="vertical"] tbody td,
+.webui-table[data-grid-lines="both"] tbody td { border-right: 1px dotted var(--border); }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table { border-collapse: separate; border-spacing: 0; color: #000; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table th {
+  background: #fff; color: #979a9b; white-space: nowrap; height: 25px;
+  padding: 0 6px; border-top: 0; border-bottom: 1px solid #d7d2ce; border-right: 1px solid #d7d2ce;
+}
+.webui-page[data-density="compact"][data-theme="light"] .webui-table th:last-child { border-right: 0; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table[data-grid-lines="none"] td { padding-inline: 4px; }
+/* CellRenderer editors overlay their existing row; they do not enlarge it. */
+.webui-page[data-density="compact"][data-theme="light"] .webui-table td:has(> input:not([type="checkbox"]), > select) { position: relative; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table td:has(> input:not([type="checkbox"]), > select)::before { content: '\00a0'; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table td > input:not([type="checkbox"]),
+.webui-page[data-density="compact"][data-theme="light"] .webui-table td > select {
+  position: absolute; top: 0; left: 2px; width: calc(100% - 4px); z-index: 1;
+}
+.webui-page[data-density="compact"][data-theme="light"] .webui-table td > input:not([type="checkbox"]):not([type="radio"]) {
+  min-height: 0; height: 100%; padding: 0 2px; border: 0; border-radius: 0; outline: none;
+}
+.webui-page[data-density="compact"][data-theme="light"] .webui-table td > select { background: #f6f5f4; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table th > button::after { content: ''; display: inline-block; width: 16px; margin-left: 2px; font-size: 9px; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table th[aria-sort="ascending"] > button::after { content: '▲'; }
+.webui-page[data-density="compact"][data-theme="light"] .webui-table th[aria-sort="descending"] > button::after { content: '▼'; }
+.webui-page[data-density="compact"][data-theme="light"] .field:has(> input[type="checkbox"]) { gap: 8px; }
+.webui-page[data-density="compact"][data-theme="light"] .field > input[type="checkbox"] + span { margin-right: 4px; }
+.webui-page[data-density="compact"][data-theme="light"] .field-label { font-weight: normal; }

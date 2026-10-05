@@ -1,0 +1,61 @@
+# frozen_string_literal: true
+
+require_relative '../../spec_helper'
+require 'webui'
+require 'api/webui'
+require 'timeout'
+
+RSpec.describe 'core-owned adapter hosting' do
+  after { Lich::WebUI.reset! }
+
+  it 'hosts and opens a page published through the author API' do
+    owner = Object.new
+    host = Lich::WebUI.service
+    opened = Queue.new
+    allow(Lich::WebUI::BrowserLauncher).to receive(:open) { |url, **| opened << url; true }
+    expect(Lich::WebUI).to receive(:adapter).with(owner: owner, viewer: 'viewer-api').and_call_original
+    expect(host.server).to receive(:broadcast).with(hash_including(type: 'pages')).and_call_original
+
+    adapter = Lich::API.webui_adapter(owner: owner, viewer: 'viewer-api')
+    adapter.create(:page, title: 'API setup')
+
+    url = Timeout.timeout(2) { opened.pop }
+    expect(host.server).to be_running
+    page = host.registry.pages_for(owner).fetch(0)
+    expect(url).to include(host.registry.address_for(page))
+  end
+
+  it 'opens the published page and creates a fresh service after launcher shutdown' do
+    previous = Lich::WebUI.service
+    previous.stop
+    opened = Queue.new
+    allow(Lich::WebUI::BrowserLauncher).to receive(:open) { |url| opened << url; true }
+    owner = Object.new
+    adapter = Lich::WebUI.adapter(owner: owner)
+    adapter.create(:page, title: 'Script setup')
+
+    expect(Timeout.timeout(2) { opened.pop }).to include('127.0.0.1')
+    expect(Lich::WebUI.service).not_to equal(previous)
+    expect(Lich::WebUI.service.registry.pages_for(owner).length).to eq(1)
+  end
+
+  it 'registers and opens a native page after the previous service stops' do
+    previous = Lich::WebUI.service
+    previous.stop
+    opened = []
+    allow(Lich::WebUI::BrowserLauncher).to receive(:open) { |url, **| opened << url; true }
+    owner = Object.new
+    page = Lich::WebUI.page(owner: owner, id: 'after-stop', title: 'Native setup') do
+      text(key: 'status', content: 'Ready')
+    end
+
+    host = Lich::WebUI.service
+    expect(host).not_to equal(previous)
+    expect(host.registry.pages_for(owner)).to eq([page])
+    host.refresh(page)
+    host.start
+    expect(Lich::WebUI.open(page: page)).to be(true)
+    expect(opened.length).to eq(1)
+    expect(opened.first).to include(host.registry.address_for(page))
+  end
+end
