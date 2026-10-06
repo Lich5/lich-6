@@ -8,6 +8,11 @@ RSpec.describe 'bounded compatibility contract additions' do
   let(:validator) { Lich::WebUI::Validator.new }
   let(:context) { { owner: 'vars', page_id: 'setup', cid: 'name' } }
 
+  it 'distinguishes an absent group label from an explicitly empty label' do
+    expect(validator.validate_component!(:group, {}, **context)).not_to have_key(:label)
+    expect(validator.validate_component!(:group, { label: '' }, **context)).to include(label: '')
+  end
+
   it 'admits an ordered focus notification without a value or submission' do
     props = validator.validate_component!(:text_input, { value: '(new var name)' }, **context)
     expect(validator.validate_event!(:text_input, :focus, {}, props: props, **context)).to eq({})
@@ -53,6 +58,16 @@ RSpec.describe 'bounded compatibility contract additions' do
       expect { validator.validate_component!(:table, table.merge(invalid), **context) }
         .to raise_error(Lich::WebUI::SchemaViolationError)
     end
+  end
+
+  it 'accepts an explicit table wrapping choice without changing the default' do
+    table = { columns: [{ key: 'name', label: 'Name' }], rows: [] }
+    expect(validator.validate_component!(:table, table, **context)).not_to have_key(:wrap)
+    [true, false].each do |wrap|
+      expect(validator.validate_component!(:table, table.merge(wrap: wrap), **context)[:wrap]).to eq(wrap)
+    end
+    expect { validator.validate_component!(:table, table.merge(wrap: 'nowrap'), **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError)
   end
 
   it 'allows dismissal only through an existing dialog response' do

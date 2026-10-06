@@ -86,7 +86,7 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-page[data-density="compact"] .webui-group { border-radius: 0; padding: 0; }
 .webui-page[data-density="compact"] .webui-group > legend { font-weight: normal; padding: 0; }
 /* GtkFrame keeps its 15px label line when the label widget is empty. */
-.webui-page[data-density="compact"] .webui-group:not(:has(> legend))::before {
+.webui-page[data-density="compact"] .webui-group[data-empty-label="true"]:not([data-borderless="true"])::before {
   content: "";
   display: block;
   height: 15px;
@@ -356,6 +356,8 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 /* Tree views explicitly select their original grid treatment. Sort buttons
    reserve the theme's arrow space even when another column is selected. */
 .webui-table[data-grid-lines] tbody td { border: 0; }
+/* Explicit single-line cells size naturally; resized columns clip the text. */
+.webui-table[data-wrap="false"] tbody td { white-space: nowrap; overflow: hidden; }
 .webui-table[data-grid-lines="horizontal"] tbody td,
 .webui-table[data-grid-lines="both"] tbody td { border-bottom: 1px dotted var(--border); }
 .webui-table[data-grid-lines="vertical"] tbody td,

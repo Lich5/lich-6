@@ -41,6 +41,23 @@ RSpec.describe 'bounded script compatibility pilot' do
     end
   end
 
+  it 'preserves absent, empty and named GTK frame labels in the shared group contract' do
+    window = compatibility.const_get(:Window).new('Frames')
+    box = compatibility.const_get(:Box).new(:vertical)
+    frame_class = compatibility.const_get(:Frame)
+    frames = [frame_class.new, frame_class.new(nil), frame_class.new(''), frame_class.new('Named'), frame_class.new]
+    frames.last.set_label_widget(compatibility.const_get(:Label).new(''))
+    frames.each { |frame| box.add(frame) }
+    window.add(box)
+    window.show_all
+    page = nil
+    Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
+    groups = page.last_render.tree.each.select { |node| node.type == :group }
+    expect(groups.map { |node| node.props.key?(:label) }).to eq([false, false, true, true, true])
+    expect(groups.map { |node| node.props[:label] }).to eq([nil, nil, '', 'Named', ''])
+    window.destroy
+  end
+
   it 'resolves GTK 3 and availability only within script bindings' do
     [scope.script_binding, scope.untrusted_binding].each do |binding|
       expect(eval('Gtk::Version::MAJOR', binding)).to eq(3)

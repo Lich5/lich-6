@@ -485,9 +485,11 @@ module Lich
         end
 
         class Frame < Widget
-          def initialize(label = '')
+          # GTK creates no label widget when the constructor label is absent.
+          # @param label [String, nil] frame label; an empty string creates a blank label
+          def initialize(label = nil)
             super()
-            @props[:label] = label
+            @props[:label] = label unless label.nil?
           end
 
           def set_label_widget(label)

@@ -49,6 +49,7 @@ spec/*.db3
 
 # --- Test artifacts ---
 spec/.rspec_status
+/spec/webui/node_modules/
 
 # --- Debug logs ---
 debug-*.log

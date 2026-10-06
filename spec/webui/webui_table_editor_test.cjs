@@ -12,6 +12,22 @@ function tableFrame(generation) {
 function cell(f) { return f.elements.pages.children[0].children[0].children[0].children[1].children[0].children[0]; }
 const keyEvent = key => ({ key, preventDefault() {}, stopPropagation() {} });
 
+test('single-line tables opt out of wrapping without changing default tables', () => {
+  const f = fixture('table-page');
+  f.receive({ type: 'hello', pages: [{ address: 'table-page', title: 'Rows' }] });
+  const frame = tableFrame(1);
+  frame.tree.children[0].props.wrap = false;
+  frame.tree.children[0].props.rows[0].cells.trigger = 'A long author name';
+  f.receive(frame);
+  const table = f.elements.pages.children[0].children[0].children[0];
+  assert.equal(table.dataset.wrap, 'false');
+  assert.equal(cell(f).textContent, 'A long author name');
+  frame.generation = 2;
+  delete frame.tree.children[0].props.wrap;
+  f.receive(frame);
+  assert.equal(f.elements.pages.children[0].children[0].children[0].dataset.wrap, undefined);
+});
+
 test('a stale cell commit replays its original value once after the fresh tree arrives', () => {
   const f = fixture('table-page');
   f.receive({ type: 'hello', pages: [{ address: 'table-page', title: 'Sounds' }] });
