@@ -19,6 +19,11 @@ module Lich
         }.freeze
 
         class MasterPasswordRequired < StandardError; end
+        class LegacyConversionRequired < StandardError; end
+
+        LEGACY_CONVERSION_NOTICE = 'Legacy saved entries must be converted before saving changes. ' \
+                                   'Close the launcher and run ruby lich.rbw --convert-entries MODE ' \
+                                   'with plaintext, standard, or enhanced, then reopen it.'
 
         Entry = Data.define(
           :key, :user_id, :char_name, :game_code, :game_name, :frontend,
@@ -384,6 +389,10 @@ module Lich
         end
 
         def writable_yaml_data
+          # A partial YAML catalog would hide every remaining entry.dat record
+          # and also prevent the existing CLI conversion from running.
+          raise LegacyConversionRequired, LEGACY_CONVERSION_NOTICE if legacy_conversion_needed?
+
           data = yaml_data
           data['accounts'] ||= {}
           data['encryption_mode'] ||= 'plaintext'

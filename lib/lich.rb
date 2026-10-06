@@ -297,6 +297,17 @@ module Lich
       end
     else
       $stderr.puts(args[:message])
+      if !$stderr.equal?(STDERR) && $stderr.respond_to?(:path)
+        # init.rb redirects stderr to the debug log; main.rb can redirect
+        # $stdout to the game client. STDOUT retains the terminal stream.
+        begin
+          STDOUT.puts "Lich encountered an error. See the debug log: #{$stderr.path}"
+          STDOUT.flush
+        rescue IOError, SystemCallError
+          # A closed terminal or broken output pipe must not mask the logged error.
+          nil
+        end
+      end
       return nil
     end
   end

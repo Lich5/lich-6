@@ -136,8 +136,11 @@ module Lich
         #
         # @param data_dir [String] Directory containing entry data
         # @param encryption_mode [Symbol] Encryption mode (:plaintext, :standard, :enhanced)
+        # @param master_password [String, nil] caller-supplied enhanced password;
+        #   when omitted, use the existing keychain workflow. This method does
+        #   not store a caller-supplied password in the keychain.
         # @return [Boolean] True if migration was successful
-        def self.migrate_from_legacy(data_dir, encryption_mode: :plaintext)
+        def self.migrate_from_legacy(data_dir, encryption_mode: :plaintext, master_password: nil)
           dat_file = File.join(data_dir, "entry.dat")
           yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
 
@@ -148,11 +151,16 @@ module Lich
           # ====================================================================
           # Handle master_password mode - check for existing or create new
           # ====================================================================
-          master_password = nil
           validation_test = nil
           if encryption_mode == :enhanced
-            # First check if master password already exists in keychain
-            result = get_existing_master_password_for_migration
+            if master_password.to_s.empty?
+              result = get_existing_master_password_for_migration
+            else
+              validation_test = Lich::Common::GUI::MasterPasswordManager.create_validation_test(master_password)
+              return false unless validation_test
+
+              result = { password: master_password, validation_test: validation_test }
+            end
 
             # If no existing password, prompt user to create one
             if result.nil?

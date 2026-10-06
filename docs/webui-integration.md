@@ -20,7 +20,7 @@ Updated October 5, 2026. This describes the WebUI integration onto the proposed
 | Slice | Scope | Branch | Publication |
 | --- | --- | --- | --- |
 | 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Merged: PR #10, `2ceb2fc0` |
-| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Initial owner commit `1c40c044`; review corrections pending |
+| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | PR #12, owner-published through `d5604677`; further inline-review corrections in working tree |
 | 3 | Repeated viewer attachment and canceled sensitive-submission cleanup; document service-wide viewer trust | To be assigned | Separate follow-up PR |
 | 4 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | To be assigned | Subsequent PR |
 
@@ -96,7 +96,10 @@ exclusion lists are unchanged to keep this PR within the review file limit; thei
 obsolete `gtk` entries will be removed in the security-hardening PR. Native authentication calls the retained
 account, encryption and persistence services; it owns the interactive unlock
 workflow previously embedded in GTK helpers. On non-Windows hosts, the generic
-`Lich.msgbox` fallback writes to stderr without loading a toolkit.
+`Lich.msgbox` fallback writes error details to stderr (the debug log after
+initialization) and prints a short notice with the log path to the original
+`STDOUT`. This avoids the game-client stream assigned to `$stdout` later.
+Before logging initializes, errors continue to print directly to stderr.
 
 The 5.22 script execution guards, connection transport, detachable-client
 handling, combat provenance, frontend logging, Events and sentinel support are
@@ -154,6 +157,74 @@ no blank tabs were created. Terminating only the owned Chrome process let the
 launcher exit with status 0 and remove its temporary browser profile. The exit
 report contained no GTK-family loaded features. This verifies browser-process
 exit cleanup, not a native close-button interaction or visual parity.
+
+### Non-Windows message notice: owner-selected CR response
+
+For PR #12's message-dialog finding, the owner confirmed that the supported
+macOS/Linux launch procedure starts Lich from a terminal. Preserve error detail
+in the debug log and emit a brief terminal notice with its path. No graphical
+message-box or confirmation-button system is introduced; no current core caller
+requests a button response. The Windows MessageBox path remains unchanged.
+If terminal output is closed or its pipe is broken, the logged error remains
+available and notification failure does not interrupt error handling. Explicit
+shell redirection still determines where terminal output goes.
+
+The regression reproduces the missing notice before correction. Subprocess
+checks cover early startup, a redirected game-client `$stdout`, a closed
+terminal stream and a broken output pipe. The focused message/startup suite
+passes nine examples (seed 37163); RuboCop passes both changed Ruby files.
+This implements the owner-selected response to the message-notice finding.
+
+### Remaining six PR #12 inline corrections
+
+- `FrontendChoices.selectable?` resolves aliases through its supplied catalog,
+  matching the catalog used to produce choices.
+- Leaving enhanced encryption requires the submitted current master password,
+  restoring the retired GTK confirmation before plaintext/standard conversion.
+- Optional manual-entry or favorite persistence failures are logged without
+  credential values and do not abort an already authenticated game launch.
+  The warning remains in the log because successful manual launch closes the UI.
+- Legacy migration accepts the catalog's `master_password:` keyword. A supplied
+  enhanced password produces the validation test and encrypted entries without
+  reading or modifying the keychain. Omitting it preserves existing keychain
+  lookup behavior.
+- Catalog writes refuse to create a partial YAML file while `entry.dat` awaits
+  conversion. The launcher displays existing CLI conversion guidance for failed
+  edits; optional manual saves log that guidance while continuing login. Legacy
+  records remain available and the CLI migration remains possible.
+- Empty or stale frontend selections leave the current draft and component
+  identities intact instead of raising `KeyError`.
+
+Focused validation passes 93 examples (seed 42810), including real catalog
+migration in all three encryption modes and unchanged EntryStore coverage.
+The full bare `rspec` sweep passes **8,621 examples, zero failures, two existing
+browser-gated pending cases** (seed 46193). Bare `rubocop` inspects **1,265 files
+with no offenses**. `git diff --check` is clean. No local CodeRabbit rerun was
+performed; the next external review remains on GitHub.
+All data is disposable and passwords synthetic. These corrections add no
+foundation/renderer/shim changes or script changes. The branch remains at 97
+changed paths relative to `main`; workflow GTK exclusion cleanup remains in
+the security-hardening follow-up so this PR stays below the review file limit.
+
+Exact working-tree files for this review update:
+
+| File | Scope |
+| --- | --- |
+| `lib/common/frontend_choices.rb` | Injected catalog aliases |
+| `lib/common/webui_launcher.rb` | Downgrade confirmation, optional persistence failures, conversion notice |
+| `lib/common/webui_launcher/catalog.rb` | Refuse partial legacy saves |
+| `lib/common/webui_launcher/frontend_tab.rb` | Ignore stale/empty selections |
+| `lib/common/authentication/entry_store.rb` | Accept the migration password keyword |
+| `spec/lib/common/frontend_choices_spec.rb` | Alias regression |
+| `spec/lib/common/webui_launcher_workflows_spec.rb` | Downgrade, persistence and notice regressions |
+| `spec/lib/common/webui_launcher/catalog_integration_spec.rb` | Legacy preservation and real migration regressions |
+| `spec/lib/common/webui_launcher/frontend_tab_spec.rb` | Selection regressions |
+| `lib/lich.rb` | Previously completed owner-selected terminal message notice |
+| `spec/lib/lich_msgbox_spec.rb` | Previously completed message notice regressions |
+| `docs/webui-integration.md` | Review decisions, file inventory and validation |
+
+No installed files were modified and no scope exceptions were needed. Staging,
+commits and pushes remain owner-only; these review corrections are uncommitted.
 
 ### Remaining review
 

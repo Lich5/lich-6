@@ -137,6 +137,61 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     end
   end
 
+  describe 'legacy entries without a YAML catalog' do
+    let(:legacy_entries) do
+      %w[Aldor Bera].map do |name|
+        { user_id: 'DOUG', password: 'synthetic-legacy-password', char_name: name,
+          game_code: 'GS3', game_name: 'GemStone IV', frontend: 'stormfront' }
+      end
+    end
+    let(:legacy_path) { File.join(data_dir, 'entry.dat') }
+    let(:yaml_path) { File.join(data_dir, 'entry.yaml') }
+
+    before do
+      File.unlink(yaml_path)
+      File.binwrite(legacy_path, [Marshal.dump(legacy_entries)].pack('m'))
+    end
+
+    %i[manual account].each do |kind|
+      it "refuses a partial #{kind} save while retaining every legacy entry" do
+        original = File.binread(legacy_path)
+        expect do
+          if kind == :manual
+            catalog.upsert_manual_entry(legacy_entries.first, 'replacement-password')
+          else
+            catalog.add_or_update_account('OTHER', 'replacement-password', [legacy_entries.first], frontend: 'stormfront')
+          end
+        end.to raise_error(described_class::LegacyConversionRequired)
+
+        expect(File.exist?(yaml_path)).to be(false)
+        expect(File.binread(legacy_path)).to eq(original)
+        expect(catalog.entries.map(&:char_name)).to contain_exactly('Aldor', 'Bera')
+        expect(catalog.legacy_conversion_needed?).to be(true)
+      end
+    end
+
+    %i[plaintext standard enhanced].each do |mode|
+      it "migrates real legacy data through the catalog in #{mode} mode" do
+        master = mode == :enhanced ? 'synthetic-migration-master' : nil
+        manager = Lich::Common::GUI::MasterPasswordManager
+        expect(manager).not_to receive(:retrieve_master_password)
+        expect(manager).not_to receive(:store_master_password)
+
+        expect(catalog.migrate_legacy(mode, master_password: master)).to be(true)
+
+        saved = YAML.safe_load_file(yaml_path)
+        expect(saved['encryption_mode']).to eq(mode.to_s)
+        if master
+          expect(manager.validate_master_password(master, saved['master_password_validation_test'])).to be(true)
+        end
+        catalog.entries.each do |entry|
+          expect(catalog.credential(entry.key, master_password: master).consume(&:dup)).to eq('synthetic-legacy-password')
+        end
+        expect(catalog.entries.map(&:char_name)).to contain_exactly('Aldor', 'Bera')
+      end
+    end
+  end
+
   it 'rejects a legacy payload containing nested objects' do
     legacy_dir = Dir.mktmpdir('webui-legacy-catalog')
     payload = [{ 'user_id' => 'DOUG', 'password' => { 'nested' => 'not allowed' } }]

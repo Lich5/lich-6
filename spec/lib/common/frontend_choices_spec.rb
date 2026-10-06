@@ -102,6 +102,14 @@ RSpec.describe Lich::Common::FrontendChoices do
   end
 
   describe '.selectable?' do
+    it 'uses aliases supplied by the injected catalog' do
+      allow(catalog).to receive(:canonical_name).with('paper-client').and_return('vellum')
+      allow(catalog).to receive(:canonical_name).with('stormfront').and_return('stormfront')
+      allow(catalog).to receive(:canonical_name).with('saga').and_return('saga')
+
+      expect(described_class.selectable?('paper-client', refresh: false, locator: locator, frontend: catalog)).to be(true)
+    end
+
     it 'resolves an alias to the frontend it names' do
       expect(described_class.selectable?('wrayth', refresh: false, locator: locator, frontend: catalog)).to be(true)
     end

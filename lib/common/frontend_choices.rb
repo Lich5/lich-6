@@ -57,7 +57,7 @@ module Lich
 
         # Whether +frontend_id+ is one the player may select.
         #
-        # The id is canonicalised through Frontend.canonical_name first, so an alias
+        # The id is canonicalised through the supplied frontend catalog first, so an alias
         # of a selectable frontend is selectable too.
         #
         # @param frontend_id [String, Symbol, nil] frontend identifier or alias
@@ -66,7 +66,7 @@ module Lich
         def selectable?(frontend_id, **keywords)
           return false if frontend_id.to_s.strip.empty?
 
-          canonical = Frontend.canonical_name(frontend_id)
+          canonical = keywords.fetch(:frontend, Frontend).canonical_name(frontend_id)
           all(**keywords).any? { |choice| choice.id == canonical }
         end
 

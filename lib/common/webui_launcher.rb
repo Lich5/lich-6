@@ -764,6 +764,9 @@ module Lich
         operation = begin_operation(:encryption, event)
         @executor.post do
           secret.consume do |password|
+            if @catalog.encryption_mode == :enhanced && mode != :enhanced
+              raise 'current master password was not accepted' if password.empty? || !@catalog.validate_master_password(password)
+            end
             master = mode == :enhanced ? password : nil
             raise 'encryption change failed' unless @catalog.change_encryption_mode(mode, master_password: master)
           end
@@ -837,17 +840,31 @@ module Lich
           favorite = submitted(values, 'checkbox:manual-favorite')
           if save || favorite
             entry = character.merge(user_id: account, frontend: frontend, custom_launch: custom, custom_launch_dir: custom_dir)
-            saved = @catalog.upsert_manual_entry(entry, password)
-            if favorite && saved
-              saved_entry = find_entry(entry)
-              @catalog.toggle_favorite(saved_entry.key) if saved_entry && !saved_entry.favorite
-            end
+            save_manual_entry(entry, password, favorite: favorite)
           end
         end
         complete(operation) { @manual_credentials.delete(viewer_id)&.discard! }
         terminal_launch(launch, :manual)
       rescue StandardError => error
         fail_operation(operation, error, manual: 'Launch failed. Retry from Manual Entry.')
+      end
+
+      # Saving is optional after authentication succeeds. A locked catalog or
+      # failed write must not discard a valid game launch. Record only the
+      # exception class, since collaborator messages may contain credentials.
+      def save_manual_entry(entry, password, favorite:)
+        raise 'manual entry save failed' unless @catalog.upsert_manual_entry(entry, password)
+        return unless favorite
+
+        saved_entry = find_entry(entry)
+        raise 'saved entry was not found' unless saved_entry
+        return if saved_entry.favorite
+
+        raise 'favorite save failed' unless @catalog.toggle_favorite(saved_entry.key)
+      rescue StandardError => error
+        notice = 'Login succeeded, but the entry or favorite was not saved.'
+        notice += " #{Catalog::LEGACY_CONVERSION_NOTICE}" if error.is_a?(Catalog::LegacyConversionRequired)
+        @logger.call(:warning, "#{notice} error=#{error.class}")
       end
 
       def perform_saved_launch(operation, entry_key, credential: nil)
@@ -909,6 +926,7 @@ module Lich
       end
 
       def fail_operation(operation, error, manual: nil, modal: nil, notice: nil)
+        notice = Catalog::LEGACY_CONVERSION_NOTICE if error.is_a?(Catalog::LegacyConversionRequired)
         complete(operation) do
           @manual.merge!(phase: :editing, error: manual) if manual
           @modal = modal if modal

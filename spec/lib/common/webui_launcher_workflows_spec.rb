@@ -75,7 +75,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     end
 
     def validate_master_password(password)
-      @calls << [:validate_master, password]
+      @calls << [:validate_master, password.dup]
       @master_valid
     end
 
@@ -116,6 +116,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   let(:catalog) { WorkflowCatalog.new(entry) }
   let(:service) { WorkflowService.new }
   let(:launches) { [] }
+  let(:messages) { [] }
   let(:authenticator) do
     Class.new do
       class << self
@@ -137,7 +138,8 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     described_class.new(
       data_dir: '/fixture', catalog: catalog, service: service, authenticator: authenticator,
       executor: ImmediateExecutor.new, on_launch: ->(launch, origin) { launches << [origin, launch] },
-      browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator
+      browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator,
+      logger: ->(level, message) { messages << [level, message] }
     )
   end
 
@@ -209,6 +211,46 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
            )).to be_nil
     expect(secret).to be_consumed
     expect(catalog.calls).to be_empty
+  end
+
+  [Lich::Common::WebUILauncher::Catalog::MasterPasswordRequired,
+   Lich::Common::WebUILauncher::Catalog::LegacyConversionRequired, IOError, false].each do |failure|
+    it "still launches after optional manual persistence fails with #{failure}" do
+      if failure
+        allow(catalog).to receive(:upsert_manual_entry).and_raise(failure, 'synthetic-secret-must-not-be-logged')
+      else
+        allow(catalog).to receive(:upsert_manual_entry).and_return(false)
+      end
+      launcher.manual_connect(event({ 'account' => 'doug', 'password' => viewer_secret('manual-canary') }),
+                              'account', 'password')
+      launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
+      launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront', 'checkbox:manual-save' => true }))
+
+      expect(launches.size).to eq(1)
+      expect(launches.first.first).to eq(:manual)
+      expect(messages).to include([:warning, a_string_matching(/not saved/)])
+      expect(messages.to_s).not_to include('synthetic-secret-must-not-be-logged', 'manual-canary')
+      expect(messages.to_s).to include('--convert-entries') if failure == described_class::Catalog::LegacyConversionRequired
+    end
+  end
+
+  it 'still launches and reports a failed optional favorite write' do
+    allow(catalog).to receive(:toggle_favorite).and_return(nil)
+    launcher.manual_connect(event({ 'account' => 'doug', 'password' => viewer_secret('manual-canary') }),
+                            'account', 'password')
+    launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
+    launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront', 'checkbox:manual-favorite' => true }))
+
+    expect(launches.size).to eq(1)
+    expect(messages).to include([:warning, a_string_matching(/not saved/)])
+  end
+
+  it 'gives actionable conversion guidance when an account save encounters legacy entries' do
+    allow(catalog).to receive(:add_or_update_account).and_raise(described_class::Catalog::LegacyConversionRequired)
+    launcher.save_account(event({ 'text_input:account-name' => 'DOUG', 'select:account-frontend' => 'stormfront',
+                                 'password_input:account-password' => viewer_secret('synthetic-password') }))
+
+    expect(launcher.send(:render_state)[:notice][:text]).to include('--convert-entries')
   end
 
   context 'manual favorites with the persisted catalog' do
@@ -313,6 +355,27 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
       'password_input:encryption-master' => viewer_secret('blocked-pass'),
     }))
     expect(launcher.send(:render_state)[:notice][:text]).to match(/unavailable/)
+  end
+
+  %w[plaintext standard].each do |mode|
+    ['', 'wrong', 'valid-master'].each do |password|
+      it "requires the current master password before changing enhanced encryption to #{mode} with #{password.inspect}" do
+        catalog.mode = :enhanced
+        catalog.master_valid = password == 'valid-master'
+        secret = viewer_secret(password)
+        launcher.change_encryption(event({ 'radio:encryption-mode' => mode, 'password_input:encryption-master' => secret }))
+
+        changes = catalog.calls.select { |call| call.first == :change_encryption }
+        if catalog.master_valid
+          expect(catalog.calls).to include([:validate_master, password])
+          expect(changes).to eq([[:change_encryption, mode.to_sym, nil]])
+        else
+          expect(changes).to be_empty
+          expect(launcher.send(:render_state)[:notice][:text]).to match(/failed/)
+        end
+        expect(secret).to be_consumed
+      end
+    end
   end
 
   it 'keeps saved multi-launch open but closes manual and single saved launches' do

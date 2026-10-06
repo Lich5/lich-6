@@ -164,8 +164,11 @@ module Lich
         def select_frontend(event)
           id = event.payload.fetch(:rows).first
           update_draft do
+            draft = @fields[id]
+            return unless draft
+
             @state.merge!(frontend_creating: false, frontend_error: nil,
-                          frontend_draft: @fields.fetch(id).dup)
+                          frontend_draft: draft.dup)
           end
         end
 

@@ -122,4 +122,17 @@ RSpec.describe Lich::Common::WebUILauncher::FrontendTab do
     expect(fresh.cid).not_to eq(previous)
     expect(fresh.props[:value]).to eq('')
   end
+
+  [[], ['removed-client']].each do |rows|
+    it "ignores an empty or stale selection #{rows.inspect} without replacing the draft" do
+      tab.begin_new_frontend
+      before = tree.to_h
+      changes = changed.size
+
+      tab.select_frontend(Struct.new(:payload).new({ rows: rows }))
+
+      expect(tree.to_h).to eq(before)
+      expect(changed.size).to eq(changes)
+    end
+  end
 end
