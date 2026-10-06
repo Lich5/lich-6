@@ -2,6 +2,7 @@
 
 require 'openssl'
 require 'yaml'
+require 'json'
 require_relative '../authentication/entry_store'
 require_relative '../gui/master_password_manager'
 require_relative '../../webui/sensitive_value'
@@ -40,11 +41,14 @@ module Lich
           @mutex = Mutex.new
         end
 
+        # Reads password-free entries whose keys remain stable across unrelated edits.
+        # @param autosort [Boolean] apply the user's display sorting preference
+        # @return [Array<Entry>] saved configurations in display order
         def entries(autosort: false)
           @mutex.synchronize do
-            source_entries.map.with_index do |entry, index|
+            source_entries.map do |entry|
               Entry.new(
-                "entry-#{index}", entry.fetch(:user_id).to_s, entry.fetch(:char_name).to_s,
+                entry.fetch(:key), entry.fetch(:user_id).to_s, entry.fetch(:char_name).to_s,
                 entry.fetch(:game_code).to_s, entry[:game_name].to_s, entry[:frontend].to_s,
                 entry[:custom_launch], entry[:custom_launch_dir], entry[:is_favorite] == true,
                 entry[:favorite_order]
@@ -336,9 +340,12 @@ module Lich
 
         private
 
+        # Omits credential material while preserving configuration identity.
+        # @api private
+        # @return [Array<Hash>] metadata with stable keys
         def source_entries
           raw_entries = entries_without_lock
-          raw_entries.map { |entry| entry.except(:key, :password, :encryption_mode) }
+          raw_entries.map { |entry| entry.except(:password, :encryption_mode) }
         ensure
           raw_entries&.each do |entry|
             password = entry[:password]
@@ -346,17 +353,18 @@ module Lich
           end
         end
 
+        # Reads persisted entries under the caller's catalog lock.
+        # @api private
+        # @return [Array<Hash>] entries including credential data for internal use
         def entries_without_lock
           file = @entry_store.yaml_file_path(data_dir)
           if File.exist?(file)
             data = yaml_data
             mode = data.fetch('encryption_mode', 'plaintext').to_sym
-            index = -1
-            data.fetch('accounts', {}).flat_map do |account, account_data|
+            raw = data.fetch('accounts', {}).flat_map do |account, account_data|
               account_data.fetch('characters', []).map do |character|
-                index += 1
                 {
-                  key: "entry-#{index}", user_id: account, password: account_data['password'],
+                  user_id: account, password: account_data['password'],
                   encryption_mode: mode, char_name: character['char_name'], game_code: character['game_code'],
                   game_name: character['game_name'], frontend: character['frontend'],
                   custom_launch: character['custom_launch'], custom_launch_dir: character['custom_launch_dir'],
@@ -364,11 +372,15 @@ module Lich
                 }
               end
             end
+            with_entry_keys(raw)
           else
             legacy_entries
           end
         end
 
+        # Reads supported legacy scalars and assigns the same identities as YAML.
+        # @api private
+        # @return [Array<Hash>] legacy entries, or an empty list for invalid data
         def legacy_entries
           file = File.join(data_dir, 'entry.dat')
           return [] unless File.exist?(file)
@@ -376,12 +388,38 @@ module Lich
           decoded = File.open(file, 'rb') { |io| Marshal.load(io.read.unpack1('m')) }
           return [] unless decoded.is_a?(Array) && decoded.all? { |entry| valid_legacy_entry?(entry) }
 
-          decoded.map.with_index do |entry, index|
-            entry.transform_keys(&:to_sym).merge(key: "entry-#{index}", encryption_mode: :plaintext)
-          end
+          with_entry_keys(decoded.map { |entry| entry.transform_keys(&:to_sym).merge(encryption_mode: :plaintext) })
         rescue StandardError => error
           Lich.log("error: unable to read legacy launcher entries: #{error.class}: #{error.message}") if Lich.respond_to?(:log)
           []
+        end
+
+        # Encodes the existing character-match tuple without delimiter ambiguity.
+        # Names, frontend and launch command define a configuration; passwords,
+        # favorites and list positions do not. This is identity, not authorization.
+        # @api private
+        # @param entry [Hash] symbol-keyed saved-entry metadata
+        # @return [String] deterministic opaque configuration key
+        def entry_key(entry)
+          identity = %i[user_id char_name game_code frontend custom_launch].map { |field| entry[field].to_s }
+          "entry-#{OpenSSL::Digest::SHA256.hexdigest(JSON.generate(identity))}"
+        end
+
+        # Keeps legacy duplicate configurations renderable without using global positions.
+        # Only indistinguishable identity tuples receive an occurrence suffix; unrelated
+        # removals or reordering cannot rename another configuration. Existing mutation
+        # rules for duplicate tuples remain unchanged.
+        # @api private
+        # @param entries [Array<Hash>] saved records in their existing order
+        # @return [Array<Hash>] records with unique presentation keys
+        def with_entry_keys(entries)
+          occurrences = Hash.new(0)
+          entries.map do |entry|
+            key = entry_key(entry)
+            occurrence = occurrences[key]
+            occurrences[key] += 1
+            entry.merge(key: occurrence.zero? ? key : "#{key}-#{occurrence}")
+          end
         end
 
         def raw_credential(metadata)

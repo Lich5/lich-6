@@ -33,9 +33,18 @@ module Lich
         @mutex = Mutex.new
       end
 
+      # Attaches one viewer per connection/page pair, or resumes a disconnected one.
+      # @param connection_id [String] authenticated connection identifier
+      # @param address [String] registered page address
+      # @param page [Page] page receiving the viewer
+      # @param resume_token [String, nil] previous attachment's reconnect token
+      # @return [Attachment] the new or resumed viewer
+      # @raise [Error] if this connection already views the page or resume is invalid
       def attach(connection_id:, address:, page:, resume_token: nil)
         @mutex.synchronize do
           expire_locked!
+          raise Error, 'viewer is already attached' if @by_connection.key?([connection_id, address])
+
           attachment = resume_token && @by_resume[resume_token]
           if attachment
             raise Error, 'resume token belongs to another page' unless attachment.address == address

@@ -3,6 +3,7 @@
 require 'openssl'
 require 'securerandom'
 require 'json'
+require 'monitor'
 require_relative '../webui'
 require_relative 'authentication/authenticator'
 require_relative 'authentication/launch_data'
@@ -31,6 +32,28 @@ module Lich
 
       attr_reader :page
 
+      # Builds launcher state and shares a close/write gate with its frontend editor.
+      # Blocking authentication runs on the executor outside this gate; persistence
+      # and launch use it only after checking that the operation is still live.
+      # @param data_dir [String] login/settings directory
+      # @param on_launch [Proc] receives launch data and origin after launch admission
+      # @param service [WebUI::Service] page/connection lifecycle host
+      # @param catalog [Catalog, nil] persistence boundary, defaulting to this directory
+      # @param authenticator [Object] account/game authentication collaborator
+      # @param launch_data [Object] frontend launch-data builder
+      # @param session_launcher [Object] persistent child-session launcher
+      # @param executor [SerialExecutor] worker owning queued resource cleanup
+      # @param browser_open [Proc, nil] app-window launch override
+      # @param on_close [Proc, nil] receives the final close reason
+      # @param browser_terminate [Proc, Method] terminates an owned browser process
+      # @param recovery [Proc, nil] reports startup failure
+      # @param logger [Proc, nil] receives severity and redacted diagnostic text
+      # @param persistent [Boolean] retain the launcher after saved-entry launches
+      # @param autosort [Boolean] sort entries for display
+      # @param tab_layout [Boolean] display account tabs rather than one list
+      # @param dark_theme [Boolean] initial stored theme preference
+      # @param geometry_store [Object, nil] window geometry persistence
+      # @param frontend_locator [Object] discovers supported frontend executables
       def initialize(data_dir:, on_launch:, service: Lich::WebUI.service, catalog: nil,
                      authenticator: Authentication, launch_data: Authentication::LaunchData,
                      session_launcher: SessionLauncher, executor: SerialExecutor.new,
@@ -67,6 +90,7 @@ module Lich
         @on_close = on_close || proc {}
         @recovery = recovery || proc { |message| $stderr.puts(message) }
         @mutex = Mutex.new
+        @commit_mutex = Monitor.new
         @closed_condition = ConditionVariable.new
         @lifecycle = :starting
         @persistent = persistent
@@ -84,6 +108,7 @@ module Lich
         reload_catalog
         @frontend_tab = FrontendTab.new(
           data_dir: @data_dir, locator: @frontend_locator, executor: @executor,
+          commit: ->(&work) { commit(&work) },
           on_change: -> { refresh },
           on_catalog_change: lambda {
             choices = discover_frontends(refresh: false)
@@ -128,16 +153,18 @@ module Lich
       # @return [Boolean] whether this call began shutdown
       def close(reason: :user)
         browser_pid = nil
-        accepted = @mutex.synchronize do
-          next false if %i[closing closed].include?(@lifecycle)
+        accepted = @commit_mutex.synchronize do
+          @mutex.synchronize do
+            next false if %i[closing closed].include?(@lifecycle)
 
-          @lifecycle = :closing
-          @active.clear
-          @manual_credentials.each_value(&:discard!)
-          @manual_credentials.clear
-          browser_pid = @browser_pid
-          @browser_pid = nil
-          true
+            @lifecycle = :closing
+            @active.clear
+            @manual_credentials.each_value(&:discard!)
+            @manual_credentials.clear
+            browser_pid = @browser_pid
+            @browser_pid = nil
+            true
+          end
         end
         return false unless accepted
 
@@ -521,53 +548,71 @@ module Lich
 
       public
 
+      # Applies a preference only if closure has not already been accepted.
+      # @param event [WebUI::Runtime::EventContext] changed control value
+      # @param setting [Symbol] known launcher preference
+      # @return [void]
       def setting_changed(event, setting)
         value = event.payload.fetch(:value)
-        @mutex.synchronize do
-          case setting
-          when :persistent then @persistent = value
-          when :autosort then @autosort = value
-          when :tab_layout then @tab_layout = value
-          when :dark_theme then @dark_theme = value
-          when :settings_visible then @settings_visible = value
-          else raise ArgumentError, "unknown launcher setting: #{setting}"
+        commit do
+          @mutex.synchronize do
+            case setting
+            when :persistent then @persistent = value
+            when :autosort then @autosort = value
+            when :tab_layout then @tab_layout = value
+            when :dark_theme then @dark_theme = value
+            when :settings_visible then @settings_visible = value
+            else raise ArgumentError, "unknown launcher setting: #{setting}"
+            end
           end
+          if setting != :settings_visible && @catalog.respond_to?(:update_launcher_setting)
+            @catalog.update_launcher_setting(setting, value)
+          end
+          reload_catalog if setting == :autosort
         end
-        if setting != :settings_visible && @catalog.respond_to?(:update_launcher_setting)
-          @catalog.update_launcher_setting(setting, value)
-        end
-        reload_catalog if setting == :autosort
         refresh
       end
 
+      # Saves validated geometry only while the launcher is open.
+      # @param event [WebUI::Runtime::EventContext] JSON geometry payload
+      # @return [Hash, false, nil] accepted geometry, or invalid/closed result
       def window_geometry_changed(event)
-        geometry = @geometry_store.save(JSON.parse(event.payload.fetch(:value)))
-        @mutex.synchronize { @window_geometry = geometry } if geometry
+        geometry = nil
+        commit do
+          geometry = @geometry_store.save(JSON.parse(event.payload.fetch(:value)))
+          @mutex.synchronize { @window_geometry = geometry } if geometry
+        end
         geometry
       rescue JSON::ParserError, KeyError
         false
       end
 
+      # Authenticates manual credentials and retains them only for a live operation.
+      # @param event [WebUI::Runtime::EventContext] credential submission
+      # @param account_cid [String] submitted account field
+      # @param password_cid [String] submitted sensitive field
+      # @return [void]
       def manual_connect(event, account_cid, password_cid)
         account = event.submission.fetch(account_cid).to_s.strip.upcase
         return manual_error('User ID is required.') if account.empty?
 
-        credential = transfer_secret(event.submission.fetch(password_cid))
         operation = begin_operation(:manual_auth, event)
+        credential = transfer_secret(event.submission.fetch(password_cid))
         @mutex.synchronize { @manual.merge!(phase: :authenticating, account: account, error: nil) }
         refresh
-        @executor.post do
+        post_operation(operation, secrets: [credential]) do
           characters = nil
           retained = nil
           credential.consume do |password|
             characters = @authenticator.authenticate(account: account, password: password, legacy: true)
             retained = Lich::WebUI::SensitiveValue.viewer(password)
           end
-          complete(operation) do
+          accepted = complete(operation) do
             @manual_credentials[event.viewer_id]&.discard!
             @manual_credentials[event.viewer_id] = retained
             @manual.merge!(phase: :selecting_character, characters: normalize_characters(characters), selected: nil)
           end
+          retained&.discard! unless accepted
         rescue StandardError => error
           retained&.discard!
           fail_operation(operation, error, manual: 'Authentication failed. Correct the credentials and retry.')
@@ -597,14 +642,23 @@ module Lich
         refresh
       end
 
+      # Cancels the viewer's pending manual work and disposes retained credentials.
+      # @param viewer_id [String] attachment abandoning manual entry
+      # @return [void]
       def manual_disconnect(viewer_id)
-        @mutex.synchronize do
-          @manual_credentials.delete(viewer_id)&.discard!
-          @manual = default_manual_state
+        @commit_mutex.synchronize do
+          @mutex.synchronize do
+            @active.delete_if { |kind, operation| operation.viewer_id == viewer_id && %i[manual_auth manual_launch].include?(kind) }
+            @manual_credentials.delete(viewer_id)&.discard!
+            @manual = default_manual_state
+          end
         end
         refresh
       end
 
+      # Queues a selected character launch with worker-owned credential disposal.
+      # @param event [WebUI::Runtime::EventContext] manual launch options
+      # @return [void]
       def manual_play(event)
         state = @mutex.synchronize do
           selected = @manual[:selected].to_s
@@ -620,33 +674,44 @@ module Lich
         values = submission_values(event.submission)
         return manual_error('The selected front end changed. Choose it again.') unless submitted(values, 'select:manual-frontend') == frontend
 
-        @mutex.synchronize { @manual_credentials.delete(event.viewer_id) }
         operation = begin_operation(:manual_launch, event)
+        @mutex.synchronize { @manual_credentials.delete(event.viewer_id) }
         @mutex.synchronize { @manual[:phase] = :launching }
         refresh
-        @executor.post { perform_manual_launch(operation, event.viewer_id, account, character, credential, values) }
+        post_operation(operation, secrets: [credential]) { perform_manual_launch(operation, account, character, credential, values) }
       end
 
+      # Queues a saved configuration by stable identity and checks liveness before launch.
+      # @param event [WebUI::Runtime::EventContext] requesting viewer
+      # @param entry_key [String] saved configuration identity
+      # @return [Boolean] whether work was accepted
       def saved_launch(event, entry_key)
         operation = begin_operation(:saved_launch, event)
-        @executor.post { perform_saved_launch(operation, entry_key) }
+        post_operation(operation) { perform_saved_launch(operation, entry_key) }
       end
 
+      # Validates an unlock password without allowing keychain writes after cancellation.
+      # @param event [WebUI::Runtime::EventContext] unlock modal response
+      # @param password_cid [String] submitted master-password field
+      # @return [void]
       def unlock_response(event, password_cid)
         return cancel_modal if event.payload[:button] == 'cancel'
 
         entry_key = @mutex.synchronize { @modal&.fetch(:entry_key, nil) }
         return event.submission.discard_sensitive! unless entry_key
 
-        master = transfer_secret(event.submission.fetch(password_cid))
         operation = begin_operation(:saved_launch, event)
-        @executor.post do
+        master = transfer_secret(event.submission.fetch(password_cid))
+        post_operation(operation, secrets: [master]) do
           credential = nil
           master.consume do |password|
-            raise StandardError, 'Master password was not accepted.' unless @catalog.validate_master_password(password)
+            next unless commit(operation) do
+              raise StandardError, 'Master password was not accepted.' unless @catalog.validate_master_password(password)
 
-            credential = @catalog.credential(entry_key, master_password: password)
+              credential = @catalog.credential(entry_key, master_password: password)
+            end
           end
+          next unless credential
           perform_saved_launch(operation, entry_key, credential: credential)
         rescue StandardError => error
           credential&.discard!
@@ -728,6 +793,9 @@ module Lich
         end
       end
 
+      # Authenticates outside the close gate, then conditionally persists the account.
+      # @param event [WebUI::Runtime::EventContext] account submission
+      # @return [void]
       def save_account(event)
         values = submission_values(event.submission)
         account = values.find { |key, _| key.end_with?('text_input:account-name') }&.last.to_s.strip.upcase
@@ -737,12 +805,14 @@ module Lich
         return set_notice('Choose an available front end.', :error) unless frontend_available?(frontend, refresh: true)
         return set_notice('Password is required.', :error) unless password_pair
 
-        secret = transfer_secret(password_pair.last)
         operation = begin_operation(:account, event)
-        @executor.post do
+        secret = transfer_secret(password_pair.last)
+        post_operation(operation, secrets: [secret]) do
           secret.consume do |password|
             characters = @authenticator.authenticate(account: account, password: password, legacy: true)
-            raise 'account persistence failed' unless @catalog.add_or_update_account(account, password, characters, frontend: frontend)
+            commit(operation) do
+              raise 'account persistence failed' unless @catalog.add_or_update_account(account, password, characters, frontend: frontend)
+            end
           end
           complete(operation) { reload_catalog_locked }
         rescue StandardError => error
@@ -750,6 +820,9 @@ module Lich
         end
       end
 
+      # Confirms and applies an encryption change only while its operation remains live.
+      # @param event [WebUI::Runtime::EventContext] target mode and master password
+      # @return [void]
       def change_encryption(event)
         values = submission_values(event.submission)
         mode = values.find { |key, _| key.end_with?('radio:encryption-mode') }&.last.to_s.to_sym
@@ -760,15 +833,17 @@ module Lich
           master_pair.last.discard!
           return set_notice('Enhanced Encryption is unavailable because no secure keychain is present.', :error)
         end
-        secret = transfer_secret(master_pair.last)
         operation = begin_operation(:encryption, event)
-        @executor.post do
+        secret = transfer_secret(master_pair.last)
+        post_operation(operation, secrets: [secret]) do
           secret.consume do |password|
-            if @catalog.encryption_mode == :enhanced && mode != :enhanced
-              raise 'current master password was not accepted' if password.empty? || !@catalog.validate_master_password(password)
+            commit(operation) do
+              if @catalog.encryption_mode == :enhanced && mode != :enhanced
+                raise 'current master password was not accepted' if password.empty? || !@catalog.validate_master_password(password)
+              end
+              master = mode == :enhanced ? password : nil
+              raise 'encryption change failed' unless @catalog.change_encryption_mode(mode, master_password: master)
             end
-            master = mode == :enhanced ? password : nil
-            raise 'encryption change failed' unless @catalog.change_encryption_mode(mode, master_password: master)
           end
           complete(operation) { reload_catalog_locked }
         rescue StandardError => error
@@ -776,6 +851,9 @@ module Lich
         end
       end
 
+      # Validates replacement fields and gates re-encryption against launcher closure.
+      # @param event [WebUI::Runtime::EventContext] current, replacement and confirmation
+      # @return [void]
       def change_master_password(event)
         values = submission_values(event.submission)
         pairs = %w[master-current master-new master-confirm].map do |key|
@@ -786,20 +864,20 @@ module Lich
           return set_notice('Master password change requires all three fields.', :error)
         end
 
-        carriers = pairs.map { |pair| transfer_secret(pair.last) }
         operation = begin_operation(:master_password, event)
-        @executor.post do
+        carriers = pairs.map { |pair| transfer_secret(pair.last) }
+        post_operation(operation, secrets: carriers) do
           consume_three(carriers) do |current, replacement, confirmation|
             raise 'passwords do not match' unless secure_equal?(replacement, confirmation)
             raise 'password too short' if replacement.length < 8
-            raise 'master password change failed' unless @catalog.change_master_password(current, replacement)
+            commit(operation) do
+              raise 'master password change failed' unless @catalog.change_master_password(current, replacement)
+            end
           end
           complete(operation) { reload_catalog_locked }
           set_notice('Encryption password changed.', :info)
         rescue StandardError => error
           fail_operation(operation, error, notice: 'Master password change failed.')
-        ensure
-          carriers.each(&:discard!)
         end
       end
 
@@ -810,12 +888,17 @@ module Lich
         end
       end
 
+      # Invalidates a viewer's operations before releasing its retained credentials.
+      # @param viewer_id [String] departing attachment identifier
+      # @return [void]
       def viewer_gone(viewer_id)
-        @mutex.synchronize do
-          @manual_credentials.delete(viewer_id)&.discard!
-          @active.delete_if { |_kind, operation| operation.viewer_id == viewer_id }
-          @manual = default_manual_state
-          @modal = nil
+        @commit_mutex.synchronize do
+          @mutex.synchronize do
+            @manual_credentials.delete(viewer_id)&.discard!
+            @active.delete_if { |_kind, operation| operation.viewer_id == viewer_id }
+            @manual = default_manual_state
+            @modal = nil
+          end
         end
       end
 
@@ -826,7 +909,15 @@ module Lich
 
       private
 
-      def perform_manual_launch(operation, viewer_id, account, character, credential, values)
+      # Prepares a manual login, then independently admits optional save and launch.
+      # @api private
+      # @param operation [Operation] cancelable launch token
+      # @param account [String] account to authenticate
+      # @param character [Hash] selected character metadata
+      # @param credential [WebUI::SensitiveValue] worker-owned one-shot password
+      # @param values [Hash] submitted frontend and save choices
+      # @return [void]
+      def perform_manual_launch(operation, account, character, credential, values)
         launch = nil
         credential.consume do |password|
           auth = @authenticator.authenticate(account: account, password: password,
@@ -840,11 +931,10 @@ module Lich
           favorite = submitted(values, 'checkbox:manual-favorite')
           if save || favorite
             entry = character.merge(user_id: account, frontend: frontend, custom_launch: custom, custom_launch_dir: custom_dir)
-            save_manual_entry(entry, password, favorite: favorite)
+            commit(operation) { save_manual_entry(entry, password, favorite: favorite) }
           end
         end
-        complete(operation) { @manual_credentials.delete(viewer_id)&.discard! }
-        terminal_launch(launch, :manual)
+        terminal_launch(operation, launch, :manual)
       rescue StandardError => error
         fail_operation(operation, error, manual: 'Launch failed. Retry from Manual Entry.')
       end
@@ -867,6 +957,12 @@ module Lich
         @logger.call(:warning, "#{notice} error=#{error.class}")
       end
 
+      # Authenticates a saved configuration and gates child/terminal launch against close.
+      # @api private
+      # @param operation [Operation] cancelable launch token
+      # @param entry_key [String] configuration identity, never a list position
+      # @param credential [WebUI::SensitiveValue, nil] previously unlocked credential
+      # @return [void]
       def perform_saved_launch(operation, entry_key, credential: nil)
         entry = @mutex.synchronize { @entries.find { |candidate| candidate.key == entry_key } }
         raise KeyError, 'saved entry no longer exists' unless entry
@@ -879,13 +975,13 @@ module Lich
           launch = @launch_data.prepare(auth, entry.frontend, entry.custom_launch, entry.custom_launch_dir)
         end
         if @persistent
-          result = @session_launcher.launch(launch, launch_context: launch_context(entry))
+          result = nil
+          return unless commit(operation) { result = @session_launcher.launch(launch, launch_context: launch_context(entry)) }
           raise 'session launch failed' unless result[:ok]
           complete(operation) { @modal = nil }
           set_notice('Session launched.', :info)
         else
-          complete(operation) { @modal = nil }
-          terminal_launch(launch, :saved_entry)
+          terminal_launch(operation, launch, :saved_entry)
         end
       rescue Catalog::MasterPasswordRequired
         complete(operation) { @modal = { kind: :unlock, entry_key: entry_key, error: nil } }
@@ -895,19 +991,33 @@ module Lich
         credential&.discard!
       end
 
+      # Queues a catalog edit through the same close gate as authentication writes.
+      # @api private
+      # @param kind [Symbol] operation category
+      # @param event [WebUI::Runtime::EventContext] originating viewer
+      # @param failure_message [String] safe user-facing failure description
+      # @yield persistence work to run only for a live operation
+      # @return [Boolean] whether work was accepted
       def mutate(kind, event, failure_message, &work)
         operation = begin_operation(kind, event)
-        @executor.post do
-          work.call
+        post_operation(operation) do
+          commit(operation, &work)
           complete(operation) { reload_catalog_locked }
         rescue StandardError => error
           fail_operation(operation, error, notice: failure_message)
         end
       end
 
+      # Allocates a token only while open and refuses overlapping work of the same kind.
+      # @api private
+      # @param kind [Symbol] operation category
+      # @param event [WebUI::Runtime::EventContext] originating viewer
+      # @return [Operation] fresh liveness token
+      # @raise [WebUI::Error] for a closed launcher or an active operation of this kind
       def begin_operation(kind, event)
         operation = Operation.new(SecureRandom.hex(10), kind, event.viewer_id)
         @mutex.synchronize do
+          raise Lich::WebUI::Error, 'launcher is closed' if %i[closing closed].include?(@lifecycle)
           raise Lich::WebUI::Error, "#{kind} operation already active" if @active.key?(kind)
           @active[kind] = operation
         end
@@ -935,10 +1045,62 @@ module Lich
         @logger.call(:error, "launcher operation failed kind=#{operation.kind} error=#{error.class}")
       end
 
-      def terminal_launch(launch, origin)
-        @mutex.synchronize { @launch_result = launch }
-        @on_launch.call(launch, origin)
-        close(reason: :launch) unless origin == :saved_entry && @persistent
+      # Serializes final launch against cancellation, then releases the gate before teardown.
+      # @api private
+      # @param operation [Operation] launch token still owned by the worker
+      # @param launch [Array] prepared frontend launch data
+      # @param origin [Symbol] :manual or :saved_entry
+      # @return [Boolean] whether launch was admitted
+      def terminal_launch(operation, launch, origin)
+        accepted = commit(operation) do
+          @mutex.synchronize { @launch_result = launch }
+          @on_launch.call(launch, origin)
+        end
+        close(reason: :launch) if accepted && !(origin == :saved_entry && @persistent)
+        accepted
+      end
+
+      # Queues one operation and transfers its temporary carriers to worker cleanup.
+      # @api private
+      # @param operation [Operation] live operation token
+      # @param secrets [Array<WebUI::SensitiveValue>] carriers owned by this work
+      # @yield work performed only while its operation remains live
+      # @return [Boolean] whether the executor accepted the work
+      def post_operation(operation, secrets: [], &work)
+        accepted = @executor.post(cleanup: -> { secrets.each(&:discard!) }) do
+          work.call if operation_live?(operation)
+        end
+        @mutex.synchronize { @active.delete(operation.kind) if @active[operation.kind] == operation } unless accepted
+        accepted
+      rescue StandardError
+        secrets.each(&:discard!)
+        @mutex.synchronize { @active.delete(operation.kind) if @active[operation.kind] == operation }
+        raise
+      end
+
+      # Tests cancellation without holding the lock during authentication/network IO.
+      # @api private
+      # @param operation [Operation, nil] queued/running token, or nil for open-state only
+      # @return [Boolean] whether the token can still produce side effects
+      def operation_live?(operation)
+        @mutex.synchronize do
+          !%i[closing closed].include?(@lifecycle) && (!operation || @active[operation.kind]&.id == operation.id)
+        end
+      end
+
+      # Serializes irreversible steps against close without holding the UI state lock.
+      # A close accepted first refuses the step; an admitted step finishes before close.
+      # @api private
+      # @param operation [Operation, nil] token, or nil for synchronous settings work
+      # @yield a short persistence or launch step; authentication belongs outside
+      # @return [Boolean] whether the step ran
+      def commit(operation = nil)
+        @commit_mutex.synchronize do
+          return false unless operation_live?(operation)
+
+          yield
+          true
+        end
       end
 
       def transfer_secret(carrier)

@@ -263,6 +263,12 @@ module Lich
         :detached
       end
 
+      # Validates and transfers a submission to the dispatcher with explicit disposal.
+      # @api private
+      # @param connection [Object] authenticated viewer connection
+      # @param message [Hash] decoded event and submission values
+      # @return [Symbol] :queued after dispatch accepts ownership
+      # @raise [Protocol::Refusal] for invalid events or queue overflow
       def event(connection, message)
         attachment = fetch_attachment(connection, message[:page])
         stale!(connection, attachment) unless message[:generation] == attachment.delivered_generation
@@ -293,12 +299,12 @@ module Lich
         @dispatcher.enqueue(
           owner: attachment.page.owner, page_id: attachment.page.id,
           viewer_id: attachment.viewer_id, cid: component.cid, event: context.event,
-          coalescable: !event_schema[:terminal] && !event_schema[:lifecycle]
+          coalescable: !event_schema[:terminal] && !event_schema[:lifecycle],
+          cleanup: -> { snapshot&.discard_sensitive! }
         ) do
           callback.call(context)
-        ensure
-          snapshot&.discard_sensitive!
         end
+        dispatched = true
         # A control already displays its own draft. Redrawing on blur needlessly
         # changes generation before the following Save arrives. Structural
         # choices still need a render; callbacks schedule their own other edits.
@@ -309,6 +315,8 @@ module Lich
         @viewers.close(connection_id: connection.viewer_id, address: message[:page])
         connection.close
         raise Protocol::Refusal.new(:overflow, 'viewer event queue overflow')
+      ensure
+        snapshot&.discard_sensitive! unless dispatched
       end
 
       def build_submission(attachment, terminal, message)

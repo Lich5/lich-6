@@ -78,6 +78,18 @@ RSpec.describe Lich::Common::WebUILauncher::FrontendTab do
     expect(File.exist?(File.join(directory, 'frontends.yml'))).to be(false)
   end
 
+  it 'honors the parent close gate before writing frontend settings' do
+    guarded = described_class.new(data_dir: directory, locator: locator, executor: executor,
+                                  on_change: proc {}, commit: ->(&_work) { false })
+    guarded.begin_new_frontend
+    guarded.save_frontend(event)
+    pending.shift.call
+
+    expect(File.exist?(File.join(directory, 'frontends.yml'))).to be(false)
+  ensure
+    guarded&.close
+  end
+
   it 'rejects overlapping edits rather than queuing a duplicate save' do
     tab.begin_new_frontend
     tab.save_frontend(event)

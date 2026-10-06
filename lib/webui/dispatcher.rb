@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'errors'
+require_relative 'work_item'
 
 module Lich
   module WebUI
@@ -40,25 +41,46 @@ module Lich
         @mutex = Mutex.new
       end
 
-      def enqueue(owner:, page_id:, viewer_id:, cid:, event:, coalescable:, &callable)
+      # Queues owner work and owns cleanup through execution, refusal or removal.
+      # @param owner [Object] callback lifecycle owner
+      # @param page_id [String] owning page identifier
+      # @param viewer_id [String] submitting attachment identifier
+      # @param cid [String] submitting component identifier
+      # @param event [Symbol] event name
+      # @param coalescable [Boolean] whether a later matching event can replace this one
+      # @param cleanup [Proc, nil] resource disposal, including canceled submissions
+      # @yield callback to execute on the owner's worker
+      # @return [Symbol] :queued or :coalesced
+      # @raise [Error] when the owner is stopped or its queue is full
+      def enqueue(owner:, page_id:, viewer_id:, cid:, event:, coalescable:, cleanup: nil, &callable)
+        work = WorkItem.new(cleanup: cleanup, &callable)
+        discarded = []
+        accepted = false
         raise ArgumentError, 'owner is required' unless owner
-        raise ArgumentError, 'callback block is required' unless callable
 
         state = owner_state(owner)
-        queued = Event.new(owner, page_id, viewer_id, cid, event, coalescable, callable)
+        queued = Event.new(owner, page_id, viewer_id, cid, event, coalescable, work)
         state.mutex.synchronize do
           raise Error, 'owner dispatcher is terminated' unless state.running
 
-          if coalescable && coalesce_last!(state.events, queued)
+          if coalescable && coalesce_last!(state.events, queued, discarded)
+            accepted = true
             return :coalesced
           end
-          enforce_bounds!(state.events, queued)
+          enforce_bounds!(state.events, queued, discarded)
           state.events << queued
+          accepted = true
           state.condition.signal
         end
         :queued
+      ensure
+        work&.cancel unless accepted
+        dispose_events(discarded || [])
       end
 
+      # Refuses future work, disposes queued callbacks, and allows current work to finish.
+      # @param owner [Object] lifecycle owner to stop
+      # @return [Boolean] whether an active owner worker existed
       def shutdown_owner(owner)
         state = @mutex.synchronize do
           @terminated_owners[owner] = true
@@ -66,11 +88,14 @@ module Lich
         end
         return false unless state
 
-        state.mutex.synchronize do
+        discarded = state.mutex.synchronize do
           state.running = false
+          pending = state.events.dup
           state.events.clear
           state.condition.broadcast
+          pending
         end
+        dispose_events(discarded)
         unless state.thread.equal?(Thread.current)
           state.thread.join(SHUTDOWN_JOIN_TIMEOUT)
           log(:warning, "WebUI callback thread did not stop within #{SHUTDOWN_JOIN_TIMEOUT}s") if state.thread.alive?
@@ -132,22 +157,36 @@ module Lich
         end
       end
 
-      def coalesce_last!(events, queued)
+      # Replaces a matching tail while deferring cleanup until after queue unlock.
+      # @api private
+      # @param events [Array<Event>] pending queue
+      # @param queued [Event] new event
+      # @param discarded [Array<Event>] removed events awaiting disposal
+      # @return [Boolean] whether replacement occurred
+      def coalesce_last!(events, queued, discarded)
         last = events.last
         return false unless last&.coalescable
         return false unless last.viewer_id == queued.viewer_id
         return false unless last.page_id == queued.page_id && last.cid == queued.cid && last.event == queued.event
 
+        discarded << last
         events[-1] = queued
         true
       end
 
-      def enforce_bounds!(events, queued)
+      # Evicts replaceable events before refusing an overflowing terminal event.
+      # @api private
+      # @param events [Array<Event>] pending queue
+      # @param queued [Event] incoming event
+      # @param discarded [Array<Event>] evictions awaiting disposal
+      # @return [void]
+      # @raise [OverflowError] when terminal events occupy the available capacity
+      def enforce_bounds!(events, queued, discarded)
         while viewer_count(events, queued.viewer_id) >= VIEWER_LIMIT || page_count(events, queued.page_id) >= PAGE_LIMIT
           index = events.index(&:coalescable)
           break unless index
 
-          events.delete_at(index)
+          discarded << events.delete_at(index)
         end
         return if viewer_count(events, queued.viewer_id) < VIEWER_LIMIT && page_count(events, queued.page_id) < PAGE_LIMIT
 
@@ -155,6 +194,18 @@ module Lich
           'WebUI event queue overflow', owner: owner_label(queued.owner),
           page_id: queued.page_id, cid: queued.cid, field: queued.event
         )
+      end
+
+      # Disposes removed callbacks without holding queue locks or skipping later ones.
+      # @api private
+      # @param events [Array<Event>] callbacks no longer owned by a queue
+      # @return [void]
+      def dispose_events(events)
+        events.each do |event|
+          event.callable.cancel
+        rescue StandardError => error
+          log(:error, "WebUI callback cleanup failed error=#{error.class}")
+        end
       end
 
       def viewer_count(events, viewer_id)
