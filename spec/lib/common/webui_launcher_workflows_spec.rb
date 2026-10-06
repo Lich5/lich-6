@@ -3,6 +3,7 @@
 require_relative '../../spec_helper'
 require_relative '../../login_spec_helper'
 require 'common/webui_launcher'
+require 'timeout'
 
 # Fixture types stay local to this workflow-focused example group.
 # rubocop:disable Lint/ConstantDefinitionInBlock
@@ -10,7 +11,17 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   Event = Data.define(:viewer_id, :payload, :submission)
 
   class ImmediateExecutor
-    def post(&work) = work.call
+    # Executes synchronously while honoring the production cleanup ownership contract.
+    # @param cleanup [Proc, nil] completion cleanup
+    # @yield fixture work
+    # @return [Boolean] true after accepting the work
+    def post(cleanup: nil, &work)
+      work.call
+      true
+    ensure
+      cleanup&.call
+    end
+
     def stop(wait: true) = wait
   end
 
@@ -117,6 +128,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   let(:service) { WorkflowService.new }
   let(:launches) { [] }
   let(:messages) { [] }
+  let(:executor) { ImmediateExecutor.new }
   let(:authenticator) do
     Class.new do
       class << self
@@ -137,7 +149,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   let(:launcher) do
     described_class.new(
       data_dir: '/fixture', catalog: catalog, service: service, authenticator: authenticator,
-      executor: ImmediateExecutor.new, on_launch: ->(launch, origin) { launches << [origin, launch] },
+      executor: executor, on_launch: ->(launch, origin) { launches << [origin, launch] },
       browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator,
       logger: ->(level, message) { messages << [level, message] }
     )
@@ -149,6 +161,126 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
 
   def viewer_secret(value)
     Lich::WebUI::SensitiveValue.viewer(value)
+  end
+
+  it 'refuses preference writes after launcher closure' do
+    launcher.close
+    launcher.setting_changed(event({}, payload: { value: true }), :dark_theme)
+
+    expect(catalog.calls).to be_empty
+    expect(launcher.send(:render_state)[:dark_theme]).to be(false)
+  end
+
+  context 'cancellation with the real launcher worker' do
+    let(:executor) { described_class::SerialExecutor.new }
+    let(:started) { Queue.new }
+    let(:release) { Queue.new }
+    let(:carriers) { [] }
+
+    before do
+      allow(Lich::WebUI::SensitiveValue).to receive(:viewer).and_wrap_original do |original, value|
+        original.call(value).tap { |carrier| carriers << carrier }
+      end
+    end
+
+    after do
+      release << true
+      launcher.close
+      executor.stop
+    end
+
+    it 'cancels a queued master-password write and clears its transferred carriers' do
+      executor.post { started << true; release.pop }
+      Timeout.timeout(2) { started.pop }
+      launcher.change_master_password(event({
+        'password_input:master-current' => viewer_secret('synthetic-current'),
+        'password_input:master-new'     => viewer_secret('synthetic-replacement'),
+        'password_input:master-confirm' => viewer_secret('synthetic-replacement'),
+      }))
+      launcher.close
+
+      expect(carriers.size).to eq(6)
+      expect(carriers).to all(be_consumed)
+      release << true
+      executor.stop
+      expect(catalog.calls).to be_empty
+    end
+
+    it 'refuses an account write after authentication returns to an already closed launcher' do
+      allow(authenticator).to receive(:authenticate) do
+        started << true
+        release.pop
+        [{ char_name: 'Aldor', game_code: 'GS3' }]
+      end
+      launcher.save_account(event({ 'text_input:account-name' => 'DOUG', 'select:account-frontend' => 'stormfront',
+                                   'password_input:account-password' => viewer_secret('synthetic-account') }))
+      Timeout.timeout(2) { started.pop }
+      launcher.close
+      release << true
+      executor.stop
+
+      expect(catalog.calls).to be_empty
+      expect(carriers).to all(be_consumed)
+    end
+
+    it 'disposes credentials produced by manual authentication that completes after close' do
+      allow(authenticator).to receive(:authenticate) do
+        started << true
+        release.pop
+        [{ char_name: 'Aldor', game_code: 'GS3' }]
+      end
+      launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('synthetic-account') }),
+                              'account', 'password')
+      Timeout.timeout(2) { started.pop }
+      launcher.close
+      release << true
+      executor.stop
+
+      expect(carriers.size).to eq(3)
+      expect(carriers).to all(be_consumed)
+      expect(launches).to be_empty
+    end
+
+    it 'does not launch a saved session after close wins during authentication' do
+      allow(authenticator).to receive(:authenticate) do
+        started << true
+        release.pop
+        { game: 'STORM', key: 'synthetic-key', gamehost: 'example', gameport: '1' }
+      end
+      launcher.saved_launch(event, 'entry-0')
+      Timeout.timeout(2) { started.pop }
+      launcher.close
+      release << true
+      executor.stop
+
+      expect(launches).to be_empty
+    end
+
+    it 'lets an admitted write finish before close completes' do
+      writes = []
+      allow(catalog).to receive(:change_master_password) do
+        started << true
+        release.pop
+        writes << :saved
+        true
+      end
+      launcher.change_master_password(event({
+        'password_input:master-current' => viewer_secret('synthetic-current'),
+        'password_input:master-new'     => viewer_secret('synthetic-replacement'),
+        'password_input:master-confirm' => viewer_secret('synthetic-replacement'),
+      }))
+      Timeout.timeout(2) { started.pop }
+      closer = Thread.new { launcher.close; writes << :closed }
+      Timeout.timeout(2) { Thread.pass until closer.status == 'sleep' || !closer.alive? }
+      expect(writes).to be_empty
+      release << true
+      Timeout.timeout(2) { closer.join }
+      executor.stop
+      expect(writes).to eq(%i[saved closed])
+    ensure
+      release << true
+      closer&.join
+    end
   end
 
   it 'launches a saved entry with an Origin B credential that never enters the render tree' do
@@ -387,11 +519,13 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
       on_launch: proc {}, browser_open: proc { true }
     )
     persistent.saved_launch(event, 'entry-0')
+    persistent.saved_launch(event, 'entry-0')
 
     expect(persistent.lifecycle).not_to eq(:closed)
+    expect(persistent.active_operations).to be_empty
     expect(session_launcher).to have_received(:launch).with(
       kind_of(Array), launch_context: hash_including(data_dir: '/fixture', force_path_flags: true)
-    )
+    ).twice
   end
 
   it 'switches tab/list layout and exercises saved versus automatic sort order under GUI Settings' do

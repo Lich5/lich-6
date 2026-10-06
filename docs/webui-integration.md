@@ -8,11 +8,12 @@ Updated October 5, 2026. This describes the WebUI integration onto the proposed
 - Integration repository: `Lich5/lich-6`. Paths below are repository-relative.
 - EO main incorporated: `0bd852bc04e98bc2050f352b42ffb05c27dafb95`
   through synchronization PR [#11](https://github.com/Lich5/lich-6/pull/11).
-- Current integration baseline: `e9d8feebf1fa9220a4f15b84e7416c092ab542a6`,
-  including foundation PR [#10](https://github.com/Lich5/lich-6/pull/10).
+- Current integration baseline: `ce0444317b294f6ece118054171f72b9554e7870`,
+  including foundation PR [#10](https://github.com/Lich5/lich-6/pull/10)
+  and native cutover PR [#12](https://github.com/Lich5/lich-6/pull/12).
 - The fork retains `LICH_VERSION = '5.22.0'`; EO still identifies this snapshot
   as `5.21.0`. The version override is excluded from future EO feature PRs.
-- Current feature branch: `webui/02-native-cutover`, based on `e9d8feeb`.
+- Current feature branch: `webui/03-hardening`, based on `ce044431`.
 - Original foundation baseline: `b95e324823a2db71af72329236d556a47b28e4df`
   (EO `58ffd5f19b609df0a22c9060f8ad72781a2bc559` plus the version override).
 - The three old 5.21 WebUI PRs, #7, #8 and #9, are closed and unmerged.
@@ -20,8 +21,8 @@ Updated October 5, 2026. This describes the WebUI integration onto the proposed
 | Slice | Scope | Branch | Publication |
 | --- | --- | --- | --- |
 | 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Merged: PR #10, `2ceb2fc0` |
-| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | PR #12, owner-published through `d5604677`; further inline-review corrections in working tree |
-| 3 | Repeated viewer attachment and canceled sensitive-submission cleanup; document service-wide viewer trust | To be assigned | Separate follow-up PR |
+| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Merged: PR #12, `ce044431` |
+| 3 | Viewer/submission cleanup, launcher cancellation, stable saved-entry identity, service-wide trust documentation and GTK CI cleanup | `webui/03-hardening` | Local working-tree changes for human review |
 | 4 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | To be assigned | Subsequent PR |
 
 After slice 2, exercise actual launcher/login, map and uberbar_eo, including
@@ -30,9 +31,126 @@ script conversions. All four slices and the conversions form the early alpha
 package, with the corresponding EO PR sequence prepared for beta review.
 Script logic, including existing quirks, must remain unchanged.
 
+### Documentation follow-up and review requirement
+
+Owner decision, October 5, 2026: address the existing native-cutover docstring
+backlog after completing the 15 script conversions. This is a deferral of the
+current backlog only. PR #12's reported coverage was 15.88% across 233 touched
+functions against a 60% threshold. YARD reported 45.93% documentation coverage
+for the seven new production files, with 51 of 86 counted methods undocumented.
+
+For every future diff presented for review or merge, include meaningful YARD
+documentation for added or changed methods and verify documentation coverage
+before handoff. The owner expects no docstring-coverage warning on those diffs.
+Check the touched scope against the applicable review threshold; whole-file
+coverage and successful parsing do not establish changed-method coverage.
+Inspect the GitHub review's documentation check when available and resolve any
+warning before describing the diff as ready. Do not suppress the check, lower
+its threshold, or add filler comments to satisfy it. Local CodeRabbit reruns
+remain disallowed unless the owner changes that instruction.
+
 Review new EO main commits at each day's start and incorporate relevant changes
 deliberately. Record the new incorporated SHA and run affected checks. A fetch
 alone does not update this implementation. No daily automation is configured.
+
+## Hardening slice: implementation and trust boundary
+
+This slice preserves the bounded shim and UI contract. Its shared `WorkItem`
+owns callback cleanup through completion, exception, queue refusal, replacement,
+eviction and cancellation. The dispatcher and launcher executor both use it;
+canceling a running callback leaves its resources with that callback until its
+ensure completes. Cleanup runs outside queue locks. Launcher shutdown refuses
+new posts and disposes queued credentials rather than draining queued writes.
+
+The launcher has one close/write gate shared with frontend editing and preference
+persistence. Authentication remains outside the gate. A close or viewer departure
+accepted before a write or launch prevents that step; a step admitted first
+finishes before close proceeds. Teardown runs outside the launch gate. Credentials
+returned by authentication after cancellation are explicitly discarded. Network
+authentication already in progress is not forcibly interrupted.
+
+One connection cannot attach to the same page twice, including a resume attempt
+onto an occupied connection/page pair. Independent viewers and the existing
+60-second reconnect window remain supported. Saved-entry keys now encode the
+existing account/character/game/frontend/custom-command identity rather than
+global list position. Legacy duplicates retain distinct presentation keys using
+an occurrence suffix within their identical tuple; existing duplicate mutation
+rules and persistence formats are unchanged. These keys are not capabilities.
+
+### Authenticated viewer trust
+
+The supported model trusts an authenticated viewer across the entire WebUI
+service: registered pages from every owner and permitted served-image routes.
+The session cookie and WebSocket admission establish service access, not
+per-page authorization. Page addresses, owner labels, resume tokens and the new
+saved-entry keys must not be presented as access-control boundaries. Owner
+identity controls callback execution and cleanup, not isolation from other
+authenticated viewers. File-root, extension and realpath restrictions still apply.
+
+Consequently, do not share an authenticated session or launch token with someone
+who should see only one script's page. Page-scoped sharing would need a separately
+designed and authorized capability model; this slice does not silently add one.
+The existing loopback, Origin, Host, cookie and token checks remain in force.
+Explicit carrier disposal reduces retention; it is not a guarantee that Ruby or
+the operating system has erased every possible copy of a submitted string.
+
+### Hardening review and validation
+
+The EO references motivating this slice are #1651 (stable identities), #1652
+and #1657 (cancellation before irreversible steps), plus the retained security
+review below. The alternate launcher/shim architecture and broader control
+vocabulary are not imported. The five deferred `BUNDLE_WITHOUT` edits remove
+only the obsolete `gtk` group; no dependency versions change.
+
+Baseline runs against the original `main` implementations reproduced five
+attachment/submission failures and six launcher/identity failures. Regressions
+use deterministic queue handoffs, real executor threads, disposable saved-entry
+files and synthetic credentials. No owner credentials, installed scripts or
+interactive browser windows are used.
+
+- Final bare `rspec`: **8,643 examples, zero failures, two existing browser-gated
+  pending cases** (seed 12236).
+- Final bare `rubocop`: **1,268 files, no offenses**.
+- YARD diff audit: **45/45 changed or new production methods documented**, including
+  private methods, with no parser warnings. This checks method bodies intersecting
+  the diff, not whole-file coverage padded by unchanged documentation. The older
+  documentation backlog remains deferred as agreed.
+- All five edited workflow YAML files parse; `git diff --check` is clean.
+- Native launcher, WebUI runtime and bounded-shim automated checks pass. No local
+  CodeRabbit rerun was performed; GitHub's review result is not yet available.
+
+Files in this slice (the pre-existing documentation deferral is preserved):
+
+```text
+.github/workflows/curate-pre-branch.yaml
+.github/workflows/rspec_tests.yaml
+.github/workflows/rubocop.yaml
+.github/workflows/ruby_syntax.yaml
+.github/workflows/windows_active_sessions.yaml
+docs/webui-integration.md
+lib/common/webui_launcher.rb
+lib/common/webui_launcher/catalog.rb
+lib/common/webui_launcher/frontend_tab.rb
+lib/common/webui_launcher/serial_executor.rb
+lib/webui/dispatcher.rb
+lib/webui/runtime.rb
+lib/webui/viewer_store.rb
+lib/webui/work_item.rb
+spec/lib/common/webui_launcher/catalog_integration_spec.rb
+spec/lib/common/webui_launcher/frontend_tab_spec.rb
+spec/lib/common/webui_launcher/serial_executor_spec.rb
+spec/lib/common/webui_launcher_workflows_spec.rb
+spec/lib/webui/dispatcher_spec.rb
+spec/lib/webui/runtime_spec.rb
+spec/lib/webui/viewer_store_spec.rb
+spec/lib/webui/work_item_spec.rb
+```
+
+For EO replay, use the eventual human-created hardening feature commit(s) after
+the foundation and cutover slices; omit fork version and synchronization commits.
+No commit or PR has been created for this slice. Windows CI and GitHub CodeRabbit
+review remain external checks; local tests do not replace those results or the
+remaining visual/live-game acceptance work.
 
 ## Preservation and PR 1 contents
 
@@ -206,7 +324,7 @@ foundation/renderer/shim changes or script changes. The branch remains at 97
 changed paths relative to `main`; workflow GTK exclusion cleanup remains in
 the security-hardening follow-up so this PR stays below the review file limit.
 
-Exact working-tree files for this review update:
+Files in the final native-cutover review update (subsequently merged in PR #12):
 
 | File | Scope |
 | --- | --- |
@@ -223,8 +341,8 @@ Exact working-tree files for this review update:
 | `spec/lib/lich_msgbox_spec.rb` | Previously completed message notice regressions |
 | `docs/webui-integration.md` | Review decisions, file inventory and validation |
 
-No installed files were modified and no scope exceptions were needed. Staging,
-commits and pushes remain owner-only; these review corrections are uncommitted.
+No installed files were modified and no scope exceptions were needed. The owner
+subsequently committed and merged these native-cutover corrections in PR #12.
 
 ### Remaining review
 
@@ -413,10 +531,11 @@ Owner-supplied security architecture review, recorded October 5, 2026, covering
 PR #10 through `9a8d378e949b7da41f9f3119160a45da85130e50`. Overall assessment:
 **Moderate**. The findings below are reported observations from that review,
 not independently revalidated by recording them here. The owner subsequently
-selected a separate security-hardening PR after native cutover. Both cleanup
-findings and the service-wide trust decision remain open for that PR; they are
-not fixes included in this cutover. Recording the review does not authorize a
-capability redesign or mark a finding fixed.
+selected a separate security-hardening PR after native cutover. These findings
+were open at cutover; the hardening slice above now implements and tests their
+cleanup corrections and documents the existing trust boundary. The original
+review observations below are retained as context, not a claim that the native
+cutover itself fixed them. No capability redesign is authorized or included.
 
 - **Deferred CI cleanup (owner-approved):** remove `gtk:` from `BUNDLE_WITHOUT`
   in `.github/workflows/curate-pre-branch.yaml`, `rspec_tests.yaml`,

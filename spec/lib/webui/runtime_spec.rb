@@ -45,6 +45,42 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  %i[shutdown refusal overflow].each do |termination|
+    it "disposes a sensitive submission on #{termination} before its callback runs" do
+      captured = []
+      allow(Lich::WebUI::SensitiveValue).to receive(:viewer).and_wrap_original do |original, value|
+        original.call(value).tap { |carrier| captured << carrier }
+      end
+      started = Queue.new
+      release = Queue.new
+      callbacks = []
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'cleanup', title: 'Cleanup') do
+        password = password_input(key: 'password')
+        button(key: 'save', label: 'Save', submit: [password], on: { activate: ->(_event) { callbacks << true } })
+      end)
+      address, render = attach(first_connection, page)
+      dispatcher.enqueue(owner: owner, page_id: page.id, viewer_id: 'blocker', cid: 'blocker', event: :activate,
+                         coalescable: false) do
+        started << true
+        release.pop
+        dispatcher.shutdown_owner(owner) if termination == :shutdown
+      end
+      started.pop
+      if termination != :shutdown
+        error = termination == :overflow ? Lich::WebUI::Dispatcher::OverflowError : Lich::WebUI::Error
+        allow(dispatcher).to receive(:enqueue).and_raise(error, 'refused')
+      end
+      runtime.handle(first_connection, type: 'event', page: address, cid: render.dig('tree', 'children', 1, 'cid'),
+                     event: 'activate', generation: render['generation'], payload: {}, submission: [+'synthetic-secret'])
+      release << true
+      Timeout.timeout(2) { Thread.pass until captured.first&.consumed? }
+      expect(captured.size).to eq(1)
+      expect(callbacks).to be_empty
+    ensure
+      release << true if release
+    end
+  end
+
   it 'permits spell-list transfers only between declared peers with an existing source row' do
     calls = Queue.new
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'spells', title: 'Spells') do

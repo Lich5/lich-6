@@ -26,7 +26,7 @@ jobs:
   rubocop:
     runs-on: ubuntu-latest
     env:
-      BUNDLE_WITHOUT: 'gtk:vscode:profanity'
+      BUNDLE_WITHOUT: 'vscode:profanity'
     name: Run Rubocop on Ruby
     steps:
       - name: Classify changed files (preflight)

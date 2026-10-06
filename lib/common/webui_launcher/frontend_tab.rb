@@ -12,12 +12,20 @@ module Lich
       class FrontendTab
         CAPABILITIES_PER_ROW = 3
 
-        def initialize(data_dir:, locator:, executor:, on_change:, on_catalog_change: proc {})
+        # Builds cached editor state and accepts the launcher's close/write gate.
+        # @param data_dir [String] settings directory
+        # @param locator [Object] frontend discovery collaborator
+        # @param executor [Object] serialized background worker
+        # @param on_change [Proc] request a presentation refresh
+        # @param on_catalog_change [Proc] reload parent frontend choices
+        # @param commit [Proc] run a write only while the parent remains open
+        def initialize(data_dir:, locator:, executor:, on_change:, on_catalog_change: proc {}, commit: ->(&work) { work.call })
           @data_dir = data_dir
           @frontend_locator = locator
           @executor = executor
           @on_change = on_change
           @on_catalog_change = on_catalog_change
+          @commit = commit
           @mutex = Mutex.new
           @closed = false
           @busy = false
@@ -228,6 +236,10 @@ module Lich
 
         # Serialize mutations with the rest of the launcher. The short lock
         # admits or cancels work; no IO occurs while holding the UI state lock.
+        # The parent commit gate serializes persistence with launcher closure.
+        # @api private
+        # @yieldparam snapshot [Hash] editor state accepted for this operation
+        # @return [void]
         def queue_edit
           snapshot = @mutex.synchronize do
             next if @closed || @busy
@@ -237,10 +249,13 @@ module Lich
           return unless snapshot
 
           @executor.post do
-            next if @mutex.synchronize { @closed }
             begin
-              yield snapshot
-              @on_catalog_change.call
+              @commit.call do
+                next if @mutex.synchronize { @closed }
+
+                yield snapshot
+                @on_catalog_change.call
+              end
             rescue StandardError => error
               @mutex.synchronize { @state[:frontend_error] = error.message }
             ensure

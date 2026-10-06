@@ -12,6 +12,37 @@ RSpec.describe Lich::WebUI::ViewerStore do
     end
   end
 
+  it 'refuses repeated attachment without retaining unreachable viewers' do
+    now = 100.0
+    store = described_class.new(clock: -> { now })
+    first = store.attach(connection_id: 'one', address: 'page-one', page: page)
+    first.values[:draft] = 'retained'
+    3.times do
+      expect { store.attach(connection_id: 'one', address: 'page-one', page: page) }
+        .to raise_error(Lich::WebUI::Error, /already attached/)
+    end
+    expect(store.attachments_for(page)).to eq([first])
+    expect(store.transient_disconnect('one')).to eq([first])
+    now += described_class::RECONNECT_WINDOW + 1
+    expect(store.attachments_for(page)).to be_empty
+    expect(first.values).to be_empty
+  end
+
+  it 'does not orphan either viewer when a resume targets an occupied connection/page pair' do
+    store = described_class.new
+    first = store.attach(connection_id: 'one', address: 'page-one', page: page)
+    store.transient_disconnect('one')
+    second = store.attach(connection_id: 'two', address: 'page-one', page: page)
+    expect do
+      store.attach(connection_id: 'two', address: 'page-one', page: page, resume_token: first.resume_token)
+    end.to raise_error(Lich::WebUI::Error, /already attached/)
+    expect(store.fetch(connection_id: 'two', address: 'page-one')).to equal(second)
+    expect(store.attach(connection_id: 'three', address: 'page-one', page: page, resume_token: first.resume_token)).to equal(first)
+    store.close(connection_id: 'two', address: 'page-one')
+    store.close(connection_id: 'three', address: 'page-one')
+    expect(store.attachments_for(page)).to be_empty
+  end
+
   it 'keeps viewer-local values isolated and shared display content common' do
     store = described_class.new
     first = store.attach(connection_id: 'one', address: 'page-one', page: page)

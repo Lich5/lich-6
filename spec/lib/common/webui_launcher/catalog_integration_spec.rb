@@ -63,6 +63,42 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     expect(catalog.toggle_favorite(entry.key)).to be_nil
   end
 
+  it 'keeps surviving keys stable and refuses deleted keys after list positions change' do
+    original = catalog.entries.first
+    catalog.upsert_manual_entry(original.to_h.merge(char_name: 'Cera'), 'synthetic-password')
+    survivor = catalog.entries.find { |entry| entry.char_name == 'Cera' }
+    expect(catalog.remove_entry(original.key)).to be(true)
+
+    expect(catalog.entries.first.key).to eq(survivor.key)
+    expect(catalog.remove_entry(original.key)).to be(false)
+    expect { catalog.credential(original.key) }.to raise_error(KeyError)
+    expect(catalog.entries.map(&:char_name)).to eq(['Cera'])
+    expect(catalog.toggle_favorite(survivor.key)).to be(true)
+    expect(catalog.entries.first.key).to eq(survivor.key)
+  end
+
+  it 'gives custom-launch variants different keys without exposing their identity fields' do
+    original = catalog.entries.first
+    catalog.upsert_manual_entry(original.to_h.merge(custom_launch: '/synthetic/client'), 'synthetic-password')
+    entries = catalog.entries
+    expect(entries.map(&:key).uniq.size).to eq(2)
+    expect(entries.map(&:key).join).not_to include('DOUG', 'Bera', '/synthetic/client')
+    expect(described_class.new(data_dir: data_dir).entries.map(&:key)).to eq(entries.map(&:key))
+  end
+
+  it 'keeps pre-existing duplicate configurations renderable with distinct keys' do
+    path = File.join(data_dir, 'entry.yaml')
+    data = YAML.safe_load_file(path)
+    characters = data['accounts']['DOUG']['characters']
+    characters << characters.first.dup
+    File.write(path, YAML.dump(data))
+
+    keys = catalog.entries.map(&:key)
+    expect(keys.uniq.size).to eq(2)
+    expect(catalog.entries.map(&:key)).to eq(keys)
+    expect(catalog.entries.map(&:char_name)).to eq(%w[Bera Bera])
+  end
+
   describe 'master-password changes' do
     let(:current_password) { 'synthetic-current-master' }
     let(:new_password) { 'synthetic-new-master' }

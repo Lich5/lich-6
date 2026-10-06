@@ -22,6 +22,18 @@ RSpec.describe Lich::WebUI::Dispatcher do
     end.to raise_error(Lich::WebUI::Error, /terminated/)
   end
 
+  it 'disposes rejected work after owner termination without invoking it' do
+    dispatcher.shutdown_owner(owner)
+    disposed = []
+    called = []
+    expect do
+      dispatcher.enqueue(owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'button', event: :activate,
+                         coalescable: false, cleanup: -> { disposed << true }) { called << true }
+    end.to raise_error(Lich::WebUI::Error, /terminated/)
+    expect(disposed).to eq([true])
+    expect(called).to be_empty
+  end
+
   it 'keeps consecutive edits from different viewers separate' do
     started = Queue.new
     release = Queue.new
@@ -109,6 +121,7 @@ RSpec.describe Lich::WebUI::Dispatcher do
     started = Queue.new
     release = Queue.new
     delivered = Queue.new
+    disposed = []
     dispatcher.enqueue(
       owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'blocker',
       event: :activate, coalescable: false
@@ -118,11 +131,13 @@ RSpec.describe Lich::WebUI::Dispatcher do
     end
     started.pop
     expect(dispatcher.enqueue(
-      owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'input', event: :change, coalescable: true
+      owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'input', event: :change, coalescable: true,
+      cleanup: -> { disposed << :replaced }
     ) { delivered << 1 }).to eq(:queued)
     expect(dispatcher.enqueue(
       owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'input', event: :change, coalescable: true
     ) { delivered << 2 }).to eq(:coalesced)
+    expect(disposed).to eq([:replaced])
     3.times do |index|
       dispatcher.enqueue(
         owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'button',
@@ -132,6 +147,28 @@ RSpec.describe Lich::WebUI::Dispatcher do
     release << true
 
     expect(4.times.map { delivered.pop }).to eq([2, 3, 4, 5])
+  end
+
+  it 'disposes evicted edits while retaining already accepted terminal callbacks' do
+    stub_const('Lich::WebUI::Dispatcher::VIEWER_LIMIT', 2)
+    started = Queue.new
+    release = Queue.new
+    delivered = Queue.new
+    disposed = []
+    dispatcher.enqueue(owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'blocker', event: :activate,
+                       coalescable: false) { started << true; release.pop }
+    started.pop
+    dispatcher.enqueue(owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'edit', event: :change,
+                       coalescable: true, cleanup: -> { disposed << :evicted }) { delivered << :edit }
+    2.times do |index|
+      dispatcher.enqueue(owner: owner, page_id: 'page', viewer_id: 'viewer', cid: "terminal-#{index}", event: :activate,
+                         coalescable: false) { delivered << index }
+    end
+    expect(disposed).to eq([:evicted])
+    release << true
+    expect([delivered.pop, delivered.pop]).to eq([0, 1])
+  ensure
+    release << true
   end
 
   it 'refuses overflow without dropping an already accepted terminal event' do
