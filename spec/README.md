@@ -1,11 +1,11 @@
 # lich-5 Test Suite
 
-This directory contains RSpec tests for the lich-5 codebase.
+This directory contains RSpec tests and JavaScript renderer tests for the lich-5 codebase.
 
 ## Quick Start
 
 ```bash
-# Run all tests
+# Run Ruby tests
 rspec
 
 # Run specific file
@@ -17,6 +17,30 @@ rspec --format doc
 # Run with specific seed (for reproducing failures)
 rspec --seed 12345
 ```
+
+## WebUI JavaScript Tests
+
+From the repository root, install the locked test dependencies and run every
+`spec/webui/webui_*_test.cjs` suite:
+
+```bash
+npm ci --prefix spec/webui
+npm test --prefix spec/webui
+```
+
+Use Node 22.22.2+, 24.15.0+, or 26+ as specified in
+`spec/webui/package.json`. The lockfile pins the dependency tree; rerun `npm ci`
+after it changes. Dependencies are local to the ignored `spec/webui/node_modules`
+directory. No global installation or `NODE_PATH` is needed. Node and jsdom are
+test tools, not requirements for running Lich or converted scripts.
+
+The command runs both the lightweight renderer fixtures and the jsdom DOM tests,
+and exits unsuccessfully if a dependency cannot load or an assertion fails.
+RSpec does not invoke these suites. Browser layout requires actual browser
+checks; GTK visual parity requires comparison with the original GTK interface;
+OS-window geometry, restoration and cleanup require actual OS-window checks.
+The JavaScript suites alone do not establish any of those behaviors.
+GitHub Actions integration is not yet configured.
 
 ## Directory Structure
 

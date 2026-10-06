@@ -1,5 +1,5 @@
-// DOM unit checks, independent of a browser or live account. Uses the owner's
-// existing jsdom installation, resolved through NODE_PATH; installs nothing.
+// DOM unit checks, independent of a browser or live account. Install the locked
+// test dependencies with npm ci --prefix spec/webui; see spec/README.md.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -23,6 +23,65 @@ function fixture() {
   return { dom, sent, page: { controls: new Map(), bindings: {}, submissions: {} },
     receive: message => listeners.message({ data: JSON.stringify(message) }) };
 }
+
+for (const explicit of [false, true]) {
+  test(`editable choices preserve ${explicit ? 'an explicit empty ID' : 'an absent value'} on creation and restoration`, t => {
+    const { dom, page, sent } = fixture();
+    t.after(() => dom.window.close());
+    page.bindings.choice = ['change'];
+    const options = [{ value: '', label: 'Empty ID option' }, { value: 'undefined', label: 'Literal undefined' }];
+    const wrapper = dom.window.LichWebUI.render(page, {
+      type: 'select', cid: 'choice', props: { editable: true, options, ...(explicit ? { value: '' } : {}) }
+    });
+    const entry = wrapper.querySelector('input');
+    const picker = wrapper.querySelector('select');
+    const assertChoice = selected => {
+      assert.equal(entry.value, selected ? 'Empty ID option' : '');
+      assert.equal(picker.selectedIndex, selected ? 0 : -1);
+      assert.equal(entry.choiceValue(), '');
+    };
+    assertChoice(explicit);
+    entry.dispatchEvent(new dom.window.Event('change'));
+    assertChoice(explicit);
+    assert.equal(sent.length, 0, 'an unchanged entry must not create a selection or event');
+    if (!explicit) {
+      picker.value = '';
+      picker.dispatchEvent(new dom.window.Event('change'));
+      assertChoice(true);
+      assert.deepEqual(sent.at(-1).payload, { value: '' });
+    }
+    entry.restoreChoice('');
+    assertChoice(true);
+    entry.restoreChoice(undefined);
+    assertChoice(false);
+    entry.restoreChoice('');
+    assertChoice(true);
+  });
+}
+
+test('editable choices retain an explicitly selected empty ID across unrelated renders', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'choices' }] });
+  const frame = generation => ({ type: 'render', page: 'choices', generation,
+    bindings: { choice: ['change'], save: ['activate'] }, submissions: { save: ['choice'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'select', cid: 'choice', props: { editable: true, value: 'x',
+        options: [{ value: '', label: 'Empty ID option' }, { value: 'x', label: 'X' }] } },
+      { type: 'button', cid: 'save', props: { label: 'Save' } }
+    ] }
+  });
+  receive(frame(1));
+  const picker = dom.window.document.querySelector('select');
+  picker.value = '';
+  picker.dispatchEvent(new dom.window.Event('change'));
+  assert.deepEqual(sent.at(-1).payload, { value: '' });
+  receive(frame(2));
+  assert.equal(dom.window.document.querySelector('input').value, 'Empty ID option');
+  assert.equal(dom.window.document.querySelector('select').selectedIndex, 0);
+  dom.window.document.querySelector('button').click();
+  assert.deepEqual(sent.at(-1).submission, ['']);
+});
 
 test('plain text preserves chart line breaks and honors nonwrapping labels', () => {
   const { dom, page } = fixture();

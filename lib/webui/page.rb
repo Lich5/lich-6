@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'tree_builder'
+require_relative 'theme'
 
 module Lich
   module WebUI
@@ -63,11 +64,14 @@ module Lich
         @mutex.synchronize { @host_geometry = value&.dup }
       end
 
+      # Builds a fresh tree with the application theme unless explicitly styled.
+      # Viewer drafts and authored color/font overrides retain their own scope.
+      # @return [Render] validated tree, callbacks and submission scopes
       def render
         @render_mutex.synchronize do
           generation, root_props, shared_values = @mutex.synchronize do
             @generation += 1
-            props = @root_props.dup
+            props = { theme: Theme.current }.merge(@root_props)
             if @host_geometry
               props[:size] = @host_geometry.values_at(:width, :height)
               props[:position] = @host_geometry[:position] if @host_geometry[:position]

@@ -19,6 +19,30 @@ function viewer() {
   return f;
 }
 
+test('groups distinguish absent labels from blank labels without changing borderless layouts', () => {
+  const f = fixture('groups');
+  f.receive({ type: 'hello', pages: [{ address: 'groups', title: 'Groups' }] });
+  f.receive({ type: 'render', page: 'groups', generation: 1,
+    tree: { type: 'page', cid: 'page', props: { bare: true, density: 'compact' }, children: [
+      { type: 'group', cid: 'borderless', props: { label: '', border_width: 0 }, children: [] },
+      { type: 'group', cid: 'framed', props: { label: '', border_width: 1 }, children: [] },
+      { type: 'group', cid: 'default', props: { label: '' }, children: [] },
+      { type: 'group', cid: 'unlabeled', props: { border_width: 3 }, children: [] },
+      { type: 'group', cid: 'named', props: { label: 'Named' }, children: [] }
+    ] } });
+  const [borderless, framed, defaultFrame, unlabeled, named] = f.elements.pages.children[0].children;
+  assert.equal(borderless.dataset.borderless, 'true');
+  assert.equal(framed.dataset.borderless, undefined);
+  assert.equal(defaultFrame.dataset.borderless, undefined);
+  assert.equal(framed.dataset.emptyLabel, 'true');
+  assert.equal(defaultFrame.dataset.emptyLabel, 'true');
+  assert.equal(unlabeled.dataset.emptyLabel, undefined);
+  assert.equal(unlabeled.children.length, 0);
+  assert.equal(named.dataset.emptyLabel, undefined);
+  assert.equal(named.children[0].tagName, 'legend');
+  assert.equal(named.children[0].textContent, 'Named');
+});
+
 test('explicit native and shim page resize requests measure intrinsic content rather than the current viewport', () => {
   for (const viewport of [false, true]) {
     const f = fixture('form');
@@ -550,6 +574,39 @@ test('editable choices retain suggestions and submit literal custom text', () =>
   assert.deepEqual(f.sent.at(-1).payload, { value: 'auto' });
 });
 
+test('editable choices display labels while events, submission and refresh retain option IDs', () => {
+  const f = fixture('form');
+  f.receive({ type: 'hello', pages: [{ address: 'form', title: 'Form' }] });
+  const frame = generation => ({ type: 'render', page: 'form', generation,
+    bindings: { choice: ['change'], save: ['activate'] }, submissions: { save: ['choice'] },
+    tree: { type: 'page', cid: 'root', props: { bare: true }, children: [
+      { type: 'select', cid: 'choice', props: { editable: true, value: '0',
+        options: [{ value: '0', label: 'None' }, { value: '6', label: 'Custom' }] } },
+      { type: 'button', cid: 'save', props: { label: 'Close' } }
+    ] } });
+  f.receive(frame(1));
+  let root = f.elements.pages.children[0], row = root.children[0].children[0];
+  assert.equal(row.children[0].value, 'None');
+  root.children[1].listeners.click();
+  assert.deepEqual(f.sent.at(-1).submission, ['0']);
+  const chooser = row.children[1].children[1];
+  chooser.value = '6'; chooser.listeners.change();
+  assert.equal(row.children[0].value, 'Custom');
+  assert.deepEqual(f.sent.at(-1).payload, { value: '6' });
+  f.receive(frame(2));
+  root = f.elements.pages.children[0]; row = root.children[0].children[0];
+  assert.equal(row.children[0].value, 'Custom');
+  assert.equal(row.children[1].children[1].value, '6');
+  root.children[1].listeners.click();
+  assert.deepEqual(f.sent.at(-1).submission, ['6']);
+  row.children[0].value = 'literal text'; row.children[0].listeners.input();
+  root.children[1].listeners.click();
+  assert.deepEqual(f.sent.at(-1).submission, ['literal text']);
+  row.children[0].value = '0'; row.children[0].listeners.input();
+  assert.equal(row.children[0].value, 'None');
+  assert.deepEqual(f.sent.at(-1).payload, { value: '0' });
+});
+
 test('a requested editable choice height reaches its control and picker row', () => {
   const f = fixture('form');
   f.receive({ type: 'hello', pages: [{ address: 'form', title: 'Form' }] });
@@ -921,4 +978,32 @@ test('frame content alignment centers natural children without changing the fram
   assert.equal(frame.style.flexDirection, 'column');
   assert.equal(frame.style.justifyContent, 'center');
   assert.equal(frame.style.height, undefined);
+});
+
+
+test('natural grids retain framed control minima while explicit constraints and scrollers stay bounded', () => {
+  for (const viewport of [false, true]) {
+    const f = fixture('grid');
+    f.receive({ type: 'hello', pages: [{ address: 'grid', title: 'Grid' }] });
+    f.receive({ type: 'render', page: 'grid', generation: 1,
+      tree: { type: 'page', cid: 'page', props: { bare: true, viewport }, children: [
+        { type: 'grid', cid: 'grid', props: { cols: 2, homogeneous: false, expand_columns: [1, 2] }, children: [
+          { type: 'group', cid: 'frame', props: { label: 'Controls' }, children: [
+            { type: 'grid', cid: 'controls', props: { cols: 2, homogeneous: false }, children: [
+              { type: 'text_input', cid: 'entry', props: { min_width: 218 } },
+              { type: 'button', cid: 'button', props: { label: 'Delete', min_width: 80 } }
+            ] }
+          ] },
+          { type: 'group', cid: 'capped', props: { constrain_width: true }, children: [] },
+          { type: 'group', cid: 'explicit', props: { min_width: 100 }, children: [] },
+          { type: 'table', cid: 'table', props: { columns: [{ key: 'name', label: '' }], rows: [], wrap: false } }
+        ] }
+      ] } });
+    const [frame, capped, explicit, table] = f.elements.pages.children[0].children[0].children;
+    assert.equal(frame.style.minWidth, 'min-content');
+    assert.notEqual(capped.style.minWidth, 'min-content');
+    assert.equal(explicit.style.minWidth, '100px');
+    assert.equal(table.style.minWidth, '0px');
+    assert.equal(table.style.contain, 'inline-size');
+  }
 });

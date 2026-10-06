@@ -11,6 +11,23 @@ RSpec.describe Lich::WebUI::Service do
 
   after { service.stop }
 
+  it 'refreshes open native and adapter pages on theme changes without replacing explicit palettes' do
+    allow(Lich).to receive(:track_dark_mode).and_return(false)
+    pages = [{}, { theme: :light }, { theme: :dark }].each_with_index.map do |props, index|
+      registry.register(Lich::WebUI::Page.new(owner: self, id: "theme-#{index}", title: 'Theme', props: props) {})
+    end
+    published = Queue.new
+    adapter = Lich::WebUI::Adapter.new(owner: self, service: service, on_publish: proc { |page| published << page })
+    adapter.create(:page, title: 'Shim')
+    shim = Timeout.timeout(2) { published.pop }
+    pages.each { |page| service.refresh(page) }
+    allow(Lich).to receive(:track_dark_mode).and_return(true)
+    service.refresh_theme
+    expect(pages.map { |page| page.last_render.tree.props[:theme] }).to eq(%w[dark light dark])
+    expect(shim.last_render.tree.props[:theme]).to eq('dark')
+    expect(service.server).not_to be_running
+  end
+
   it 'reports callback failures through the default Lich logger without logging exception values' do
     messages = Queue.new
     allow(Lich).to receive(:log) { |message| messages << message }

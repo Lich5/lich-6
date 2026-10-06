@@ -184,7 +184,8 @@ module Lich
           }, children: :many, events: {}, value: nil,
         },
         group: {
-          properties: { label: property(SHORT, required: true), collapsible: property(BOOL, default: false),
+          # Omission means no label widget; an empty string retains the blank label requisition.
+          properties: { label: property(SHORT), collapsible: property(BOOL, default: false),
                         menu: property(enum(:context, :submenu)), constrain_width: property(BOOL, default: false) },
           children: :many, events: {}, value: nil,
         },
@@ -402,6 +403,9 @@ module Lich
 
       TABLE_PROPERTIES = {
         scrollable: property(BOOL, default: true),
+        # Single-line cells retain their natural width and scroll horizontally.
+        # Omission preserves existing wrapping tables, including shim consumers.
+        wrap: property(BOOL),
         row_height: property(integer(min: 1, max: BOUNDS[:geometry].end)),
         border_width: property(integer(min: 0, max: 8)),
         grid_lines: property(enum(:none, :horizontal, :vertical, :both)),

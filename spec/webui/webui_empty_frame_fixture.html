@@ -17,6 +17,6 @@
     return frame.querySelector('div').getBoundingClientRect().top - frame.getBoundingClientRect().top;
   };
   const result = Object.fromEntries(['native', 'shim', 'named', 'dark'].map(id => [id, topInset(id)]));
-  const pass = result.native === 15 && result.shim === 15 && result.named === 15 && result.dark === 0;
+  const pass = result.native === 15 && result.shim === 15 && result.named === 15 && result.dark === 15;
   document.getElementById('measured').textContent = `${pass ? 'PASS' : 'FAIL'} ${JSON.stringify(result)}`;
 </script>

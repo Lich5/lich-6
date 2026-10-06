@@ -29,6 +29,12 @@ RSpec.describe Lich::WebUI::SettingsForm do
     service.stop
   end
 
+  it 'inherits the stored dark preference instead of forcing light' do
+    allow(Lich).to receive(:track_dark_mode).and_return(true)
+    form.show
+    expect(form.page.last_render.tree.props[:theme]).to eq('dark')
+  end
+
   def invoke(label, submitted = [])
     render = form.page.last_render
     button = render.tree.each.find { |node| node.props[:label] == label }

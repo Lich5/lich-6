@@ -11,10 +11,11 @@ module Lich
         class Settings
           def self.default = new
 
+          # Reports the same preference as native pages so scripts can choose
+          # their original light/dark palettes without GTK runtime dependencies.
+          # @return [Boolean] whether the application prefers the dark theme
           def gtk_application_prefer_dark_theme?
-            # GTK's default preference is light. Match the compact page palette
-            # instead of claiming dark while rendering the browser's own theme.
-            false
+            Lich::WebUI::Theme.current == :dark
           end
         end
 

@@ -15,6 +15,30 @@ module Lich
 
       attr_reader :bindings, :submissions, :facilities
 
+      # Sets the page palette from render-time state (for example a launcher
+      # preference toggle). The ordinary page schema validates the value.
+      # @param value [Symbol, String] light or dark
+      # @return [Symbol, String] supplied palette
+      def theme(value)
+        @root.props[:theme] = value
+      end
+
+      # Composes a setup notice and action without owning Save/Close behavior.
+      # Pass a SettingsForm layout's save callable to retain its submission scope.
+      # @param notice [String] caller's exact notice text
+      # @param action [#call] renders the action with this builder and keywords
+      # @param label [String] caller's action label
+      # @param notice_props [Hash] text properties, including margins and wrapping
+      # @param action_props [Hash] action properties, including margins and sizing
+      # @param columns_props [Hash] overrides for the existing columns control
+      # @return [Draft] footer columns
+      def setup_footer(notice:, action:, label: 'Close', notice_props: {}, action_props: {}, **columns_props)
+        columns(**{ count: 2, compact: true, weights: [5, 1], gap: 0 }.merge(columns_props)) do
+          text(**{ font_style: :italic, content: notice, slot: '0' }.merge(notice_props))
+          action.call(self, **{ label: label, slot: '1', align: :end }.merge(action_props))
+        end
+      end
+
       def initialize(owner:, page_id:, title:, root_props: {}, validator: Validator.new)
         @owner = owner
         @page_id = page_id

@@ -171,6 +171,20 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(launcher.send(:render_state)[:dark_theme]).to be(false)
   end
 
+  it 'applies both theme toggle values to the launcher and persists through the existing catalog' do
+    host = Lich::WebUI::Service.new
+    allow(self).to receive(:service).and_return(host)
+    launcher.start
+    [true, false].each do |dark|
+      launcher.setting_changed(event({}, payload: { value: dark }), :dark_theme)
+      expect(catalog.calls).to include([:setting, :dark_theme, dark])
+      expect(launcher.render_tree.props[:theme]).to eq(dark ? 'dark' : 'light')
+    end
+  ensure
+    launcher.close
+    host&.stop
+  end
+
   context 'cancellation with the real launcher worker' do
     let(:executor) { described_class::SerialExecutor.new }
     let(:started) { Queue.new }

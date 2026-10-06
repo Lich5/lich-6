@@ -8,6 +8,15 @@ module Lich
     class SettingsForm
       attr_reader :page
 
+      # Formats already prepared choices without changing their values or order.
+      # Blank and duplicate choices remain present; callers own coercion, labels
+      # that differ from values, and the selected/default value.
+      # @param choices [Enumerable] prepared string choices
+      # @return [Array<Hash>] records for the existing select/radio contract
+      def self.choice_options(choices)
+        choices.map { |value| { value: value, label: value } }
+      end
+
       # Prepares a settings editor without displaying it or persisting values.
       # Hashes, arrays and strings in the initial values and fields are copied.
       # The owning script supplies any normalization and persistence policy.
@@ -33,7 +42,7 @@ module Lich
         @normalize = normalize || proc { |draft| draft }
         @tabbed = tabbed
         @layout = layout
-        @props = { bare: true, theme: :light, density: :compact }.merge(props)
+        @props = { bare: true, density: :compact }.merge(props)
         @input_revision = 0
         @completion = Future.new
         @error = ''
