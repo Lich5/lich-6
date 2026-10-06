@@ -1,211 +1,135 @@
-# WebUI integration onto proposed 5.22
+# WebUI architecture and integration
 
-Updated October 5, 2026. This describes the WebUI integration onto the proposed
-5.22 baseline. Proposed 5.22 is a snapshot, not a released upstream tag.
+WebUI supplies the graphical launcher, native script interfaces, and a bounded
+GTK compatibility layer. Both native and compatible GTK script interfaces use
+the same component contract, renderer, and window lifecycle. Core WebUI is
+independent of the compatibility layer and does not require the GTK gem.
 
-## Baseline and sequence
+## Rendering and event flow
 
-- Integration repository: `Lich5/lich-6`. Paths below are repository-relative.
-- EO main incorporated: `0bd852bc04e98bc2050f352b42ffb05c27dafb95`
-  through synchronization PR [#11](https://github.com/Lich5/lich-6/pull/11).
-- Current integration baseline: `35585d3993d3d181dcedd7cbd4c626e43c1babf2`,
-  including foundation PR [#10](https://github.com/Lich5/lich-6/pull/10)
-  and native cutover PR [#12](https://github.com/Lich5/lich-6/pull/12),
-  followed by hardening PR [#13](https://github.com/Lich5/lich-6/pull/13).
-- The fork retains `LICH_VERSION = '5.22.0'`; EO still identifies this snapshot
-  as `5.21.0`. The version override is excluded from future EO feature PRs.
-- Current feature branch: `webui/04-theme-abstractions`, based on `35585d39`.
-- Original foundation baseline: `b95e324823a2db71af72329236d556a47b28e4df`
-  (EO `58ffd5f19b609df0a22c9060f8ad72781a2bc559` plus the version override).
-- The three old 5.21 WebUI PRs, #7, #8 and #9, are closed and unmerged.
-
-| Slice | Scope | Branch | Publication |
-| --- | --- | --- | --- |
-| 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Merged: PR #10, `2ceb2fc0` |
-| 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Merged: PR #12, `ce044431` |
-| 3 | Viewer/submission cleanup, launcher cancellation, stable saved-entry identity, service-wide trust documentation and GTK CI cleanup | `webui/03-hardening` | Merged: PR #13, `35585d39` |
-| 4 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | `webui/04-theme-abstractions` | Implemented locally for human review; script adoption follows |
-
-After slice 2, exercise actual launcher/login, map and uberbar_eo, including
-close/reopen and cleanup. After slice 4, finish practical acceptance of all 15
-script conversions. All four slices and the conversions form the early alpha
-package, with the corresponding EO PR sequence prepared for beta review.
-Script logic, including existing quirks, must remain unchanged.
-
-### Documentation follow-up and review requirement
-
-Owner decision, October 5, 2026: address the existing native-cutover docstring
-backlog after completing the 15 script conversions. This is a deferral of the
-current backlog only. PR #12's reported coverage was 15.88% across 233 touched
-functions against a 60% threshold. YARD reported 45.93% documentation coverage
-for the seven new production files, with 51 of 86 counted methods undocumented.
-
-For every future diff presented for review or merge, include meaningful YARD
-documentation for added or changed methods and verify documentation coverage
-before handoff. The owner expects no docstring-coverage warning on those diffs.
-Check the touched scope against the applicable review threshold; whole-file
-coverage and successful parsing do not establish changed-method coverage.
-Inspect the GitHub review's documentation check when available and resolve any
-warning before describing the diff as ready. Do not suppress the check, lower
-its threshold, or add filler comments to satisfy it. Local CodeRabbit reruns
-remain disallowed unless the owner changes that instruction.
-
-Review new EO main commits at each day's start and incorporate relevant changes
-deliberately. Record the new incorporated SHA and run affected checks. A fetch
-alone does not update this implementation. No daily automation is configured.
-
-### Deferred proposal: YAML/keychain failure recovery
-
-Captured at the owner's request from [PR #13's security architecture review](https://github.com/Lich5/lich-6/pull/13#issuecomment-6007048989),
-covering commit `c32a06521fa4711e8681cf752594d741b480c1ee`.
-CodeRabbit proposed coordinating YAML account-store and keychain recovery across
-write failures and process interruption. The launcher close/write gate orders
-admission against cancellation; it does not provide atomic recovery across both
-stores.
-
-This is deferred follow-up work, not a blocker for PR #13 and not authorization
-to implement a persistence redesign. A future assessment should identify partial
-write states, propose recovery behavior that preserves existing credentials and
-settings, and validate failure/interruption handling with disposable stores and
-synthetic credentials. Obtain owner agreement on that design before implementing.
-
-## Hardening slice: implementation and trust boundary
-
-This slice preserves the bounded shim and UI contract. Its shared `WorkItem`
-owns callback cleanup through completion, exception, queue refusal, replacement,
-eviction and cancellation. The dispatcher and launcher executor both use it;
-canceling a running callback leaves its resources with that callback until its
-ensure completes. Cleanup runs outside queue locks. Launcher shutdown refuses
-new posts and disposes queued credentials rather than draining queued writes.
-
-The launcher has one close/write gate shared with frontend editing and preference
-persistence. Authentication remains outside the gate. A close or viewer departure
-accepted before a write or launch prevents that step; a step admitted first
-finishes before close proceeds. Teardown runs outside the launch gate. Credentials
-returned by authentication after cancellation are explicitly discarded. Network
-authentication already in progress is not forcibly interrupted.
-
-One connection cannot attach to the same page twice, including a resume attempt
-onto an occupied connection/page pair. Independent viewers and the existing
-60-second reconnect window remain supported. Saved-entry keys now encode the
-existing account/character/game/frontend/custom-command identity rather than
-global list position. Legacy duplicates retain distinct presentation keys using
-an occurrence suffix within their identical tuple; existing duplicate mutation
-rules and persistence formats are unchanged. These keys are not capabilities.
-
-### Authenticated viewer trust
-
-The supported model trusts an authenticated viewer across the entire WebUI
-service: registered pages from every owner and permitted served-image routes.
-The session cookie and WebSocket admission establish service access, not
-per-page authorization. Page addresses, owner labels, resume tokens and the new
-saved-entry keys must not be presented as access-control boundaries. Owner
-identity controls callback execution and cleanup, not isolation from other
-authenticated viewers. File-root, extension and realpath restrictions still apply.
-
-Consequently, do not share an authenticated session or launch token with someone
-who should see only one script's page. Page-scoped sharing would need a separately
-designed and authorized capability model; this slice does not silently add one.
-The existing loopback, Origin, Host, cookie and token checks remain in force.
-Explicit carrier disposal reduces retention; it is not a guarantee that Ruby or
-the operating system has erased every possible copy of a submitted string.
-
-### Hardening review and validation
-
-The EO references motivating this slice are #1651 (stable identities), #1652
-and #1657 (cancellation before irreversible steps), plus the retained security
-review below. The alternate launcher/shim architecture and broader control
-vocabulary are not imported. The five deferred `BUNDLE_WITHOUT` edits remove
-only the obsolete `gtk` group; no dependency versions change.
-
-Baseline runs against the original `main` implementations reproduced five
-attachment/submission failures and six launcher/identity failures. Regressions
-use deterministic queue handoffs, real executor threads, disposable saved-entry
-files and synthetic credentials. No owner credentials, installed scripts or
-interactive browser windows are used.
-
-- Final bare `rspec`: **8,643 examples, zero failures, two existing browser-gated
-  pending cases** (seed 12236).
-- Final bare `rubocop`: **1,268 files, no offenses**.
-- YARD diff audit: **45/45 changed or new production methods documented**, including
-  private methods, with no parser warnings. This checks method bodies intersecting
-  the diff, not whole-file coverage padded by unchanged documentation. The older
-  documentation backlog remains deferred as agreed.
-- All five edited workflow YAML files parse; `git diff --check` is clean.
-- Native launcher, WebUI runtime and bounded-shim automated checks pass.
-- Owner-requested local CodeRabbit agent review: **22 files, zero findings**.
-- GitHub CodeRabbit review of `c32a0652`: **zero actionable findings**, minimal
-  merge risk, low security architecture risk and no retained architecture-level
-  concerns. Its touched-function docstring coverage was **74.19%**, passing the
-  60% threshold; its measurement scope differs from the production-method audit.
-- GitHub RSpec, RuboCop, Ruby syntax and Windows ActiveSessions handoff checks
-  passed. The YAML/keychain recovery proposal is captured above as deferred work.
-
-Files in this slice (the pre-existing documentation deferral is preserved):
-
-```text
-.github/workflows/curate-pre-branch.yaml
-.github/workflows/rspec_tests.yaml
-.github/workflows/rubocop.yaml
-.github/workflows/ruby_syntax.yaml
-.github/workflows/windows_active_sessions.yaml
-docs/webui-integration.md
-lib/common/webui_launcher.rb
-lib/common/webui_launcher/catalog.rb
-lib/common/webui_launcher/frontend_tab.rb
-lib/common/webui_launcher/serial_executor.rb
-lib/webui/dispatcher.rb
-lib/webui/runtime.rb
-lib/webui/viewer_store.rb
-lib/webui/work_item.rb
-spec/lib/common/webui_launcher/catalog_integration_spec.rb
-spec/lib/common/webui_launcher/frontend_tab_spec.rb
-spec/lib/common/webui_launcher/serial_executor_spec.rb
-spec/lib/common/webui_launcher_workflows_spec.rb
-spec/lib/webui/dispatcher_spec.rb
-spec/lib/webui/runtime_spec.rb
-spec/lib/webui/viewer_store_spec.rb
-spec/lib/webui/work_item_spec.rb
+```mermaid
+flowchart LR
+    native["Native pages and settings forms"] --> page["Page and component tree"]
+    script["GTK script calls"] --> shim["Script-local GTK shim"]
+    shim --> adapter["WebUI adapter"]
+    adapter --> page
+    page --> service["WebUI service and runtime"]
+    service -->|"Render messages over WebSocket"| renderer["Browser renderer"]
+    renderer -->|"Events and submitted values"| service
+    service --> dispatcher["Owner-scoped dispatcher"]
+    dispatcher --> callback["Ruby callback"]
+    callback -->|"Updated state and refresh"| page
+    service -->|"Authenticated launch URL"| host["BrowserWindow and BrowserLauncher"]
+    host -->|"Dedicated app window"| renderer
 ```
 
-For EO replay, use hardening feature commit `c32a06521fa4711e8681cf752594d741b480c1ee` after
-the foundation and cutover slices; omit fork version and synchronization commits.
-PR #13 is merged. These automated and review results do not replace the remaining
-visual/live-game acceptance work for the script conversions.
+The main responsibilities are:
 
-## Theme and presentation helpers: slice 4
-
-The existing GTK preference path remains authoritative: `StartupTheme.apply`
-uses `Lich.track_dark_mode`, persists an explicit `--dark-mode` override, and
-the retained session-launch code passes that preference to child sessions.
-`WebUI::Theme.current` reads that same setting without duplicating persistence
-or selecting the operating system's theme. Native pages and setup forms inherit
-it unless they explicitly declare `theme: :light` or `:dark`. The bounded shim's
-existing `Gtk::Settings.default.gtk_application_prefer_dark_theme?` query now
-reports the preference, allowing unchanged script palette functions to work.
-No additional shim widgets or methods are admitted.
-
-The launcher renders its initial preference and applies subsequent toggles;
-after the existing catalog persists the change, its service refreshes already
-rendered pages. Viewer drafts survive that refresh. Menus, dialogs, tables,
-disabled controls and progress troughs use the shared palette. Explicit component
-colors, fonts, dimensions and progress fractions retain their authority. Common
-compact layout metrics apply equally to both themes: the old generic dark CSS
-had incorrectly incorporated CreatureBar-specific dimensions and fonts.
-
-### Small helpers and the rule of three
-
-These helpers extend existing Ruby presentation classes. They introduce no new
-widgets, renderer cases, persistence, validation, sorting or cancellation rules.
-Their adoption in the conversion sources belongs to the next script phase.
-
-| API | Responsibility | Previously identified consumers |
+| Layer | Responsibility | Source |
 | --- | --- | --- |
-| `TreeBuilder#setup_footer` | Existing two-column italic notice and action; caller supplies wording, spacing, wrapping and the original save/close callable | BlackArts, ebounty, eloot; also ecleanse, eherbs, ewaggle, go2, bigshot |
-| `ListSettingsForm.text_list_spec` | Lazy single text-column rows with unchanged caller-owned value, Add and Delete callbacks | BlackArts, ebounty, eloot |
-| `SettingsForm.choice_options` | Map already-prepared strings to value/label records; preserve order, duplicates and blank choices | bigshot, ebounty, eloot; also go2, soundfx, calibrate_creaturebar |
+| Author API | Register, render, open and close owner-scoped pages | [WebUI API](../lib/api/webui.rb), [WebUI facade](../lib/webui.rb) |
+| Presentation | Build declarative component trees, forms and reusable compositions | [TreeBuilder](../lib/webui/tree_builder.rb), [SettingsForm](../lib/webui/settings_form.rb), [ListSettingsForm](../lib/webui/list_settings_form.rb) |
+| Compatibility | Translate supported script-local GTK calls into the shared contract | [ScriptScope](../lib/common/script_scope.rb), [GTK shim](../lib/common/script_scope/gtk/) |
+| Contract | Define and validate properties, events and child relationships | [Contract](../lib/webui/contract.rb), [Validator](../lib/webui/validator.rb) |
+| Runtime | Register pages, track viewers, dispatch callbacks and manage modals | [Service](../lib/webui/service.rb), [Runtime](../lib/webui/runtime.rb) |
+| Window host | Launch and monitor browser processes and retain window geometry | [BrowserWindow](../lib/webui/browser_window.rb), [BrowserLauncher](../lib/webui/browser_launcher.rb), [WindowGeometryStore](../lib/webui/window_geometry_store.rb) |
+| Renderer | Paint shared controls and send user events and submissions | [JavaScript](../lib/webui/assets/app.js), [CSS](../lib/webui/assets/app.css) |
 
-Example within an existing SettingsForm layout:
+Scripts retain ownership of their calculations, defaults, ordering, persistence,
+validation and cancellation behavior. Presentation helpers do not supply those
+policies. Native consumers use WebUI directly; they do not pass through the shim.
+The compatibility layer is a supported subset of GTK, not a complete GTK runtime.
+Unsupported interfaces require a native conversion or a separately designed
+contract extension.
+
+## Window hosting and lifecycle
+
+The current host uses dedicated Google Chrome app windows, with Microsoft Edge
+also supported on Windows. The launcher searches known installation locations.
+App windows provide an OS title bar without ordinary browser tabs or address
+controls. This implementation uses external browser processes, not an embedded
+WebKit or Electron runtime.
+
+`Service` owns one `BrowserWindow` per registered page. Repeated opens of the
+same page reuse that ownership. Each managed browser process has an isolated
+temporary profile; its exit monitor removes the profile. Closing one page acts
+on its owned process, not the user's ordinary browser or another page's window.
+
+Geometry precedence is explicit caller geometry, then saved geometry where the
+page does not own configure handling, then the page's default size and position.
+The geometry store is scoped by game and character when that context is available.
+Browser content dimensions and OS-window dimensions are distinct; programmatic
+window positioning and resizing remain subject to browser and platform behavior.
+The current browser host does not provide GTK-equivalent always-on-top behavior.
+
+Owner termination cancels modals, revokes the owner's file routes, shuts down its
+callback dispatch, unregisters its pages, and destroys viewer state. Explicit
+window closure is distinguished from a temporary transport disconnect. Ordinary
+disconnect retains a bounded 60-second resume window; repeated attachment to the
+same page on an occupied connection is rejected.
+
+## Authentication and trust boundaries
+
+The loopback service uses short-lived, single-use launch tokens to establish
+port-specific HttpOnly, SameSite=Strict cookies. Launch tokens expire after
+60 seconds. Treat launch URLs as credentials: do not log, persist, or share them.
+Host and Fetch Metadata checks apply to requests; WebSocket admission also
+requires an allowed loopback Origin. Image serving requires authentication,
+permitted roots and extensions, and realpath containment.
+
+An authenticated viewer is trusted across the entire WebUI service, including
+registered pages from different owners and permitted image routes. Authentication
+is not a per-page capability. Page addresses, owner labels, resume tokens and
+saved-entry keys are not access-control boundaries. Owner identity determines
+callback execution and cleanup, not isolation between authenticated viewers.
+Page-scoped sharing would require a separate authorization design.
+
+`WorkItem` owns callback cleanup through completion, exceptions, queue refusal,
+replacement, eviction and cancellation. Cleanup occurs outside queue locks.
+Canceling a running callback leaves cleanup with that callback until it exits.
+Sensitive-value disposal reduces retention; it cannot guarantee erasure of every
+copy Ruby or the operating system may have made.
+
+The native launcher shares a close/write gate with frontend editing and
+preference persistence. A close or viewer departure accepted before a write or
+launch prevents that step; an admitted step finishes before close proceeds.
+Authentication runs outside the gate and is not forcibly interrupted; credentials
+returned after cancellation are discarded. The gate does not make account YAML
+and keychain writes a single recoverable transaction.
+
+## Theme behavior
+
+`StartupTheme.apply` retains the application's existing `Lich.track_dark_mode`
+preference, explicit `--dark-mode` override, and child-session propagation.
+`WebUI::Theme.current` reads that preference without introducing another settings
+store or selecting the operating system's theme. Standalone consumers without
+Lich settings default to light mode.
+
+Native pages and settings forms inherit the application preference unless they
+explicitly request `theme: :light` or `:dark`. The shim's
+`Gtk::Settings.default.gtk_application_prefer_dark_theme?` query reports the same
+preference so script palette functions can retain their existing behavior.
+
+The launcher persists preference changes through its catalog and refreshes
+rendered pages. Viewer drafts survive the refresh. Shared menus, dialogs, tables,
+disabled controls and progress troughs use the palette; explicit component
+colors, fonts, dimensions and progress fractions retain their authority.
+Compact layout metrics are shared by both themes. Script-specific styling belongs
+in explicit presentation properties.
+
+## Reusable presentation helpers
+
+These helpers compose existing controls. They do not add persistence, validation,
+sorting, default selection, or cancellation behavior.
+
+| API | Purpose |
+| --- | --- |
+| `TreeBuilder#setup_footer` | Compose an italic notice and existing action; the caller supplies wording, spacing, wrapping and the action renderer. |
+| `ListSettingsForm.text_list_spec` | Describe lazy single-column rows while retaining caller-owned value, Add and Delete callbacks. |
+| `SettingsForm.choice_options` | Convert prepared strings to value/label records while preserving order, duplicates and blank choices. |
+
+Within an existing `SettingsForm` layout, pass its `save` callable to retain the
+form's submission scope:
 
 ```ruby
 tree.setup_footer(
@@ -215,657 +139,24 @@ tree.setup_footer(
 )
 ```
 
-`action:` renders the caller's existing button; it does not itself save or close.
-`text_list_spec(value:, add:, delete:, label: '', clear_after_add: false)` retains
-the callbacks themselves and reads current values on each render. In particular,
-the original chained `uniq!.sort!` failure is neither repaired nor swallowed.
-`choice_options` does not select a default or make duplicate values valid under
-the select contract; caller-owned choice preparation remains necessary.
-
-### Closed EO WebUI comparison
-
-Reviewed the current closed/unmerged `webui` list, the twelve diffs and their
-inline review comments: #1634, #1648, #1649, #1650, #1651, #1652, #1653, #1654,
-#1655, #1657, #1658 and #1659. No additional theme/helper implementation was found
-to import into this slice.
-
-- [#1634](https://github.com/elanthia-online/lich-5/pull/1634) and
-  [#1652](https://github.com/elanthia-online/lich-5/pull/1652) retain the launcher
-  preference/catalog writer; [#1649](https://github.com/elanthia-online/lich-5/pull/1649)
-  and [#1657](https://github.com/elanthia-online/lich-5/pull/1657) preserve child
-  dark-mode propagation. This slice keeps those behaviors.
-- [#1650](https://github.com/elanthia-online/lich-5/pull/1650)'s client refresh and
-  draft-preservation concerns informed the live check: theme changes must retain
-  unsaved input. Its alternate client/contract is not imported wholesale.
-- [#1653](https://github.com/elanthia-online/lich-5/pull/1653) and
-  [#1654](https://github.com/elanthia-online/lich-5/pull/1654) use a different shim
-  scope; they do not justify expanding the accepted bounded shim.
-- #1648/#1651 retain their previously recorded foundation/hardening disposition;
-  #1655's dual-launcher default is superseded by native cutover. #1658 remains a
-  reference for the deferred documentation backlog. [#1659](https://github.com/elanthia-online/lich-5/pull/1659)'s
-  chips, grouped options and list-box select are additional widgets/features,
-  not prerequisites for these small helpers, and remain outside scope.
-
-This is a theme/helper comparison, not a claim that every unrelated finding in
-the EO stack has been independently closed.
-
-### Validation and remaining review
-
-- New regressions reproduced forced-light native pages/forms and the shim's
-  false preference query before correction. A small shared-control browser
-  fixture failed on theme-dependent geometry and missing dark paint before the
-  CSS change, then passed after it.
-- Bare `rspec`: **8,654 examples, zero failures, two existing browser-gated
-  pending cases**, seed 48955. The service refresh test also passed after being
-  adjusted to await actual adapter publication rather than invoke a private method.
-- Bare `rubocop`: **1,271 files, no offenses**. YARD diff audit:
-  **19/19 changed or new production methods documented**, no parser warnings.
-- **76 dependency-free renderer checks passed.** The older
-  `webui_renderer_test.cjs` remains unavailable because this host lacks `jsdom`;
-  no dependency was installed.
-- Actual headless Chrome passed the new theme fixture and seven existing control
-  fixtures: checkbox indicators, empty frames, tree-view paint, textarea
-  requisitions, entry widths, selected rows and separators. No page errors.
-- Actual GTK Adwaita controls retained 34px button/entry heights and 15px labels
-  in both palettes, with unchanged font settings. The measured label and entry
-  foregrounds are checked in the new browser fixture.
-- A disposable real-service/launcher check toggled both themes across the
-  launcher, native settings form and bounded shim. It retained unsaved native
-  text and a 50% progress fraction while the frozen `spellson` palette function
-  selected the original light/dark colors. Fixture boundaries: in-memory catalog
-  preference, empty account/frontend data and synthetic spell data; no login or
-  game action. Browser and service fixtures were closed afterward.
-
-The browser checks establish content rendering and callback behavior, not OS
-window geometry or acceptance of all script conversions. In particular, the
-CreatureBar/calibrator conversion must express any original custom styling
-through existing explicit properties during its script review; it must not rely
-on generic dark mode to supply script-specific metrics. Existing explicit light
-page overrides in conversion sources also remain for individual review against
-their originals. No conversion source or installed script was changed here.
-Cross-platform visual review and the next PR's GitHub review/CI remain external
-checks. The deferred YAML/keychain recovery proposal remains separate.
-
-Exact slice-4 working-tree file inventory (including this integration record):
-
-```text
-docs/webui-integration.md
-lib/common/script_scope/gtk/style.rb
-lib/common/script_scope/gtk/widgets.rb
-lib/common/webui_launcher.rb
-lib/webui/assets/app.css
-lib/webui/list_settings_form.rb
-lib/webui/page.rb
-lib/webui/registry.rb
-lib/webui/service.rb
-lib/webui/settings_form.rb
-lib/webui/theme.rb
-lib/webui/tree_builder.rb
-spec/lib/common/script_scope_widgets_spec.rb
-spec/lib/common/webui_launcher_workflows_spec.rb
-spec/lib/webui/presentation_helpers_spec.rb
-spec/lib/webui/service_spec.rb
-spec/lib/webui/settings_form_spec.rb
-spec/lib/webui/theme_spec.rb
-spec/webui/webui_checkbox_indicator_fixture.html
-spec/webui/webui_empty_frame_fixture.html
-spec/webui/webui_theme_fixture.html
-```
-
-For EO replay, use the eventual human-created slice-4 feature commit(s) after the
-foundation, native cutover and hardening slices, omitting fork version/sync commits.
-
-## Preservation and PR 1 contents
-
-The preserved source is `test/integration` at
-`14c5d16bbbcc60693686620a223d556035cb0650`, together with its then-uncommitted
-40 modified tracked files and 36 untracked files. The imported snapshot is
-recorded in commit `3115873349912ae5a9c6c5e220fa918fc83c0a0a`.
-
-PR 1 imports 86 files from that preserved state, with every imported source
-hash checked before writing. It adds the existing contract 2.9.0, 29 component
-types and ten-operation imperative adapter, renderer, loopback service,
-browser ownership/geometry, forms and bounded script-local GTK compatibility.
-The shim population and public component types are not expanded.
-
-No pre-existing 5.22 tracked file is modified. In particular, `lich.rbw`,
-`lib/common/script.rb`, the main/async/frontend paths, dependency files and
-release configuration retain the baseline. Normal startup is still GTK in this
-slice. The WebUI API can be explicitly required for testing; activation in the
-normal application belongs to slice 2. Core WebUI has no dependency on the shim
-or the GTK gem. No script conversion or installed script was changed.
-
-Corrections made after import, each demonstrated by a failing-before regression:
-
-| Production file | Correction |
-| --- | --- |
-| `lib/webui/dispatcher.rb` | Refuse callbacks after owner termination; coalesce only within the same viewer; report callback class and source location without exception values |
-| `lib/webui/runtime.rb` | Pass the logger to its default dispatcher; capture detach lifecycle contexts before a close callback can clear the attachment |
-| `lib/webui/service.rb` | Use Lich's logger by default when available |
-| `lib/webui/server.rb` | Port-specific authentication cookies; bounded nonblocking WebSocket writes, including waiting for the writer mutex |
-| `lib/webui/modal_coordinator.rb` | Resolve a modal on user close; remove a registration when opening fails before completion cleanup is installed |
-| `lib/webui/adapter.rb` | Preserve distinct root identities in handle lookup and render batching, even when their properties are equal |
-| `lib/webui.rb` | Resolve the active service before registering a native page after service shutdown |
-
-These are changes to the imported core foundation, not script-specific
-workarounds. Fourteen added regression examples cover them, including identity-based
-termination for distinct-but-equal owners and support for symbol owners. The imported shim test
-also now permits real GTK already loaded by 5.22's tests while verifying that
-the script-local shim neither creates nor replaces GTK constants in core.
-Additional import-only lint cleanup consists of alignment/blank lines in the
-contract and specs, unused test arguments, ASCII source notation for two Unicode
-test values, and a documented lint exception for HostThread's cleanup-and-reraise
-on interruption. These do not change runtime behavior.
-
-## Native cutover: review and EO replay record
-
-Proposed PR title: **Make native WebUI the default launcher and remove GTK**.
-
-Implementation base: `e9d8feebf1fa9220a4f15b84e7416c092ab542a6`.
-Preserved implementation source: `14c5d16bbbcc60693686620a223d556035cb0650`.
-The launcher and its tests are ported from that source; existing 5.22 files
-receive only the required integration changes. The owner committed the initial
-cutover as `1c40c04459def1dca4aedf829d519fd8a19f1a24`. CodeRabbit follow-up corrections
-remain in the working tree. Record the final reviewed feature head and Lich5/EO
-PR URLs when the owner publishes them.
-
-Default graphical startup now opens the native launcher, including saved/manual
-login, account management, Frontends and GUI Settings. Script execution activates
-the existing script-local shim. GTK UI modules, their obsolete tests, the gem
-and its orphaned locked dependencies are removed. The five existing CI workflow
-exclusion lists are unchanged to keep this PR within the review file limit; their
-obsolete `gtk` entries will be removed in the security-hardening PR. Native authentication calls the retained
-account, encryption and persistence services; it owns the interactive unlock
-workflow previously embedded in GTK helpers. On non-Windows hosts, the generic
-`Lich.msgbox` fallback writes error details to stderr (the debug log after
-initialization) and prints a short notice with the log path to the original
-`STDOUT`. This avoids the game-client stream assigned to `$stdout` later.
-Before logging initializes, errors continue to print directly to stderr.
-
-The 5.22 script execution guards, connection transport, detachable-client
-handling, combat provenance, frontend logging, Events and sentinel support are
-preserved. SessionLauncher receives the existing explicit path-flag override
-used by native multi-launch. Existing domain tests remain; GTK-only tests are
-replaced by the preserved native workflow, catalog and Frontends tests.
-
-No `lib/webui*` foundation/renderer or `lib/common/script_scope*` shim file is
-changed in this slice. No script conversion source or installed script is
-changed. No dependencies were installed. Recovery material was read in place;
-no worktrees or duplicate source trees were created. Disposable validation
-files are outside the repository.
-
-### Validation
-
-CodeRabbit follow-up reproduced both reported defects in six failing-before
-examples. The master-password loop now scrubs each temporary plaintext in its
-own ensure block, preserving success, validation failure, encryption exceptions
-and keychain rollback on write failure. Manual favorite marking preserves an
-existing favorite and matches the custom-launch variant. Regressions use the
-real catalog and disposable YAML; encryption runs locally with synthetic values
-and the keychain boundary is a double. All 21 focused examples pass after repair.
-
-- After CodeRabbit corrections, full bare `rspec`: **8,598 examples, zero
-  failures, two existing browser-gated pending cases** (seed 49493). The owner
-  selected GitHub for the next CodeRabbit review; no local rerun was started.
-- Full bare `rspec` before restoring the persistence spec: **8,586 examples,
-  zero failures, two existing browser-gated pending cases** (seed 51129).
-- Restored the six `account_frontend_edit_spec.rb` persistence examples that
-  had been incorrectly grouped with GTK-only removals. Their assertions are
-  unchanged; an explicit Utilities require replaces the former indirect GTK
-  launcher load. Focused run: six examples, zero failures; RuboCop clean.
-- Final bare `rubocop`: 1,265 files inspected, no offenses.
-- Entrypoint-focused checks: five examples, zero failures. They run actual
-  `lich.rbw` with empty arguments, authenticate HTTP/WebSocket access, render
-  all four launcher tabs, toggle GUI Settings and close cleanly without GTK.
-  Browser process creation is replaced by a protocol client in that automated
-  test; the launcher start/await implementations are real.
-- Both actual trusted and label-based script binding entrypoints expose the
-  script-local compatibility constants without defining GTK in core or loading
-  the GTK gem.
-- Bundler parses all 76 remaining locked specs with a complete dependency
-  closure and no gtk3. No unrelated gem versions changed.
-- YARD parses the seven imported production files without warnings. Lifecycle
-  comments describe browser ownership, shutdown and the blocking launch result;
-  this is documentation validation, not a claim of complete documentation.
-- Workflow YAML parses successfully; `git diff --check` passes.
-
-Actual macOS launch used the production entrypoint and BrowserLauncher with
-empty disposable data. Chrome connected to the service and persisted the
-launcher geometry (840 x 680 at [22, 52]). The native UI tool selected a separate
-existing **Lich v5.21.0** process instead of the owned **5.22** process; its Window
-menu exposed only that older window. No old window was closed or reloaded and
-no blank tabs were created. Terminating only the owned Chrome process let the
-launcher exit with status 0 and remove its temporary browser profile. The exit
-report contained no GTK-family loaded features. This verifies browser-process
-exit cleanup, not a native close-button interaction or visual parity.
-
-### Non-Windows message notice: owner-selected CR response
-
-For PR #12's message-dialog finding, the owner confirmed that the supported
-macOS/Linux launch procedure starts Lich from a terminal. Preserve error detail
-in the debug log and emit a brief terminal notice with its path. No graphical
-message-box or confirmation-button system is introduced; no current core caller
-requests a button response. The Windows MessageBox path remains unchanged.
-If terminal output is closed or its pipe is broken, the logged error remains
-available and notification failure does not interrupt error handling. Explicit
-shell redirection still determines where terminal output goes.
-
-The regression reproduces the missing notice before correction. Subprocess
-checks cover early startup, a redirected game-client `$stdout`, a closed
-terminal stream and a broken output pipe. The focused message/startup suite
-passes nine examples (seed 37163); RuboCop passes both changed Ruby files.
-This implements the owner-selected response to the message-notice finding.
-
-### Remaining six PR #12 inline corrections
-
-- `FrontendChoices.selectable?` resolves aliases through its supplied catalog,
-  matching the catalog used to produce choices.
-- Leaving enhanced encryption requires the submitted current master password,
-  restoring the retired GTK confirmation before plaintext/standard conversion.
-- Optional manual-entry or favorite persistence failures are logged without
-  credential values and do not abort an already authenticated game launch.
-  The warning remains in the log because successful manual launch closes the UI.
-- Legacy migration accepts the catalog's `master_password:` keyword. A supplied
-  enhanced password produces the validation test and encrypted entries without
-  reading or modifying the keychain. Omitting it preserves existing keychain
-  lookup behavior.
-- Catalog writes refuse to create a partial YAML file while `entry.dat` awaits
-  conversion. The launcher displays existing CLI conversion guidance for failed
-  edits; optional manual saves log that guidance while continuing login. Legacy
-  records remain available and the CLI migration remains possible.
-- Empty or stale frontend selections leave the current draft and component
-  identities intact instead of raising `KeyError`.
-
-Focused validation passes 93 examples (seed 42810), including real catalog
-migration in all three encryption modes and unchanged EntryStore coverage.
-The full bare `rspec` sweep passes **8,621 examples, zero failures, two existing
-browser-gated pending cases** (seed 46193). Bare `rubocop` inspects **1,265 files
-with no offenses**. `git diff --check` is clean. No local CodeRabbit rerun was
-performed; the next external review remains on GitHub.
-All data is disposable and passwords synthetic. These corrections add no
-foundation/renderer/shim changes or script changes. The branch remains at 97
-changed paths relative to `main`; workflow GTK exclusion cleanup remains in
-the security-hardening follow-up so this PR stays below the review file limit.
-
-Files in the final native-cutover review update (subsequently merged in PR #12):
-
-| File | Scope |
-| --- | --- |
-| `lib/common/frontend_choices.rb` | Injected catalog aliases |
-| `lib/common/webui_launcher.rb` | Downgrade confirmation, optional persistence failures, conversion notice |
-| `lib/common/webui_launcher/catalog.rb` | Refuse partial legacy saves |
-| `lib/common/webui_launcher/frontend_tab.rb` | Ignore stale/empty selections |
-| `lib/common/authentication/entry_store.rb` | Accept the migration password keyword |
-| `spec/lib/common/frontend_choices_spec.rb` | Alias regression |
-| `spec/lib/common/webui_launcher_workflows_spec.rb` | Downgrade, persistence and notice regressions |
-| `spec/lib/common/webui_launcher/catalog_integration_spec.rb` | Legacy preservation and real migration regressions |
-| `spec/lib/common/webui_launcher/frontend_tab_spec.rb` | Selection regressions |
-| `lib/lich.rb` | Previously completed owner-selected terminal message notice |
-| `spec/lib/lich_msgbox_spec.rb` | Previously completed message notice regressions |
-| `docs/webui-integration.md` | Review decisions, file inventory and validation |
-
-No installed files were modified and no scope exceptions were needed. The owner
-subsequently committed and merged these native-cutover corrections in PR #12.
-
-### Remaining review
-
-1. In the 5.22 app window, confirm launcher appearance and tab/dialog behavior,
-   native close/reopen, resizing and saved geometry restoration.
-2. Perform a real account login and initial `map.lic` / `uberbar_eo` smoke in
-   the running game session. Automated authentication cases use disposable
-   values and collaborators; no owner credentials were used.
-3. Follow with the agreed security-hardening PR, then dark mode and the three
-   abstractions. Finish the 15 conversions before assembling the alpha package.
-
-For EO, replay only this slice's eventual feature commits onto the incorporated
-EO snapshot plus the foundation slice. Exclude the fork version override and
-synchronization commits. Compare the resulting file diff and rerun affected
-checks if EO advances. Publication remains human-only.
-
-### Exact native-cutover files
-
-97 paths: 18 additions, 35 modifications (including this record), and 44
-removals. Status letters below describe the complete slice relative to its implementation
-base, including the committed import and unstaged review corrections.
-
-```text
-M Gemfile
-M Gemfile.lock
-M docs/webui-integration.md
-M lib/common/authentication/cli_password.rb
-M lib/common/authentication/entry_store.rb
-D lib/common/authentication/gui.rb
-M lib/common/authentication/login_helpers.rb
-M lib/common/cli/cli_conversion.rb
-M lib/common/cli/cli_orchestration.rb
-M lib/common/frontend.rb
-D lib/common/gtk.rb
-D lib/common/gui/accessibility.rb
-D lib/common/gui/account_manager_ui.rb
-D lib/common/gui/components.rb
-D lib/common/gui/conversion_ui.rb
-D lib/common/gui/encryption_mode_change.rb
-D lib/common/gui/favorites_manager.rb
-D lib/common/gui/frontend_manager_tab.rb
-D lib/common/gui/frontend_selector.rb
-D lib/common/gui/game_selection.rb
-D lib/common/gui/login_tab_utils.rb
-D lib/common/gui/manual_frontend_selector.rb
-D lib/common/gui/manual_login_tab.rb
-D lib/common/gui/master_password_change.rb
-D lib/common/gui/master_password_prompt.rb
-D lib/common/gui/master_password_prompt_ui.rb
-D lib/common/gui/parameter_objects.rb
-D lib/common/gui/password_change.rb
-D lib/common/gui/password_manager.rb
-D lib/common/gui/saved_login_tab.rb
-M lib/common/gui/state.rb
-D lib/common/gui/tab_communicator.rb
-D lib/common/gui/theme_utils.rb
-M lib/common/gui/utilities.rb
-D lib/common/gui/window_settings.rb
-D lib/common/gui_login.rb
-M lib/common/script.rb
-M lib/common/session_launcher.rb
-M lib/gemcheck.rb
-M lib/gemstone/combat/async_processor.rb
-M lib/init.rb
-M lib/lich.rb
-M lib/main/early_exit.rb
-M lib/main/help_text.rb
-M lib/main/main.rb
-M lib/main/startup_theme.rb
-D lib/util/gtk_compaction.rb
-M lib/util/memoryreleaser.rb
-M lich.rbw
-M spec/lib/common/authentication/entry_store_spec.rb
-D spec/lib/common/authentication/gui_spec.rb
-M spec/lib/common/authentication/integration_spec.rb
-D spec/lib/common/gtk_edge_cases_spec.rb
-D spec/lib/common/gtk_spec.rb
-M spec/lib/common/gui/account_frontend_edit_spec.rb
-D spec/lib/common/gui/account_manager_ui_spec.rb
-D spec/lib/common/gui/conversion_ui_spec.rb
-D spec/lib/common/gui/encryption_mode_change_spec.rb
-D spec/lib/common/gui/favorites_manager_spec.rb
-D spec/lib/common/gui/frontend_manager_tab_spec.rb
-D spec/lib/common/gui/frontend_selector_spec.rb
-D spec/lib/common/gui/game_selection_spec.rb
-D spec/lib/common/gui/login_tab_utils_frontend_spec.rb
-D spec/lib/common/gui/manual_login_tab_spec.rb
-D spec/lib/common/gui/master_password_change_spec.rb
-D spec/lib/common/gui/master_password_prompt_spec.rb
-D spec/lib/common/gui/saved_frontend_workflow_spec.rb
-D spec/lib/common/gui_login_spec.rb
-M spec/lib/common/session_launcher_spec.rb
-M spec/lib/gemcheck_spec.rb
-M spec/lib/gemstone/combat/async_processor_spec.rb
-M spec/lib/lich_msgbox_spec.rb
-M spec/lib/main/help_text_spec.rb
-M spec/lib/main/startup_theme_spec.rb
-D spec/lib/util/gtk_compaction_spec.rb
-M spec/lib/util/memoryreleaser_spec.rb
-M spec/login_spec_helper.rb
-D spec/native/frontend_inline_smoke.rb
-M spec/spec_helper.rb
-A lib/common/frontend_choices.rb
-A lib/common/frontend_editor.rb
-A lib/common/webui_launcher.rb
-A lib/common/webui_launcher/catalog.rb
-A lib/common/webui_launcher/frontend_tab.rb
-A lib/common/webui_launcher/serial_executor.rb
-A lib/common/webui_launcher/window_geometry_store.rb
-A spec/lib/common/frontend_choices_spec.rb
-A spec/lib/common/frontend_editor_spec.rb
-A spec/lib/common/webui_launcher/catalog_integration_spec.rb
-A spec/lib/common/webui_launcher/frontend_tab_spec.rb
-A spec/lib/common/webui_launcher/window_geometry_store_spec.rb
-A spec/lib/common/webui_launcher_redux_spec.rb
-A spec/lib/common/webui_launcher_workflows_spec.rb
-A spec/lib/main/default_webui_acceptance_spec.rb
-A spec/lib/main/webui_default_spec.rb
-A spec/support/default_webui_acceptance_check.rb
-A spec/support/default_webui_acceptance_probe.rb
-```
-
-## Upstream proposal disposition
-
-The twelve EO PRs labeled `webui` were closed and unmerged at assessment.
-They are reference proposals, not a second stack to import wholesale.
-
-| Proposal | Disposition |
-| --- | --- |
-| #1634, #1649, #1655 | Earlier vendor/dual-launcher/default-WebUI approaches are superseded by this staged plan; GTK removal belongs to slice 2 |
-| #1648 | Selected owner termination, viewer coalescing, cookie isolation, WebSocket deadline and modal cleanup corrections are included; stale-event ordering, bounded shutdown, listener recovery and rendering outside the adapter lock already exist in the preserved source |
-| #1650 | Preserve the existing bounded contract instead of importing its broader revision; retained renderer already has bounded stale-event retry |
-| #1651, #1652 | Reconcile authentication, saved-entry identity, frontend and cancellation changes during native cutover |
-| #1653, #1654 | Do not replace the existing script-local bounded shim with the alternative broader implementation/session worker |
-| #1657 | Logger delivery and close/detach race corrected here; launcher password/favorite handling belongs to slice 2; window-discovery changes target a different host implementation |
-| #1658, #1659 | YARD expansion and chips/contract expansion are not included |
-
-Other #1648 proposals have not been adopted: queue performance changes,
-a maximum served-file size, timed cancellation after a transient modal
-disconnect, and Windows presentation/adoption changes. Revisit relevant lifecycle
-cases during slice 2's actual launcher integration; do not represent PR 1 as the
-whole of #1648 or all platform acceptance. A modal user-close now cancels it;
-a transport loss alone retains the existing reconnect/timeout/owner-termination
-behavior. No new reconnect grace policy is introduced in this slice.
-
-## Validation and limits
-
-CodeRabbit follow-up: three regressions reproduced the root-identity and service
-restart defects before correction. After correction, the foundation/shim suite
-passed 279 examples with zero failures and two browser-gated cases (seed 31271).
-RuboCop found no offenses in the four changed Ruby files. The native restart
-test stubs browser process creation; it does not claim OS-window acceptance.
-
-The initial import at `31158733` had the validation results below. Browser-content checks
-are distinct from OS-window geometry, restoration, independent-window cleanup,
-GTK visual comparisons and live game acceptance. Those later acceptance steps
-are not closed by these tests.
-
-- Final focused foundation/shim suite: 276 examples, zero failures, two
-  browser-gated cases (seed 62369).
-- Both gated cases separately passed in actual headless Google Chrome:
-  checkbox and entry values/activation, separator rendering, callback delivery;
-  two examples, zero failures, no browser page errors. No visible blank tabs.
-- Dependency-free renderer checks: 76 passed, including a rerun after relocating
-  all 14 renderer tests/fixtures to `spec/webui/`. Their contents are unchanged;
-  the same directory depth preserves existing relative asset paths. The empty
-  top-level test directory was removed.
-- Older `webui_renderer_test.cjs` could not run because `jsdom` is absent from
-  this host's module paths. No dependencies were installed.
-- RuboCop: all 69 added Ruby files inspected, no offenses.
-- Ruby compilation and whitespace checks: all added Ruby files compile; all
-  87 additions pass whitespace checks.
-- Final full 5.22 suite: **8,750 examples, zero failures, two browser-gated
-  cases**, seed 63710, Ruby 4.0.5. Both gated cases passed separately above.
-
-The first full run found only the shim test's assumption that global GTK was
-absent (8,748 examples, one failure, two gated cases). That assumption conflicts
-with this staged integration; the corrected test checks namespace preservation.
-A first browser harness run used the wrong `hr` selector for the existing
-`div.webui-divider`; correcting the disposable harness yielded the passing
-browser run above. Neither issue required a product rendering change.
-
-## Security review carried into native cutover
-
-Owner-supplied security architecture review, recorded October 5, 2026, covering
-PR #10 through `9a8d378e949b7da41f9f3119160a45da85130e50`. Overall assessment:
-**Moderate**. The findings below are reported observations from that review,
-not independently revalidated by recording them here. The owner subsequently
-selected a separate security-hardening PR after native cutover. These findings
-were open at cutover; the hardening slice above now implements and tests their
-cleanup corrections and documents the existing trust boundary. The original
-review observations below are retained as context, not a claim that the native
-cutover itself fixed them. No capability redesign is authorized or included.
-
-- **Deferred CI cleanup (owner-approved):** remove `gtk:` from `BUNDLE_WITHOUT`
-  in `.github/workflows/curate-pre-branch.yaml`, `rspec_tests.yaml`,
-  `rubocop.yaml`, `ruby_syntax.yaml`, and `windows_active_sessions.yaml`.
-  These five one-line edits were withdrawn from native cutover solely to fit
-  CodeRabbit's 100-file review limit. GTK is already absent from the runtime
-  and Gemfile; keeping an unused exclusion group does not reinstall it.
-
-- **Medium, reported observed: repeated attachment retains viewer state.** An
-  authenticated connection can repeatedly attach to one page without a resume
-  token. Each attachment remains in the resume index while the connection index
-  is overwritten. Disconnect/detach cleans only the latest mapping; older
-  entries have no expiry, retain values, participate in refresh delivery, and
-  can make an owner appear to have viewers after disconnection. Ordinary resume
-  expiry and page destruction do not repair this repeated-attach path.
-- **Inferred impact:** repetition permits persistent memory and render-work
-  amplification affecting other pages in the shared host. This requires
-  authenticated local access; it is not an unauthenticated remote attack.
-- **Low, reported observed: canceled sensitive submissions bypass disposal.**
-  Explicit disposal currently belongs to the callback's ensure block. Owner
-  shutdown removes queued callbacks without running that block, and enqueue
-  refusal after snapshot construction has no snapshot-disposal path. Both
-  bypass SensitiveValue's overwrite-and-clear operation. Normal callback
-  completion and raw-input scrubbing are countercontrols. This is a cleanup
-  gap, not evidence of serialization leakage or externally accessible plaintext.
-- **Reported trust boundary:** authentication grants service-wide visibility,
-  not a page-specific capability. WebSocket greetings expose registered page
-  descriptors, attachments resolve supplied page addresses, and file requests
-  use the shared session cookie. Callbacks retain the selected page owner's
-  authority. Owner attribution governs lifecycle, not viewer-to-owner access.
-- **Existing controls reported by the review:** single-use launch tokens expire
-  after 60 seconds; port-named cookies are HttpOnly and SameSite=Strict; Host and
-  Fetch Metadata checks apply, with loopback Origin checks for WebSockets. File
-  access requires authentication, image-extension filtering, permitted roots
-  and realpath containment. Missing Origin on an authenticated file GET alone
-  does not demonstrate a cross-origin bypass. Ordinary disconnect has a
-  60-second resume window; page destruction clears viewer indexes and values.
-  Owner termination cancels modals, revokes file routes, shuts down dispatch,
-  unregisters pages and destroys viewer state. Startup was unchanged in PR #10.
-- **Trust decision retained for the security-hardening PR:** document whether every
-  authenticated viewer is trusted across all owners and registered file roots.
-  If page-specific trust is required, assess explicit capabilities; opaque page
-  addresses and owner attribution must not be represented as authorization.
-
-## Publishing the same feature for EO review
-
-The following title and description record the foundation slice. The native
-cutover has its own replay record below.
-
-Proposed PR title: **Add WebUI foundation and bounded script compatibility**.
-
-Proposed description: Add the preserved WebUI renderer, authenticated loopback
-service, native browser host, forms and script-local compatibility layer onto
-the proposed 5.22 baseline. Correct callback ownership, viewer coalescing,
-multi-session authentication, write deadlines and modal lifecycle issues with
-focused regressions. Normal startup remains unchanged until the subsequent
-native cutover PR. Validation and remaining platform/browser limits are recorded
-in this document.
-
-This feature's implementation base is the full `b95e3248` SHA above. CodeRabbit
-reviewed initial import `3115873349912ae5a9c6c5e220fa918fc83c0a0a` and identified
-the adapter identity, service restart and documentation issues corrected here.
-PR descriptions should record the publication URLs and subsequent reviewed
-commit range.
-
-`Lich5/lich-6` shares history with EO but is **not registered as a GitHub fork**.
-Do not assume GitHub will accept a cross-repository PR from it. The owner has
-EO write access, so a matching feature branch in EO (or a true GitHub fork) is
-the publication route. The local upstream push URL remains disabled.
-
-For each owner-published slice, record its Lich5 PR URL, EO PR URL, implementation
-base, feature commit list and reviewed head. Replay only those feature commits
-onto the recorded EO baseline plus any predecessor slices. Do not include the
-fork's version bump or future daily synchronization commits in the feature PR.
-Compare the resulting feature diff; rebasing/squashing may change commit IDs.
-While an EO predecessor is unmerged, retain an explicit dependency or target its
-review branch. Record and retest any adjustment required by newer EO code.
-
-## Exact foundation files
-
-Historical PR #10 additions, including this integration record. These were new
-relative to its original PR base; native-cutover changes are listed separately.
-
-- `docs/webui-integration.md`
-- `lib/api/webui.rb`
-- `lib/common/script_scope.rb`
-- `lib/common/script_scope/gtk/boot.rb`
-- `lib/common/script_scope/gtk/dialogs.rb`
-- `lib/common/script_scope/gtk/displays.rb`
-- `lib/common/script_scope/gtk/inputs.rb`
-- `lib/common/script_scope/gtk/layout.rb`
-- `lib/common/script_scope/gtk/session.rb`
-- `lib/common/script_scope/gtk/style.rb`
-- `lib/common/script_scope/gtk/widgets.rb`
-- `lib/webui.rb`
-- `lib/webui/adapter.rb`
-- `lib/webui/assets/app.css`
-- `lib/webui/assets/app.js`
-- `lib/webui/assets/index.html`
-- `lib/webui/browser_launcher.rb`
-- `lib/webui/browser_window.rb`
-- `lib/webui/component.rb`
-- `lib/webui/contract.rb`
-- `lib/webui/dispatcher.rb`
-- `lib/webui/errors.rb`
-- `lib/webui/file_service.rb`
-- `lib/webui/future.rb`
-- `lib/webui/host_thread.rb`
-- `lib/webui/image_size.rb`
-- `lib/webui/list_settings_form.rb`
-- `lib/webui/modal_coordinator.rb`
-- `lib/webui/page.rb`
-- `lib/webui/protocol.rb`
-- `lib/webui/registry.rb`
-- `lib/webui/runtime.rb`
-- `lib/webui/sensitive_value.rb`
-- `lib/webui/server.rb`
-- `lib/webui/service.rb`
-- `lib/webui/settings_form.rb`
-- `lib/webui/submission.rb`
-- `lib/webui/tree_builder.rb`
-- `lib/webui/validator.rb`
-- `lib/webui/viewer_store.rb`
-- `lib/webui/websocket.rb`
-- `lib/webui/window_geometry_store.rb`
-- `spec/webui/webui_checkbox_indicator_fixture.html`
-- `spec/webui/webui_compact_presentation_test.cjs`
-- `spec/webui/webui_empty_frame_fixture.html`
-- `spec/webui/webui_entry_intrinsic_fixture.html`
-- `spec/webui/webui_renderer_fixture.cjs`
-- `spec/webui/webui_renderer_test.cjs`
-- `spec/webui/webui_selected_row_fixture.html`
-- `spec/webui/webui_separator_fixture.html`
-- `spec/webui/webui_table_editor_test.cjs`
-- `spec/webui/webui_textarea_requisition_fixture.html`
-- `spec/webui/webui_treeview_paint_fixture.html`
-- `spec/webui/webui_treeview_paint_fixture.js`
-- `spec/webui/webui_window_geometry_test.cjs`
-- `spec/webui/webui_window_isolation_test.cjs`
-- `spec/lib/common/script_scope_redux_spec.rb`
-- `spec/lib/common/script_scope_widgets_spec.rb`
-- `spec/lib/webui/adapter_factory_spec.rb`
-- `spec/lib/webui/adapter_spec.rb`
-- `spec/lib/webui/assets_spec.rb`
-- `spec/lib/webui/bounded_contract_spec.rb`
-- `spec/lib/webui/browser_launcher_spec.rb`
-- `spec/lib/webui/compact_presentation_spec.rb`
-- `spec/lib/webui/contract_foundation_spec.rb`
-- `spec/lib/webui/contract_spec.rb`
-- `spec/lib/webui/dispatcher_spec.rb`
-- `spec/lib/webui/file_service_spec.rb`
-- `spec/lib/webui/future_spec.rb`
-- `spec/lib/webui/image_size_spec.rb`
-- `spec/lib/webui/list_settings_form_spec.rb`
-- `spec/lib/webui/modal_coordinator_spec.rb`
-- `spec/lib/webui/native_legacy_presentation_spec.rb`
-- `spec/lib/webui/native_typography_spec.rb`
-- `spec/lib/webui/page_spec.rb`
-- `spec/lib/webui/protocol_spec.rb`
-- `spec/lib/webui/runtime_spec.rb`
-- `spec/lib/webui/sensitive_value_spec.rb`
-- `spec/lib/webui/server_spec.rb`
-- `spec/lib/webui/service_spec.rb`
-- `spec/lib/webui/settings_form_spec.rb`
-- `spec/lib/webui/tree_builder_submission_spec.rb`
-- `spec/lib/webui/validator_spec.rb`
-- `spec/lib/webui/viewer_store_spec.rb`
-- `spec/lib/webui/websocket_spec.rb`
-- `spec/lib/webui/window_geometry_store_spec.rb`
-- `spec/lib/webui/window_lifecycle_spec.rb`
+Use notice text that matches the script's behavior. `action:` renders the caller's
+button; the helper itself does not save or close anything.
+
+`text_list_spec(value:, add:, delete:, label: '', clear_after_add: false)` reads
+current values on each render and passes mutation callbacks through unchanged.
+It neither normalizes values nor swallows callback errors. `choice_options` does
+not select a default or make duplicate values valid under the select contract;
+choice preparation remains the caller's responsibility.
+
+## Validation
+
+See the [test suite README](../spec/README.md) for Ruby and JavaScript commands
+and test conventions. Ruby tests cover contracts, callbacks, lifecycle and
+integration boundaries; the JavaScript suites cover renderer logic and DOM
+behavior. The JavaScript suites run separately from RSpec.
+
+Actual browser runs establish browser layout and interaction. Visual equivalence
+requires comparison with the original GTK interface. Native geometry, focus,
+restoration and independent-window cleanup require actual OS-window checks.
+Mocks, jsdom, responsive viewports and browser-tab closure do not establish those
+native behaviors. Game-connected behavior requires validation in a game session.

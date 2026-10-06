@@ -36,8 +36,10 @@ test tools, not requirements for running Lich or converted scripts.
 
 The command runs both the lightweight renderer fixtures and the jsdom DOM tests,
 and exits unsuccessfully if a dependency cannot load or an assertion fails.
-RSpec does not invoke these suites. These tests do not establish browser layout,
-GTK visual parity, or OS-window behavior; those still require browser checks.
+RSpec does not invoke these suites. Browser layout requires actual browser
+checks; GTK visual parity requires comparison with the original GTK interface;
+OS-window geometry, restoration and cleanup require actual OS-window checks.
+The JavaScript suites alone do not establish any of those behaviors.
 GitHub Actions integration is not yet configured.
 
 ## Directory Structure
