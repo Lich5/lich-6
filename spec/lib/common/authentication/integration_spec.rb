@@ -101,8 +101,7 @@ RSpec.describe 'Authentication module integration' do
   end
 
   describe 'module loading order' do
-    # Verify that requiring gui_login.rb loads all dependencies correctly
-    # This catches missing require statements
+    # Verify that native launcher/authentication support loads its dependencies.
 
     it 'loads EntryStore module' do
       expect(defined?(Lich::Common::Authentication::EntryStore)).to eq('constant')

@@ -7,7 +7,6 @@ require_relative '../../../login_spec_helper'
 require_relative '../../../../lib/common/gui/state'
 require_relative '../../../../lib/common/authentication/entry_store'
 require_relative '../../../../lib/common/gui/master_password_manager'
-require_relative '../../../../lib/common/gui/master_password_prompt'
 
 # Alias for easier test access
 State = Lich::Common::GUI::State
@@ -36,7 +35,6 @@ RSpec.describe Lich::Common::Authentication::EntryStore do
       allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password).and_return(nil)
       allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test).and_return('validation_test')
       allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password).and_return(true)
-      allow(Lich::Common::GUI::MasterPasswordPrompt).to receive(:show_create_master_password_dialog).and_return('TestPassword123')
       allow(State).to receive(:load_saved_entries).and_return([])
       allow(described_class).to receive(:save_entries).and_return(true)
       allow(described_class).to receive(:encrypt_password).and_return('encrypted')
@@ -216,7 +214,7 @@ RSpec.describe Lich::Common::Authentication::EntryStore do
           .and_return('ExistingPassword123')
       end
 
-      it 'returns existing password without prompting' do
+      it 'returns the existing password' do
         existing_password = 'ExistingPassword123'
 
         result = described_class.send(:ensure_master_password_exists)
@@ -229,54 +227,12 @@ RSpec.describe Lich::Common::Authentication::EntryStore do
       before do
         allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
           .and_return(nil)
-        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
-          .and_return('validation_test')
-        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
-          .and_return(true)
       end
 
-      it 'shows dialog to create password' do
-        allow(Lich::Common::GUI::MasterPasswordPrompt).to receive(:show_create_master_password_dialog)
-          .and_return('NewPassword123')
-
-        described_class.send(:ensure_master_password_exists)
-
-        expect(Lich::Common::GUI::MasterPasswordPrompt).to have_received(:show_create_master_password_dialog).once
-      end
-
-      it 'returns nil if user cancels' do
-        allow(Lich::Common::GUI::MasterPasswordPrompt).to receive(:show_create_master_password_dialog)
-          .and_return(nil)
-
+      it 'returns nil so the native WebUI or CLI can obtain one' do
         result = described_class.send(:ensure_master_password_exists)
 
         expect(result).to be_nil
-      end
-
-      it 'creates validation test' do
-        password = 'NewPassword123'
-
-        allow(Lich::Common::GUI::MasterPasswordPrompt).to receive(:show_create_master_password_dialog)
-          .and_return(password)
-
-        expect(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
-          .with(password)
-          .and_return('validation_test')
-
-        described_class.send(:ensure_master_password_exists)
-      end
-
-      it 'returns password and validation test on success' do
-        password = 'NewPassword123'
-
-        allow(Lich::Common::GUI::MasterPasswordPrompt).to receive(:show_create_master_password_dialog)
-          .and_return(password)
-
-        result = described_class.send(:ensure_master_password_exists)
-
-        expect(result).to be_a(Hash)
-        expect(result[:password]).to eq(password)
-        expect(result[:validation_test]).to eq('validation_test')
       end
     end
   end
