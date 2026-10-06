@@ -70,6 +70,12 @@ module Lich
         @mutex.synchronize { @pages.size }
       end
 
+      # Takes a snapshot without holding the registry lock while pages render.
+      # @return [Array<Page>] currently registered pages
+      def pages
+        @mutex.synchronize { @pages.values }
+      end
+
       def address_for(page)
         @mutex.synchronize { @page_addresses.fetch(page) }
       rescue KeyError

@@ -122,6 +122,14 @@ module Lich
         runtime.refresh(page)
       end
 
+      # Repaints existing windows after the persisted preference changes.
+      # Explicit page themes still win; unrendered pages pick up the preference
+      # on their first render. This does not open windows or start the listener.
+      # @return [void]
+      def refresh_theme
+        registry.pages.each { |page| refresh(page) if page.last_render }
+      end
+
       def terminate_owner(owner)
         modals.terminate_owner(owner)
         file_service.revoke_owner(owner)

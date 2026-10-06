@@ -294,11 +294,13 @@ module Lich
           TOPLEVEL = :toplevel
           Allocation = Data.define(:width, :height)
 
+          # Creates a compact window inheriting the application's GTK preference.
+          # @param kind [Symbol, String] :toplevel or the window title
           def initialize(kind = :toplevel)
             super()
             session.refuse(self, :new) unless kind == :toplevel || kind.is_a?(String)
             @props[:title] = kind.is_a?(String) ? kind : ''
-            @props.merge!(bare: true, theme: :light, density: :compact)
+            @props.merge!(bare: true, density: :compact)
             session.register(self)
           end
 

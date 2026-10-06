@@ -202,6 +202,8 @@ module Lich
 
       private
 
+      # Composes the launcher with its current preference and workflow state.
+      # @return [WebUI::Page] unregistered launcher page
       def build_page
         launcher = self
         Lich::WebUI::Page.new(
@@ -213,6 +215,7 @@ module Lich
           }
         ) do
           state = launcher.__send__(:render_state)
+          theme(state[:dark_theme] ? :dark : :light)
           manual_controls = nil
           tabs(key: 'launcher-tabs', names: TABS, selected: state[:initial_tab],
                on: { select: ->(_event) {} }) do
@@ -554,7 +557,7 @@ module Lich
       # @return [void]
       def setting_changed(event, setting)
         value = event.payload.fetch(:value)
-        commit do
+        accepted = commit do
           @mutex.synchronize do
             case setting
             when :persistent then @persistent = value
@@ -570,6 +573,7 @@ module Lich
           end
           reload_catalog if setting == :autosort
         end
+        @service.refresh_theme if accepted && setting == :dark_theme
         refresh
       end
 

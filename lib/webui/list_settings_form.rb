@@ -8,6 +8,21 @@ module Lich
     # Scripts own rows, mutations and submitted values. This class supplies
     # identities and selection only; it never normalizes list contents.
     class ListSettingsForm < SettingsForm
+      # Describes a single text column using caller-owned values and mutations.
+      # Reads remain lazy so replaced arrays are reflected on the next render.
+      # Add/Delete callbacks are passed through without validation or normalization.
+      # @param value [#call] returns the current text list
+      # @param add [#call] existing callback receiving entered text
+      # @param delete [#call] existing callback receiving the selected row index
+      # @param label [String] original column label, including an empty label
+      # @param clear_after_add [Boolean] caller's existing entry-clearing policy
+      # @return [Hash] definition accepted by ListSettingsForm's lists argument
+      def self.text_list_spec(value:, add:, delete:, label: '', clear_after_add: false)
+        { columns: [{ key: 'text', label: label }],
+          rows: proc { value.call.map { |text| { 'text' => text } } },
+          value: value, add: add, delete: delete, clear_after_add: clear_after_add }
+      end
+
       def initialize(lists:, **options)
         @lists = lists
         @selection = {}

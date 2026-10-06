@@ -8,12 +8,13 @@ Updated October 5, 2026. This describes the WebUI integration onto the proposed
 - Integration repository: `Lich5/lich-6`. Paths below are repository-relative.
 - EO main incorporated: `0bd852bc04e98bc2050f352b42ffb05c27dafb95`
   through synchronization PR [#11](https://github.com/Lich5/lich-6/pull/11).
-- Current integration baseline: `ce0444317b294f6ece118054171f72b9554e7870`,
+- Current integration baseline: `35585d3993d3d181dcedd7cbd4c626e43c1babf2`,
   including foundation PR [#10](https://github.com/Lich5/lich-6/pull/10)
-  and native cutover PR [#12](https://github.com/Lich5/lich-6/pull/12).
+  and native cutover PR [#12](https://github.com/Lich5/lich-6/pull/12),
+  followed by hardening PR [#13](https://github.com/Lich5/lich-6/pull/13).
 - The fork retains `LICH_VERSION = '5.22.0'`; EO still identifies this snapshot
   as `5.21.0`. The version override is excluded from future EO feature PRs.
-- Current feature branch: `webui/03-hardening`, based on `ce044431`.
+- Current feature branch: `webui/04-theme-abstractions`, based on `35585d39`.
 - Original foundation baseline: `b95e324823a2db71af72329236d556a47b28e4df`
   (EO `58ffd5f19b609df0a22c9060f8ad72781a2bc559` plus the version override).
 - The three old 5.21 WebUI PRs, #7, #8 and #9, are closed and unmerged.
@@ -22,8 +23,8 @@ Updated October 5, 2026. This describes the WebUI integration onto the proposed
 | --- | --- | --- | --- |
 | 1 | Existing WebUI foundation, browser host, renderer and bounded shim; selected correctness fixes | `webui/01-foundation-shim` | Merged: PR #10, `2ceb2fc0` |
 | 2 | Native launcher, login/settings/Frontends, authentication integration, startup/script activation and GTK runtime removal | `webui/02-native-cutover` | Merged: PR #12, `ce044431` |
-| 3 | Viewer/submission cleanup, launcher cancellation, stable saved-entry identity, service-wide trust documentation and GTK CI cleanup | `webui/03-hardening` | Local working-tree changes for human review |
-| 4 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | To be assigned | Subsequent PR |
+| 3 | Viewer/submission cleanup, launcher cancellation, stable saved-entry identity, service-wide trust documentation and GTK CI cleanup | `webui/03-hardening` | Merged: PR #13, `35585d39` |
+| 4 | Functional preference-driven dark mode; `setup_footer`, `text_list_spec`, `choice_options` | `webui/04-theme-abstractions` | Implemented locally for human review; script adoption follows |
 
 After slice 2, exercise actual launcher/login, map and uberbar_eo, including
 close/reopen and cleanup. After slice 4, finish practical acceptance of all 15
@@ -52,6 +53,21 @@ remain disallowed unless the owner changes that instruction.
 Review new EO main commits at each day's start and incorporate relevant changes
 deliberately. Record the new incorporated SHA and run affected checks. A fetch
 alone does not update this implementation. No daily automation is configured.
+
+### Deferred proposal: YAML/keychain failure recovery
+
+Captured at the owner's request from [PR #13's security architecture review](https://github.com/Lich5/lich-6/pull/13#issuecomment-6007048989),
+covering commit `c32a06521fa4711e8681cf752594d741b480c1ee`.
+CodeRabbit proposed coordinating YAML account-store and keychain recovery across
+write failures and process interruption. The launcher close/write gate orders
+admission against cancellation; it does not provide atomic recovery across both
+stores.
+
+This is deferred follow-up work, not a blocker for PR #13 and not authorization
+to implement a persistence redesign. A future assessment should identify partial
+write states, propose recovery behavior that preserves existing credentials and
+settings, and validate failure/interruption handling with disposable stores and
+synthetic credentials. Obtain owner agreement on that design before implementing.
 
 ## Hardening slice: implementation and trust boundary
 
@@ -116,8 +132,14 @@ interactive browser windows are used.
   the diff, not whole-file coverage padded by unchanged documentation. The older
   documentation backlog remains deferred as agreed.
 - All five edited workflow YAML files parse; `git diff --check` is clean.
-- Native launcher, WebUI runtime and bounded-shim automated checks pass. No local
-  CodeRabbit rerun was performed; GitHub's review result is not yet available.
+- Native launcher, WebUI runtime and bounded-shim automated checks pass.
+- Owner-requested local CodeRabbit agent review: **22 files, zero findings**.
+- GitHub CodeRabbit review of `c32a0652`: **zero actionable findings**, minimal
+  merge risk, low security architecture risk and no retained architecture-level
+  concerns. Its touched-function docstring coverage was **74.19%**, passing the
+  60% threshold; its measurement scope differs from the production-method audit.
+- GitHub RSpec, RuboCop, Ruby syntax and Windows ActiveSessions handoff checks
+  passed. The YAML/keychain recovery proposal is captured above as deferred work.
 
 Files in this slice (the pre-existing documentation deferral is preserved):
 
@@ -146,11 +168,152 @@ spec/lib/webui/viewer_store_spec.rb
 spec/lib/webui/work_item_spec.rb
 ```
 
-For EO replay, use the eventual human-created hardening feature commit(s) after
+For EO replay, use hardening feature commit `c32a06521fa4711e8681cf752594d741b480c1ee` after
 the foundation and cutover slices; omit fork version and synchronization commits.
-No commit or PR has been created for this slice. Windows CI and GitHub CodeRabbit
-review remain external checks; local tests do not replace those results or the
-remaining visual/live-game acceptance work.
+PR #13 is merged. These automated and review results do not replace the remaining
+visual/live-game acceptance work for the script conversions.
+
+## Theme and presentation helpers: slice 4
+
+The existing GTK preference path remains authoritative: `StartupTheme.apply`
+uses `Lich.track_dark_mode`, persists an explicit `--dark-mode` override, and
+the retained session-launch code passes that preference to child sessions.
+`WebUI::Theme.current` reads that same setting without duplicating persistence
+or selecting the operating system's theme. Native pages and setup forms inherit
+it unless they explicitly declare `theme: :light` or `:dark`. The bounded shim's
+existing `Gtk::Settings.default.gtk_application_prefer_dark_theme?` query now
+reports the preference, allowing unchanged script palette functions to work.
+No additional shim widgets or methods are admitted.
+
+The launcher renders its initial preference and applies subsequent toggles;
+after the existing catalog persists the change, its service refreshes already
+rendered pages. Viewer drafts survive that refresh. Menus, dialogs, tables,
+disabled controls and progress troughs use the shared palette. Explicit component
+colors, fonts, dimensions and progress fractions retain their authority. Common
+compact layout metrics apply equally to both themes: the old generic dark CSS
+had incorrectly incorporated CreatureBar-specific dimensions and fonts.
+
+### Small helpers and the rule of three
+
+These helpers extend existing Ruby presentation classes. They introduce no new
+widgets, renderer cases, persistence, validation, sorting or cancellation rules.
+Their adoption in the conversion sources belongs to the next script phase.
+
+| API | Responsibility | Previously identified consumers |
+| --- | --- | --- |
+| `TreeBuilder#setup_footer` | Existing two-column italic notice and action; caller supplies wording, spacing, wrapping and the original save/close callable | BlackArts, ebounty, eloot; also ecleanse, eherbs, ewaggle, go2, bigshot |
+| `ListSettingsForm.text_list_spec` | Lazy single text-column rows with unchanged caller-owned value, Add and Delete callbacks | BlackArts, ebounty, eloot |
+| `SettingsForm.choice_options` | Map already-prepared strings to value/label records; preserve order, duplicates and blank choices | bigshot, ebounty, eloot; also go2, soundfx, calibrate_creaturebar |
+
+Example within an existing SettingsForm layout:
+
+```ruby
+tree.setup_footer(
+  notice: 'Your changes are saved automatically.', action: save,
+  notice_props: { margin: { left: 10, top: 5, bottom: 5 } },
+  action_props: { margin: { right: 10, top: 5, bottom: 5 }, min_width: 80 }
+)
+```
+
+`action:` renders the caller's existing button; it does not itself save or close.
+`text_list_spec(value:, add:, delete:, label: '', clear_after_add: false)` retains
+the callbacks themselves and reads current values on each render. In particular,
+the original chained `uniq!.sort!` failure is neither repaired nor swallowed.
+`choice_options` does not select a default or make duplicate values valid under
+the select contract; caller-owned choice preparation remains necessary.
+
+### Closed EO WebUI comparison
+
+Reviewed the current closed/unmerged `webui` list, the twelve diffs and their
+inline review comments: #1634, #1648, #1649, #1650, #1651, #1652, #1653, #1654,
+#1655, #1657, #1658 and #1659. No additional theme/helper implementation was found
+to import into this slice.
+
+- [#1634](https://github.com/elanthia-online/lich-5/pull/1634) and
+  [#1652](https://github.com/elanthia-online/lich-5/pull/1652) retain the launcher
+  preference/catalog writer; [#1649](https://github.com/elanthia-online/lich-5/pull/1649)
+  and [#1657](https://github.com/elanthia-online/lich-5/pull/1657) preserve child
+  dark-mode propagation. This slice keeps those behaviors.
+- [#1650](https://github.com/elanthia-online/lich-5/pull/1650)'s client refresh and
+  draft-preservation concerns informed the live check: theme changes must retain
+  unsaved input. Its alternate client/contract is not imported wholesale.
+- [#1653](https://github.com/elanthia-online/lich-5/pull/1653) and
+  [#1654](https://github.com/elanthia-online/lich-5/pull/1654) use a different shim
+  scope; they do not justify expanding the accepted bounded shim.
+- #1648/#1651 retain their previously recorded foundation/hardening disposition;
+  #1655's dual-launcher default is superseded by native cutover. #1658 remains a
+  reference for the deferred documentation backlog. [#1659](https://github.com/elanthia-online/lich-5/pull/1659)'s
+  chips, grouped options and list-box select are additional widgets/features,
+  not prerequisites for these small helpers, and remain outside scope.
+
+This is a theme/helper comparison, not a claim that every unrelated finding in
+the EO stack has been independently closed.
+
+### Validation and remaining review
+
+- New regressions reproduced forced-light native pages/forms and the shim's
+  false preference query before correction. A small shared-control browser
+  fixture failed on theme-dependent geometry and missing dark paint before the
+  CSS change, then passed after it.
+- Bare `rspec`: **8,654 examples, zero failures, two existing browser-gated
+  pending cases**, seed 48955. The service refresh test also passed after being
+  adjusted to await actual adapter publication rather than invoke a private method.
+- Bare `rubocop`: **1,271 files, no offenses**. YARD diff audit:
+  **19/19 changed or new production methods documented**, no parser warnings.
+- **76 dependency-free renderer checks passed.** The older
+  `webui_renderer_test.cjs` remains unavailable because this host lacks `jsdom`;
+  no dependency was installed.
+- Actual headless Chrome passed the new theme fixture and seven existing control
+  fixtures: checkbox indicators, empty frames, tree-view paint, textarea
+  requisitions, entry widths, selected rows and separators. No page errors.
+- Actual GTK Adwaita controls retained 34px button/entry heights and 15px labels
+  in both palettes, with unchanged font settings. The measured label and entry
+  foregrounds are checked in the new browser fixture.
+- A disposable real-service/launcher check toggled both themes across the
+  launcher, native settings form and bounded shim. It retained unsaved native
+  text and a 50% progress fraction while the frozen `spellson` palette function
+  selected the original light/dark colors. Fixture boundaries: in-memory catalog
+  preference, empty account/frontend data and synthetic spell data; no login or
+  game action. Browser and service fixtures were closed afterward.
+
+The browser checks establish content rendering and callback behavior, not OS
+window geometry or acceptance of all script conversions. In particular, the
+CreatureBar/calibrator conversion must express any original custom styling
+through existing explicit properties during its script review; it must not rely
+on generic dark mode to supply script-specific metrics. Existing explicit light
+page overrides in conversion sources also remain for individual review against
+their originals. No conversion source or installed script was changed here.
+Cross-platform visual review and the next PR's GitHub review/CI remain external
+checks. The deferred YAML/keychain recovery proposal remains separate.
+
+Exact slice-4 working-tree file inventory (including this integration record):
+
+```text
+docs/webui-integration.md
+lib/common/script_scope/gtk/style.rb
+lib/common/script_scope/gtk/widgets.rb
+lib/common/webui_launcher.rb
+lib/webui/assets/app.css
+lib/webui/list_settings_form.rb
+lib/webui/page.rb
+lib/webui/registry.rb
+lib/webui/service.rb
+lib/webui/settings_form.rb
+lib/webui/theme.rb
+lib/webui/tree_builder.rb
+spec/lib/common/script_scope_widgets_spec.rb
+spec/lib/common/webui_launcher_workflows_spec.rb
+spec/lib/webui/presentation_helpers_spec.rb
+spec/lib/webui/service_spec.rb
+spec/lib/webui/settings_form_spec.rb
+spec/lib/webui/theme_spec.rb
+spec/webui/webui_checkbox_indicator_fixture.html
+spec/webui/webui_empty_frame_fixture.html
+spec/webui/webui_theme_fixture.html
+```
+
+For EO replay, use the eventual human-created slice-4 feature commit(s) after the
+foundation, native cutover and hardening slices, omitting fork version/sync commits.
 
 ## Preservation and PR 1 contents
 
