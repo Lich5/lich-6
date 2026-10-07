@@ -9,7 +9,13 @@ module Lich
         # This is a dependency boundary, not a sandbox against arbitrary Ruby.
         module RequireBoundary
           COMPATIBILITY_FEATURES = %w[gtk2 gtk2.rb gtk3 gtk3.rb].freeze
-          NATIVE_FEATURE = %r{(?:\A|/)(?:gtk[234]|gdk[234]?|glib2|gio2|gobject-introspection|cairo(?:-gobject)?|pango|atk)(?:\.(?:rb|so|bundle|dll))?(?:/|\z)|\Agtk(?:\.rb)?\z}i
+          # Ruby-GNOME uses underscore names for some native extensions even
+          # when their Ruby entrypoints use hyphens; guard both before loading.
+          NATIVE_FEATURE = %r{
+            (?:\A|/)(?:gtk[234]|gdk[234]?|gdk_pixbuf2|glib2|gio2|gi|
+            gobject[-_]introspection|cairo(?:[-_]gobject)?|pango|atk)
+            (?:\.(?:rb|so|bundle|dll))?(?:/|\z)|\Agtk(?:\.rb)?\z
+          }ix
 
           # Recognizes preloaded compatibility entrypoints or refuses native code.
           # Other dependencies retain normal Ruby loader behavior.

@@ -13,8 +13,52 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
   end
 
   it 'refuses native entrypoints outside script ownership instead of loading installed gems' do
-    %w[gtk3 glib2 cairo gobject-introspection gtk4 gdk3 pango].each do |feature|
-      expect { Kernel.require(feature) }.to raise_error(scope::Gtk::UnsupportedOperation, /script=none.*native GTK loading is disabled/)
+    Dir.mktmpdir('gtk-entrypoints') do |root|
+      %w[gtk3 glib2 gio2 cairo cairo-gobject cairo_gobject gobject-introspection gobject_introspection
+         gi gtk4 gdk3 gdk_pixbuf2 pango atk].each do |feature|
+        target = File.join(root, "#{feature}.rb")
+        File.write(target, 'raise "native entrypoint sentinel executed"')
+        expect { Kernel.require(target) }.to raise_error(scope::Gtk::UnsupportedOperation, /script=none.*native GTK loading is disabled/)
+      end
+    end
+  end
+
+  %w[gdk_pixbuf2/loader gdk_pixbuf2/pixbuf-loader gobject_introspection cairo_gobject gi].each do |feature|
+    it "refuses #{feature} before executing a direct subload" do
+      Dir.mktmpdir('gtk-direct-subload') do |root|
+        stub_const('GTK_SUBLOAD_EXECUTED', [])
+        target = File.join(root, "#{feature}.rb")
+        FileUtils.mkdir_p(File.dirname(target))
+        File.write(target, 'GTK_SUBLOAD_EXECUTED << true')
+
+        expect { Kernel.require(target) }.to raise_error(scope::Gtk::UnsupportedOperation, /native GTK loading is disabled/)
+        expect(GTK_SUBLOAD_EXECUTED).to be_empty
+        expect($LOADED_FEATURES).not_to include(target)
+      end
+    end
+  end
+
+  it 'refuses platform extension spellings of the GTK dependency stack' do
+    %w[gtk2 gtk3 gtk4 gdk2 gdk3 gdk4 gdk_pixbuf2 glib2 gio2 gobject_introspection cairo cairo_gobject pango atk].each do |feature|
+      %w[so bundle dll].each do |extension|
+        # Inspect the guard directly: a regression must not load installed binaries.
+        expect do
+          scope::Gtk::RequireBoundary.handled?("#{feature}.#{extension}", :require, caller_locations(0, 1).first)
+        end.to raise_error(scope::Gtk::UnsupportedOperation)
+      end
+    end
+  end
+
+  it 'guards Ruby autoload when the deferred native feature is resolved' do
+    Dir.mktmpdir('gtk-autoload') do |root|
+      stub_const('GTK_AUTOLOAD_EXECUTED', [])
+      target = File.join(root, 'gdk_pixbuf2.rb')
+      File.write(target, 'GTK_AUTOLOAD_EXECUTED << true')
+      namespace = Module.new
+      namespace.autoload(:NativeProbe, target)
+
+      expect { namespace.const_get(:NativeProbe) }.to raise_error(scope::Gtk::UnsupportedOperation)
+      expect(GTK_AUTOLOAD_EXECUTED).to be_empty
     end
   end
 
