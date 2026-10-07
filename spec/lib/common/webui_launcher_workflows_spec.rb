@@ -128,6 +128,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   let(:service) { WorkflowService.new }
   let(:launches) { [] }
   let(:messages) { [] }
+  let(:feedback) { [] }
   let(:executor) { ImmediateExecutor.new }
   let(:authenticator) do
     Class.new do
@@ -151,6 +152,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
       data_dir: '/fixture', catalog: catalog, service: service, authenticator: authenticator,
       executor: executor, on_launch: ->(launch, origin) { launches << [origin, launch] },
       browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator,
+      recovery: ->(message) { feedback << message },
       logger: ->(level, message) { messages << [level, message] }
     )
   end
@@ -349,6 +351,91 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(WorkflowFrontendLocator.resolved).to include(['stormfront', true])
   end
 
+  it 'distinguishes account authentication failure from successful master-password unlock' do
+    catalog.require_master = true
+    launcher.saved_launch(event, 'entry-0')
+    allow(authenticator).to receive(:authenticate).and_raise(StandardError, 'private-auth-error')
+
+    launcher.unlock_response(event({ 'password' => viewer_secret('correct') }, payload: { button: 'unlock' }), 'password')
+
+    state = launcher.send(:render_state)
+    expect(state[:modal]).to be_nil
+    expect(state[:notice][:text]).to match(/account authentication failed/i)
+    expect(state[:notice][:text]).not_to include('private-auth-error', 'Master password')
+    expect(launcher.active_operations).to be_empty
+    expect(launches).to be_empty
+  end
+
+  it 'reports launch preparation separately from account authentication' do
+    allow(Lich::Common::Authentication::LaunchData).to receive(:prepare).and_raise(StandardError, 'private-launch-error')
+    launcher.saved_launch(event, 'entry-0')
+    expect(launcher.send(:render_state)[:notice][:text]).to match(/launch preparation failed/i)
+    expect(messages.to_s).not_to include('private-launch-error')
+  end
+
+  it 'explains when a selected manual frontend is no longer available' do
+    launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('manual-canary') }), 'account', 'password')
+    launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
+    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+    launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront' }))
+    expect(launcher.send(:render_state)[:manual][:error]).to match(/front end is unavailable.*Frontends/)
+    expect(launches).to be_empty
+  end
+
+  it 'reports a host exit before first attachment once and still completes cleanup' do
+    reporting_states = []
+    launcher.instance_variable_set(:@recovery, proc do |message|
+      feedback << message
+      reporting_states << launcher.lifecycle
+    end)
+    expect(launcher.close(reason: :browser_process_exit)).to be(true)
+    expect(launcher.close(reason: :browser_process_exit)).to be(false)
+    expect(feedback).to contain_exactly(match(/closed before connecting/))
+    expect(messages).to include([:info, 'WebUI launcher closed reason=browser_process_exit'])
+    expect(reporting_states).to eq([:closing]) # Report before await_launch releases the main thread.
+    expect(service.stopped).to be(true)
+  end
+
+  it 'does not report ordinary closure of a connected window as a startup failure' do
+    launcher.viewer_attached
+    launcher.close(reason: :browser_process_exit)
+    expect(feedback).to be_empty
+    expect(service.stopped).to be(true)
+  end
+
+  it 'releases an existing launch waiter and reports early closure even when logging fails' do
+    launcher.instance_variable_set(:@logger, proc { raise IOError, 'logger failed' })
+    closed = []
+    launcher.instance_variable_set(:@on_close, proc { |reason| closed << reason })
+    waiting = Queue.new
+    condition = launcher.instance_variable_get(:@closed_condition)
+    allow(condition).to receive(:wait).and_wrap_original do |original, *args|
+      waiting << true
+      original.call(*args)
+    end
+    waiter = Thread.new { launcher.await_launch }
+    Timeout.timeout(2) { waiting.pop }
+
+    expect(launcher.close(reason: :browser_process_exit)).to be(true)
+    expect(waiter.join(2)).to equal(waiter)
+    expect(waiter.value).to be_nil
+    expect(service.stopped).to be(true)
+    expect(feedback).to contain_exactly(match(/closed before connecting/))
+    expect(closed).to eq([:browser_process_exit])
+  ensure
+    waiter&.kill
+    waiter&.join
+  end
+
+  it 'signals closure while preserving a teardown exception' do
+    error = IOError.new('stop failed')
+    allow(service).to receive(:stop).and_raise(error)
+
+    expect { launcher.close }.to(raise_error { |actual| expect(actual).to equal(error) })
+    expect(launcher.lifecycle).to eq(:closed)
+    expect(Timeout.timeout(2) { launcher.await_launch }).to be_nil
+  end
+
   it 'discards an unlock submission if its modal has already closed' do
     secret = viewer_secret('late-secret')
 
@@ -375,6 +462,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
       expect(launches.size).to eq(1)
       expect(launches.first.first).to eq(:manual)
       expect(messages).to include([:warning, a_string_matching(/not saved/)])
+      expect(feedback).to contain_exactly(match(/not saved/))
       expect(messages.to_s).not_to include('synthetic-secret-must-not-be-logged', 'manual-canary')
       expect(messages.to_s).to include('--convert-entries') if failure == described_class::Catalog::LegacyConversionRequired
     end
@@ -389,6 +477,25 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
 
     expect(launches.size).to eq(1)
     expect(messages).to include([:warning, a_string_matching(/not saved/)])
+    expect(feedback).to contain_exactly(match(/not saved/))
+  end
+
+  [false, true].each do |cancel|
+    it "preserves #{cancel ? 'cancellation' : 'launch'} when save feedback #{cancel ? 'closes the launcher' : 'raises'}" do
+      allow(catalog).to receive(:upsert_manual_entry).and_return(false)
+      allow(launcher).to receive(:report_feedback).and_wrap_original do |original, message|
+        expect(launcher.instance_variable_get(:@commit_mutex).mon_owned?).to be(false)
+        original.call(message)
+      end
+      launcher.instance_variable_set(:@recovery, proc do |_message|
+        cancel ? launcher.close : raise(IOError, 'private notifier error')
+      end)
+      launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('manual-canary') }), 'account', 'password')
+      launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
+      launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront', 'checkbox:manual-save' => true }))
+      expect(launches.size).to eq(cancel ? 0 : 1)
+      expect(messages.to_s).not_to include('private notifier error', 'manual-canary')
+    end
   end
 
   it 'gives actionable conversion guidance when an account save encounters legacy entries' do
@@ -460,7 +567,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
 
     allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
     launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront' }))
-    expect(launcher.send(:render_state)[:manual][:error]).to match(/available front end/)
+    expect(launcher.send(:render_state)[:manual][:error]).to match(/front end is unavailable/)
     expect(launches).to be_empty
   end
 

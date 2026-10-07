@@ -48,7 +48,7 @@ module Lich
       # @param browser_open [Proc, nil] app-window launch override
       # @param on_close [Proc, nil] receives the final close reason
       # @param browser_terminate [Proc, Method] terminates an owned browser process
-      # @param recovery [Proc, nil] reports startup failure
+      # @param recovery [Proc, nil] reports startup/save failures outside the window
       # @param logger [Proc, nil] receives severity and redacted diagnostic text
       # @param persistent [Boolean] retain the launcher after saved-entry launches
       # @param autosort [Boolean] sort entries for display
@@ -90,11 +90,12 @@ module Lich
         end
         @on_launch = on_launch
         @on_close = on_close || proc {}
-        @recovery = recovery || proc { |message| $stderr.puts(message) }
+        @recovery = recovery || proc { |message| Lich.msgbox(message: message, icon: :warning) }
         @mutex = Mutex.new
         @commit_mutex = Monitor.new
         @closed_condition = ConditionVariable.new
         @lifecycle = :starting
+        @viewer_attached = false
         @persistent = persistent
         @autosort = autosort
         @tab_layout = tab_layout
@@ -137,29 +138,32 @@ module Lich
         end
 
         raise Lich::WebUI::Error,
-              'dedicated launcher window failed to open; install Google Chrome ' \
-              '(or Microsoft Edge on Windows) and retry'
+              'dedicated launcher window failed to open; check the configured WebUI host and debug log, then retry'
       rescue Lich::WebUI::Error => error
-        @recovery.call("ERROR: #{error.message}. The WebUI launcher has stopped.")
+        report_feedback("ERROR: #{error.message}. The WebUI launcher has stopped.")
         close(reason: :browser_failure)
         raise
       rescue StandardError => error
-        @recovery.call("WebUI launcher unavailable: #{error.class}. Retry after correcting the failure or abort safely.")
+        report_feedback("WebUI launcher unavailable: #{error.class}. Retry after correcting the failure or abort safely.")
         close(reason: :browser_failure)
         raise
       end
 
       # Closes the owned browser, page, service and operation worker once.
       # Racing browser-exit and page-detach callbacks share this lifecycle gate.
+      # Diagnostics cannot interrupt cleanup; teardown failures still propagate,
+      # but always release callers waiting for the launcher's terminal state.
       # @param reason [Symbol] lifecycle reason delivered to the close callback
       # @return [Boolean] whether this call began shutdown
       def close(reason: :user)
         browser_pid = nil
+        unattached_exit = false
         accepted = @commit_mutex.synchronize do
           @mutex.synchronize do
             next false if %i[closing closed].include?(@lifecycle)
 
             @lifecycle = :closing
+            unattached_exit = reason == :browser_process_exit && !@viewer_attached
             @active.clear
             @manual_credentials.each_value(&:discard!)
             @manual_credentials.clear
@@ -170,14 +174,19 @@ module Lich
         end
         return false unless accepted
 
-        terminate_browser(browser_pid) if browser_pid
-        @frontend_tab.close
-        @service.terminate_owner(self)
-        @service.stop
-        @executor.stop(wait: false)
-        @mutex.synchronize do
-          @lifecycle = :closed
-          @closed_condition.broadcast
+        begin
+          terminate_browser(browser_pid) if browser_pid
+          @frontend_tab.close
+          @service.terminate_owner(self)
+          @service.stop
+          @executor.stop(wait: false)
+          log_diagnostic(:info, "WebUI launcher closed reason=#{reason}")
+          report_feedback('The WebUI launcher window closed before connecting. Check the debug log and retry.') if unattached_exit
+        ensure
+          @mutex.synchronize do
+            @lifecycle = :closed
+            @closed_condition.broadcast
+          end
         end
         @on_close.call(reason)
         true
@@ -212,6 +221,7 @@ module Lich
           owner: self, id: 'launcher', title: "Lich v#{defined?(LICH_VERSION) ? LICH_VERSION : ''}".strip,
           props: { bare: true },
           on: {
+            attach: ->(_event) { launcher.viewer_attached },
             close: ->(event) { launcher.browser_window_closed(event.viewer_id) },
             detach: ->(event) { launcher.viewer_gone(event.viewer_id) },
           }
@@ -640,7 +650,7 @@ module Lich
           retained&.discard! unless accepted
         rescue StandardError => error
           retained&.discard!
-          fail_operation(operation, error, manual: 'Authentication failed. Correct the credentials and retry.')
+          fail_operation(operation, error, manual: 'Authentication failed. Check the account credentials and service availability, then retry.')
         end
       end
 
@@ -692,8 +702,11 @@ module Lich
           [@manual[:account], character, @manual_credentials[event.viewer_id], @manual[:frontend]]
         end
         account, character, credential, frontend = state
-        unless character && credential && frontend && frontend_available?(frontend, refresh: true)
+        unless character && credential && frontend
           return manual_error('Enter credentials, select a character, and choose an available front end before playing.')
+        end
+        unless frontend_available?(frontend, refresh: true)
+          return manual_error('The selected front end is unavailable. Check its configuration in Frontends, or choose another front end.')
         end
 
         values = submission_values(event.submission)
@@ -965,7 +978,38 @@ module Lich
         close(reason: :browser_window_closed)
       end
 
+      # Records first connection without treating later transport loss as closure.
+      # @return [Boolean] true after an attachment has been observed
+      def viewer_attached
+        @mutex.synchronize { @viewer_attached = true }
+      end
+
       private
+
+      # Reports feedback that must survive window closure through the existing
+      # platform notifier (terminal/debug log off Windows). Notification failures
+      # must not prevent cleanup or a valid launch after an optional save failure.
+      # @param message [String] authored message containing no submitted secrets
+      # @return [Object, nil] notifier result, or nil if notification failed
+      # @api private
+      def report_feedback(message)
+        @recovery.call(message)
+      rescue StandardError => error
+        log_diagnostic(:warning, "launcher feedback failed error=#{error.class}")
+        nil
+      end
+
+      # Attempts diagnostic logging without making feedback or closure depend on
+      # logger availability. Do not recursively report a failed diagnostic sink.
+      # @param level [Symbol] diagnostic severity
+      # @param message [String] redacted diagnostic text
+      # @return [Object, nil] logger result, or nil when logging fails
+      # @api private
+      def log_diagnostic(level, message)
+        @logger.call(level, message)
+      rescue StandardError
+        nil
+      end
 
       # Prepares a manual login, then independently admits optional save and launch.
       # @api private
@@ -977,6 +1021,7 @@ module Lich
       # @return [void]
       def perform_manual_launch(operation, account, character, credential, values)
         launch = nil
+        save_notice = nil
         credential.consume do |password|
           auth = @authenticator.authenticate(account: account, password: password,
                                              character: character[:char_name], game_code: character[:game_code])
@@ -989,9 +1034,10 @@ module Lich
           favorite = submitted(values, 'checkbox:manual-favorite')
           if save || favorite
             entry = character.merge(user_id: account, frontend: frontend, custom_launch: custom, custom_launch_dir: custom_dir)
-            commit(operation) { save_manual_entry(entry, password, favorite: favorite) }
+            commit(operation) { save_notice = save_manual_entry(entry, password, favorite: favorite) }
           end
         end
+        report_feedback(save_notice) if save_notice && operation_live?(operation)
         terminal_launch(operation, launch, :manual)
       rescue StandardError => error
         fail_operation(operation, error, manual: 'Launch failed. Retry from Manual Entry.')
@@ -999,7 +1045,13 @@ module Lich
 
       # Saving is optional after authentication succeeds. A locked catalog or
       # failed write must not discard a valid game launch. Record only the
-      # exception class, since collaborator messages may contain credentials.
+      # exception class and return an authored notice for reporting outside the
+      # commit gate, after the temporary plaintext has been disposed.
+      # @param entry [Hash] selected character and launch options
+      # @param password [String] temporary account password used by persistence
+      # @param favorite [Boolean] whether to also mark the saved entry as a favorite
+      # @return [String, nil] authored failure notice, or nil after successful saving
+      # @api private
       def save_manual_entry(entry, password, favorite:)
         raise 'manual entry save failed' unless @catalog.upsert_manual_entry(entry, password)
         return unless favorite
@@ -1013,6 +1065,7 @@ module Lich
         notice = 'Login succeeded, but the entry or favorite was not saved.'
         notice += " #{Catalog::LEGACY_CONVERSION_NOTICE}" if error.is_a?(Catalog::LegacyConversionRequired)
         @logger.call(:warning, "#{notice} error=#{error.class}")
+        notice
       end
 
       # Authenticates a saved configuration and gates child/terminal launch against close.
@@ -1022,21 +1075,29 @@ module Lich
       # @param credential [WebUI::SensitiveValue, nil] previously unlocked credential
       # @return [void]
       def perform_saved_launch(operation, entry_key, credential: nil)
+        failure_notice = 'The saved entry could not be read. Refresh Entries and retry.'
         entry = @mutex.synchronize { @entries.find { |candidate| candidate.key == entry_key } }
         raise KeyError, 'saved entry no longer exists' unless entry
 
         if SagaLaunchPolicy.custom_launch_conflict?(frontend: entry.frontend, custom_launch: entry.custom_launch)
           raise ArgumentError, SagaLaunchPolicy::CUSTOM_LAUNCH_CONFLICT
         end
-        return perform_saga_launch(operation, entry) if Frontend.canonical_name(entry.frontend) == 'saga'
+        if Frontend.canonical_name(entry.frontend) == 'saga'
+          failure_notice = 'Saga could not be launched. Check its configuration in Frontends and the debug log.'
+          return perform_saga_launch(operation, entry)
+        end
 
+        failure_notice = 'The saved account password could not be unlocked. Check the encryption settings and retry.'
         credential ||= @catalog.credential(entry_key)
         launch = nil
         credential.consume do |password|
+          failure_notice = 'Saved account authentication failed. Check the account credentials and service availability, then retry.'
           auth = @authenticator.authenticate(account: entry.user_id, password: password,
                                              character: entry.char_name, game_code: entry.game_code)
+          failure_notice = 'Login succeeded, but launch preparation failed. Check the front end configuration and debug log.'
           launch = @launch_data.prepare(auth, entry.frontend, entry.custom_launch, entry.custom_launch_dir)
         end
+        failure_notice = 'Login succeeded, but the session could not be launched. Check the front end configuration and debug log.'
         if @persistent
           result = nil
           return unless commit(operation) { result = @session_launcher.launch(launch, launch_context: launch_context(entry)) }
@@ -1052,9 +1113,9 @@ module Lich
         notice = if entry && SagaLaunchPolicy.custom_launch_conflict?(frontend: entry.frontend, custom_launch: entry.custom_launch)
                    SagaLaunchPolicy::CUSTOM_LAUNCH_CONFLICT
                  else
-                   'Saved-entry launch failed. Retry is available.'
+                   failure_notice
                  end
-        fail_operation(operation, error, notice: notice)
+        fail_operation(operation, error, modal: nil, notice: notice)
       ensure
         credential&.discard!
       end
@@ -1121,11 +1182,19 @@ module Lich
         accepted
       end
 
-      def fail_operation(operation, error, manual: nil, modal: nil, notice: nil)
+      # Completes a failed operation with authored, credential-safe feedback.
+      # @param operation [Operation] token whose liveness guards visible changes
+      # @param error [Exception] failure; only its class enters diagnostics
+      # @param manual [String, nil] manual-entry error, if applicable
+      # @param modal [Hash, nil, Symbol] replacement dialog, nil to close, or :unchanged
+      # @param notice [String, nil] authored failure notice
+      # @return [Object] logger result
+      # @api private
+      def fail_operation(operation, error, manual: nil, modal: :unchanged, notice: nil)
         notice = Catalog::LEGACY_CONVERSION_NOTICE if error.is_a?(Catalog::LegacyConversionRequired)
         complete(operation) do
           @manual.merge!(phase: :editing, error: manual) if manual
-          @modal = modal if modal
+          @modal = modal unless modal == :unchanged
           @notice = { text: notice, level: 'error' } if notice
         end
         @logger.call(:error, "launcher operation failed kind=#{operation.kind} error=#{error.class}")
