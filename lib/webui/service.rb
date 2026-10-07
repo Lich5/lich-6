@@ -41,7 +41,8 @@ module Lich
         )
         @runtime = Runtime.new(
           registry: registry, file_service: file_service, logger: @logger,
-          on_page_closed: method(:close_window), window_host: method(:window_host)
+          on_page_closed: method(:close_window), window_host: method(:window_host),
+          viewers_changed: ->(owner) { @modals.viewers_changed(owner) }
         )
         @server = Server.new(
           assets_dir: ASSETS_DIR, pages_provider: -> { registry.descriptors },
@@ -66,15 +67,20 @@ module Lich
       # Failed closes remain tracked; repeated calls retry them without spawning.
       # @return [Service] this stopped host
       def stop
+        registry.stop
         pages = @windows_mutex.synchronize do
           @stopped = true
           @windows.keys.dup
         end
-        pages.each { |page| close_window(page) }
         begin
-          server.stop
+          modals.shutdown
         ensure
-          runtime.shutdown
+          pages.each { |page| close_window(page) }
+          begin
+            server.stop
+          ensure
+            runtime.shutdown
+          end
         end
         self
       end
@@ -111,6 +117,7 @@ module Lich
         url = launch_url(page: page)
         window = @windows_mutex.synchronize do
           raise Error, 'service is stopped' if @stopped
+          registry.ensure_active!(page.owner)
           return true if @windows.key?(page)
           registry.address_for(page)
           runtime.watch_window(page)
@@ -170,10 +177,22 @@ module Lich
         registry.pages.each { |page| refresh(page) if page.last_render }
       end
 
+      # Refuses new owner work before canceling modals, routes and runtime resources.
+      # Every cleanup stage runs even if an earlier stage raises.
+      # @param owner [Object] terminating script or core owner identity
+      # @return [Array<Page>] pages removed by the runtime
       def terminate_owner(owner)
-        modals.terminate_owner(owner)
-        file_service.revoke_owner(owner)
-        runtime.terminate_owner(owner)
+        registry.terminate_owner(owner)
+        begin
+          modals.terminate_owner(owner)
+        ensure
+          begin
+            file_service.revoke_owner(owner)
+          ensure
+            pages = runtime.terminate_owner(owner)
+          end
+        end
+        pages
       end
 
       def modal(**options, &content)

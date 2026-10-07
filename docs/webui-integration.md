@@ -115,11 +115,20 @@ in-window dialogs cannot change its level or title. Navigation and native bridge
 messages are limited to the original loopback origin and main frame. The helper
 has no file-reading, shell-execution or arbitrary native-call bridge.
 
-Owner termination cancels modals, revokes the owner's file routes, shuts down its
-callback dispatch, unregisters its pages, and destroys viewer state. Explicit
+Owner termination first refuses new pages, windows and modals for that owner,
+then cancels modals, revokes file routes, shuts down callback dispatch,
+unregisters pages, and destroys viewer state. A restarted script has a new owner
+identity. Completion-callback failures are logged without preventing remaining
+callbacks or cleanup; full service shutdown also cancels pending modals. Explicit
 window closure is distinguished from a temporary transport disconnect. Ordinary
 disconnect retains a bounded 60-second resume window; repeated attachment to the
 same page on an occupied connection is rejected.
+
+Modals reapply their declared `no_viewer` policy when the last active viewer
+leaves: `abort` cancels, `default` selects the declared response, and `wait`
+remains pending. Resumable disconnected attachments are not active viewers.
+There is no new user-response deadline. A settings form whose host cannot open
+its window cancels immediately instead of leaving its script waiting.
 
 ## Authentication and trust boundaries
 
