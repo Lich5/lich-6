@@ -50,6 +50,20 @@ module Lich
         @degradations = {}.compare_by_identity
       end
 
+      # Submits non-page work to the same ordered worker as this owner's UI events.
+      # It is never coalesced. Owner termination cancels pending work, and the
+      # existing dispatcher bounds apply to these submissions as one logical source.
+      # @param owner [Object] lifecycle identity used by the caller's pages
+      # @yield work to execute asynchronously; must not await this dispatcher
+      # @return [Symbol] :queued when admitted, not the block's eventual result
+      # @raise [Error] if the host/owner has stopped or the queue is full
+      # @raise [ArgumentError] if the owner or work block is missing
+      def dispatch(owner:, &work)
+        @registry.ensure_active!(owner)
+        @dispatcher.enqueue(owner: owner, page_id: nil, viewer_id: nil, cid: nil,
+                            event: :callback, coalescable: false, &work)
+      end
+
       # Combines browser facilities with presentation available on the current OS.
       # Opacity support may be content-only; per-window metadata identifies native alpha.
       # @param _page [Page, nil] reserved for page-specific host selection

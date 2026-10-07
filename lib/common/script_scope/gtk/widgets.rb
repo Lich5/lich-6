@@ -211,16 +211,18 @@ module Lich
             self
           end
 
+          # Removes the widget once and runs each destroy handler independently.
+          # @return [Widget] self, including repeated destruction
           def destroy
             return self if @destroyed
 
-            @dialogs&.dup&.each(&:destroy)
+            @dialogs&.dup&.each { |dialog| session.cleanup(dialog) { dialog.destroy } }
             session.port.destroy(@handle) if @handle
             @parent&.send(:forget_child, self)
             @parent = nil
             mark_destroyed
             session.forget(self)
-            @destroy_handlers&.each { |handler| handler.call(self) }
+            @destroy_handlers&.each { |handler| session.cleanup(self) { handler.call(self) } }
             self
           end
 

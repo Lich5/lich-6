@@ -48,6 +48,80 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
     script_class.class_variable_set(:@@stopping, [])
   end
 
+  describe 'GTK-free script loading' do
+    it 'executes deferred Gtk.queue work with the real calling Script as owner' do
+      Dir.mktmpdir('script-queue-owner') do |root|
+        FileUtils.mkdir_p(File.join(root, 'custom'))
+        stub_const('SCRIPT_DIR', root)
+        stub_const('SCRIPT_QUEUE_EVENTS', Queue.new)
+        File.write(File.join(root, 'custom', 'queued.lic'), <<~RUBY)
+          # quiet
+          release, done = Queue.new, Queue.new
+          Gtk.queue do
+            release.pop
+            SCRIPT_QUEUE_EVENTS << Script.current
+            done << true
+          end
+          SCRIPT_QUEUE_EVENTS << :caller_continued
+          release << true
+          raise 'callback did not finish' unless done.pop(timeout: 2)
+        RUBY
+        child = script_class.start('queued')
+        expect(child.join(3)).to equal(child)
+        expect(child).to be_completed_successfully
+        expect(SCRIPT_QUEUE_EVENTS.pop(timeout: 1)).to eq(:caller_continued)
+        expect(SCRIPT_QUEUE_EVENTS.pop(timeout: 1)).to equal(child)
+      ensure
+        Lich::WebUI.reset!
+      end
+    end
+
+    [false, true].each do |label_based|
+      it "resolves GTK requires through the shim for #{label_based ? 'label-based' : 'trusted'} scripts" do
+        Dir.mktmpdir('script-gtk-boundary') do |root|
+          FileUtils.mkdir_p(File.join(root, 'custom'))
+          stub_const('SCRIPT_DIR', root)
+          stub_const('GTK_BOUNDARY_EVENTS', Queue.new)
+          File.write(File.join(root, 'gtk3.rb'), 'GTK_BOUNDARY_EVENTS << :native_loaded')
+          File.write(File.join(root, 'gtk2.rb'), 'GTK_BOUNDARY_EVENTS << :native_loaded')
+          File.write(File.join(root, 'custom', 'boundary.lic'), <<~RUBY)
+            # quiet
+            GTK_BOUNDARY_EVENTS << require('gtk3')
+            GTK_BOUNDARY_EVENTS << Kernel.require('gtk2')
+            GTK_BOUNDARY_EVENTS << Gtk::Version::MAJOR
+            #{"Done:\nnil" if label_based}
+          RUBY
+          $LOAD_PATH.unshift(root)
+          child = script_class.start('boundary')
+          expect(child.join(2)).to equal(child)
+          expect(child).to be_completed_successfully
+          expect(GTK_BOUNDARY_EVENTS.size).to eq(3)
+          expect(3.times.map { GTK_BOUNDARY_EVENTS.pop }).to eq([false, false, 3])
+          expect($LOADED_FEATURES).not_to include(File.join(root, 'gtk3.rb'))
+        ensure
+          $LOAD_PATH.delete(root)
+        end
+      end
+    end
+
+    it 'refuses a native subload from a required helper with script and source attribution' do
+      Dir.mktmpdir('script-gtk-boundary') do |root|
+        FileUtils.mkdir_p(File.join(root, 'custom'))
+        stub_const('SCRIPT_DIR', root)
+        FileUtils.mkdir_p(File.join(root, 'gtk3'))
+        native_file = File.join(root, 'gtk3', 'loader.rb')
+        File.write(native_file, 'raise "native sentinel executed"')
+        File.write(File.join(root, 'native_helper.rb'), "Kernel.require #{native_file.dump}\n")
+        File.write(File.join(root, 'custom', 'boundary.lic'), "# quiet\nrequire #{File.join(root, 'native_helper.rb').dump}\n")
+        child = script_class.start('boundary')
+        expect(child.join(2)).to equal(child)
+        expect(child).not_to be_completed_successfully
+        expect(child.exit_error).to be_a(Lich::Common::ScriptScope::Gtk::UnsupportedOperation)
+        expect(child.exit_error.message).to match(/script=boundary.*require.*gtk3\/loader.*native_helper\.rb:1/)
+      end
+    end
+  end
+
   describe 'named-script lifetime execution guards' do
     def guarded_fixture(source)
       Dir.mktmpdir('script-lifetime-guard') do |root|

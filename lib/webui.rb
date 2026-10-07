@@ -101,6 +101,18 @@ module Lich
         end)
       end
 
+      # Captures an owner's asynchronous callback queue on the current host.
+      # Calling the returned proc with a block submits ordered, non-coalesced work;
+      # it never waits for that block or starts a browser. Retaining the host here
+      # prevents a stale queue from creating a replacement service after shutdown.
+      # @param owner [Object] lifecycle identity shared with pages and callbacks
+      # @return [Proc] block-accepting handle returning :queued on admission
+      # @raise [Error] on submission after shutdown, owner termination or overflow
+      def callback_queue(owner:)
+        host = service
+        proc { |&work| host.runtime.dispatch(owner: owner, &work) }
+      end
+
       # Starts the shared loopback listener; repeated calls reuse it.
       # @return [Service] running host
       def start

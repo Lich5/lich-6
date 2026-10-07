@@ -9,6 +9,14 @@ RSpec.describe Lich::WebUI::Dispatcher do
 
   after { dispatcher.shutdown }
 
+  it 'refuses a new owner after full dispatcher shutdown' do
+    dispatcher.shutdown
+    expect do
+      dispatcher.enqueue(owner: Object.new, page_id: nil, viewer_id: nil, cid: nil,
+                         event: :callback, coalescable: false) {}
+    end.to raise_error(Lich::WebUI::Error, /stopped/)
+  end
+
   it 'refuses late callbacks after an owner has been terminated' do
     delivered = Queue.new
     dispatcher.enqueue(owner: owner, page_id: 'page', viewer_id: 'viewer', cid: 'button',
