@@ -24,6 +24,24 @@ function fixture() {
     receive: message => listeners.message({ data: JSON.stringify(message) }) };
 }
 
+test('Markdown does not forward host cookies to another local port or scheme', t => {
+  const { dom, receive } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'links' }] });
+  receive({ type: 'render', page: 'links', generation: 1,
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'markdown', cid: 'help', props: { content:
+        '[other port](http://127.0.0.1:9090/) [numeric alias](http://2130706433:9090/) ' +
+        '[other scheme](https://127.0.0.1/) [invalid](http://[broken) ' +
+        '[local](http://127.0.0.1/help) [wiki](https://gswiki.play.net/)' } }
+    ] } });
+  const help = dom.window.document.querySelector('[data-cid="help"]');
+  assert.deepEqual([...help.querySelectorAll('a')].map(link => link.href),
+    ['http://127.0.0.1/help', 'https://gswiki.play.net/']);
+  assert.ok(help.textContent.includes('other port'));
+  assert.ok(help.textContent.includes('invalid'));
+});
+
 test('cascading menus require clicks, retain the selected branch and dismiss one level with Escape', t => {
   const { dom, receive } = fixture();
   t.after(() => dom.window.close());

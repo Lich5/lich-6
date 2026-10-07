@@ -6,6 +6,7 @@ require 'digest/sha1'
 require 'securerandom'
 require 'socket'
 require 'uri'
+require 'cgi/escape'
 require_relative 'file_service'
 require_relative 'protocol'
 require_relative 'websocket'
@@ -16,6 +17,7 @@ module Lich
     class Server
       COOKIE_NAME = 'lich_webui'
       MAX_HEADER_BYTES = 8192
+      MAX_CLIENTS = 64
       READ_TIMEOUT = 5
       WS_POLL_INTERVAL = 0.25
       LAUNCH_TOKEN_LIFETIME = 60
@@ -31,6 +33,17 @@ module Lich
 
       attr_reader :host, :port
 
+      # Builds an inactive, bounded loopback listener with fresh authentication.
+      # @param assets_dir [String] existing directory containing renderer assets
+      # @param pages_provider [#call] returns currently registered page descriptors
+      # @param message_handler [#call] handles a connection and decoded message
+      # @param disconnect_handler [#call, nil] releases disconnected viewer state
+      # @param file_service [FileService, nil] authenticated image route resolver
+      # @param host [String] permitted loopback bind address
+      # @param port [Integer] listener port, or zero for an ephemeral port
+      # @param logger [#call, nil] receives a level and sanitized diagnostic
+      # @param server_factory [#call, nil] listener factory accepting host and port
+      # @param thread_factory [#call, nil] creates host-owned accept/client workers
       def initialize(assets_dir:, pages_provider:, message_handler:, disconnect_handler: nil, file_service: nil,
                      host: '127.0.0.1', port: 0, logger: nil,
                      server_factory: nil, thread_factory: nil)
@@ -58,6 +71,7 @@ module Lich
         @server = nil
         @accept_thread = nil
         @client_threads = []
+        @client_sockets = []
         @connections = []
         @mutex = Mutex.new
         @stopping = false
@@ -112,24 +126,34 @@ module Lich
         connections.each { |connection| connection.send_text(json) }
       end
 
+      # Closes admitted HTTP and WebSocket sockets before joining their workers.
+      # @return [nil] after listener and client shutdown
       def stop
         server = nil
         accept_thread = nil
         clients = nil
         connections = nil
+        sockets = nil
         @mutex.synchronize do
           @stopping = true
           server = @server
           accept_thread = @accept_thread
           clients = @client_threads.dup
           connections = @connections.dup
+          sockets = @client_sockets.dup
           @server = nil
           @accept_thread = nil
           @client_threads.clear
           @connections.clear
+          @client_sockets.clear
           @launch_tokens.clear
         end
         connections.each(&:close)
+        sockets.each do |socket|
+          socket.close unless socket.closed?
+        rescue IOError, SystemCallError
+          nil # The worker may have closed it concurrently.
+        end
         server&.close
         join_or_kill(accept_thread)
         clients.each { |thread| join_or_kill(thread) }
@@ -212,32 +236,55 @@ module Lich
 
       private
 
+      # Reserves a bounded socket slot before starting each request worker.
+      # Excess clients are closed immediately without allocating another thread.
+      # @return [void]
       def accept_loop
         loop do
           listener = @mutex.synchronize { @server }
           break unless listener
 
+          socket = nil
           socket = listener.accept
+          admitted = @mutex.synchronize do
+            @client_sockets << socket if !@stopping && @client_sockets.size < MAX_CLIENTS
+          end
+          unless admitted
+            socket.close
+            next
+          end
           thread = @thread_factory.call(socket) { |client| handle_client_thread(client) }
           @mutex.synchronize do
             @client_threads.reject! { |client| !client.alive? }
             @client_threads << thread if thread.alive?
           end
         rescue IOError, Errno::EBADF
+          @mutex.synchronize { @client_sockets.delete(socket) }
+          socket&.close unless socket&.closed?
           break if stopping?
           raise
         rescue StandardError => error
           socket&.close
+          @mutex.synchronize { @client_sockets.delete(socket) }
           log(:warning, "WebUI accept refusal=#{error.class}")
         end
       end
 
+      # Releases admission even when parsing, dispatch or the worker raises.
+      # @param socket [Socket] admitted client, including upgraded WebSockets
+      # @return [void]
       def handle_client_thread(socket)
         handle_client(socket)
       ensure
-        @mutex.synchronize { @client_threads.delete(Thread.current) }
+        @mutex.synchronize do
+          @client_sockets.delete(socket)
+          @client_threads.delete(Thread.current)
+        end
       end
 
+      # Dispatches one HTTP request; upgraded sockets remain with their worker.
+      # @param socket [Socket] admitted client connection
+      # @return [void]
       def handle_client(socket)
         websocket = false
         request = read_request(socket)
@@ -256,6 +303,8 @@ module Lich
         else
           respond_error(socket, 404, 'Not Found')
         end
+      rescue IOError, SystemCallError
+        nil # Disconnect or shutdown can interrupt any read or write.
       rescue StandardError => error
         log(:warning, "WebUI request refused=#{error.class}")
         respond_error(socket, 400, 'Bad Request') unless websocket
@@ -307,6 +356,11 @@ module Lich
         { method: method, path: path, query: query, headers: headers }
       end
 
+      # Redeems a short-lived token. File-bootstrap navigation first commits an
+      # authenticated document so the next navigation can send a Strict cookie.
+      # @param socket [Socket] requesting connection
+      # @param request [Hash] parsed HTTP request
+      # @return [void]
       def handle_auth(socket, request)
         return respond_error(socket, 405, 'Method Not Allowed') unless request[:method] == 'GET'
 
@@ -320,14 +374,13 @@ module Lich
         return respond_error(socket, 403, 'Forbidden') unless accepted
 
         target = valid_redirect_target?(params['to']) ? params['to'] : '/'
-        respond(
-          socket, 302, 'Found', '',
-          extra_headers: [
-            "Location: #{target}",
-            "Set-Cookie: #{cookie_name}=#{@session_token}; HttpOnly; SameSite=Strict; Path=/",
-            'Referrer-Policy: no-referrer',
-          ]
-        )
+        headers = ["Set-Cookie: #{cookie_name}=#{@session_token}; HttpOnly; SameSite=Strict; Path=/"]
+        if request[:headers]['sec-fetch-site'] == 'cross-site'
+          body = %(<meta http-equiv="refresh" content="0;url=#{CGI.escapeHTML(target)}">)
+          respond(socket, 200, 'OK', body, content_type: 'text/html; charset=utf-8', extra_headers: headers)
+        else
+          respond(socket, 302, 'Found', '', extra_headers: ["Location: #{target}", *headers])
+        end
       rescue ArgumentError
         respond_error(socket, 400, 'Bad Request')
       end
@@ -465,8 +518,15 @@ module Lich
         origin.nil? || origin_allowed?(request)
       end
 
+      # Allows cross-site top-level token redemption for file-bootstrap navigation.
+      # All authenticated content retains same-origin Fetch Metadata checks.
+      # @param request [Hash] parsed HTTP request
+      # @return [Boolean] whether browser request metadata permits this route
       def fetch_metadata_allowed?(request)
         site = request[:headers]['sec-fetch-site']
+        if request[:path] == '/auth' && site == 'cross-site'
+          return request[:headers]['sec-fetch-mode'] == 'navigate' && request[:headers]['sec-fetch-dest'] == 'document'
+        end
         return false if site && !%w[same-origin none].include?(site)
 
         mode = request[:headers]['sec-fetch-mode']
@@ -502,8 +562,11 @@ module Lich
         @launch_tokens.delete_if { |_token, expiry| expiry < now }
       end
 
+      # Accepts only local paths without browser-normalized authority delimiters.
+      # @param target [Object] decoded redirect destination
+      # @return [Boolean] whether the Location stays on this host and port
       def valid_redirect_target?(target)
-        target.is_a?(String) && target.start_with?('/') && !target.start_with?('//') && !target.match?(/[\r\n]/)
+        target.is_a?(String) && target.start_with?('/') && !target.start_with?('//') && !target.match?(/[\\\x00-\x20\x7f]/)
       end
 
       def loopback_address?(address)

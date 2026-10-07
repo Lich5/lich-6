@@ -219,11 +219,14 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count == 3, let url = URL(string: arguments[1]), url.scheme == "http",
+// The parent owns this private file until process exit; credentials never enter argv.
+guard arguments.count == 3,
+      let launchURL = try? String(contentsOfFile: arguments[1], encoding: .utf8),
+      let url = URL(string: launchURL), url.scheme == "http",
       ["127.0.0.1", "localhost", "::1"].contains(url.host ?? ""), url.port != nil,
       let data = arguments[2].data(using: .utf8),
       let geometry = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-    fputs("Lich WebUI: expected a loopback launch URL and geometry\n", stderr)
+    fputs("Lich WebUI: expected a private loopback launch file and geometry\n", stderr)
     exit(1)
 }
 let app = NSApplication.shared

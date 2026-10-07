@@ -5,6 +5,8 @@ require_relative 'host_thread'
 require 'rbconfig'
 require 'tmpdir'
 require 'fileutils'
+require 'cgi/escape'
+require 'uri'
 require_relative 'errors'
 require_relative 'native_host'
 
@@ -26,12 +28,12 @@ module Lich
 
       module_function
 
-      # Spawns one app host; monitored browser hosts receive an isolated profile.
+      # Spawns one app host using a private launch file instead of secret argv.
+      # Every browser receives an isolated profile, removed after process exit.
       # The start callback runs before the exit monitor is installed, so callers
       # must defer termination until this method returns.
       # @param url [String] authenticated loopback launch URL
       # @param spawn [#call] process creator accepting an argv array and options
-      # @param detach [#call] process reaper when no exit callback is supplied
       # @param platform [String, nil] discovery override; nil uses the current OS
       # @param browser_path [String, nil] explicit browser, bypassing the native host
       # @param chrome_path [String, nil] legacy alias for browser_path
@@ -41,32 +43,29 @@ module Lich
       # @param waitpid [#call] blocking process-exit observer
       # @param thread_factory [#call] factory for the host-owned monitor thread
       # @return [Boolean] whether spawn and monitor setup succeeded
-      def open(url, spawn: Process.method(:spawn), detach: Process.method(:detach), platform: nil,
+      def open(url, spawn: Process.method(:spawn), platform: nil,
                browser_path: nil, chrome_path: nil, geometry: nil, on_exit: nil,
                on_start: nil, waitpid: Process.method(:waitpid),
                thread_factory: HostThread.method(:start))
         native = native_host(platform, browser_path || chrome_path)
-        profile_dir = Dir.mktmpdir('lich-webui-browser-') if on_exit && !native
+        profile_dir = Dir.mktmpdir('lich-webui-browser-')
+        target = launch_file(url, profile_dir, native: native)
         command = command_for(
-          url, platform: platform, browser_path: browser_path || chrome_path,
-          geometry: geometry, profile_dir: profile_dir
+          target, platform: platform, browser_path: browser_path || chrome_path,
+          geometry: geometry, profile_dir: native ? nil : profile_dir
         )
         pid = spawn.call(*command, out: File::NULL, err: File::NULL)
         on_start&.call(pid)
-        if on_exit
-          monitor_process(pid, profile_dir, waitpid: waitpid, thread_factory: thread_factory, on_exit: on_exit)
-        else
-          detach.call(pid)
-        end
+        monitor_process(pid, profile_dir, waitpid: waitpid, thread_factory: thread_factory, on_exit: on_exit)
         true
       rescue StandardError => error
         remove_profile(profile_dir)
-        Lich.log("warning: unable to open WebUI browser: #{error.class}: #{error.message}") if Lich.respond_to?(:log)
+        Lich.log("warning: unable to open WebUI browser: #{error.class}") if Lich.respond_to?(:log)
         false
       end
 
       # Selects native or browser argv without invoking a shell or starting a process.
-      # @param url [String] authenticated loopback launch URL
+      # @param url [String] private launch-file path (native) or file URL (browser)
       # @param platform [String, nil] discovery override; nil uses the current OS
       # @param browser_path [String, nil] explicit browser, bypassing native selection
       # @param chrome_path [String, nil] legacy alias for browser_path
@@ -104,6 +103,30 @@ module Lich
         NativeHost.platform(platform) unless browser_path
       end
 
+      # Stores the one-use credential inside the launch directory (0700 on POSIX).
+      # Windows also relies on the user's private temporary-directory ACL.
+      # @param url [String] authenticated loopback launch URL; never logged
+      # @param directory [String] freshly created private launch/profile directory
+      # @param native [Symbol, nil] native host kind, or nil for a browser
+      # @return [String] native file path or percent-encoded browser file URL
+      def launch_file(url, directory, native:)
+        path = File.join(directory, native ? 'launch.url' : 'launch.html')
+        content = native ? url : %(<meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=#{CGI.escapeHTML(url)}">)
+        File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(content) }
+        return path if native
+
+        normalized = File.expand_path(path).tr('\\', '/')
+        normalized = "/#{normalized}" unless normalized.start_with?('/')
+        "file://#{URI::DEFAULT_PARSER.escape(normalized, /[^A-Za-z0-9\-._~\/:]/)}"
+      end
+
+      # Reaps the owned host and removes its credential file and browser profile.
+      # @param pid [Integer] exact spawned process id
+      # @param profile_dir [String] private launch/profile directory
+      # @param waitpid [#call] blocking process-exit observer
+      # @param thread_factory [#call] factory for a host-owned monitor
+      # @param on_exit [#call, nil] optional owner notification
+      # @return [Thread] monitor returned by the thread factory
       def monitor_process(pid, profile_dir, waitpid:, thread_factory:, on_exit:)
         thread_factory.call do
           begin
@@ -112,7 +135,7 @@ module Lich
             nil
           ensure
             begin
-              on_exit.call
+              on_exit&.call
             ensure
               remove_profile(profile_dir)
             end
@@ -120,6 +143,9 @@ module Lich
         end
       end
 
+      # Removes private launch data after exit or failed startup.
+      # @param profile_dir [String, nil] private directory, absent before allocation
+      # @return [void]
       def remove_profile(profile_dir)
         FileUtils.remove_entry_secure(profile_dir) if profile_dir && File.directory?(profile_dir)
       rescue StandardError

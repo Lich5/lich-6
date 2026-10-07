@@ -100,7 +100,7 @@ module Lich
 
       # Window ownership belongs to the host, for native and compatibility pages.
       # Reserve before spawning so repeated opens and concurrent shutdown agree.
-      # @param page [Page] registered page with a validated render
+      # @param page [Page, nil] registered page, or the service-owned page selector
       # @param geometry [Hash, nil] explicit bounds overriding stored or default bounds
       # @return [Boolean] opener result, or true for an already-owned window
       # @raise [Error] if the host is stopped or the page is unregistered
@@ -108,26 +108,28 @@ module Lich
         # Explicit caller geometry and script configure handlers retain their
         # existing settings authority. Otherwise saved user geometry precedes
         # a page's default size (for example a setup form's first-run size).
-        props = page.last_render&.tree&.props
-        geometry ||= @geometry_store&.read(page) unless page.lifecycle_bindings.key?(:configure)
+        props = page&.last_render&.tree&.props
+        geometry ||= @geometry_store&.read(page) if page && !page.lifecycle_bindings.key?(:configure)
         if geometry.nil? && props && props[:size]
           geometry = { width: props[:size][0], height: props[:size][1], position: props[:position] }
         end
-        page.restore_window_geometry(geometry) if geometry
+        page.restore_window_geometry(geometry) if page && geometry
         url = launch_url(page: page)
         window = @windows_mutex.synchronize do
           raise Error, 'service is stopped' if @stopped
-          registry.ensure_active!(page.owner)
+          registry.ensure_active!(page.owner) if page
           return true if @windows.key?(page)
-          registry.address_for(page)
-          runtime.watch_window(page)
+          if page
+            registry.address_for(page)
+            runtime.watch_window(page)
+          end
 
           @windows[page] = BrowserWindow.new(
             opener: @browser_open, terminate: @browser_terminate,
             on_close: -> { browser_closed(page) }
           )
         end
-        window.present(page.last_render) if page.last_render
+        window.present(page.last_render) if page&.last_render
         # Spawn and monitor setup must survive the requesting script's exit.
         result = HostThread.start { window.open(url, geometry: geometry) }.value
         close_window(page) if !result || window.closed?
@@ -139,10 +141,10 @@ module Lich
 
       # Saves geometry and releases ownership only after termination succeeds.
       # Startup and termination failures leave the window tracked for retry.
-      # @param page [Page] exact registered or recently unregistered page identity
+      # @param page [Page, nil] exact page identity, or the service-owned selector
       # @return [void]
       def close_window(page)
-        save_geometry(page)
+        save_geometry(page) if page
         window = @windows_mutex.synchronize { @windows[page] }
         return unless window
 
@@ -159,10 +161,13 @@ module Lich
         @windows_mutex.synchronize { @windows[page] }
       end
 
+      # Releases an exited window and reports page closure when one was selected.
+      # @param page [Page, nil] exact page identity, or the service-owned selector
+      # @return [void]
       def browser_closed(page)
-        save_geometry(page)
+        save_geometry(page) if page
         window = @windows_mutex.synchronize { @windows.delete(page) }
-        runtime.browser_closed(page) if window
+        runtime.browser_closed(page) if window && page
       end
 
       def refresh(page)
