@@ -24,7 +24,7 @@ RSpec.describe Lich::WebUI::ListSettingsForm do
     allow(Lich::WebUI).to receive(:service).and_return(host)
     allow(Lich::WebUI).to receive(:registry).and_return(host.registry)
     allow(Lich::WebUI).to receive(:start)
-    allow(Lich::WebUI).to receive(:open)
+    allow(Lich::WebUI).to receive(:open).and_return(true)
   end
   after { form.close; host.stop }
 

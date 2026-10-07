@@ -163,4 +163,31 @@ RSpec.describe Lich::WebUI::ModalCoordinator do
     expect(registry.size).to eq(0)
     expect(modal.pending_count).to eq(0)
   end
+
+  it 'returns the live modal when its post-registration viewer check fails' do
+    checks = 0
+    present = lambda do |_owner|
+      checks += 1
+      raise 'viewer lookup failed' if checks > 1
+
+      true
+    end
+    logger = double('logger', call: nil)
+    modal = described_class.new(registry: registry, runtime: runtime, viewers_present: present,
+                                pages_changed: pages_changed, logger: logger)
+    allow(runtime).to receive(:close_page) { |page, **| registry.unregister(page.owner, page.id) }
+
+    future = modal.open(owner: owner, id: 'live', title: 'Live', buttons: buttons, no_viewer: :abort)
+
+    expect(future).not_to be_resolved
+    expect(modal.pending_count).to eq(1)
+    expect(registry.fetch(owner, 'live')).to be_a(Lich::WebUI::Page)
+    expect(logger).to have_received(:call).with(:warning, 'WebUI modal viewer check failed: RuntimeError')
+    future.resolve(button: 'ok')
+    expect(future.await.button).to eq('ok')
+    expect(modal.pending_count).to eq(0)
+    expect(registry.size).to eq(0)
+  ensure
+    modal&.shutdown
+  end
 end

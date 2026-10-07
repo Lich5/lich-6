@@ -7,19 +7,29 @@ module Lich
   module WebUI
     # Server-owned page registry. Owner identity is never accepted from wire input.
     class Registry
+      # Creates an empty registry with owner admission tracked by identity.
       def initialize
         @pages = {}
         @addresses = {}
         @page_addresses = {}.compare_by_identity
         @modal_pages = {}.compare_by_identity
+        @terminated_owners = ObjectSpace::WeakMap.new
+        @stopped = false
         @mutex = Mutex.new
       end
 
+      # Registers a page only while its owner and this host accept new work.
+      # @param page [Page] page to publish
+      # @param modal [Boolean] whether descriptors route it to the owner's pages
+      # @return [Page] registered page
+      # @raise [Error] if the owner terminated or the registry stopped
+      # @raise [DuplicatePageError] if the owner already registered this page ID
       def register(page, modal: false)
         raise ArgumentError, 'page must be a WebUI::Page' unless page.is_a?(Page)
 
         key = registry_key(page.owner, page.id)
         @mutex.synchronize do
+          check_active!(page.owner)
           if @pages.key?(key)
             raise DuplicatePageError.new(
               "page id #{page.id.inspect} is already registered for owner",
@@ -33,6 +43,28 @@ module Lich
           @modal_pages[page] = true if modal
         end
         page
+      end
+
+      # Rejects new work before owner cleanup takes a snapshot of existing pages.
+      # Repeated calls are safe; a restarted script must use its new owner identity.
+      # @param owner [Object] terminating owner
+      # @return [void]
+      def terminate_owner(owner)
+        @mutex.synchronize { @terminated_owners[owner] = true }
+      end
+
+      # Closes registration for every owner without hiding pages still needing cleanup.
+      # @return [void]
+      def stop
+        @mutex.synchronize { @stopped = true }
+      end
+
+      # Checks admission for operations that can precede page registration.
+      # @param owner [Object] owner requesting work
+      # @return [void]
+      # @raise [Error] if the owner terminated or this registry stopped
+      def ensure_active!(owner)
+        @mutex.synchronize { check_active!(owner) }
       end
 
       def fetch(owner, page_id)
@@ -105,6 +137,16 @@ module Lich
       end
 
       private
+
+      # Checks admission while the registry mutex is held.
+      # @param owner [Object] owner requesting work
+      # @return [void]
+      # @raise [Error] if registration is no longer allowed
+      # @api private
+      def check_active!(owner)
+        raise Error, 'page registry is stopped' if @stopped
+        raise Error, 'page owner is terminated' if @terminated_owners[owner]
+      end
 
       def registry_key(owner, page_id)
         [owner.object_id, page_id.to_s]

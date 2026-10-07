@@ -25,11 +25,13 @@ module Lich
       # @param logger [#call, nil] diagnostic sink accepting level and message
       # @param on_page_closed [#call, nil] callback releasing a page's owned window
       # @param window_host [#call, nil] lookup from a Page to its BrowserWindow
+      # @param viewers_changed [#call, nil] notification after an owner's viewer loss
       def initialize(registry:, dispatcher: nil, viewers: ViewerStore.new,
-                     validator: Validator.new, file_service: nil, logger: nil, on_page_closed: nil, window_host: nil)
+                     validator: Validator.new, file_service: nil, logger: nil, on_page_closed: nil, window_host: nil, viewers_changed: nil)
         @registry = registry
         @on_page_closed = on_page_closed
         @window_host = window_host
+        @viewers_changed = viewers_changed
         @window_close_mutex = Mutex.new
         @window_closes = ObjectSpace::WeakMap.new
         @viewers = viewers
@@ -85,11 +87,18 @@ module Lich
         :refused
       end
 
+      # Retains resumable attachments and rechecks modals after active viewers leave.
+      # Enqueues every detach before notifying each owner identity once.
+      # @param connection [Object] disconnected transport with a viewer_id
+      # @return [void]
       def disconnect(connection)
         @connections_mutex.synchronize { @connections.delete(connection.viewer_id) }
+        owners = {}.compare_by_identity
         @viewers.transient_disconnect(connection.viewer_id).each do |attachment|
           enqueue_lifecycle(attachment, :detach)
+          owners[attachment.page.owner] = true
         end
+        owners.each_key { |owner| @viewers_changed&.call(owner) }
       end
 
       # A different script's open window cannot present this owner's modal.
@@ -150,7 +159,12 @@ module Lich
         )
       end
 
+      # Renders and delivers a page only while its owner accepts work.
+      # @param page [Page] page to refresh
+      # @return [Integer] evaluated render generation
+      # @raise [Error] if its owner terminated or the host stopped
       def refresh(page)
+        @registry.ensure_active!(page.owner)
         page.bind_runtime(self)
         render = validated_render(page)
         @viewers.attachments_for(page).each do |attachment|
@@ -163,7 +177,11 @@ module Lich
         render.generation
       end
 
+      # Closes admission before waiting for previously accepted work and releasing pages.
+      # @param owner [Object] terminating owner identity
+      # @return [Array<Page>] removed pages
       def terminate_owner(owner)
+        @registry.terminate_owner(owner)
         cancel_renders(owner)
         pages = @registry.pages_for(owner)
         @dispatcher.shutdown_owner(owner)
@@ -200,6 +218,10 @@ module Lich
         nil # Owner termination already removed the page or its dispatcher.
       end
 
+      # Removes a page and its attachments, then reevaluates owner modal availability.
+      # @param page [Page] page to remove
+      # @param reason [Symbol] reason sent to attached viewers
+      # @return [Page, nil] removed page, or nil if already absent
       def close_page(page, reason: :owner)
         address = @registry.address_for(page)
         @registry.unregister(page.owner, page.id)
@@ -210,12 +232,16 @@ module Lich
         end
         @viewers.destroy_page(page)
         @degradation_mutex.synchronize { @degradations.delete(page) }
+        @viewers_changed&.call(page.owner)
         page
       rescue Error
         nil
       end
 
+      # Refuses registration before draining the host's dispatcher and render workers.
+      # @return [void]
       def shutdown
+        @registry.stop
         @dispatcher.shutdown
         cancel_renders
       end
@@ -257,6 +283,11 @@ module Lich
         :attached
       end
 
+      # Removes an explicit viewer attachment and rechecks its owner's modal policies.
+      # @param connection [Object] authenticated transport
+      # @param message [Hash] validated detach envelope
+      # @return [Symbol] :detached after removal
+      # @api private
       def detach(connection, message)
         attachment = fetch_attachment(connection, message[:page])
         jobs = []
@@ -277,6 +308,7 @@ module Lich
         jobs << lifecycle_job(attachment, :detach)
         jobs.compact.each(&:call)
         @viewers.close(connection_id: connection.viewer_id, address: message[:page])
+        @viewers_changed&.call(attachment.page.owner)
         :detached
       end
 

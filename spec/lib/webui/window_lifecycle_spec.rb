@@ -187,7 +187,8 @@ RSpec.describe 'WebUI script window lifecycle' do
       owner = active[index].owner
       service.terminate_owner(owner)
       expect(terminated).to eq((1..index + 1).map { |pid| [OS.windows? ? 'KILL' : 'TERM', pid] })
-      active[index] = page(owner)
+      # Restarting a script creates a new lifetime identity; the old owner stays retired.
+      active[index] = page
       service.open(active[index])
       expect(service.registry.address_for(active[index])).not_to eq(original_addresses[index])
       expect(active.map { |target| service.registry.fetch_address(service.registry.address_for(target)) }).to eq(active)

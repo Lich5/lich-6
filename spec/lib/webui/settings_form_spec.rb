@@ -21,12 +21,20 @@ RSpec.describe Lich::WebUI::SettingsForm do
     allow(Lich::WebUI).to receive(:service).and_return(service)
     allow(Lich::WebUI).to receive(:registry).and_return(service.registry)
     allow(Lich::WebUI).to receive(:start)
-    allow(Lich::WebUI).to receive(:open)
+    allow(Lich::WebUI).to receive(:open).and_return(true)
   end
 
   after do
     form.close
     service.stop
+  end
+
+  it 'cancels without waiting when the host cannot open its window' do
+    allow(Lich::WebUI).to receive(:open).and_return(false)
+    form.show
+    expect(form.instance_variable_get(:@completion)).to be_resolved
+    expect(form.wait).to be_nil
+    expect(service.registry.pages_for(owner)).to be_empty
   end
 
   it 'inherits the stored dark preference instead of forcing light' do

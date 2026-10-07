@@ -7,7 +7,7 @@ module Lich
   module WebUI
     # Owns modal registration and the response/timeout/termination race.
     class ModalCoordinator
-      Pending = Data.define(:owner, :page, :future, :timer)
+      Pending = Data.define(:owner, :page, :future, :timer, :props)
 
       def initialize(registry:, runtime:, viewers_present:, pages_changed:, logger: nil)
         @registry = registry
@@ -19,8 +19,28 @@ module Lich
         @mutex = Mutex.new
       end
 
+      # Registers a nonblocking modal while its owner is live, with explicit viewer policy.
+      # @param owner [Object] lifetime identity shared with the presenting pages
+      # @param id [String] modal page ID unique within the owner
+      # @param title [String] dialog title
+      # @param buttons [Array<Hash>] permitted responses
+      # @param no_viewer [Symbol, String] abort, default or wait when no active viewer exists
+      # @param body [String, nil] optional dialog text
+      # @param default_button [String, nil] response selected by the default policy
+      # @param timeout [Numeric, nil] explicit deadline in seconds; nil adds no deadline
+      # @param credential [Boolean] refuses wait policy for credential prompts
+      # @param props [Hash] dialog property overrides
+      # @param page_props [Hash] containing page properties
+      # @param on_response [#call, nil] custom handler receiving event and completion
+      # @param content [Proc, nil] builder for additional dialog controls
+      # @return [Future] response or cancellation completion
+      # @raise [Error] if the owner terminated or the host stopped
+      # @raise [ArgumentError] if a credential modal requests wait policy
       def open(owner:, id:, title:, buttons:, no_viewer:, body: nil, default_button: nil,
                timeout: nil, credential: false, props: {}, page_props: {}, on_response: nil, &content)
+        timer = nil
+        registered = false
+        @registry.ensure_active!(owner)
         raise ArgumentError, 'credential modals cannot wait for a viewer' if credential && no_viewer.to_s == 'wait'
 
         props = props.merge(
@@ -33,7 +53,7 @@ module Lich
         page_props = Validator.new.validate_component!(
           :page, page_props.merge(title: title), owner: owner_label(owner), page_id: id, cid: "page:#{id}"
         )
-        future = Future.new
+        future = Future.new(logger: @logger)
         unless @viewers_present.call(owner)
           return resolve_absent_viewer(future, props) unless props[:no_viewer] == 'wait'
         end
@@ -64,17 +84,22 @@ module Lich
             end
           end
         end
-        @registry.register(page, modal: true)
-        registered = true
-        page.bind_runtime(@runtime)
-        timer = timeout && Thread.new do
-          sleep(timeout)
-          future.resolve(reason: :timeout)
+        # Admission and pending tracking must be indivisible with respect to
+        # terminate_owner/shutdown; user callbacks run only after releasing this lock.
+        @mutex.synchronize do
+          @registry.register(page, modal: true)
+          registered = true
+          page.bind_runtime(@runtime)
+          timer = timeout && Thread.new do
+            sleep(timeout)
+            future.resolve(reason: :timeout)
+          end
+          @pending[future] = Pending.new(owner, page, future, timer, props)
         end
-        @mutex.synchronize { @pending[future] = Pending.new(owner, page, future, timer) }
         future.then { |result| complete(future, result) }
         cleanup_installed = true
         @pages_changed.call
+        viewers_changed(owner)
         future
       rescue StandardError
         future&.cancel(reason: :error)
@@ -85,12 +110,45 @@ module Lich
         raise
       end
 
+      # Prevents late admission and resolves every pending modal for one owner.
+      # @param owner [Object] terminating lifetime identity
+      # @return [Integer] number of completions considered
       def terminate_owner(owner)
+        @registry.terminate_owner(owner)
         futures = @mutex.synchronize do
           @pending.values.select { |pending| pending.owner.equal?(owner) }.map(&:future)
         end
         futures.each { |future| future.cancel(reason: :terminated) }
         futures.length
+      end
+
+      # Cancels pending completions after globally closing registration.
+      # @return [void]
+      def shutdown
+        @registry.stop
+        futures = @mutex.synchronize { @pending.keys }
+        futures.each { |future| future.cancel(reason: :terminated) }
+      end
+
+      # Reapplies each modal's policy when its owner has no active viewers.
+      # Disconnected attachments remain resumable, but do not count as active.
+      # A failed availability check is logged and leaves registered modals live;
+      # it must not turn a post-registration notification into a setup failure.
+      # @param owner [Object] owner whose viewer availability changed
+      # @return [void]
+      def viewers_changed(owner)
+        return if @viewers_present.call(owner)
+
+        pending = @mutex.synchronize { @pending.values.select { |item| item.owner.equal?(owner) } }
+        pending.each do |item|
+          resolve_absent_viewer(item.future, item.props) unless item.props[:no_viewer] == 'wait'
+        end
+      rescue StandardError => error
+        begin
+          @logger.call(:warning, "WebUI modal viewer check failed: #{error.class}")
+        rescue StandardError
+          nil # Diagnostic failure must not cancel an otherwise usable modal.
+        end
       end
 
       def pending_count

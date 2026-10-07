@@ -61,6 +61,7 @@ module Lich
       end
 
       # Registers, renders and opens the form without waiting for completion.
+      # A refused window launch cancels the form so #wait returns without blocking.
       # @return [SettingsForm] this form, ready for #wait
       # @raise [ArgumentError] if this instance has already been shown
       def show
@@ -72,7 +73,7 @@ module Lich
         end
         WebUI.refresh(@page)
         WebUI.start
-        WebUI.open(page: @page)
+        close unless WebUI.open(page: @page)
         self
       rescue StandardError
         close

@@ -8,7 +8,10 @@ module Lich
     class Future
       Result = Data.define(:button, :reason)
 
-      def initialize
+      # Creates an unresolved completion with isolated callback diagnostics.
+      # @param logger [#call, nil] sink accepting level and sanitized message
+      def initialize(logger: nil)
+        @logger = logger || proc { |level, message| Lich.log("#{level}: #{message}") if Lich.respond_to?(:log) }
         @mutex = Mutex.new
         @condition = ConditionVariable.new
         @result = nil
@@ -19,6 +22,10 @@ module Lich
         @mutex.synchronize { !@result.nil? }
       end
 
+      # Completes once and runs every callback, logging individual callback failures.
+      # @param button [Object, nil] accepted response or submitted form result
+      # @param reason [Symbol, nil] cancellation or completion reason
+      # @return [Boolean] whether this call won completion
       def resolve(button: nil, reason: nil)
         callbacks = nil
         result = Result.new(button, reason)
@@ -31,7 +38,7 @@ module Lich
           @condition.broadcast
           true
         end
-        callbacks&.each { |callback| callback.call(result) }
+        callbacks&.each { |callback| invoke(callback, result) }
         accepted
       end
 
@@ -39,6 +46,12 @@ module Lich
         resolve(reason: reason)
       end
 
+      # Registers a completion callback, invoking it immediately if already resolved.
+      # Callback exceptions are isolated consistently for early and late registration.
+      # @param callback [Proc] observer receiving the winning completion
+      # @yieldparam result [Result] winning completion
+      # @return [Future] this completion
+      # @raise [ArgumentError] if no callback is supplied
       def then(&callback)
         raise ArgumentError, 'completion callback is required' unless callback
 
@@ -50,7 +63,7 @@ module Lich
             nil
           end
         end
-        callback.call(result) if result
+        invoke(callback, result) if result
         self
       end
 
@@ -72,6 +85,21 @@ module Lich
       end
 
       private
+
+      # Prevents a script callback or diagnostic sink from interrupting other cleanup.
+      # @param callback [#call] completion observer
+      # @param result [Result] winning completion
+      # @return [void]
+      # @api private
+      def invoke(callback, result)
+        callback.call(result)
+      rescue StandardError => error
+        begin
+          @logger.call(:error, "WebUI completion callback failed: #{error.class}")
+        rescue StandardError
+          nil
+        end
+      end
 
       def monotonic_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
