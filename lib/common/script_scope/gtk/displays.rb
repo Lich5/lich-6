@@ -138,9 +138,21 @@ module Lich
             @props[:value] = 0.0
           end
 
+          # Bounds the displayed fraction without changing the script's arithmetic.
+          # NaN has no representable WebUI fraction; retain the last display value
+          # and report that degradation once rather than aborting the whole update.
+          # @param value [Numeric] requested fraction; infinities saturate at an end
+          # @return [ProgressBar] this progress bar
+          # @raise [UnsupportedOperation] when the value is not a real number
           def set_fraction(value)
-            session.refuse(self, :set_fraction) unless value.is_a?(Numeric) && value.finite? && value.between?(0, 1)
-            write(:value, value)
+            session.refuse(self, :set_fraction) unless value.is_a?(Numeric) && value.real?
+            fraction = value.to_f
+            if fraction.nan?
+              session.degrade(:progress_fraction_nan, 'undefined fraction; retaining the last displayed value')
+              return self
+            end
+
+            write(:value, fraction.clamp(0.0, 1.0))
           end
 
           def style_context = @style_context ||= StyleContext.new(self)

@@ -44,10 +44,11 @@ module Lich
         end
 
         # Defers one block onto the existing core owner dispatcher. Shadow-state
-        # operations inside the block remain synchronous; admission never waits
-        # for execution. No native GTK loop or second shim queue is created.
+        # operations inside the block remain synchronous. During before_dying,
+        # the existing session executes cleanup on Script's cleanup thread.
+        # No native GTK loop or second shim queue is created.
         # @yield script UI work to execute once, in owner enqueue order
-        # @return [Symbol, nil] :queued on admission, nil during script teardown
+        # @return [Symbol, nil] :queued on admission/cleanup, nil for other late work
         # @raise [UnsupportedOperation] when no script owner/session is available
         # @raise [ArgumentError] when no block is supplied
         # @raise [Lich::WebUI::Error] when the host stopped or its queue is full
@@ -55,7 +56,11 @@ module Lich
           raise ArgumentError, 'work block is required' unless block
 
           owner = Script.current
-          return if owner.respond_to?(:stopping?) && owner.stopping?
+          if owner.respond_to?(:stopping?) && owner.stopping?
+            # Teardown may use an existing session, but must never create a host.
+            current = @mutex.synchronize { @sessions[owner] }
+            return current&.queue(&block)
+          end
 
           current = owner ? session : Thread.current.thread_variable_get(:lich_script_compatibility_session)
           raise UnsupportedOperation, 'script owner is required for Gtk' unless current

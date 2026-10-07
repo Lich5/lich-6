@@ -77,6 +77,26 @@ RSpec.describe 'bounded script compatibility pilot' do
     release&.push(true)
   end
 
+  it 'retains the rejected shim operation without logging arbitrary exception messages' do
+    completed = Queue.new
+    compatibility.queue { compatibility.const_get(:ProgressBar).new.set_fraction('private value') }
+    compatibility.queue { raise 'private exception message' }
+    compatibility.queue { completed << true }
+    expect(completed.pop(timeout: 2)).to be(true)
+    expect(Lich).to have_received(:log).with(/operation=queue.*rejected=class=.*ProgressBar operation=set_fraction/)
+    expect(Lich).not_to have_received(:log).with(/private value|private exception message/)
+  end
+
+  it 'refuses stopping-owner submissions outside its cleanup thread and never recreates a session' do
+    retained = compatibility.session
+    allow(owner).to receive(:stopping?).and_return(true)
+    expect(compatibility.queue { raise 'must not run' }).to be_nil
+    expect(retained.queue { raise 'must not run' }).to be_nil
+    Lich::Common::ScriptDeath.run(owner)
+    expect(compatibility.queue { raise 'must not run' }).to be_nil
+    expect(compatibility.instance_variable_get(:@sessions)).not_to have_key(owner)
+  end
+
   it 'finishes destroy handlers and sibling windows when script cleanup raises' do
     first = compatibility.const_get(:Window).new('First')
     second = compatibility.const_get(:Window).new('Second')
@@ -439,7 +459,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect { buffer.insert(other.end_iter, 'foreign') }.to raise_error(StandardError, /insert/)
   end
 
-  it 'renders spell progress with its overlay label and refuses invalid fractions' do
+  it 'renders spell progress with its overlay label and clamps overflow fractions' do
     window = compatibility.const_get(:Window).new
     row = compatibility.const_get(:Paned).new(:horizontal)
     overlay = compatibility.const_get(:Overlay).new
@@ -451,7 +471,32 @@ RSpec.describe 'bounded script compatibility pilot' do
     row.add2(overlay)
     window.add(row)
     expect { window.show_all }.not_to raise_error
-    expect { progress.set_fraction(1.1) }.to raise_error(StandardError, /set_fraction/)
+    { 1.1 => 1.0, -0.1 => 0.0, Float::INFINITY => 1.0, -Float::INFINITY => 0.0 }.each do |input, expected|
+      expect(progress.set_fraction(input)).to equal(progress)
+      expect(progress.send(:component_props)[:value]).to eq(expected)
+    end
+    expect { progress.set_fraction('invalid') }.to raise_error(StandardError, /set_fraction/)
+
+    # Indefinite effects can divide a positive remaining time by zero. The
+    # existing script must still reach its subsequent duration-label update.
+    duration = compatibility.const_get(:Label).new
+    finished = Queue.new
+    compatibility.queue do
+      progress.set_fraction(10_000.0 / 0.0)
+      duration.text = 'Indefinite'
+      finished << true
+    end
+    expect(finished.pop(timeout: 2)).to be(true)
+    expect(progress.send(:component_props)[:value]).to eq(1.0)
+    expect(duration.text).to eq('Indefinite')
+  end
+
+  it 'retains the last fraction for NaN and reports the degradation only once' do
+    progress = compatibility.const_get(:ProgressBar).new
+    progress.set_fraction(0.5)
+    2.times { expect(progress.set_fraction(Float::NAN)).to equal(progress) }
+    expect(progress.send(:component_props)[:value]).to eq(0.5)
+    expect(Lich).to have_received(:log).with(/progress_fraction_nan/).once
   end
 
   it 'preserves spellson colors and row height without leaking provider style to sibling labels' do
