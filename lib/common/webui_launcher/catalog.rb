@@ -21,6 +21,10 @@ module Lich
 
         class MasterPasswordRequired < StandardError; end
         class LegacyConversionRequired < StandardError; end
+        class InvalidCatalogError < StandardError; end
+
+        INVALID_CATALOG_NOTICE = 'Saved entries are unreadable. Repair or restore entry.yaml, then refresh. ' \
+                                 'Manual Entry remains available; catalog changes are disabled.'
 
         LEGACY_CONVERSION_NOTICE = 'Legacy saved entries must be converted before saving changes. ' \
                                    'Close the launcher and run ruby lich.rbw --convert-entries MODE ' \
@@ -46,14 +50,18 @@ module Lich
         # @return [Array<Entry>] saved configurations in display order
         def entries(autosort: false)
           @mutex.synchronize do
-            source_entries.map do |entry|
+            normalized = source_entries.map do |entry|
+              entry.merge(user_id: entry[:user_id].to_s, char_name: entry[:char_name].to_s,
+                          game_name: entry[:game_name].to_s, is_favorite: entry[:is_favorite] == true)
+            end
+            @entry_store.sort_entries_with_favorites(normalized, autosort).map do |entry|
               Entry.new(
                 entry.fetch(:key), entry.fetch(:user_id).to_s, entry.fetch(:char_name).to_s,
                 entry.fetch(:game_code).to_s, entry[:game_name].to_s, entry[:frontend].to_s,
                 entry[:custom_launch], entry[:custom_launch_dir], entry[:is_favorite] == true,
                 entry[:favorite_order]
               )
-            end.then { |items| sort_entries(items, autosort) }
+            end
           end
         end
 
@@ -300,8 +308,15 @@ module Lich
           end
         end
 
+        # Refuses mode changes while saved data is unreadable or requires migration.
+        # @param mode [Symbol] selected encryption mode
+        # @param master_password [String, nil] confirmed password for Enhanced mode
+        # @return [Boolean] whether persistence succeeded
         def change_encryption_mode(mode, master_password: nil)
-          @entry_store.change_encryption_mode(data_dir, mode.to_sym, master_password)
+          @mutex.synchronize do
+            writable_yaml_data
+            @entry_store.change_encryption_mode(data_dir, mode.to_sym, master_password)
+          end
         end
 
         def migrate_legacy(mode, master_password: nil)
@@ -437,11 +452,37 @@ module Lich
           data
         end
 
+        # Reads saved state without treating a damaged file as an empty writable catalog.
+        # @return [Hash] parsed account data, or defaults for an absent file or nil document
+        # @raise [InvalidCatalogError] for unreadable YAML or incompatible container shapes
+        # @api private
         def yaml_data
           file = @entry_store.yaml_file_path(data_dir)
           return { 'accounts' => {}, 'encryption_mode' => 'plaintext' } unless File.exist?(file)
 
-          YAML.safe_load_file(file, permitted_classes: [Symbol]) || {}
+          data = YAML.safe_load_file(file, permitted_classes: [Symbol])
+          data = { 'accounts' => {}, 'encryption_mode' => 'plaintext' } if data.nil?
+          raise InvalidCatalogError, INVALID_CATALOG_NOTICE unless valid_catalog?(data)
+
+          data
+        rescue Psych::Exception, SystemCallError, IOError
+          raise InvalidCatalogError, INVALID_CATALOG_NOTICE
+        end
+
+        # Checks the containers and sort fields consumed by catalog operations.
+        # @param data [Object] parsed YAML document
+        # @return [Boolean] whether account iteration and sorting are safe
+        # @api private
+        def valid_catalog?(data)
+          return false unless data.is_a?(Hash) && data.fetch('accounts', {}).is_a?(Hash)
+          return false unless %w[plaintext standard enhanced].include?(data.fetch('encryption_mode', 'plaintext').to_s)
+
+          data.fetch('accounts', {}).all? do |name, account|
+            name.is_a?(String) && account.is_a?(Hash) && account.fetch('characters', []).is_a?(Array) &&
+              account.fetch('characters', []).all? do |character|
+                character.is_a?(Hash) && (character['favorite_order'].nil? || character['favorite_order'].is_a?(Integer))
+              end
+          end
         end
 
         def write_yaml(data)
@@ -483,12 +524,6 @@ module Lich
           end
           favorites.sort_by { |character| character['favorite_order'].to_i }
                    .each_with_index { |character, index| character['favorite_order'] = index + 1 }
-        end
-
-        def sort_entries(items, autosort)
-          return items.sort_by { |entry| [entry.favorite ? 0 : 1, entry.favorite_order.to_i] } unless autosort
-
-          items.sort_by { |entry| [entry.favorite ? 0 : 1, entry.game_name, entry.user_id, entry.char_name] }
         end
 
         def secure_equal?(left, right)

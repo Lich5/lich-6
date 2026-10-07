@@ -12,6 +12,8 @@ require_relative 'frontend_locator'
 require_relative 'frontend_choices'
 require_relative 'webui_launcher/frontend_tab'
 require_relative 'session_launcher'
+require_relative 'saga_launch_policy'
+require_relative 'saga_managed_launcher'
 require_relative 'webui_launcher/catalog'
 require_relative 'webui_launcher/serial_executor'
 require_relative 'webui_launcher/window_geometry_store'
@@ -210,8 +212,8 @@ module Lich
           owner: self, id: 'launcher', title: "Lich v#{defined?(LICH_VERSION) ? LICH_VERSION : ''}".strip,
           props: { bare: true },
           on: {
-            close: ->(_event) { launcher.close(reason: :user) },
-            detach: ->(event) { launcher.browser_window_closed(event.viewer_id) },
+            close: ->(event) { launcher.browser_window_closed(event.viewer_id) },
+            detach: ->(event) { launcher.viewer_gone(event.viewer_id) },
           }
         ) do
           state = launcher.__send__(:render_state)
@@ -231,6 +233,7 @@ module Lich
           text_input(key: 'window-geometry', value: JSON.generate(state[:window_geometry]), hidden: true,
                      max_length: 256, on: { change: ->(event) { launcher.window_geometry_changed(event) } })
           launcher.__send__(:render_modal, self, state[:modal]) if state[:modal]
+          text(key: 'catalog-error', content: state[:catalog_error], tone: :caution) if state[:catalog_error]
           notify(state[:notice]) if state[:notice]
           geometry_options = {
             width: state[:window_geometry][:width], height: state[:window_geometry][:height]
@@ -248,6 +251,9 @@ module Lich
         @frontend_tab.render(ui)
       end
 
+      # Captures launcher state, including recoverable catalog errors, for one render.
+      # @return [Hash] presentation state without account passwords
+      # @api private
       def render_state
         @mutex.synchronize do
           {
@@ -255,7 +261,7 @@ module Lich
             encryption_mode: @encryption_mode, keychain: @catalog.enhanced_encryption_available?,
             persistent: @persistent, autosort: @autosort, tab_layout: @tab_layout,
             dark_theme: @dark_theme, settings_visible: @settings_visible,
-            notice: @notice, modal: @modal&.dup,
+            notice: @notice, modal: @modal&.dup, catalog_error: @catalog_error,
             manual: @manual.merge(characters: @manual[:characters].dup), active: @active.keys,
             draft_entry_key: @draft_entry_key, window_geometry: @window_geometry.dup,
             frontend_options: @frontend_options.map(&:dup),
@@ -263,6 +269,11 @@ module Lich
         end
       end
 
+      # Renders saved account order and the independently ordered Favorites panel.
+      # @param ui [WebUI::TreeBuilder] parent builder
+      # @param state [Hash] captured launcher state
+      # @return [Object] authored saved-entry controls
+      # @api private
       def render_saved(ui, state)
         launcher = self
         account_names = state[:accounts].select { |account| state[:entries].any? { |entry| entry.user_id == account } }
@@ -271,7 +282,8 @@ module Lich
           ui.tabs(key: 'saved-account-tabs', names: names, selected: 0,
                   on: { select: ->(_event) {} }) do
             stack(slot: 'FAVORITES', key: 'favorites-panel') do
-              launcher.__send__(:render_entry_rows, self, state[:entries].select(&:favorite), state,
+              launcher.__send__(:render_entry_rows, self,
+                                state[:entries].select(&:favorite).sort_by { |entry| [entry.favorite_order || 999999, entry.char_name] }, state,
                                 empty: 'No favorite characters yet.')
             end
             account_names.each do |account|
@@ -507,7 +519,14 @@ module Lich
         end
       end
 
+      # Renders confirmed password creation and an explicit plaintext acknowledgement.
+      # @param ui [WebUI::TreeBuilder] parent builder
+      # @param state [Hash] current launcher state
+      # @return [Object] authored controls or the catalog recovery notice
+      # @api private
       def render_encryption(ui, state)
+        return ui.text(content: state[:catalog_error], tone: :caution) if state[:catalog_error]
+
         launcher = self
         ui.group(label: 'Encryption Management', key: 'encryption-section') do
           text(content: "Current mode: #{state[:encryption_mode]}", emphasis: :strong)
@@ -520,8 +539,10 @@ module Lich
           mode = radio(key: 'encryption-mode', label: 'Encryption mode', group: 'encryption-mode',
                        options: modes, selected: state[:encryption_mode].to_s)
           master = password_input(key: 'encryption-master', label: 'Master Password')
+          confirmation = password_input(key: 'encryption-confirm', label: 'Confirm New Master Password (for Enhanced Encryption)')
+          plaintext = checkbox(key: 'encryption-plaintext-confirm', label: 'I understand Plaintext stores saved passwords without encryption.', checked: false)
           button(key: 'encryption-change', label: 'Change Encryption Mode', variant: :primary,
-                 submit: [mode, master], on: { activate: ->(event) { launcher.change_encryption(event) } })
+                 submit: [mode, master, confirmation, plaintext], on: { activate: ->(event) { launcher.change_encryption(event) } })
           divider(label: 'Change Master Password')
           current = password_input(key: 'master-current', label: 'Current Master Password')
           replacement = password_input(key: 'master-new', label: 'New Master Password')
@@ -775,6 +796,10 @@ module Lich
         end
       end
 
+      # Saves a supported frontend even when it is not installed on this machine.
+      # Native-only frontends still reject a conflicting custom launch command.
+      # @param event [WebUI::Runtime::EventContext] character configuration submission
+      # @return [void]
       def save_character(event)
         values = submission_values(event.submission)
         entry_key = @mutex.synchronize { @draft_entry_key }
@@ -788,7 +813,10 @@ module Lich
         character[:game_name] = GAME_NAMES.fetch(character[:game_code], character[:game_code])
         account = values.find { |key, _| key.end_with?('select:character-account') }&.last.to_s
         return set_notice('Character name is required.', :error) if character[:char_name].empty?
-        return set_notice('Choose an available front end.', :error) unless frontend_available?(character[:frontend], refresh: true)
+        return set_notice('Choose a supported front end.', :error) unless @frontend_options.any? { |option| option[:value] == character[:frontend] }
+        if native_launch_only?(character[:frontend]) && character[:custom_launch]
+          return set_notice('This front end requires native launch; remove the Custom Launch command.', :error)
+        end
 
         mutate(:character, event, 'Character could not be saved.') do
           success = entry_key ? @catalog.update_character(entry_key, character) : @catalog.add_character(account, character)
@@ -806,7 +834,7 @@ module Lich
         frontend = values.find { |key, _| key.end_with?('select:account-frontend') }&.last.to_s
         password_pair = values.find { |key, _| key.end_with?('password_input:account-password') }
         return set_notice('Account name is required.', :error) if account.empty?
-        return set_notice('Choose an available front end.', :error) unless frontend_available?(frontend, refresh: true)
+        return set_notice('Choose a supported front end.', :error) unless @frontend_options.any? { |option| option[:value] == frontend }
         return set_notice('Password is required.', :error) unless password_pair
 
         operation = begin_operation(:account, event)
@@ -824,34 +852,57 @@ module Lich
         end
       end
 
-      # Confirms and applies an encryption change only while its operation remains live.
-      # @param event [WebUI::Runtime::EventContext] target mode and master password
+      # Validates confirmed creation or an explicit plaintext acknowledgement before writing.
+      # Existing GTK creation policy requires nonempty matching values; the separate
+      # replacement-password workflow retains its existing minimum length.
+      # @param event [WebUI::Runtime::EventContext] mode, master password and confirmations
       # @return [void]
       def change_encryption(event)
         values = submission_values(event.submission)
-        mode = values.find { |key, _| key.end_with?('radio:encryption-mode') }&.last.to_s.to_sym
-        master_pair = values.find { |key, _| key.end_with?('password_input:encryption-master') }
-        return set_notice('Master password submission is incomplete.', :error) unless master_pair
-
+        mode = submitted(values, 'radio:encryption-mode').to_s.to_sym
+        current_mode = @mutex.synchronize { @encryption_mode }
+        unless %i[plaintext standard enhanced].include?(mode)
+          event.submission.discard_sensitive!
+          return set_notice('Choose a supported encryption mode.', :error)
+        end
+        if mode == current_mode
+          event.submission.discard_sensitive!
+          return set_notice('Encryption mode is unchanged.', :info)
+        end
+        if mode == :plaintext && submitted(values, 'checkbox:encryption-plaintext-confirm') != true
+          event.submission.discard_sensitive!
+          return set_notice('Confirm that saved passwords will be stored without encryption.', :error)
+        end
         if mode == :enhanced && !@catalog.enhanced_encryption_available?
-          master_pair.last.discard!
+          event.submission.discard_sensitive!
           return set_notice('Enhanced Encryption is unavailable because no secure keychain is present.', :error)
         end
+        master = submitted(values, 'password_input:encryption-master')
+        confirmation = submitted(values, 'password_input:encryption-confirm')
+        unless master && (mode != :enhanced || confirmation)
+          event.submission.discard_sensitive!
+          return set_notice('Master password submission is incomplete.', :error)
+        end
+
         operation = begin_operation(:encryption, event)
-        secret = transfer_secret(master_pair.last)
-        post_operation(operation, secrets: [secret]) do
+        secret = transfer_secret(master)
+        confirmed = confirmation && transfer_secret(confirmation)
+        post_operation(operation, secrets: [secret, confirmed].compact) do
           secret.consume do |password|
+            if mode == :enhanced
+              raise 'password cannot be empty' if password.empty?
+              confirmed.consume { |value| raise 'passwords do not match' unless secure_equal?(password, value) }
+            end
             commit(operation) do
               if @catalog.encryption_mode == :enhanced && mode != :enhanced
                 raise 'current master password was not accepted' if password.empty? || !@catalog.validate_master_password(password)
               end
-              master = mode == :enhanced ? password : nil
-              raise 'encryption change failed' unless @catalog.change_encryption_mode(mode, master_password: master)
+              raise 'encryption change failed' unless @catalog.change_encryption_mode(mode, master_password: mode == :enhanced ? password : nil)
             end
           end
           complete(operation) { reload_catalog_locked }
         rescue StandardError => error
-          fail_operation(operation, error, notice: 'Encryption mode change failed.')
+          fail_operation(operation, error, notice: 'Encryption mode change failed. Check the password and confirmation.')
         end
       end
 
@@ -906,6 +957,9 @@ module Lich
         end
       end
 
+      # Closes only for an explicit window-close event, never a reconnectable detach.
+      # @param viewer_id [String, nil] closing attachment, if known
+      # @return [Boolean] whether shutdown began
       def browser_window_closed(viewer_id)
         viewer_gone(viewer_id)
         close(reason: :browser_window_closed)
@@ -971,6 +1025,11 @@ module Lich
         entry = @mutex.synchronize { @entries.find { |candidate| candidate.key == entry_key } }
         raise KeyError, 'saved entry no longer exists' unless entry
 
+        if SagaLaunchPolicy.custom_launch_conflict?(frontend: entry.frontend, custom_launch: entry.custom_launch)
+          raise ArgumentError, SagaLaunchPolicy::CUSTOM_LAUNCH_CONFLICT
+        end
+        return perform_saga_launch(operation, entry) if Frontend.canonical_name(entry.frontend) == 'saga'
+
         credential ||= @catalog.credential(entry_key)
         launch = nil
         credential.consume do |password|
@@ -990,9 +1049,32 @@ module Lich
       rescue Catalog::MasterPasswordRequired
         complete(operation) { @modal = { kind: :unlock, entry_key: entry_key, error: nil } }
       rescue StandardError => error
-        fail_operation(operation, error, notice: 'Saved-entry launch failed. Retry is available.')
+        notice = if entry && SagaLaunchPolicy.custom_launch_conflict?(frontend: entry.frontend, custom_launch: entry.custom_launch)
+                   SagaLaunchPolicy::CUSTOM_LAUNCH_CONFLICT
+                 else
+                   'Saved-entry launch failed. Retry is available.'
+                 end
+        fail_operation(operation, error, notice: notice)
       ensure
         credential&.discard!
+      end
+
+      # Lets Saga own saved-entry authentication and its Via-Lich child process.
+      # @param operation [Operation] cancelable saved-launch token
+      # @param entry [Catalog::Entry] selected Saga configuration
+      # @return [void]
+      # @api private
+      def perform_saga_launch(operation, entry)
+        raise 'Saga is unavailable' unless frontend_available?('saga', refresh: true)
+
+        result = nil
+        return unless commit(operation) do
+          result = SagaManagedLauncher.launch(account: entry.user_id, character: entry.char_name, game_code: entry.game_code)
+        end
+        raise 'Saga launch failed' unless result[:ok]
+
+        complete(operation) { @modal = nil }
+        @persistent ? set_notice('Saga session launched.', :info) : close(reason: :launch)
       end
 
       # Queues a catalog edit through the same close gate as authentication writes.
@@ -1129,10 +1211,19 @@ module Lich
         @mutex.synchronize { reload_catalog_locked }
       end
 
+      # Loads a complete catalog or exposes a recoverable, non-writable error state.
+      # @return [void]
+      # @api private
       def reload_catalog_locked
         @entries = @catalog.entries(autosort: @autosort)
         @accounts = @catalog.accounts
         @encryption_mode = @catalog.encryption_mode
+        @catalog_error = nil
+      rescue Catalog::InvalidCatalogError => error
+        @entries = []
+        @accounts = []
+        @encryption_mode = :plaintext
+        @catalog_error = error.message
       end
 
       def refresh

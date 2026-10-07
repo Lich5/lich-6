@@ -26,6 +26,59 @@ RSpec.describe Lich::Common::Authentication::EntryStore do
 
   after { FileUtils.remove_entry(temp_dir) if Dir.exist?(temp_dir) }
 
+  describe '.write_yaml_file' do
+    it 'leaves the previous catalog intact when serialization fails' do
+      original = YAML.dump('accounts' => {})
+      File.write(yaml_file, original)
+      allow(YAML).to receive(:dump).and_raise(IOError, 'synthetic write failure')
+      expect { described_class.write_yaml_file(yaml_file, { 'accounts' => {} }) }.to raise_error(IOError)
+      expect(File.read(yaml_file)).to eq(original)
+    end
+
+    it 'publishes complete documents with private permissions and no temporary files' do
+      described_class.write_yaml_file(yaml_file, { 'accounts' => {}, 'encryption_mode' => 'standard' })
+      expect(YAML.safe_load_file(yaml_file)).to include('accounts' => {}, 'encryption_mode' => 'standard')
+      expect(File.stat(yaml_file).mode & 0o777).to eq(0o600) unless OS.windows?
+      expect(Dir.children(data_dir)).to contain_exactly('entry.yaml', 'entry.yaml.lock')
+    end
+
+    it 'syncs the containing directory after publishing on non-Windows hosts' do
+      allow(OS).to receive(:windows?).and_return(false)
+      directory = instance_double(File)
+      allow(File).to receive(:open).and_call_original
+      expect(File).to receive(:open).with(data_dir, File::RDONLY).and_yield(directory)
+      expect(directory).to receive(:fsync) do
+        expect(YAML.safe_load_file(yaml_file)).to include('encryption_mode' => 'standard')
+        0
+      end
+
+      described_class.write_yaml_file(yaml_file, { 'accounts' => {}, 'encryption_mode' => 'standard' })
+    end
+
+    it 'skips directory syncing on Windows while still publishing the catalog' do
+      allow(OS).to receive(:windows?).and_return(true)
+      allow(File).to receive(:open).and_call_original
+      expect(File).not_to receive(:open).with(data_dir, File::RDONLY)
+
+      described_class.write_yaml_file(yaml_file, { 'accounts' => {}, 'encryption_mode' => 'standard' })
+      expect(YAML.safe_load_file(yaml_file)).to include('encryption_mode' => 'standard')
+    end
+
+    it 'reports uncertain durability without failing an already published write' do
+      allow(OS).to receive(:windows?).and_return(false)
+      directory = instance_double(File)
+      allow(directory).to receive(:fsync).and_raise(Errno::EINVAL)
+      allow(File).to receive(:open).and_call_original
+      allow(File).to receive(:open).with(data_dir, File::RDONLY).and_yield(directory)
+      expect(Lich).to receive(:log).with(/published.*durability.*uncertain/)
+
+      expect do
+        described_class.write_yaml_file(yaml_file, { 'accounts' => {}, 'encryption_mode' => 'standard' })
+      end.not_to raise_error
+      expect(YAML.safe_load_file(yaml_file)).to include('encryption_mode' => 'standard')
+    end
+  end
+
   describe '.migrate_from_legacy with enhanced mode' do
     before do
       # Create a dummy entry.dat file for each test

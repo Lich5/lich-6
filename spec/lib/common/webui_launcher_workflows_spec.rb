@@ -478,11 +478,109 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(catalog.calls.last.first).to eq(:update_character)
   end
 
+  it 'saves supported but undetected frontends while refusing Saga custom-launch conflicts' do
+    values = {
+      'select:character-account' => 'DOUG', 'text_input:character-name' => 'Cera',
+      'select:character-game' => 'GS3', 'select:character-frontend' => 'wizard',
+    }
+    launcher.save_character(event(values))
+    expect(catalog.calls.last).to match([:add_character, 'DOUG', hash_including(frontend: 'wizard')])
+
+    launcher.save_account(event({ 'text_input:account-name' => 'DOUG', 'select:account-frontend' => 'wizard',
+                                 'password_input:account-password' => viewer_secret('synthetic') }))
+    expect(catalog.calls.last.first).to eq(:save_account)
+    expect(catalog.calls.last.last).to eq('wizard')
+
+    before = catalog.calls.dup
+    launcher.save_character(event(values.merge('select:character-frontend' => 'saga', 'text_input:character-custom' => 'custom-client')))
+    expect(catalog.calls).to eq(before)
+    expect(launcher.send(:render_state)[:notice][:text]).to include('requires native launch')
+  end
+
+  it 'keeps the launcher open on detach while invalidating viewer-owned work' do
+    launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('synthetic') }), 'account', 'password')
+    page = launcher.send(:build_page)
+    page.lifecycle_bindings.fetch(:detach).call(event)
+    expect(launcher.lifecycle).not_to eq(:closed)
+    expect(service.stopped).to be_nil
+    expect(launcher.send(:render_state)[:manual][:phase]).to eq(:editing)
+  end
+
+  it 'keeps Manual Entry renderable when the catalog is damaged' do
+    Dir.mktmpdir('launcher-recovery') do |directory|
+      path = File.join(directory, 'entry.yaml')
+      File.write(path, "accounts: [unclosed\n")
+      recovery_catalog = described_class::Catalog.new(data_dir: directory)
+      allow(recovery_catalog).to receive(:enhanced_encryption_available?).and_return(false)
+      allow(self).to receive(:catalog).and_return(recovery_catalog)
+      expect { launcher.send(:build_page).render }.not_to raise_error
+      expect(launcher.send(:render_state)[:catalog_error]).to match(/unreadable/)
+      launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('synthetic') }), 'account', 'password')
+      expect(launcher.send(:render_state)[:manual][:phase]).to eq(:selecting_character)
+      File.write(path, YAML.dump('accounts' => {}, 'encryption_mode' => 'standard'))
+      launcher.refresh_catalog
+      expect(launcher.send(:render_state).values_at(:catalog_error, :encryption_mode)).to eq([nil, :standard])
+    end
+  end
+
+  [['', ''], ['new-master', 'different']].each do |password, confirmation|
+    it "refuses enhanced encryption with empty or mismatched creation fields #{password.inspect}" do
+      launcher.change_encryption(event({
+        'radio:encryption-mode' => 'enhanced', 'password_input:encryption-master' => viewer_secret(password),
+        'password_input:encryption-confirm' => viewer_secret(confirmation)
+      }))
+      expect(catalog.calls.map(&:first)).not_to include(:change_encryption)
+    end
+  end
+
+  it 'requires explicit acknowledgement before storing passwords as plaintext' do
+    launcher.change_encryption(event({ 'radio:encryption-mode' => 'plaintext', 'password_input:encryption-master' => viewer_secret('') }))
+    expect(catalog.calls.map(&:first)).not_to include(:change_encryption)
+  end
+
+  it 'preserves GTK creation policy for a nonempty confirmed password without imposing a new length limit' do
+    expect(catalog).to receive(:change_encryption_mode).with(:enhanced, master_password: 'x').and_call_original
+    launcher.change_encryption(event({
+      'radio:encryption-mode' => 'enhanced', 'password_input:encryption-master' => viewer_secret('x'),
+      'password_input:encryption-confirm' => viewer_secret('x')
+    }))
+    expect(catalog.mode).to eq(:enhanced)
+  end
+
+  it 'disposes an incomplete enhanced submission without changing encryption' do
+    secret = viewer_secret('synthetic')
+    launcher.change_encryption(event({ 'radio:encryption-mode' => 'enhanced', 'password_input:encryption-master' => secret }))
+    expect(secret).to be_consumed
+    expect(catalog.calls.map(&:first)).not_to include(:change_encryption)
+  end
+
+  it 'routes saved Saga through its managed launcher without reading credentials or creating a game key' do
+    catalog.entries_value = [entry.with(frontend: 'saga')]
+    allow(WorkflowFrontendLocator).to receive(:resolve).and_call_original
+    allow(WorkflowFrontendLocator).to receive(:resolve).with('saga', refresh: true).and_return(WorkflowFrontendLocator::Resolution.new('saga'))
+    expect(Lich::Common::SagaManagedLauncher).to receive(:launch).with(account: 'DOUG', character: 'Aldor', game_code: 'GS3').and_return(ok: true, pid: 123)
+    launcher.saved_launch(event, entry.key)
+    expect(catalog.calls.map(&:first)).not_to include(:credential)
+    expect(authenticator.calls).to be_empty
+    expect(launches).to be_empty
+    expect(launcher.lifecycle).to eq(:closed)
+  end
+
+  it 'refuses saved Saga plus custom launch before authentication' do
+    catalog.entries_value = [entry.with(frontend: 'saga', custom_launch: 'custom-client')]
+    launcher.saved_launch(event, entry.key)
+    expect(authenticator.calls).to be_empty
+    expect(launches).to be_empty
+    expect(launcher.send(:render_state)[:notice][:text]).to include('Saga')
+  end
+
   it 'covers plaintext, standard, enhanced, keychain-unavailable, and master-password change paths' do
     %w[plaintext standard enhanced].each do |mode|
       launcher.change_encryption(event({
-        'radio:encryption-mode'            => mode,
-        'password_input:encryption-master' => viewer_secret(mode == 'enhanced' ? 'master-pass' : ''),
+        'radio:encryption-mode'                 => mode,
+        'password_input:encryption-master'      => viewer_secret(mode == 'enhanced' ? 'master-pass' : ''),
+        'password_input:encryption-confirm'     => viewer_secret(mode == 'enhanced' ? 'master-pass' : ''),
+        'checkbox:encryption-plaintext-confirm' => true,
       }))
     end
     expect(catalog.calls.select { |call| call.first == :change_encryption }.map { |call| call[1] })
@@ -496,6 +594,8 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(catalog.calls.map(&:first)).to include(:change_master)
 
     catalog.keychain = false
+    catalog.mode = :standard
+    launcher.send(:reload_catalog)
     launcher.change_encryption(event({
       'radio:encryption-mode'            => 'enhanced',
       'password_input:encryption-master' => viewer_secret('blocked-pass'),
@@ -509,7 +609,8 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
         catalog.mode = :enhanced
         catalog.master_valid = password == 'valid-master'
         secret = viewer_secret(password)
-        launcher.change_encryption(event({ 'radio:encryption-mode' => mode, 'password_input:encryption-master' => secret }))
+        launcher.change_encryption(event({ 'radio:encryption-mode' => mode, 'password_input:encryption-master' => secret,
+                                          'checkbox:encryption-plaintext-confirm' => true }))
 
         changes = catalog.calls.select { |call| call.first == :change_encryption }
         if catalog.master_valid
@@ -563,7 +664,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
                                      [:setting, :autosort, true])
   end
 
-  it 'clears viewer-owned state and closes the launcher service when its browser window disconnects' do
+  it 'clears viewer-owned state and closes the launcher service on explicit window close' do
     launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('disconnect-canary') }), 'account', 'password')
     launcher.browser_window_closed('viewer-1')
 

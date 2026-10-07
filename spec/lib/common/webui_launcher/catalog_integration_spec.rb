@@ -99,6 +99,65 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     expect(catalog.entries.map(&:char_name)).to eq(%w[Bera Bera])
   end
 
+  it 'preserves saved order with AutoSort off and uses the established sorter when enabled' do
+    path = File.join(data_dir, 'entry.yaml')
+    data = YAML.safe_load_file(path)
+    characters = (1..40).map do |index|
+      { 'char_name' => format('C%02d', index), 'game_code' => 'GS3', 'game_name' => 'GemStone IV', 'frontend' => 'stormfront' }
+    end
+    characters[5].merge!('is_favorite' => true, 'favorite_order' => 2)
+    characters[12].merge!('is_favorite' => true, 'favorite_order' => 1)
+    data['accounts']['DOUG']['characters'] = characters
+    File.write(path, YAML.dump(data))
+    expect(catalog.entries.map(&:char_name)).to eq(characters.map { |character| character['char_name'] })
+    expect(catalog.entries(autosort: true).map(&:char_name)).to eq(%w[C13 C06] + characters.reject { |character| character['is_favorite'] }.map { |character| character['char_name'] })
+  end
+
+  { empty: '', comment_only: "# No saved entries yet\n", null: "--- null\n" }.each do |kind, document|
+    it "treats a #{kind} YAML document as an empty writable catalog" do
+      path = File.join(data_dir, 'entry.yaml')
+      File.write(path, document)
+
+      expect(catalog.entries).to be_empty
+      expect(catalog.accounts).to be_empty
+      expect(catalog.encryption_mode).to eq(:plaintext)
+      expect(File.read(path)).to eq(document)
+      expect(catalog.upsert_manual_entry({ user_id: 'OTHER', char_name: 'New', game_code: 'GS3', frontend: 'stormfront' }, 'synthetic')).to be(true)
+      expect(catalog.entries.map(&:char_name)).to eq(['New'])
+    end
+  end
+
+  ["false\n", "[]\n"].each do |document|
+    it "refuses the non-nil invalid catalog #{document.strip}" do
+      path = File.join(data_dir, 'entry.yaml')
+      File.write(path, document)
+
+      expect { catalog.entries }.to raise_error(described_class::InvalidCatalogError)
+      expect do
+        catalog.upsert_manual_entry({ user_id: 'OTHER', char_name: 'New', game_code: 'GS3', frontend: 'stormfront' }, 'synthetic')
+      end.to raise_error(described_class::InvalidCatalogError)
+      expect(File.read(path)).to eq(document)
+    end
+  end
+
+  it 'refuses writes rather than replacing a damaged catalog with an empty one' do
+    path = File.join(data_dir, 'entry.yaml')
+    damaged = "accounts: [unclosed\n"
+    File.write(path, damaged)
+    expect do
+      catalog.upsert_manual_entry({ user_id: 'OTHER', char_name: 'New', game_code: 'GS3', frontend: 'stormfront' }, 'synthetic')
+    end.to raise_error(described_class::InvalidCatalogError)
+    expect(File.read(path)).to eq(damaged)
+  end
+
+  it 'normalizes missing display names before applying the established sorter' do
+    path = File.join(data_dir, 'entry.yaml')
+    data = YAML.safe_load_file(path)
+    data['accounts']['DOUG']['characters'] << { 'char_name' => 'Aldor', 'game_code' => 'GS3', 'frontend' => 'stormfront' }
+    File.write(path, YAML.dump(data))
+    expect(catalog.entries(autosort: true).map(&:char_name)).to eq(%w[Aldor Bera])
+  end
+
   describe 'master-password changes' do
     let(:current_password) { 'synthetic-current-master' }
     let(:new_password) { 'synthetic-new-master' }
@@ -138,6 +197,21 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
         expect(entry_store.decrypt_password(saved['accounts'][name]['password'], mode: :enhanced,
                                                                                account_name: name, master_password: new_password)).to eq(password)
       end
+    end
+
+    it 'retains matching YAML and keychain state if directory syncing fails after publication' do
+      allow(OS).to receive(:windows?).and_return(false)
+      directory = instance_double(File)
+      allow(directory).to receive(:fsync).and_raise(Errno::EINVAL)
+      allow(File).to receive(:open).and_call_original
+      allow(File).to receive(:open).with(data_dir, File::RDONLY).and_yield(directory)
+
+      expect(catalog.change_master_password(current_password, new_password)).to be(true)
+      expect(manager).to have_received(:store_master_password).with(new_password).once
+      expect(manager).not_to have_received(:store_master_password).with(current_password)
+      saved = YAML.safe_load_file(path)
+      expect(entry_store.decrypt_password(saved['accounts']['DOUG']['password'], mode: :enhanced,
+                                                                               account_name: 'DOUG', master_password: new_password)).to eq('server-origin-canary')
     end
 
     it 'returns false without changing persisted data when validation fails' do
