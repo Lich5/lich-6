@@ -199,6 +199,21 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
       end
     end
 
+    it 'retains matching YAML and keychain state if directory syncing fails after publication' do
+      allow(OS).to receive(:windows?).and_return(false)
+      directory = instance_double(File)
+      allow(directory).to receive(:fsync).and_raise(Errno::EINVAL)
+      allow(File).to receive(:open).and_call_original
+      allow(File).to receive(:open).with(data_dir, File::RDONLY).and_yield(directory)
+
+      expect(catalog.change_master_password(current_password, new_password)).to be(true)
+      expect(manager).to have_received(:store_master_password).with(new_password).once
+      expect(manager).not_to have_received(:store_master_password).with(current_password)
+      saved = YAML.safe_load_file(path)
+      expect(entry_store.decrypt_password(saved['accounts']['DOUG']['password'], mode: :enhanced,
+                                                                               account_name: 'DOUG', master_password: new_password)).to eq('server-origin-canary')
+    end
+
     it 'returns false without changing persisted data when validation fails' do
       allow(manager).to receive(:validate_master_password).and_return(false)
       before = File.binread(path)

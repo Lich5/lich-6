@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'os'
 require 'tempfile'
 require_relative '../gui/state'
 require_relative '../gui/password_cipher'
@@ -1013,6 +1014,8 @@ module Lich
         # Atomically publishes a complete catalog with owner-only permissions.
         # Writers share a stable sidecar lock; readers see the old or new document.
         # This protects publication, not a caller's entire read/modify/write transaction.
+        # Non-Windows hosts also sync the directory after rename. A directory-sync
+        # failure logs uncertain durability without rolling back the published state.
         # @param yaml_file [String] destination catalog path
         # @param yaml_data [Hash] account data to serialize
         # @return [void]
@@ -1028,6 +1031,15 @@ module Lich
               temporary_path = file.path
               file.close
               File.rename(temporary_path, yaml_file)
+              unless OS.windows?
+                begin
+                  File.open(File.dirname(yaml_file), File::RDONLY) { |directory| directory.fsync }
+                rescue SystemCallError, IOError => error
+                  # Publication already succeeded; raising could roll back YAML or
+                  # keychain state independently and leave credentials inconsistent.
+                  Lich.log "warning: Catalog was published, but directory sync failed; power-loss durability is uncertain (#{error.class})."
+                end
+              end
             end
           end
         end

@@ -181,6 +181,10 @@ rather than silently replaced with an empty catalog.
 a stable sidecar lock. This prevents partial publication by callers using that
 writer; it does not serialize a caller's entire read/modify/write transaction or
 make YAML and keychain changes transactional.
+On non-Windows hosts, the writer also syncs the containing directory after rename
+to improve crash durability. A directory-sync failure is logged as uncertain
+power-loss durability; the already-published file remains in use so callers do not
+roll back matching encryption state. Windows skips this directory operation.
 
 Creating Enhanced Encryption requires a nonempty password and a matching
 confirmation, preserving GTK's creation policy. Switching to Plaintext requires
