@@ -11,6 +11,7 @@ module Lich
   module WebUI
     # Server-routed page attachment, viewer state, submission, and callback runtime.
     class Runtime
+      LIFECYCLE_SNAPSHOT_KEY = :lich_webui_lifecycle_snapshot
       EventContext = Data.define(:viewer_id, :page, :component, :event, :payload, :submission)
       PRESENTATION_SUPPORT = {
         always_on_top: false, borderless: false, opacity: true, scrollbars: true,
@@ -159,12 +160,13 @@ module Lich
         )
       end
 
-      # Renders and delivers a page only while its owner accepts work.
+      # Renders and delivers a registered page only while its owner accepts work.
       # @param page [Page] page to refresh
       # @return [Integer] evaluated render generation
-      # @raise [Error] if its owner terminated or the host stopped
+      # @raise [Error] if the page closed, its owner terminated or the host stopped
       def refresh(page)
         @registry.ensure_active!(page.owner)
+        @registry.address_for(page)
         page.bind_runtime(self)
         render = validated_render(page)
         @viewers.attachments_for(page).each do |attachment|
@@ -204,16 +206,18 @@ module Lich
         @window_close_mutex.synchronize { @window_closes[page] = false }
       end
 
+      # Dispatches an OS close with the last retained viewer state when unambiguous.
+      # @param page [Page] page whose owned process exited
+      # @return [Object, nil] dispatch result, or nil when already closed
       def browser_closed(page)
         @registry.address_for(page)
         callback = page.lifecycle_bindings[:close]
         return unless callback && claim_window_close(page)
 
-        context = EventContext.new(nil, page, page.last_render&.tree, :close, { reason: :user }.freeze, nil)
-        @dispatcher.enqueue(
-          owner: page.owner, page_id: page.id, viewer_id: nil,
-          cid: page.last_render&.tree&.cid, event: :close, coalescable: false
-        ) { callback.call(context) }
+        snapshot = @viewers.closing_snapshot(page)
+        component = snapshot&.render&.tree || page.last_render&.tree
+        context = EventContext.new(snapshot&.viewer_id, page, component, :close, { reason: :user }.freeze, nil)
+        dispatch_lifecycle(context, callback, snapshot)
       rescue Error
         nil # Owner termination already removed the page or its dispatcher.
       end
@@ -429,14 +433,16 @@ module Lich
       # @return [Object] transport send result
       # @api private
       def send_render(connection, attachment)
-        bindings = attachment.render.bindings.keys.group_by(&:first).transform_values do |pairs|
+        snapshot = @viewers.snapshot(attachment)
+        render = snapshot.render
+        bindings = render.bindings.keys.group_by(&:first).transform_values do |pairs|
           pairs.map(&:last).map(&:to_s)
         end
         connection.send_text(
           Protocol.render(
-            address: attachment.address, generation: attachment.delivered_generation,
-            tree: serialize_for_client(attachment), facilities: attachment.render.facilities,
-            bindings: bindings, submissions: attachment.render.submissions,
+            address: attachment.address, generation: render.generation,
+            tree: serialize_for_client(snapshot), facilities: render.facilities,
+            bindings: bindings, submissions: render.submissions,
             resume: attachment.resume_token,
             window_presentation: @window_host&.call(attachment.page)&.presentation_support || {}
           )
@@ -450,9 +456,13 @@ module Lich
         raise Protocol::Refusal.new(:component_id, 'component is not registered for delivered page')
       end
 
-      def serialize_for_client(attachment)
-        tree = @viewers.serialize(attachment)
-        rewrite_popup_addresses(tree, attachment.page.owner)
+      # Serializes a coherent viewer snapshot and resolves logical popup addresses.
+      # @param snapshot [ViewerStore::Snapshot] state captured before transport writes
+      # @return [Hash] client component tree
+      # @api private
+      def serialize_for_client(snapshot)
+        tree = @viewers.serialize(snapshot)
+        rewrite_popup_addresses(tree, snapshot.page.owner)
       end
 
       def rewrite_popup_addresses(component, owner)
@@ -476,8 +486,13 @@ module Lich
         "#{owner.class}:#{owner.object_id}"
       end
 
+      # Finds a component in the closing viewer's snapshot or the current page render.
+      # @param page [Page] owning page
+      # @param cid [String] component identifier
+      # @return [Component] matching component
+      # @api private
       def page_component(page, cid)
-        render = page.last_render || page.render
+        render = lifecycle_snapshot(page)&.render || page.last_render || page.render
         component = render.tree.each.find { |candidate| candidate.cid == cid.to_s }
         return component if component
 
@@ -532,7 +547,12 @@ module Lich
             reason: :unsupported_by_browser_host,
           }.freeze
         end
-        @degradation_mutex.synchronize { @degradations[page] = refusals.freeze }
+        @degradation_mutex.synchronize do
+          # Close unregisters before taking this lock. A late render therefore
+          # cannot restore a strong reference after close removes the record.
+          @registry.address_for(page)
+          @degradations[page] = refusals.freeze
+        end
       end
 
       def fetch_page(address)
@@ -565,20 +585,44 @@ module Lich
         lifecycle_job(attachment, event, payload)&.call
       end
 
+      # Captures readable viewer state before close removes its live attachment.
+      # @param attachment [ViewerStore::Attachment] originating viewer
+      # @param event [Symbol] lifecycle event
+      # @param payload [Hash] validated event details
+      # @return [Proc, nil] enqueue operation, or nil when no callback is bound
+      # @api private
       def lifecycle_job(attachment, event, payload = {})
         callback = attachment.page.lifecycle_bindings[event]
         return unless callback
         return if event == :close && !claim_window_close(attachment.page)
 
-        component = attachment.render.tree
+        snapshot = @viewers.snapshot(attachment) if %i[close detach configure].include?(event)
+        component = (snapshot&.render || attachment.render).tree
         context = EventContext.new(
           attachment.viewer_id, attachment.page, component, event, payload.freeze, nil
         )
-        proc do
-          @dispatcher.enqueue(
-            owner: context.page.owner, page_id: context.page.id,
-            viewer_id: context.viewer_id, cid: component.cid, event: event, coalescable: false
-          ) { callback.call(context) }
+        proc { dispatch_lifecycle(context, callback, snapshot) }
+      end
+
+      # Owns closing-state disposal even when callback work is refused or canceled.
+      # @param context [EventContext] captured lifecycle event
+      # @param callback [#call] bound page callback
+      # @param snapshot [ViewerStore::Snapshot, nil] temporary closing viewer state
+      # @return [Symbol] dispatcher admission result
+      # @api private
+      def dispatch_lifecycle(context, callback, snapshot)
+        @dispatcher.enqueue(
+          owner: context.page.owner, page_id: context.page.id,
+          viewer_id: context.viewer_id, cid: context.component&.cid, event: context.event, coalescable: false,
+          cleanup: -> { snapshot&.values&.clear }
+        ) do
+          previous = Thread.current.thread_variable_get(LIFECYCLE_SNAPSHOT_KEY)
+          Thread.current.thread_variable_set(LIFECYCLE_SNAPSHOT_KEY, [self, snapshot])
+          begin
+            callback.call(context)
+          ensure
+            Thread.current.thread_variable_set(LIFECYCLE_SNAPSHOT_KEY, previous)
+          end
         end
       end
 
@@ -604,7 +648,16 @@ module Lich
         raise KeyError, name
       end
 
+      # Resolves callback-scoped closing state before looking up a live viewer.
+      # @param page [Page] owning page
+      # @param component [Component] component being accessed
+      # @param viewer [Object, String, nil] explicit viewer outside callbacks
+      # @return [ViewerStore::Attachment, ViewerStore::Snapshot] viewer-local state
+      # @api private
       def contextual_attachment(page, component, viewer)
+        snapshot = lifecycle_snapshot(page)
+        return snapshot if snapshot
+
         selected = @dispatcher.current_context&.viewer_id || viewer
         viewer_id = selected.respond_to?(:viewer_id) ? selected.viewer_id : selected
         unless viewer_id
@@ -615,6 +668,15 @@ module Lich
         end
 
         @viewers.attachment_for_viewer(page, viewer_id.to_s)
+      end
+
+      # Limits detached state access to this runtime's current lifecycle callback.
+      # @param page [Page] page whose closing state is requested
+      # @return [ViewerStore::Snapshot, nil] matching callback snapshot
+      # @api private
+      def lifecycle_snapshot(page)
+        runtime, snapshot = Thread.current.thread_variable_get(LIFECYCLE_SNAPSHOT_KEY)
+        snapshot if runtime.equal?(self) && snapshot&.page.equal?(page)
       end
 
       def schedule_refresh(page)

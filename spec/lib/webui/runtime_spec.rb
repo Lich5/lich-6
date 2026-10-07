@@ -157,6 +157,94 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(registry.size).to eq(0)
   end
 
+  it 'keeps close callback reads available after detaching and disposes them afterwards' do
+    queued = []
+    allow(dispatcher).to receive(:enqueue) do |**options, &callback|
+      queued << Lich::WebUI::WorkItem.new(cleanup: options[:cleanup], &callback)
+    end
+    observed = []
+    page = nil
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'save-close', title: 'Save', on: {
+      close: proc { |event| observed << page.get('page:save-close/text_input:name', viewer: event.viewer_id) }
+    }) { text_input(key: 'name', value: 'old', on: { change: proc {} }) })
+    address, render = attach(first_connection, page)
+    runtime.handle(first_connection, type: 'event', page: address, generation: render['generation'],
+                                     cid: 'page:save-close/text_input:name', event: 'change', payload: { value: 'edited' })
+    runtime.handle(first_connection, type: 'detach', page: address, generation: render['generation'])
+    expect(runtime.viewers_present?(owner)).to be false
+    queued.each(&:call)
+    expect(observed).to eq(['edited'])
+    expect { page.get('page:save-close/text_input:name', viewer: 'connection-one') }.to raise_error(Lich::WebUI::Error)
+  end
+
+  it 'disposes a closing snapshot if owner shutdown cancels its callback' do
+    entered = Queue.new
+    release = Queue.new
+    snapshots = []
+    allow(viewers).to receive(:snapshot).and_wrap_original do |original, *args|
+      original.call(*args).tap { |snapshot| snapshots << snapshot }
+    end
+    callback = double('close callback')
+    expect(callback).not_to receive(:call)
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'cancel-close', title: 'Cancel', on: { close: callback }) do
+      text_input(key: 'name', value: 'draft')
+    end)
+    address, render = attach(first_connection, page)
+    dispatcher.enqueue(owner: owner, page_id: page.id, viewer_id: 'busy', cid: 'busy', event: :activate, coalescable: false) do
+      entered << true
+      release.pop
+    end
+    Timeout.timeout(2) { entered.pop }
+    runtime.handle(first_connection, type: 'detach', page: address, generation: render['generation'])
+    closing = snapshots.last
+    expect(closing.values).not_to be_empty
+    shutdown = Thread.new { dispatcher.shutdown_owner(owner) }
+    Timeout.timeout(2) { sleep 0.001 until closing.values.empty? }
+    release << true
+    shutdown.join
+    expect(closing.values).to be_empty
+  ensure
+    release << true
+    shutdown&.join(2)
+  end
+
+  it 'does not retain a page when an in-flight render finishes after close' do
+    entered = Queue.new
+    release = Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'retention', title: 'Retention') do
+      entered << true
+      release.pop
+      text(content: 'late')
+    end)
+    worker = Thread.new { runtime.refresh(page) rescue Lich::WebUI::Error }
+    Timeout.timeout(2) { entered.pop }
+    runtime.close_page(page)
+    release << true
+    expect(worker.join(2)).to equal(worker)
+    expect(runtime.instance_variable_get(:@degradations)).not_to have_key(page)
+  ensure
+    release << true
+    worker&.join(2)
+  end
+
+  it 'sends a coherent frame when a newer render arrives during serialization' do
+    number = 0
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'frames', title: 'Frames') do
+      number += 1
+      button(key: "button-#{number}", label: number.to_s, on: { activate: proc {} })
+    end)
+    address, = attach(first_connection, page)
+    attachment = viewers.fetch(connection_id: first_connection.viewer_id, address: address)
+    # Reproduce a delivery between binding selection and tree serialization.
+    allow(viewers).to receive(:serialize).and_wrap_original do |original, *args|
+      viewers.deliver(attachment, page.render)
+      original.call(*args)
+    end
+    runtime.send(:send_render, first_connection, attachment)
+    frame = first_connection.sent.last
+    expect(frame['bindings'].keys).to contain_exactly(frame['tree']['cid'], frame['tree']['children'].first['cid'])
+  end
+
   it 'accepts viewer-delivered generations independently and routes callbacks server-side' do
     callbacks = Queue.new
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'actions', title: 'Actions') do

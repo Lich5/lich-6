@@ -54,6 +54,25 @@ RSpec.describe Lich::WebUI::Adapter do
     expect { adapter.set(button, :invented, true) }.to raise_error(Lich::WebUI::UnknownPropertyError, /opaque-/)
   end
 
+  %i[get set].each do |operation|
+    it "releases the adapter monitor before viewer #{operation} enters page rendering" do
+      allow(service.runtime).to receive(:schedule_render)
+      root = adapter.create(:page, title: 'Form')
+      input = adapter.create(:text_input, value: 'before')
+      adapter.attach(root, input)
+      adapter.send(:flush!)
+      page = service.registry.pages_for(owner).first
+      allow(page).to receive(operation) do |*_args, **_options|
+        worker = Thread.new { adapter.get(root, :title) }
+        expect(worker.join(1)).to equal(worker)
+        'after'
+      ensure
+        worker&.kill
+      end
+      operation == :get ? adapter.get(input, :value) : adapter.set(input, :value, 'after')
+    end
+  end
+
   it 'refuses shrinking a grid past an existing cell without corrupting its layout' do
     grid = adapter.create(:grid, cols: 4)
     child = adapter.create(:text, content: 'Fourth column', placement: { column: 4 })
