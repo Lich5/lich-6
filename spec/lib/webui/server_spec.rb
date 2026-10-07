@@ -79,12 +79,14 @@ RSpec.describe Lich::WebUI::Server do
       thread_factory: ->(*args, &block) { Thread.new(*args, &block).tap(&:join) }
     )
     server.instance_variable_set(:@server, listener)
-    server.instance_variable_set(:@stopping, true)
     server.instance_variable_get(:@client_threads) << Thread.new {}.tap(&:join)
     allow(server).to receive(:handle_client).with(socket)
     accepted = false
     allow(listener).to receive(:accept) do
-      raise IOError if accepted
+      if accepted
+        server.instance_variable_set(:@stopping, true)
+        raise IOError
+      end
 
       accepted = true
       socket
@@ -101,6 +103,31 @@ RSpec.describe Lich::WebUI::Server do
         assets_dir: @assets_dir, pages_provider: -> { [] }, message_handler: proc {}, host: '0.0.0.0'
       )
     end.to raise_error(ArgumentError, /must be loopback/)
+  end
+
+  it 'bounds sockets before creating workers and admits a new client after release' do
+    stub_const('Lich::WebUI::Server::MAX_CLIENTS', 2)
+    admitted = Queue.new
+    server = build_server(@assets_dir)
+    allow(server).to receive(:handle_client).and_wrap_original do |original, socket|
+      admitted << true
+      original.call(socket)
+    end
+    server.start
+    sockets = Array.new(2) { TCPSocket.new(server.host, server.port) }
+    Timeout.timeout(2) { 2.times { admitted.pop } }
+    excess = TCPSocket.new(server.host, server.port)
+    expect(Timeout.timeout(2) { excess.read }).to eq('')
+    expect(admitted).to be_empty
+    sockets.first.close
+    Timeout.timeout(2) do
+      sleep 0.005 until server.instance_variable_get(:@client_sockets).size == 1
+    end
+    expect(authenticate(server)[1]).to start_with('HTTP/1.1 302 Found')
+  ensure
+    excess&.close
+    sockets&.each { |socket| socket.close unless socket.closed? }
+    server&.stop
   end
 
   it 'uses an ephemeral loopback port and authenticates through a one-shot clean redirect', security_id: 'sec-auth-fallback' do
@@ -145,6 +172,35 @@ RSpec.describe Lich::WebUI::Server do
   ensure
     first&.stop
     second&.stop
+  end
+
+  it 'redeems file-bootstrap navigation without weakening authenticated content checks' do
+    server = build_server(@assets_dir).start
+    uri = URI(server.launch_url(to: '/?page=example'))
+    navigation = { 'Sec-Fetch-Site' => 'cross-site', 'Sec-Fetch-Mode' => 'navigate', 'Sec-Fetch-Dest' => 'document' }
+    expect(request(server, uri.request_uri, navigation.merge('Sec-Fetch-Dest' => 'image'))).to start_with('HTTP/1.1 403')
+    response = request(server, uri.request_uri, navigation)
+    expect(response).to start_with('HTTP/1.1 200 OK')
+    expect(response).to include('url=/?page=example', 'SameSite=Strict', 'HttpOnly')
+    expect(response).not_to include('token=')
+    expect(request(server, uri.request_uri, navigation)).to start_with('HTTP/1.1 403')
+    cookie = response[/^Set-Cookie: ([^;]+)/i, 1]
+    expect(request(server, '/', navigation.merge('Cookie' => cookie))).to start_with('HTTP/1.1 403')
+    expect(request(server, '/', 'Cookie' => cookie, 'Sec-Fetch-Site' => 'same-origin')).to start_with('HTTP/1.1 200')
+  ensure
+    server&.stop
+  end
+
+  it 'refuses redirects that browsers can normalize into another authority' do
+    server = build_server(@assets_dir).start
+    ["/\\evil.test", "/\tevil.test", '//evil.test', " /safe", "/safe\n"].each do |target|
+      uri = URI(server.launch_url)
+      token = URI.decode_www_form(uri.query).to_h.fetch('token')
+      response = request(server, "/auth?#{URI.encode_www_form(token: token, to: target)}")
+      expect(response).to include("Location: /\r\n")
+    end
+  ensure
+    server&.stop
   end
 
   it 'keeps two localhost sessions authenticated in one browser cookie jar' do

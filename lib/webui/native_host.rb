@@ -26,16 +26,16 @@ module Lich
       end
 
       # Builds argv for an isolated native window. Never invokes a shell.
-      # @param url [String] authenticated loopback launch URL
+      # @param launch_file [String] private file containing the loopback launch URL
       # @param geometry [Hash, nil] initial outer size and desktop position
       # @return [Array<String>] executable and arguments
       # @raise [Error] if the helper has not been built or supplied
-      def command_for(url, geometry: nil)
+      def command_for(launch_file, geometry: nil)
         unless File.executable?(EXECUTABLE)
           raise Error, 'macOS WebUI helper is missing; run lib/webui/native/macos/build.sh or supply the prebuilt helper'
         end
 
-        [EXECUTABLE, url, JSON.generate(geometry || {})]
+        [EXECUTABLE, launch_file, JSON.generate(geometry || {})]
       end
     end
   end

@@ -54,7 +54,7 @@ function fixture(target) {
     addEventListener: (name, callback) => { windowEvents[name] = callback; },
     removeEventListener: name => { delete windowEvents[name]; } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../lib/webui/assets/app.js'), 'utf8'),
-    { window, document, WebSocket, URLSearchParams, CSS: { escape: value => value }, queueMicrotask: work => work() });
+    { window, document, WebSocket, URL, URLSearchParams, CSS: { escape: value => value }, queueMicrotask: work => work() });
   return { document, documentEvents, elements, sent, resized, windowEvents, window,
     frame: () => { frames.splice(0).forEach(work => work()); },
     receive: message => listeners.message({ data: JSON.stringify(message) }) };

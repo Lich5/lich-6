@@ -4,19 +4,35 @@ require_relative '../../spec_helper'
 require 'webui'
 
 RSpec.describe Lich::WebUI::BrowserLauncher do
+  %w[darwin mingw linux].each do |platform|
+    it "keeps launch credentials off #{platform} process arguments" do
+      allow(File).to receive(:executable?).and_return(true)
+      url = 'http://127.0.0.1:1234/auth?token=synthetic-launch-secret&to=%2F'
+      arguments = nil
+      result = described_class.open(url, platform: platform,
+                                    browser_path: platform == 'darwin' ? nil : '/test/browser',
+                                    spawn: ->(*argv, **_options) { arguments = argv; 42 },
+                                    on_exit: proc {}, waitpid: ->(*) {}, thread_factory: ->(&work) { work.call })
+      expect(result).to be(true)
+      expect(arguments.join(' ')).not_to include('synthetic-launch-secret')
+    end
+  end
+
   it 'selects the native macOS helper through OS.mac? and monitors it without a Chrome profile' do
     allow(OS).to receive(:mac?).and_return(true)
     allow(File).to receive(:executable?).with(Lich::WebUI::NativeHost::EXECUTABLE).and_return(true)
-    expect(Dir).not_to receive(:mktmpdir)
     calls = []
+    contents = []
     started = []
     exited = []
     result = described_class.open('http://127.0.0.1:1234/', geometry: { width: 500, height: 350 },
-                                  spawn: ->(*argv, **_options) { calls << argv; 42 },
+                                  spawn: ->(*argv, **_options) { calls << argv; contents << File.read(argv[1]); 42 },
                                   on_start: ->(pid) { started << pid }, on_exit: -> { exited << true },
                                   waitpid: ->(pid, _flags) { pid }, thread_factory: ->(&work) { work.call })
     expect(result).to be(true)
-    expect(calls).to eq([[Lich::WebUI::NativeHost::EXECUTABLE, 'http://127.0.0.1:1234/', '{"width":500,"height":350}']])
+    expect(calls.first).to match([Lich::WebUI::NativeHost::EXECUTABLE, a_string_ending_with('/launch.url'), '{"width":500,"height":350}'])
+    expect(contents).to eq(['http://127.0.0.1:1234/'])
+    expect(File.exist?(File.dirname(calls.first[1]))).to be(false)
     expect(started).to eq([42])
     expect(exited).to eq([true])
   end
@@ -39,22 +55,28 @@ RSpec.describe Lich::WebUI::BrowserLauncher do
     )
   end
 
-  it 'opens macOS URLs in a new Google Chrome app window without invoking a shell' do
+  it 'isolates and reaps a browser even without an exit callback' do
     calls = []
+    launch_file = nil
     spawn = lambda do |*arguments, **options|
       calls << [arguments, options]
+      launch_file = URI::DEFAULT_PARSER.unescape(URI(arguments.last.delete_prefix('--app=')).path).sub(%r{\A/(?=[A-Za-z]:/)}, '')
+      expect(File.read(launch_file)).to include('token=x&amp;to=%2F')
+      unless OS.windows?
+        expect(File.stat(launch_file).mode & 0o777).to eq(0o600)
+        expect(File.stat(File.dirname(launch_file)).mode & 0o777).to eq(0o700)
+      end
       42
     end
-    detached = []
+    waited = []
 
-    expect(described_class.open('http://127.0.0.1:1234/auth?token=x', spawn: spawn,
-                                                                      detach: ->(pid) { detached << pid },
-                                                                      platform: 'darwin',
-                                                                      browser_path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')).to be(true)
-    expect(calls).to eq([[['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                           '--new-window', '--app=http://127.0.0.1:1234/auth?token=x'],
-                          { out: File::NULL, err: File::NULL }]])
-    expect(detached).to eq([42])
+    expect(described_class.open('http://127.0.0.1:1234/auth?token=x&to=%2F', spawn: spawn,
+                                waitpid: ->(pid, _flags) { waited << pid }, thread_factory: ->(&work) { work.call },
+                                platform: 'darwin', browser_path: '/Applications/Google Chrome')).to be(true)
+    expect(calls.first.first).to include('/Applications/Google Chrome', '--new-window', a_string_starting_with('--user-data-dir='))
+    expect(calls.first.last).to eq(out: File::NULL, err: File::NULL)
+    expect(waited).to eq([42])
+    expect(File.exist?(File.dirname(launch_file))).to be(false)
   end
 
   it 'owns and monitors an isolated app process when an exit callback is supplied' do
@@ -70,7 +92,7 @@ RSpec.describe Lich::WebUI::BrowserLauncher do
     end
 
     expect(described_class.open(
-             'http://127.0.0.1:1234/', spawn: spawn, detach: ->(*) { raise 'must not detach' },
+             'http://127.0.0.1:1234/', spawn: spawn,
              platform: 'darwin', browser_path: '/Applications/Google Chrome', on_exit: -> { exited << true },
              on_start: ->(pid) { started << pid }, waitpid: ->(pid, flags) { waited << [pid, flags]; pid },
              thread_factory: ->(&work) { work.call }
@@ -181,12 +203,29 @@ RSpec.describe Lich::WebUI::BrowserLauncher do
                          waitpid: ->(*) {}, thread_factory: ->(&work) { work.call })
     expect(calls.first.first).to eq('C:/Edge/msedge.exe')
     expect(calls.first).to include(a_string_starting_with('--user-data-dir='))
-    expect(calls.first.last).to eq('--app=http://127.0.0.1/')
+    expect(calls.first.last).to start_with('--app=file:///')
   end
 
   it 'reports failure without exposing or executing the URL through a shell' do
-    expect(described_class.open('http://127.0.0.1/', spawn: ->(*) { raise Errno::ENOENT },
-                                                     detach: ->(*) {}, platform: 'darwin',
-                                                     browser_path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')).to be(false)
+    directory = nil
+    messages = []
+    allow(Lich).to receive(:log) { |message| messages << message }
+    spawn = lambda do |*argv, **_options|
+      directory = argv.find { |value| value.start_with?('--user-data-dir=') }.split('=', 2).last
+      raise Errno::ENOENT, 'synthetic-private-error'
+    end
+    expect(described_class.open('http://127.0.0.1/', spawn: spawn, platform: 'darwin',
+                                browser_path: '/Applications/Google Chrome')).to be(false)
+    expect(File.exist?(directory)).to be(false)
+    expect(messages.join).not_to include('synthetic-private-error')
+  end
+
+  it 'encodes special characters in the private bootstrap path' do
+    Dir.mktmpdir('launch space-#-') do |directory|
+      target = described_class.launch_file('http://127.0.0.1/', directory, native: nil)
+      expect(URI(target).fragment).to be_nil
+      path = URI::DEFAULT_PARSER.unescape(URI(target).path).sub(%r{\A/(?=[A-Za-z]:/)}, '')
+      expect(File.read(path)).to include('url=http://127.0.0.1/')
+    end
   end
 end

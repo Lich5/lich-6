@@ -54,6 +54,8 @@ accessory activation policy). Its windows remain interactive without adding
 per-window application icons to the Dock or Cmd-Tab switcher. There is no
 application menu bar; keyboard equivalents remain available inside the window.
 Already-running helpers must be closed and reopened to adopt a changed build.
+The helper and Ruby launcher must ship together: its first argument is a private
+launch-file path, not an authenticated URL.
 
 The experimental macOS helper is built with
 `zsh lib/webui/native/macos/build.sh`. This requires Apple's installed command-line
@@ -76,8 +78,9 @@ updates the same controller, which rechecks PID ownership before changing a
 window. Native failures are logged. Actual Windows focus, opacity and cleanup
 still require verification on Windows.
 
-`Service` owns one `BrowserWindow` per registered page. Repeated opens of the
-same page reuse that ownership. Chrome/Edge processes have isolated temporary
+`Service` owns one `BrowserWindow` per registered page and one for the page selector
+opened by `WebUI.open` without a page. Service shutdown closes both. Repeated opens
+reuse that ownership. Chrome/Edge processes have isolated temporary
 profiles; their exit monitors remove the profiles. The macOS helper uses a
 nonpersistent WebKit data store. Closing one page acts
 on its owned process, not the user's ordinary browser or another page's window.
@@ -144,10 +147,31 @@ its window cancels immediately instead of leaving its script waiting.
 
 The loopback service uses short-lived, single-use launch tokens to establish
 port-specific HttpOnly, SameSite=Strict cookies. Launch tokens expire after
-60 seconds. Treat launch URLs as credentials: do not log, persist, or share them.
-Host and Fetch Metadata checks apply to requests; WebSocket admission also
+60 seconds. Treat launch URLs as credentials: do not log or share them. The
+launcher passes a private temporary file path in process arguments; the file
+contains the URL. On POSIX the directory is 0700 and file 0600; Windows relies on
+the user's private temporary-directory ACL. Every browser gets an isolated
+profile, even without an exit callback. The exit monitor removes launch files
+and profiles; failed startup removes them too. Abrupt process or system failure
+can leave temporary files, but unused launch tokens still expire.
+
+Host and Fetch Metadata checks apply to requests. File-to-HTTP bootstrap is a
+cross-site document navigation: `/auth` still requires a valid single-use token,
+then commits a small same-origin document before navigating to the clean page
+URL with its Strict cookie. Other routes retain the ordinary origin checks.
+WebSocket admission also
 requires an allowed loopback Origin. Image serving requires authentication,
 permitted roots and extensions, and realpath containment.
+
+At most 64 accepted HTTP/WebSocket sockets occupy request workers, including
+clients that have not supplied complete headers. Excess sockets close before a
+worker starts. Header reads retain their five-second timeout. This bounds
+resource use; it does not guarantee availability against a sustained local flood.
+Authentication redirects reject backslashes and ASCII whitespace/control bytes.
+Markdown renders same-host links to another port or scheme as plain labels,
+because cookies are host-scoped despite their port-specific names. External
+HTTP(S) links and same-origin links remain available. This is renderer protection,
+not general cookie isolation from a user manually navigating their browser.
 
 An authenticated viewer is trusted across the entire WebUI service, including
 registered pages from different owners and permitted image routes. Authentication

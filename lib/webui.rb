@@ -116,16 +116,14 @@ module Lich
       end
 
       # Opens a browser app window after the caller renders and starts the host.
-      # A registered page has one host-owned window; repeated opens reuse it.
+      # Pages and the page selector have host-owned windows; repeated opens reuse them.
       #
       # @param page [Page, nil] registered page, or the page selector
       # @param geometry [Hash, nil] width, height and optional position; when nil,
       #   page windows use persisted geometry or their declared size
       # @return [Boolean] whether opening succeeded or the page was already open
       def open(page: nil, geometry: nil)
-        return service.open(page, geometry: geometry) if page
-
-        BrowserLauncher.open(launch_url, geometry: geometry)
+        service.open(page, geometry: geometry)
       end
 
       # Runs the page render block and delivers to its connected viewers.

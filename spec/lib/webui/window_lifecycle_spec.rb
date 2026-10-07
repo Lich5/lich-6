@@ -25,6 +25,20 @@ RSpec.describe 'WebUI script window lifecycle' do
 
   after { service.stop }
 
+  it 'owns the page selector, reuses it, and includes it in shutdown' do
+    expect(Lich::WebUI::BrowserLauncher).not_to receive(:open)
+    Lich::WebUI.service = service
+    service.start
+    2.times { expect(Lich::WebUI.open).to be(true) }
+    expect(opened.size).to eq(1)
+    expect(service).to be_pending_windows
+    service.stop
+    expect(terminated).to eq([[OS.windows? ? 'KILL' : 'TERM', 1]])
+    expect(service).not_to be_pending_windows
+  ensure
+    Lich::WebUI.reset!
+  end
+
   it 'routes rendered native and shim presentation through the owned window controller' do
     controller = instance_double(Lich::WebUI::WindowPresentation::Controller, start: nil, update: nil, close: nil)
     allow(Lich::WebUI::WindowPresentation).to receive(:available?).and_return(true)
