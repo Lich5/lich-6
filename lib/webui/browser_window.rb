@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'browser_launcher'
+require_relative 'window_presentation'
 
 module Lich
   module WebUI
@@ -13,38 +14,78 @@ module Lich
         @on_close = on_close
         @mutex = Mutex.new
         @closed = false
+        @opening = false
         @pid = nil
+        @presentation = WindowPresentation::Controller.new if WindowPresentation.available?
       end
 
+      # @param render [Page::Render] validated presentation from either API
+      # @return [void]
+      def present(render)
+        @presentation&.update(render)
+      end
+
+      # @return [Hash] OS-handled properties the renderer must not apply again
+      def presentation_support = @presentation ? WindowPresentation::SUPPORT : {}
+
+      # Opens unless already closed, settling any close requested during spawn
+      # only after the opener has returned and installed its process monitor.
+      # @param url [String] authenticated page launch URL
+      # @param geometry [Hash, nil] initial window bounds
+      # @return [Boolean] opener result, or false when closed before startup
       def open(url, geometry: nil)
-        result = @opener.call(url, geometry: geometry, on_start: method(:started), on_exit: method(:exited))
-        close unless result
+        @mutex.synchronize do
+          return false if @closed
+
+          @opening = true
+        end
+        begin
+          result = @opener.call(url, geometry: geometry, on_start: method(:started), on_exit: method(:exited))
+        ensure
+          @mutex.synchronize { @opening = false }
+        end
+        close if !result || closed?
         result
       rescue StandardError
         close
         raise
       end
 
+      # Requests closure; startup must finish installing its process monitor
+      # before termination can succeed and the service can release ownership.
+      # @return [Boolean] whether startup is settled and no termination retry is needed
+      # @raise [SystemCallError] when the owned process could not be terminated
       def close
         @mutex.synchronize do
           @closed = true
+          @presentation&.close
+          return false if @opening
+
           terminate_process
+          true
         end
+      end
+
+      # @return [Boolean] whether closure was requested or the process exited
+      def closed?
+        @mutex.synchronize { @closed }
       end
 
       private
 
-      # Closing while spawn is still in progress also closes the arriving PID.
+      # Retain an arriving PID even after closure is requested. open performs
+      # deferred termination after the opener has installed its exit monitor.
       def started(pid)
         @mutex.synchronize do
           @pid = pid
-          terminate_process if @closed
+          @presentation&.start(pid) unless @closed
         end
       end
 
       def exited
         notify = @mutex.synchronize do
           @pid = nil
+          @presentation&.close
           next false if @closed
 
           @closed = true
@@ -56,7 +97,8 @@ module Lich
       def terminate_process
         return unless @pid
 
-        @terminate.call('TERM', @pid)
+        # Windows Ruby rejects TERM for external processes with EINVAL.
+        @terminate.call(OS.windows? ? 'KILL' : 'TERM', @pid)
         @pid = nil
       rescue Errno::ESRCH, Errno::ECHILD
         @pid = nil

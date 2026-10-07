@@ -24,6 +24,81 @@ function fixture() {
     receive: message => listeners.message({ data: JSON.stringify(message) }) };
 }
 
+test('cascading menus require clicks, retain the selected branch and dismiss one level with Escape', t => {
+  const { dom, receive } = fixture();
+  t.after(() => dom.window.close());
+  const { document, HTMLElement, Event, MouseEvent, KeyboardEvent } = dom.window;
+  const visible = new Set();
+  HTMLElement.prototype.showPopover = function () { visible.add(this); };
+  HTMLElement.prototype.hidePopover = function () { visible.delete(this); };
+  Object.defineProperty(dom.window, 'innerWidth', { value: 320 });
+  Object.defineProperty(dom.window, 'innerHeight', { value: 240 });
+  receive({ type: 'hello', pages: [{ address: 'menus' }] });
+  receive({ type: 'render', page: 'menus', generation: 1, bindings: {}, submissions: {},
+    tree: { type: 'page', cid: 'root', props: { bare: true }, children: [
+      { type: 'group', cid: 'surface', props: { context_menu: 'menu' } },
+      { type: 'group', cid: 'menu', props: { menu: 'context', key: 'menu' }, children: [
+        { type: 'group', cid: 'outer', props: { menu: 'submenu', label: 'Outer' }, children: [
+          { type: 'group', cid: 'inner', props: { menu: 'submenu', label: 'Inner' }, children: [
+            { type: 'button', cid: 'choice', props: { label: 'Choose' } }
+          ] }
+        ] },
+        { type: 'group', cid: 'sibling', props: { menu: 'submenu', label: 'Sibling' }, children: [] }
+      ] }
+    ] }
+  });
+  const surface = document.querySelector('[data-cid="surface"]');
+  const menu = document.querySelector('.webui-context-menu');
+  const outer = document.querySelector('[data-cid="outer"]');
+  const triggers = [...document.querySelectorAll('.submenu-trigger')];
+  const panels = [...document.querySelectorAll('.submenu-items')];
+  triggers.forEach(trigger => { trigger.getBoundingClientRect = () => ({ left: 130, right: 320, top: 200 }); });
+  panels.forEach(panel => { panel.getBoundingClientRect = () => ({ width: 180, height: 240 }); });
+  const open = () => {
+    surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));
+    triggers.slice(0, 2).forEach(trigger => trigger.click());
+    assert.equal(visible.size, 2);
+    assert.equal(panels[0].getAttribute('popover'), 'manual');
+    assert.equal(panels[0].style.left, '0px');
+    assert.equal(panels[0].style.top, '0px');
+  };
+  const closed = () => {
+    assert.equal(visible.size, 0);
+    triggers.forEach(trigger => assert.equal(trigger.getAttribute('aria-expanded'), 'false'));
+    panels.forEach(panel => assert.equal(panel.style.display, 'none'));
+  };
+  outer.dispatchEvent(new Event('pointerenter'));
+  assert.equal(visible.size, 0, 'hover must not open a submenu');
+  open();
+  outer.dispatchEvent(new Event('pointerleave'));
+  assert.equal(visible.size, 2, 'crossing other rows must not close the selected branch');
+  document.querySelector('[data-cid="sibling"]').dispatchEvent(new Event('pointerenter'));
+  assert.equal(visible.has(panels[2]), false, 'hovering another branch must not replace the selected branch');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.equal(visible.size, 1);
+  assert.equal(visible.has(panels[0]), true);
+  assert.equal(document.activeElement, triggers[1]);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  closed();
+  assert.equal(menu.style.display, 'block');
+  assert.equal(document.activeElement, triggers[0]);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.equal(menu.style.display, 'none');
+  open();
+  triggers[2].click();
+  assert.equal(visible.size, 1);
+  assert.equal(visible.has(panels[2]), true, 'clicking a sibling closes the old branch and its descendants');
+  open();
+  triggers[0].click();
+  closed();
+  open();
+  document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+  closed();
+  open();
+  document.querySelector('[data-cid="choice"]').click();
+  closed();
+});
+
 for (const explicit of [false, true]) {
   test(`editable choices preserve ${explicit ? 'an explicit empty ID' : 'an absent value'} on creation and restoration`, t => {
     const { dom, page, sent } = fixture();

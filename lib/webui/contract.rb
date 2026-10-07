@@ -101,6 +101,12 @@ module Lich
       GEOMETRY = integer(min: BOUNDS[:geometry].begin, max: BOUNDS[:geometry].end).freeze
       SCROLL_PIXELS = integer(min: 0, max: BOUNDS[:geometry].end).freeze
 
+      # One shape for declarative facilities and imperative shim window state.
+      PRESENTATION = record(
+        always_on_top: property(BOOL), borderless: property(BOOL),
+        opacity: property(number(min: 0.1, max: 1.0)), scrollbars: property(BOOL)
+      ).freeze
+
       OPTION = record(
         value: property(string(:input_text), required: true),
         label: property(SHORT, required: true)
@@ -177,6 +183,7 @@ module Lich
             title: property(SHORT, required: true), bare: property(BOOL, default: false),
             theme: property(enum(:light, :dark)), density: property(enum(:compact, :normal)),
             viewport: property(BOOL, default: false),
+            presentation: property(PRESENTATION),
             size: property(array(GEOMETRY, min: 2, max: 2)),
             resize_request: property(record(id: property(IDENT, required: true),
                                             size: property(array(integer(min: 1, max: BOUNDS[:geometry].end), min: 2, max: 2), required: true))),
@@ -548,10 +555,7 @@ module Lich
           ), scope: :viewer,
         },
         presentation: {
-          shape: record(
-            always_on_top: property(BOOL), borderless: property(BOOL),
-            opacity: property(number(min: 0.1, max: 1.0)), scrollbars: property(BOOL)
-          ), scope: :viewer,
+          shape: PRESENTATION, scope: :viewer,
         },
       }.freeze
 

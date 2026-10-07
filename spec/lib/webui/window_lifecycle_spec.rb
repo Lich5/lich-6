@@ -25,6 +25,31 @@ RSpec.describe 'WebUI script window lifecycle' do
 
   after { service.stop }
 
+  it 'routes rendered native and shim presentation through the owned window controller' do
+    controller = instance_double(Lich::WebUI::WindowPresentation::Controller, start: nil, update: nil, close: nil)
+    allow(Lich::WebUI::WindowPresentation).to receive(:available?).and_return(true)
+    allow(Lich::WebUI::WindowPresentation::Controller).to receive(:new).and_return(controller)
+    alpha = 0.5
+    target = service.registry.register(
+      Lich::WebUI::Page.new(owner: Object.new, id: 'opacity', title: 'Opacity', props: { presentation: { always_on_top: true } }) do
+        presentation(opacity: alpha)
+      end
+    )
+    service.refresh(target)
+    service.start
+    service.open(target)
+    expect(controller).to have_received(:start).with(1)
+    expect(controller).to have_received(:update).with(target.last_render)
+    expect(service.window_host(target).presentation_support).to include(opacity: true)
+    alpha = 0.8
+    service.runtime.refresh(target)
+    expect(controller).to have_received(:update).with(target.last_render)
+    expect(target.last_render.facilities[:presentation][:opacity]).to eq(0.8)
+    service.runtime.close_page(target)
+    expect(controller).to have_received(:close)
+    expect(service.window_host(target)).to be_nil
+  end
+
   it 'closes only the requested page window and leaves the server and other owner working' do
     first = page
     second = page
@@ -34,7 +59,7 @@ RSpec.describe 'WebUI script window lifecycle' do
     service.runtime.close_page(first)
 
     expect(opened.first[:geometry]).to eq(width: 196, height: 254, position: [20, 30])
-    expect(terminated).to eq([['TERM', 1]])
+    expect(terminated).to eq([[OS.windows? ? 'KILL' : 'TERM', 1]])
     expect(service.registry.pages_for(second.owner)).to eq([second])
     expect(service.server).to be_running
   end
@@ -63,7 +88,7 @@ RSpec.describe 'WebUI script window lifecycle' do
     service.terminate_owner(target.owner)
     opened.first[:on_exit].call
 
-    expect(terminated).to eq([['TERM', 1]])
+    expect(terminated).to eq([[OS.windows? ? 'KILL' : 'TERM', 1]])
     expect(closed).to be_empty
     expect(service.registry.size).to eq(0)
   end
@@ -106,7 +131,7 @@ RSpec.describe 'WebUI script window lifecycle' do
     service.runtime.close_page(target)
     release << true
     opening.value
-    expect(terminated).to eq([['TERM', 77]])
+    expect(terminated).to eq([[OS.windows? ? 'KILL' : 'TERM', 77]])
   ensure
     release << true if release
     opening&.join(2)
@@ -161,7 +186,7 @@ RSpec.describe 'WebUI script window lifecycle' do
     3.times do |index|
       owner = active[index].owner
       service.terminate_owner(owner)
-      expect(terminated).to eq((1..index + 1).map { |pid| ['TERM', pid] })
+      expect(terminated).to eq((1..index + 1).map { |pid| [OS.windows? ? 'KILL' : 'TERM', pid] })
       active[index] = page(owner)
       service.open(active[index])
       expect(service.registry.address_for(active[index])).not_to eq(original_addresses[index])

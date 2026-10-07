@@ -380,7 +380,7 @@ module Lich
 
           def keep_above=(value)
             session.refuse(self, :keep_above=) unless value == true || value == false
-            session.degrade(:keep_above, 'always-on-top is unsupported by the browser host') if value
+            write(:presentation, (@props[:presentation] || {}).merge(always_on_top: value))
           end
 
           # Window borders belong to its content, not the page schema.

@@ -38,12 +38,13 @@ module Lich
         )
       end
 
-      def render(address:, generation:, tree:, facilities: {}, bindings: {}, submissions: {}, resume: nil)
+      def render(address:, generation:, tree:, facilities: {}, bindings: {}, submissions: {}, resume: nil, window_presentation: {})
         payload = {
           type: 'render', page: address, generation: generation,
           tree: tree, facilities: facilities, bindings: bindings, submissions: submissions
         }
         payload[:resume] = resume if resume
+        payload[:window_presentation] = window_presentation unless window_presentation.empty?
         JSON.generate(payload)
       end
 

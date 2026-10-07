@@ -4,6 +4,8 @@ require_relative 'dispatcher'
 require_relative 'protocol'
 require_relative 'submission'
 require_relative 'viewer_store'
+require_relative 'native_host'
+require_relative 'window_presentation'
 
 module Lich
   module WebUI
@@ -15,9 +17,10 @@ module Lich
       }.freeze
 
       def initialize(registry:, dispatcher: nil, viewers: ViewerStore.new,
-                     validator: Validator.new, file_service: nil, logger: nil, on_page_closed: nil)
+                     validator: Validator.new, file_service: nil, logger: nil, on_page_closed: nil, window_host: nil)
         @registry = registry
         @on_page_closed = on_page_closed
+        @window_host = window_host
         @window_close_mutex = Mutex.new
         @window_closes = ObjectSpace::WeakMap.new
         @viewers = viewers
@@ -36,7 +39,8 @@ module Lich
       end
 
       def presentation_support(_page = nil)
-        PRESENTATION_SUPPORT
+        support = NativeHost.platform ? PRESENTATION_SUPPORT.merge(always_on_top: true, borderless: true) : PRESENTATION_SUPPORT
+        support.merge(WindowPresentation.support).freeze
       end
 
       def degradations(page)
@@ -383,7 +387,8 @@ module Lich
             address: attachment.address, generation: attachment.delivered_generation,
             tree: serialize_for_client(attachment), facilities: attachment.render.facilities,
             bindings: bindings, submissions: attachment.render.submissions,
-            resume: attachment.resume_token
+            resume: attachment.resume_token,
+            window_presentation: @window_host&.call(attachment.page)&.presentation_support || {}
           )
         )
       end
@@ -453,13 +458,14 @@ module Lich
 
           @registry.fetch(page.owner, component.props[:popup][:page])
         end
+        @window_host&.call(page)&.present(render)
         render
       end
 
       def record_presentation_degradations(page, render)
-        requested = render.facilities[:presentation] || {}
+        requested = (render.tree.props[:presentation] || {}).merge(render.facilities[:presentation] || {})
         refusals = requested.each_key.filter_map do |property|
-          next if PRESENTATION_SUPPORT.fetch(property)
+          next if presentation_support(page).fetch(property)
 
           {
             facility: :presentation, property: property,

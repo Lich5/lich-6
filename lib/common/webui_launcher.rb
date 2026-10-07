@@ -1238,7 +1238,7 @@ module Lich
       end
 
       def terminate_browser(pid)
-        @browser_terminate.call('TERM', pid)
+        @browser_terminate.call(OS.windows? ? 'KILL' : 'TERM', pid)
       rescue Errno::ESRCH, Errno::ECHILD
         nil
       rescue StandardError => error

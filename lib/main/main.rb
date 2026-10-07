@@ -1170,6 +1170,7 @@ reconnect_if_wanted = proc {
       Lich::Common::ShutdownLog.info('saving script settings...')
       shutdown_step.call('Vars.save') { Vars.save }
     end
+    shutdown_step.call('WebUI reset') { Lich::WebUI.reset! if defined?(Lich::WebUI) }
     Lich::Common::ShutdownLog.info('closing connections...')
     shutdown_step.call('Game.close') { Game.close }
     shutdown_step.call('client_thread.kill') { client_thread.kill }
@@ -1209,6 +1210,12 @@ reconnect_if_wanted = proc {
     Lich::Common::ShutdownLog.info('exiting...')
     exit
   ensure
+    # Retry failed owned-window closes, including abnormal teardown exits.
+    begin
+      Lich::WebUI.reset! if defined?(Lich::WebUI)
+    rescue StandardError => error
+      Lich::Common::ShutdownLog.warning("WebUI shutdown failed: #{error.class}: #{error.message}")
+    end
     # Guarantee lifecycle stop even on abnormal exit (e.g. abort_on_exception).
     # Both .stop methods are idempotent -- safe to call if already stopped.
     Lich::Common::ShutdownLog.flush_user_exit_summary! rescue nil

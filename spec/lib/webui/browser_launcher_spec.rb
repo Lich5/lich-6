@@ -4,6 +4,41 @@ require_relative '../../spec_helper'
 require 'webui'
 
 RSpec.describe Lich::WebUI::BrowserLauncher do
+  it 'selects the native macOS helper through OS.mac? and monitors it without a Chrome profile' do
+    allow(OS).to receive(:mac?).and_return(true)
+    allow(File).to receive(:executable?).with(Lich::WebUI::NativeHost::EXECUTABLE).and_return(true)
+    expect(Dir).not_to receive(:mktmpdir)
+    calls = []
+    started = []
+    exited = []
+    result = described_class.open('http://127.0.0.1:1234/', geometry: { width: 500, height: 350 },
+                                  spawn: ->(*argv, **_options) { calls << argv; 42 },
+                                  on_start: ->(pid) { started << pid }, on_exit: -> { exited << true },
+                                  waitpid: ->(pid, _flags) { pid }, thread_factory: ->(&work) { work.call })
+    expect(result).to be(true)
+    expect(calls).to eq([[Lich::WebUI::NativeHost::EXECUTABLE, 'http://127.0.0.1:1234/', '{"width":500,"height":350}']])
+    expect(started).to eq([42])
+    expect(exited).to eq([true])
+  end
+
+  it 'reports a missing native helper without silently opening Chrome' do
+    allow(OS).to receive(:mac?).and_return(true)
+    allow(File).to receive(:executable?).with(Lich::WebUI::NativeHost::EXECUTABLE).and_return(false)
+    expect(described_class).not_to receive(:app_browser_path)
+    expect { described_class.command_for('http://127.0.0.1:1234/') }.to raise_error(Lich::WebUI::Error, /helper is missing/)
+  end
+
+  it 'uses ordinary platform discovery off macOS without needing the native helper' do
+    allow(OS).to receive(:mac?).and_return(false)
+    allow(OS).to receive(:windows?).and_return(false)
+    allow(OS).to receive(:host_os).and_return('linux')
+    allow(described_class).to receive(:app_browser_path).with(platform: 'linux').and_return('/usr/bin/google-chrome')
+    expect(Lich::WebUI::NativeHost).not_to receive(:command_for)
+    expect(described_class.command_for('http://127.0.0.1/')).to eq(
+      ['/usr/bin/google-chrome', '--new-window', '--app=http://127.0.0.1/']
+    )
+  end
+
   it 'opens macOS URLs in a new Google Chrome app window without invoking a shell' do
     calls = []
     spawn = lambda do |*arguments, **options|
@@ -138,12 +173,15 @@ RSpec.describe Lich::WebUI::BrowserLauncher do
     end.to raise_error(Lich::WebUI::Error, /Google Chrome is required/)
   end
 
-  it 'raises a Windows-specific error when neither Chrome nor Edge is installed' do
-    allow(described_class).to receive(:app_browser_path).with(platform: 'mingw').and_return(nil)
-
-    expect do
-      described_class.command_for('http://127.0.0.1/', platform: 'mingw')
-    end.to raise_error(Lich::WebUI::Error, /Google Chrome or Microsoft Edge is required/)
+  it 'opens Windows app windows with Chrome or Edge and an isolated profile' do
+    allow(described_class).to receive(:app_browser_path).with(platform: 'mingw').and_return('C:/Edge/msedge.exe')
+    calls = []
+    described_class.open('http://127.0.0.1/', platform: 'mingw',
+                         spawn: ->(*argv, **_options) { calls << argv; 42 }, on_exit: proc {},
+                         waitpid: ->(*) {}, thread_factory: ->(&work) { work.call })
+    expect(calls.first.first).to eq('C:/Edge/msedge.exe')
+    expect(calls.first).to include(a_string_starting_with('--user-data-dir='))
+    expect(calls.first.last).to eq('--app=http://127.0.0.1/')
   end
 
   it 'reports failure without exposing or executing the URL through a shell' do

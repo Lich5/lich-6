@@ -31,7 +31,7 @@ module Lich
         )
         @runtime = Runtime.new(
           registry: registry, file_service: file_service, logger: @logger,
-          on_page_closed: method(:close_window)
+          on_page_closed: method(:close_window), window_host: method(:window_host)
         )
         @server = Server.new(
           assets_dir: ASSETS_DIR, pages_provider: -> { registry.descriptors },
@@ -52,21 +52,30 @@ module Lich
         self
       end
 
+      # Stops the listener and callbacks while attempting every owned window.
+      # Failed closes remain tracked; repeated calls retry them without spawning.
+      # @return [Service] this stopped host
       def stop
-        @windows_mutex.synchronize { @windows.keys.dup }.each { |page| save_geometry(page) }
-        windows = @windows_mutex.synchronize do
+        pages = @windows_mutex.synchronize do
           @stopped = true
-          current = @windows.values
-          @windows.clear
-          current
+          @windows.keys.dup
         end
-        windows.each(&:close)
-        server.stop
-        runtime.shutdown
+        pages.each { |page| close_window(page) }
+        begin
+          server.stop
+        ensure
+          runtime.shutdown
+        end
         self
       end
 
       def stopped? = @stopped
+
+      # Failed terminations and in-flight spawns remain owned for later cleanup.
+      # @return [Boolean] whether this host still owns any active or closing window
+      def pending_windows?
+        @windows_mutex.synchronize { !@windows.empty? }
+      end
 
       def launch_url(page: nil)
         target = page ? "/?page=#{registry.address_for(page)}" : '/'
@@ -97,9 +106,10 @@ module Lich
             on_close: -> { browser_closed(page) }
           )
         end
+        window.present(page.last_render) if page.last_render
         # Spawn and monitor setup must survive the requesting script's exit.
         result = HostThread.start { window.open(url, geometry: geometry) }.value
-        close_window(page) unless result
+        close_window(page) if !result || window.closed?
         result
       rescue StandardError
         close_window(page) if window
@@ -108,8 +118,19 @@ module Lich
 
       def close_window(page)
         save_geometry(page)
-        window = @windows_mutex.synchronize { @windows.delete(page) }
-        window&.close
+        window = @windows_mutex.synchronize { @windows[page] }
+        return unless window
+
+        return false unless window.close
+        @windows_mutex.synchronize { @windows.delete(page) if @windows[page].equal?(window) }
+      rescue StandardError => error
+        @logger.call(:warning, "WebUI window termination failed: #{error.class}; retained for retry")
+      end
+
+      # @param page [Page] exact page identity, never a title or sibling modal
+      # @return [BrowserWindow, nil] the page's owned desktop window
+      def window_host(page)
+        @windows_mutex.synchronize { @windows[page] }
       end
 
       def browser_closed(page)

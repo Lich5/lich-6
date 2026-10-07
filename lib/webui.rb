@@ -66,6 +66,7 @@ module Lich
       def service
         INITIALIZATION_MUTEX.synchronize do
           if @service&.stopped?
+            (@retired_services ||= []) << @service if @service.pending_windows?
             @service = nil
             @registry = Registry.new
           end
@@ -164,15 +165,31 @@ module Lich
 
       # Stops the current host and replaces the registry, discarding all pages.
       # Intended for full-host teardown, not closing an individual script's UI.
+      # Hosts with pending window cleanup remain retained for a subsequent retry;
+      # calling this method never constructs a replacement service.
       # @return [Service, nil] stopped service, or nil if none existed
       def reset!
-        service = INITIALIZATION_MUTEX.synchronize do
+        current = nil
+        services = INITIALIZATION_MUTEX.synchronize do
           current = @service
           @service = nil
           @registry = Registry.new
-          current
+          @retired_services ||= []
+          @retired_services << current if current && !@retired_services.include?(current)
+          @retired_services.dup
         end
-        service&.stop
+        services.each do |host|
+          begin
+            host.stop
+          rescue StandardError => error
+            Lich.log("warning: WebUI shutdown failed: #{error.class}") if Lich.respond_to?(:log)
+          ensure
+            INITIALIZATION_MUTEX.synchronize do
+              @retired_services.delete(host) unless host.pending_windows?
+            end
+          end
+        end
+        current
       end
     end
 

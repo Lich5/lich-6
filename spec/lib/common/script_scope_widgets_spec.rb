@@ -26,6 +26,19 @@ RSpec.describe 'bounded script compatibility pilot' do
     service.stop
   end
 
+  it 'retains shim keep-above requests and later changes in the shared page presentation' do
+    window = compatibility.const_get(:Window).new('On top')
+    window.keep_above = true
+    window.show_all
+    page = nil
+    Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
+    expect(page.last_render.tree.props[:presentation]).to eq(always_on_top: true)
+    window.keep_above = false
+    Timeout.timeout(5) { sleep 0.01 until page.last_render.tree.props.dig(:presentation, :always_on_top) == false }
+    expect { window.keep_above = 'yes' }.to raise_error(scope.const_get(:Gtk)::UnsupportedOperation)
+    window.destroy
+  end
+
   it 'reports the persisted GTK theme preference and uses it for shim windows' do
     [true, false].each do |dark|
       allow(Lich).to receive(:track_dark_mode).and_return(dark)

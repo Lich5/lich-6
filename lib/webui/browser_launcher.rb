@@ -6,12 +6,13 @@ require 'rbconfig'
 require 'tmpdir'
 require 'fileutils'
 require_relative 'errors'
+require_relative 'native_host'
 
 module Lich
   module WebUI
-    # Opens an authenticated loopback URL in a dedicated Google Chrome app
-    # window. App mode provides an OS title bar without browser tabs, location
-    # controls, or bookmark chrome.
+    # Opens an authenticated loopback URL in a native helper or a
+    # dedicated browser app process. Explicit browser paths remain available
+    # for browser comparisons and callers that intentionally choose Chrome.
     module BrowserLauncher
       MACOS_PATHS = [
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -25,11 +26,12 @@ module Lich
 
       module_function
 
-      def open(url, spawn: Process.method(:spawn), detach: Process.method(:detach), platform: RUBY_PLATFORM,
+      def open(url, spawn: Process.method(:spawn), detach: Process.method(:detach), platform: nil,
                browser_path: nil, chrome_path: nil, geometry: nil, on_exit: nil,
                on_start: nil, waitpid: Process.method(:waitpid),
                thread_factory: HostThread.method(:start))
-        profile_dir = Dir.mktmpdir('lich-webui-browser-') if on_exit
+        native = native_host(platform, browser_path || chrome_path)
+        profile_dir = Dir.mktmpdir('lich-webui-browser-') if on_exit && !native
         command = command_for(
           url, platform: platform, browser_path: browser_path || chrome_path,
           geometry: geometry, profile_dir: profile_dir
@@ -48,8 +50,13 @@ module Lich
         false
       end
 
-      def command_for(url, platform: RUBY_PLATFORM, browser_path: nil, chrome_path: nil, geometry: nil,
+      def command_for(url, platform: nil, browser_path: nil, chrome_path: nil, geometry: nil,
                       profile_dir: nil)
+        if native_host(platform, browser_path || chrome_path)
+          return NativeHost.command_for(url, geometry: geometry)
+        end
+
+        platform ||= OS.host_os
         executable = browser_path || chrome_path || app_browser_path(platform: platform)
         unless executable
           requirement = windows?(platform) ? 'Google Chrome or Microsoft Edge' : 'Google Chrome'
@@ -62,6 +69,13 @@ module Lich
                               []
                             end
         [executable, '--new-window', *profile_arguments, *geometry_arguments(geometry), "--app=#{url}"]
+      end
+
+      # An explicit platform is a test/discovery override; normal dispatch uses
+      # the os gem rather than guessing from a Ruby build-platform string.
+      # @return [Symbol, nil] native host kind, absent for explicit browsers
+      def native_host(platform, browser_path)
+        NativeHost.platform(platform) unless browser_path
       end
 
       def monitor_process(pid, profile_dir, waitpid:, thread_factory:, on_exit:)
