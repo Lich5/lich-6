@@ -49,6 +49,65 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
   end
 
   describe 'GTK-free script loading' do
+    %i[finish window_close runtime shutdown].each do |stop_mode|
+      it "finishes queued exit cleanup without stopping the host on #{stop_mode}" do
+        Dir.mktmpdir('script-queue-cleanup') do |root|
+          FileUtils.mkdir_p(File.join(root, 'custom'))
+          stub_const('SCRIPT_DIR', root)
+          stub_const('SCRIPT_QUEUE_EVENTS', Queue.new)
+          stub_const('SCRIPT_QUEUE_RELEASE', Queue.new)
+          host = Lich::WebUI.service
+          allow(Lich::WebUI).to receive(:adapter) do |owner:, viewer: nil|
+            Lich::WebUI::Adapter.new(owner: owner, viewer: viewer, service: host)
+          end
+          File.write(File.join(root, 'custom', 'cleanup.lic'), <<~RUBY)
+            # quiet
+            window = Gtk::Window.new(:toplevel)
+            window.resize(240, 25)
+            window.signal_connect('delete_event') { SCRIPT_QUEUE_RELEASE << true; true }
+            retained = Gtk.session
+            Script.current.at_exit do
+              cleanup_thread = Thread.current
+              finished = Queue.new
+              Gtk.queue do
+                dimensions = window.allocation
+                window.destroy
+                Gtk.queue { finished << [dimensions.width, dimensions.height, Thread.current == cleanup_thread] }
+              end
+              result = finished.pop(timeout: 0.5)
+              raise 'exit queue was discarded' unless result
+              SCRIPT_QUEUE_EVENTS << [:saved, result, window.destroyed?]
+            end
+            window.show_all
+            SCRIPT_QUEUE_EVENTS << retained
+            SCRIPT_QUEUE_RELEASE.pop
+          RUBY
+          child = script_class.start('cleanup')
+          retained = SCRIPT_QUEUE_EVENTS.pop(timeout: 2)
+          if stop_mode == :finish
+            SCRIPT_QUEUE_RELEASE << true
+          elsif stop_mode == :window_close
+            Timeout.timeout(2) { sleep 0.001 until host.registry.pages_for(child).first&.last_render }
+            page = host.registry.pages_for(child).first
+            host.runtime.browser_closed(page)
+          else
+            child.kill(context: stop_mode)
+          end
+          expect(child.join(3)).to equal(child)
+          expect(SCRIPT_QUEUE_EVENTS.pop(timeout: 1)).to eq([:saved, [240, 25, true], true])
+          expect(host.registry.pages_for(child)).to be_empty
+          expect(host).not_to be_stopped
+          expect(retained.queue { raise 'closed session ran work' }).to be_nil
+          delivered = Queue.new
+          host.runtime.dispatch(owner: Object.new) { delivered << :other_owner_alive }
+          expect(delivered.pop(timeout: 1)).to eq(:other_owner_alive)
+        ensure
+          SCRIPT_QUEUE_RELEASE << true if defined?(SCRIPT_QUEUE_RELEASE)
+          Lich::WebUI.reset!
+        end
+      end
+    end
+
     it 'executes deferred Gtk.queue work with the real calling Script as owner' do
       Dir.mktmpdir('script-queue-owner') do |root|
         FileUtils.mkdir_p(File.join(root, 'custom'))

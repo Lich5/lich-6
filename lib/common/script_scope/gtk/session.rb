@@ -36,24 +36,30 @@ module Lich
           # Defers script UI work without holding the shadow-state lock on admission.
           # The core worker supplies FIFO ordering and bounded cancellation; this
           # wrapper supplies Script ownership and the legacy queue error boundary.
+          # Exit handlers run inline on the owner's cleanup thread because its
+          # ordinary workers have already been stopped. This also permits their
+          # existing queue-then-wait cleanup pattern without reviving dispatch.
           # @yield one-shot callback; must not wait for another callback on this owner
-          # @return [Symbol, nil] :queued when admitted, nil during script teardown
+          # @return [Symbol, nil] :queued when admitted/cleaned up, nil for late work
           # @raise [ArgumentError] when no block is supplied
           # @raise [Lich::WebUI::Error] for a stopped host or queue overflow
           def queue(&block)
             raise ArgumentError, 'work block is required' unless block
+            return if @closed
+            if cleanup_thread?
+              run_queue_block { synchronize { block.call unless @closed } }
+              return :queued
+            end
             return if stopping?
 
             @dispatch.call do
-              next if stopping?
+              run_queue_block do
+                next if stopping?
 
-              @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
-              Script.current # Honor pause after adopting the initially unowned worker.
-              synchronize { block.call unless stopping? }
-            rescue StandardError, SyntaxError, SystemExit, SecurityError, SystemStackError, LoadError, NoMemoryError => error
-              source = Array(error.backtrace).find { |frame| frame.start_with?("#{@owner.name}:") || frame.include?('.lic:') }
-              source_warning(self, :queue, "callback failed error=#{error.class} at=#{source || error.backtrace&.first}")
-              respond "error in Gtk.queue (#{@owner.name}): #{error.class}; see debug log"
+                @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
+                Script.current # Honor pause after adopting the initially unowned worker.
+                synchronize { block.call unless stopping? }
+              end
             end
           end
 
@@ -138,6 +144,29 @@ module Lich
           end
 
           private
+
+          # Recognizes only Script's active cleanup executor for this stopped owner.
+          # @return [Boolean] whether queue work may run inline during exit cleanup
+          def cleanup_thread?
+            @owner.respond_to?(:stopping?) && @owner.stopping? &&
+              Script.const_defined?(:CLEANUP_SCRIPT_THREAD_KEY, false) &&
+              Thread.current.thread_variable_get(Script::CLEANUP_SCRIPT_THREAD_KEY).equal?(@owner)
+          end
+
+          # Applies the legacy error boundary to ordinary and exit-handler work.
+          # Only shim class/operation tokens are retained from exception messages;
+          # arbitrary script messages may contain sensitive input.
+          # @yield queued script operation
+          # @return [Object, nil] callback result, or nil after a reported failure
+          def run_queue_block
+            yield
+          rescue StandardError, SyntaxError, SystemExit, SecurityError, SystemStackError, LoadError, NoMemoryError => error
+            source = Array(error.backtrace).find { |frame| frame.start_with?("#{@owner.name}:") || frame.include?('.lic:') }
+            detail = error.message[/\b(?:class=[\w:]+ )?operation=[\w?!=]+/] if error.is_a?(UnsupportedOperation)
+            source_warning(self, :queue, "callback failed error=#{error.class} at=#{source || error.backtrace&.first}#{" rejected=#{detail}" if detail}")
+            respond "error in Gtk.queue (#{@owner.name}): #{error.class}; see debug log"
+            nil
+          end
 
           # Prevents teardown and retained sessions from admitting fresh UI work.
           # @return [Boolean] whether new or pending callbacks must be discarded

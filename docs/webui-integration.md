@@ -69,7 +69,8 @@ treated as recoverable callback errors. Repeated destruction remains idempotent.
 `Gtk.queue` defers its block through `WebUI.callback_queue(owner:)`, which captures
 the current host and submits to its existing owner dispatcher. It returns
 `:queued` on admission, not the block result or a GLib timer ID. It returns `nil`
-during script teardown; a stopped host or full queue refuses the submission.
+for ordinary work submitted during script teardown; a stopped host or full queue
+refuses ordinary submissions.
 The shim does not create an additional worker queue or a native event loop.
 
 Accepted blocks execute sequentially in owner enqueue order alongside native UI
@@ -84,6 +85,21 @@ state. Legacy queue exceptions are reported without aborting later blocks.
 Pending work is canceled on owner termination, and a retained queue handle
 cannot restart a stopped host. Full dispatcher shutdown closes admission before
 collecting workers, including owners that have not previously submitted work.
+
+There is one cleanup exception: a `before_dying`/`Script.at_exit` handler may
+call `Gtk.queue` on its existing session. Script has already stopped its ordinary
+workers, so this block (including nested cleanup) executes inline under the shim
+lock on that owner's cleanup thread and returns `:queued`. Existing scripts may
+therefore queue their geometry reads/destruction and wait for completion without
+deadlocking teardown. This does not reopen the dispatcher, create a session, or
+allow unrelated late work. Closed sessions refuse all further submissions.
+Compatibility failures retain their rejected class/operation in queue diagnostics;
+arbitrary exception messages are not copied into those diagnostics.
+
+The shim bounds progress fractions to the displayed 0–1 interval, including
+infinite values. A NaN fraction retains the previous display value and emits one
+compatibility notice per session because WebUI cannot transport NaN. Script
+calculations are unchanged; native WebUI's numeric validation remains strict.
 
 ## Window hosting and lifecycle
 
