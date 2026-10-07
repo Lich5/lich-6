@@ -33,12 +33,16 @@ module Lich
         end
       end
 
+      # Creates bounded owner queues; workers start only when work is admitted.
+      # @param logger [#call, nil] diagnostic sink accepting level and message
+      # @param thread_factory [#call, nil] worker constructor accepting a block
       def initialize(logger: nil, thread_factory: nil)
         @logger = logger || proc { |_level, _message| }
         @thread_factory = thread_factory || ->(&block) { Thread.new(&block) }
         @owners = {}.compare_by_identity
         @terminated_owners = ObjectSpace::WeakMap.new
         @mutex = Mutex.new
+        @stopped = false
       end
 
       # Queues owner work and owns cleanup through execution, refusal or removal.
@@ -103,8 +107,13 @@ module Lich
         true
       end
 
+      # Closes admission before collecting workers, including not-yet-seen owners.
+      # @return [void]
       def shutdown
-        owners = @mutex.synchronize { @owners.keys }
+        owners = @mutex.synchronize do
+          @stopped = true
+          @owners.keys
+        end
         owners.each { |owner| shutdown_owner(owner) }
       end
 
@@ -123,8 +132,14 @@ module Lich
 
       private
 
+      # Finds or creates a worker under the same admission lock used by shutdown.
+      # @api private
+      # @param owner [Object] callback lifecycle identity
+      # @return [OwnerState] live worker state
+      # @raise [Error] when the dispatcher or owner has terminated
       def owner_state(owner)
         @mutex.synchronize do
+          raise Error, 'dispatcher is stopped' if @stopped
           raise Error, 'owner dispatcher is terminated' if @terminated_owners[owner]
 
           @owners[owner] ||= begin

@@ -8,6 +8,45 @@ require 'timeout'
 RSpec.describe 'core-owned adapter hosting' do
   after { Lich::WebUI.reset! }
 
+  it 'orders queued owner work with native callbacks on the same dispatcher' do
+    owner = Object.new
+    host = Lich::WebUI.service
+    queue = Lich::WebUI.callback_queue(owner: owner)
+    started, release, delivered = Queue.new, Queue.new, Queue.new
+    queue.call { started << true; release.pop; delivered << :first }
+    expect(started.pop(timeout: 2)).to be(true)
+    page = host.registry.register(Lich::WebUI::Page.new(owner: owner, id: 'ordered', title: 'Ordered',
+                                                        on: { attach: ->(_) { delivered << :native } }) {})
+    connection = double('connection', viewer_id: 'queue-order', send_text: true)
+    host.runtime.handle(connection, type: 'attach', page: host.registry.address_for(page))
+    queue.call { delivered << :last }
+    release << true
+    expect(3.times.map { delivered.pop(timeout: 2) }).to eq(%i[first native last])
+  ensure
+    release&.push(true)
+  end
+
+  it 'binds a callback queue to its original host and refuses work after shutdown' do
+    owner = Object.new
+    queue = Lich::WebUI.callback_queue(owner: owner)
+    previous = Lich::WebUI.service
+    previous.stop
+    expect { queue.call { raise 'must not execute' } }.to raise_error(Lich::WebUI::Error, /stopped/)
+    expect(Lich::WebUI.instance_variable_get(:@service)).to equal(previous)
+  end
+
+  it 'refuses owner work when the existing dispatcher queue reaches its bound' do
+    owner = Object.new
+    queue = Lich::WebUI.callback_queue(owner: owner)
+    started, release = Queue.new, Queue.new
+    queue.call { started << true; release.pop }
+    expect(started.pop(timeout: 2)).to be(true)
+    Lich::WebUI::Dispatcher::VIEWER_LIMIT.times { expect(queue.call {}).to eq(:queued) }
+    expect { queue.call {} }.to raise_error(Lich::WebUI::Dispatcher::OverflowError)
+  ensure
+    release&.push(true)
+  end
+
   it 'hosts and opens a page published through the author API' do
     owner = Object.new
     host = Lich::WebUI.service

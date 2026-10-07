@@ -13,10 +13,14 @@ module Lich
         class Session
           attr_reader :port
 
+          # Binds the script's shadow state and callback submissions to one host.
+          # @param owner [Script] script whose lifetime governs all shim work
           def initialize(owner)
             @owner = owner
             @port = Lich::WebUI.adapter(owner: owner, viewer: self)
+            @dispatch = Lich::WebUI.callback_queue(owner: owner)
             @mutex = Monitor.new
+            @closed = false
             @windows = []
             @degradations = {}
             @window_viewers = {}.compare_by_identity
@@ -27,6 +31,30 @@ module Lich
 
           def synchronize(&block)
             @mutex.synchronize(&block)
+          end
+
+          # Defers script UI work without holding the shadow-state lock on admission.
+          # The core worker supplies FIFO ordering and bounded cancellation; this
+          # wrapper supplies Script ownership and the legacy queue error boundary.
+          # @yield one-shot callback; must not wait for another callback on this owner
+          # @return [Symbol, nil] :queued when admitted, nil during script teardown
+          # @raise [ArgumentError] when no block is supplied
+          # @raise [Lich::WebUI::Error] for a stopped host or queue overflow
+          def queue(&block)
+            raise ArgumentError, 'work block is required' unless block
+            return if stopping?
+
+            @dispatch.call do
+              next if stopping?
+
+              @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
+              Script.current # Honor pause after adopting the initially unowned worker.
+              synchronize { block.call unless stopping? }
+            rescue StandardError, SyntaxError, SystemExit, SecurityError, SystemStackError, LoadError, NoMemoryError => error
+              source = Array(error.backtrace).find { |frame| frame.start_with?("#{@owner.name}:") || frame.include?('.lic:') }
+              source_warning(self, :queue, "callback failed error=#{error.class} at=#{source || error.backtrace&.first}")
+              respond "error in Gtk.queue (#{@owner.name}): #{error.class}; see debug log"
+            end
           end
 
           def register(window)
@@ -90,11 +118,32 @@ module Lich
             Lich.log("#{attribution(receiver, operation)}: #{message}")
           end
 
+          # Isolates script cleanup failures so later handlers/windows still close.
+          # Fatal VM failures are not treated as recoverable script errors.
+          # @param receiver [Widget] object whose cleanup is running
+          # @yield cleanup action
+          # @return [Object, nil] cleanup result, or nil after a reported failure
+          def cleanup(receiver)
+            yield
+          rescue StandardError, ScriptError, SystemExit => error
+            source_warning(receiver, :destroy, "cleanup failed error=#{error.class} at=#{error.backtrace&.first}")
+            nil
+          end
+
+          # Attempts every remaining window even if one script callback fails.
+          # @return [void]
           def close
-            synchronize { @windows.dup.each(&:destroy) }
+            @closed = true
+            synchronize { @windows.dup.each { |window| cleanup(window) { window.destroy } } }
           end
 
           private
+
+          # Prevents teardown and retained sessions from admitting fresh UI work.
+          # @return [Boolean] whether new or pending callbacks must be discarded
+          def stopping?
+            @closed || (@owner.respond_to?(:stopping?) && @owner.stopping?)
+          end
 
           def root_for(widget)
             widget = widget.parent while widget.parent

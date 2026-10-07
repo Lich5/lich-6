@@ -9,6 +9,7 @@ require_relative 'inputs'
 require_relative 'dialogs'
 require_relative 'style'
 require_relative 'displays'
+require_relative 'require_boundary'
 
 module Lich
   module Common
@@ -42,16 +43,24 @@ module Lich
           current
         end
 
-        # Construction is synchronous shadow-state work. The core adapter owns
-        # asynchronous rendering; the shim adds no second UI event queue.
+        # Defers one block onto the existing core owner dispatcher. Shadow-state
+        # operations inside the block remain synchronous; admission never waits
+        # for execution. No native GTK loop or second shim queue is created.
+        # @yield script UI work to execute once, in owner enqueue order
+        # @return [Symbol, nil] :queued on admission, nil during script teardown
+        # @raise [UnsupportedOperation] when no script owner/session is available
+        # @raise [ArgumentError] when no block is supplied
+        # @raise [Lich::WebUI::Error] when the host stopped or its queue is full
         def self.queue(&block)
-          # Script.current is cleared before Ruby ensure clauses unwind during
-          # termination. Existing widgets still need their idempotent cleanup;
-          # a retained session permits that without creating a new UI owner.
-          current = Script.current ? session : Thread.current.thread_variable_get(:lich_script_compatibility_session)
+          raise ArgumentError, 'work block is required' unless block
+
+          owner = Script.current
+          return if owner.respond_to?(:stopping?) && owner.stopping?
+
+          current = owner ? session : Thread.current.thread_variable_get(:lich_script_compatibility_session)
           raise UnsupportedOperation, 'script owner is required for Gtk' unless current
 
-          current.synchronize(&block)
+          current.queue(&block)
         end
 
         # Contract 11.5 dispositions native main-loop calls as lifecycle-only:

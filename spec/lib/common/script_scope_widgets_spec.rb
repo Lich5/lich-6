@@ -18,12 +18,89 @@ RSpec.describe 'bounded script compatibility pilot' do
     stub_const('Lich::Common::Script', Class.new { def self.current; end })
     allow(Lich::Common::Script).to receive(:current).and_return(owner)
     allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
+    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
     allow(Lich).to receive(:log)
   end
 
   after do
     Lich::Common::ScriptDeath.run(owner)
     service.stop
+  end
+
+  it 'defers Gtk.queue without blocking its caller and preserves nested enqueue order' do
+    started, release, returned, delivered = Queue.new, Queue.new, Queue.new, Queue.new
+    producer = Thread.new do
+      returned << compatibility.queue do
+        started << true
+        release.pop
+        delivered << :first
+        compatibility.queue { delivered << :nested }
+      end
+    end
+    expect(started.pop(timeout: 2)).to be(true)
+    expect(returned.pop(timeout: 0.2)).to eq(:queued)
+    compatibility.queue { delivered << :second }
+    release << true
+    expect(3.times.map { delivered.pop(timeout: 2) }).to eq(%i[first second nested])
+  ensure
+    release&.push(true)
+    producer&.join(2)
+  end
+
+  it 'reports Gtk.queue errors without killing the caller or skipping subsequent work' do
+    completed = Queue.new
+    [RuntimeError, SyntaxError, SystemExit].each do |error|
+      expect(compatibility.queue { raise error, 'script failure' }).to eq(:queued)
+    end
+    compatibility.queue { completed << true }
+    expect(completed.pop(timeout: 2)).to be(true)
+    [RuntimeError, SyntaxError, SystemExit].each do |error|
+      expect(Lich).to have_received(:log).with(/script=pilot\.lic.*operation=queue.*error=#{error}/)
+    end
+  end
+
+  it 'cancels pending Gtk.queue blocks on owner termination and refuses late submissions' do
+    started, release, stopped, delivered = Queue.new, Queue.new, Queue.new, Queue.new
+    compatibility.queue do
+      started << true
+      release.pop
+      service.runtime.terminate_owner(owner)
+      stopped << true
+    end
+    expect(started.pop(timeout: 2)).to be(true)
+    compatibility.queue { delivered << :must_not_run }
+    release << true
+    expect(stopped.pop(timeout: 2)).to be(true)
+    expect(delivered).to be_empty
+    expect { compatibility.queue {} }.to raise_error(Lich::WebUI::Error, /terminated/)
+  ensure
+    release&.push(true)
+  end
+
+  it 'finishes destroy handlers and sibling windows when script cleanup raises' do
+    first = compatibility.const_get(:Window).new('First')
+    second = compatibility.const_get(:Window).new('Second')
+    completed = []
+    first.signal_connect('destroy') { raise 'broken cleanup' }
+    first.signal_connect('destroy') { completed << :first }
+    second.signal_connect('destroy') { completed << :second }
+
+    Lich::Common::ScriptDeath.run(owner)
+
+    expect([first, second]).to all(be_destroyed)
+    expect(completed).to eq(%i[first second])
+    expect(Lich).to have_received(:log).with(/script=pilot\.lic.*operation=destroy.*RuntimeError/)
+  end
+
+  it 'continues session cleanup after a window itself fails to destroy' do
+    first = compatibility.const_get(:Window).new('First')
+    second = compatibility.const_get(:Window).new('Second')
+    allow(first).to receive(:destroy).and_raise(RuntimeError, 'broken window')
+
+    Lich::Common::ScriptDeath.run(owner)
+
+    expect(second).to be_destroyed
+    expect(Lich).to have_received(:log).with(/script=pilot\.lic.*operation=destroy.*RuntimeError/)
   end
 
   it 'retains shim keep-above requests and later changes in the shared page presentation' do
@@ -114,8 +191,8 @@ RSpec.describe 'bounded script compatibility pilot' do
       expect(eval("Gtk::Version::STRING.chr == '3'", binding)).to be(true)
       expect(eval('HAVE_GTK', binding)).to be(true)
     end
-    # PR 1 coexists with 5.22's GTK launcher until the native cutover. Loading
-    # the shim must neither add a global Gtk nor replace an existing real Gtk.
+    # The shim exposes only lexical compatibility constants; it must not
+    # introduce GTK constants into the core namespace.
     @core_gtk.each do |namespace, original|
       if original
         expect(namespace.const_get(:Gtk, false)).to equal(original)

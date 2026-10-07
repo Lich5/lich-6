@@ -42,6 +42,49 @@ The compatibility layer is a supported subset of GTK, not a complete GTK runtime
 Unsupported interfaces require a native conversion or a separately designed
 contract extension.
 
+### Script dependency boundary
+
+`Script` activates the compatibility scope before evaluating either trusted or
+label-based scripts. Within a running script, `require 'gtk2'` and
+`require 'gtk3'` (including `.rb` spellings) resolve to that already-loaded shim
+and return `false`. They never activate an installed native GTK gem. Supported
+widgets still resolve lexically through `ScriptScope`; no global `Gtk` is added.
+
+The plugin guards Ruby's `require`, `require_relative`, and `load`, including
+explicit `Kernel` calls and calls in required helpers. Recognizable native GTK
+subloads and GTK-stack dependencies are refused with script, operation, feature
+and source attribution. Outside script ownership, even the GTK entrypoint aliases
+are refused. Ordinary dependencies retain Ruby loading and relative-path behavior.
+This process-wide dependency guard is installed by the script plugin; core WebUI
+does not depend on the shim. It is not a sandbox against arbitrary Ruby, renamed
+native binaries, or direct FFI calls. Native GTK loading, event loops, and fallback
+are unsupported; installed GTK gems do not extend the compatibility contract.
+
+Destroy callbacks run independently. A script error in one handler is logged and
+does not skip later handlers or sibling-window cleanup. Fatal VM failures are not
+treated as recoverable callback errors. Repeated destruction remains idempotent.
+
+### Queued script work
+
+`Gtk.queue` defers its block through `WebUI.callback_queue(owner:)`, which captures
+the current host and submits to its existing owner dispatcher. It returns
+`:queued` on admission, not the block result or a GLib timer ID. It returns `nil`
+during script teardown; a stopped host or full queue refuses the submission.
+The shim does not create an additional worker queue or a native event loop.
+
+Accepted blocks execute sequentially in owner enqueue order alongside native UI
+callbacks. They are not coalesced; a nested submission goes to the tail rather
+than executing inline. Different owners run independently. No exact delay,
+cross-script ordering, or browser-paint completion is promised. A block must not
+wait for another callback on the same owner or synchronously await a modal;
+use the existing asynchronous response callbacks instead.
+
+The worker adopts the calling Script's ownership and respects its pause/stop
+state. Legacy queue exceptions are reported without aborting later blocks.
+Pending work is canceled on owner termination, and a retained queue handle
+cannot restart a stopped host. Full dispatcher shutdown closes admission before
+collecting workers, including owners that have not previously submitted work.
+
 ## Window hosting and lifecycle
 
 On macOS, `BrowserLauncher` uses `OS.mac?` to select an AppKit window containing
