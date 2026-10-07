@@ -204,10 +204,12 @@ RSpec.describe Lich::WebUI::Runtime do
 
   it 'reports native window support for both declarative and shim presentation requests on macOS' do
     allow(Lich::WebUI::NativeHost).to receive(:platform).and_return(:macos)
-    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'native-host', title: 'Native host',
-                                                   props: { presentation: { always_on_top: true } }) do
-      presentation(borderless: true)
-    end)
+    page = registry.register(
+      Lich::WebUI::Page.new(owner: owner, id: 'native-host', title: 'Native host',
+                            props: { presentation: { always_on_top: true } }) do
+        presentation(borderless: true)
+      end
+    )
     attach(first_connection, page)
     expect(page.presentation_support).to include(always_on_top: true, borderless: true)
     expect(page.degradations).to be_empty
