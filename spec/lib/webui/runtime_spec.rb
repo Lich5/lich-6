@@ -45,6 +45,32 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  it 'queues every detach before notifying each distinct owner once' do
+    owner_class = Struct.new(:name)
+    first_owner = owner_class.new('same-name')
+    second_owner = owner_class.new('same-name')
+    queued, notifications = [], []
+    completed = Queue.new
+    host = described_class.new(registry: registry, dispatcher: dispatcher, viewers: viewers,
+                               viewers_changed: ->(owner) { notifications << [owner.object_id, queued.dup] })
+    allow(dispatcher).to receive(:enqueue).and_wrap_original do |original, **options, &work|
+      queued << options[:page_id] if options[:event] == :detach
+      original.call(**options, &work)
+    end
+    [first_owner, first_owner, second_owner].each_with_index do |page_owner, index|
+      id = "page-#{index}"
+      page = registry.register(Lich::WebUI::Page.new(owner: page_owner, id: id, title: 'Fixture',
+                                                     on: { detach: ->(_event) { completed << id } }) {})
+      host.handle(first_connection, type: 'attach', page: registry.address_for(page), version: Lich::WebUI::Contract::VERSION)
+    end
+
+    host.disconnect(first_connection)
+
+    page_ids = %w[page-0 page-1 page-2]
+    expect(notifications).to eq([[first_owner.object_id, page_ids], [second_owner.object_id, page_ids]])
+    expect(Timeout.timeout(2) { Array.new(3) { completed.pop } }).to match_array(page_ids)
+  end
+
   %i[shutdown refusal overflow].each do |termination|
     it "disposes a sensitive submission on #{termination} before its callback runs" do
       captured = []

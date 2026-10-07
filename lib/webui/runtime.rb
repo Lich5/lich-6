@@ -88,14 +88,17 @@ module Lich
       end
 
       # Retains resumable attachments and rechecks modals after active viewers leave.
+      # Enqueues every detach before notifying each owner identity once.
       # @param connection [Object] disconnected transport with a viewer_id
       # @return [void]
       def disconnect(connection)
         @connections_mutex.synchronize { @connections.delete(connection.viewer_id) }
+        owners = {}.compare_by_identity
         @viewers.transient_disconnect(connection.viewer_id).each do |attachment|
           enqueue_lifecycle(attachment, :detach)
-          @viewers_changed&.call(attachment.page.owner)
+          owners[attachment.page.owner] = true
         end
+        owners.each_key { |owner| @viewers_changed&.call(owner) }
       end
 
       # A different script's open window cannot present this owner's modal.
