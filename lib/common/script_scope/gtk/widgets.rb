@@ -279,10 +279,14 @@ module Lich
 
           def port_property(property) = property
 
+          # Commits terminal input before invoking legacy save/close handlers.
+          # @param event [Symbol] shared-control event mapped to a GTK signal
+          # @return [String] adapter binding identifier
+          # @api private
           def bind_event(event)
             widget = self
             session.port.bind(@handle, event, proc do |context|
-              session.callback(context, terminal: %i[activate submit].include?(event), widget: widget) do
+              session.callback(context, terminal: !context.viewer_id.nil? && %i[activate submit close].include?(event), widget: widget) do
                 result = @signals[event]&.call(widget)
                 widget.destroy if event == :close && result != true
               end

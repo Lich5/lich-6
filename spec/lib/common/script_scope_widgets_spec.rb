@@ -39,6 +39,43 @@ RSpec.describe 'bounded script compatibility pilot' do
     window.destroy
   end
 
+  %i[detach process_exit].each do |close_path|
+    it "saves entry and checkbox drafts through delete_event on #{close_path}" do
+      window = compatibility.const_get(:Window).new('Close/save')
+      box = compatibility.const_get(:Box).new(:vertical)
+      entry = compatibility.const_get(:Entry).new
+      check = compatibility.const_get(:CheckButton).new('Enabled')
+      entry.text = 'old'
+      box.add(entry)
+      box.add(check)
+      window.add(box)
+      saved = Queue.new
+      window.signal_connect('delete_event') { saved << [entry.text, check.active?]; false }
+      window.show_all
+      page = nil
+      Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+      connection = double('connection', viewer_id: 'close-save', alive?: true, send_text: true)
+      address = service.registry.address_for(page)
+      service.runtime.handle(connection, type: 'attach', page: address)
+      page.last_render.tree.each do |component|
+        next unless %i[text_input checkbox].include?(component.type)
+
+        service.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                           cid: component.cid, event: 'change',
+                                           payload: { value: component.type == :checkbox ? true : 'edited' })
+      end
+      if close_path == :detach
+        service.runtime.handle(connection, type: 'detach', page: address, generation: page.generation)
+      else
+        service.runtime.disconnect(connection)
+        service.runtime.browser_closed(page)
+      end
+      expect(Timeout.timeout(2) { saved.pop }).to eq(['edited', true])
+      Timeout.timeout(2) { sleep 0.001 until window.destroyed? }
+      expect([entry.text, check.active?]).to eq(['edited', true])
+    end
+  end
+
   it 'reports the persisted GTK theme preference and uses it for shim windows' do
     [true, false].each do |dark|
       allow(Lich).to receive(:track_dark_mode).and_return(dark)

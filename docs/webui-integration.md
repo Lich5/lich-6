@@ -124,6 +124,16 @@ window closure is distinguished from a temporary transport disconnect. Ordinary
 disconnect retains a bounded 60-second resume window; repeated attachment to the
 same page on an occupied connection is rejected.
 
+Close and detach callbacks receive a temporary snapshot of the last validated
+viewer state, so legacy close/save handlers can still read inputs after the live
+attachment is removed. The shim commits those inputs before `delete_event`;
+callback completion or cancellation releases the snapshot. An owned OS window
+exiting without `pagehide` uses its sole retained viewer when available; it does
+not guess among multiple viewers. This does not add unsupported GTK dialogs.
+Outgoing frames similarly use one captured render and its viewer values, keeping
+component IDs, bindings and generation consistent during concurrent refreshes.
+Late refreshes cannot restore diagnostic records for unregistered pages.
+
 Modals reapply their declared `no_viewer` policy when the last active viewer
 leaves: `abort` cancels, `default` selects the declared response, and `wait`
 remains pending. Resumable disconnected attachments are not active viewers.

@@ -8,6 +8,7 @@ module Lich
     # Per-page viewer attachments and viewer-local state.
     class ViewerStore
       RECONNECT_WINDOW = 60
+      Snapshot = Data.define(:page, :viewer_id, :render, :values)
 
       class Attachment
         attr_accessor :connection_id, :render, :delivered_generation, :expires_at
@@ -163,6 +164,33 @@ module Lich
       def set_input(attachment, component, value)
         property = input_property(component.type)
         @mutex.synchronize { attachment.values[[component.cid, property]] = value } if property
+      end
+
+      # Copies one coherent render and its nonsensitive viewer values for queued work.
+      # The snapshot is not attached or resumable and cannot receive browser events.
+      # @param attachment [Attachment] viewer whose delivered state is captured
+      # @return [Snapshot] independent values with an immutable render definition
+      def snapshot(attachment)
+        @mutex.synchronize do
+          raise Error, 'viewer has no delivered render' unless attachment.render
+
+          Snapshot.new(attachment.page, attachment.viewer_id, attachment.render, attachment.values.dup)
+        end
+      end
+
+      # Captures the sole retained viewer when an owned OS window exits without pagehide.
+      # Multiple viewers are deliberately not guessed; expired viewers are excluded.
+      # @param page [Page] page whose native host exited
+      # @return [Snapshot, nil] last delivered state, when unambiguous
+      def closing_snapshot(page)
+        @mutex.synchronize do
+          expire_locked!
+          candidates = @by_resume.values.select { |attachment| attachment.page.equal?(page) && attachment.render }
+          if candidates.one?
+            attachment = candidates.first
+            Snapshot.new(page, attachment.viewer_id, attachment.render, attachment.values.dup)
+          end
+        end
       end
 
       def serialize(attachment)

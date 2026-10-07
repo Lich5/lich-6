@@ -64,7 +64,12 @@ module Lich
         raise attributed(error, handle)
       end
 
+      # Reads validated shadow state without holding the adapter lock across rendering.
+      # @param handle [Object] opaque component handle
+      # @param property [Symbol, String] contract property
+      # @return [Object] a copy of the current property value
       def get(handle, property)
+        target = nil
         @mutex.synchronize do
           node = node!(handle)
           name, definition = property!(node, handle, property)
@@ -74,7 +79,13 @@ module Lich
               page_id: adapter_page_id, cid: handle_label(handle), field: name
             )
           end
-          return viewer_value(node, handle, name) if definition[:scope] == :viewer
+          if definition[:scope] == :viewer
+            if (page = root_for(node).page) && node.cid
+              target = [page, node.cid, name]
+              next
+            end
+            return deep_copy(@viewer_values.fetch([viewer!, handle, name], node.props[name]))
+          end
 
           # Window measurements are captured before callback dispatch. Exit
           # cleanup can therefore read the latest size even if a script is
@@ -84,11 +95,19 @@ module Lich
             return geometry[:position].dup if name == :position
           end
 
-          deep_copy(node.props[name])
+          return deep_copy(node.props[name])
         end
+        page, cid, name = target
+        deep_copy(page.get(cid, name, viewer: @viewer))
       end
 
+      # Updates a property, releasing the adapter lock before viewer-state dispatch.
+      # @param handle [Object] opaque component handle
+      # @param property [Symbol, String] contract property
+      # @param value [Object] candidate value validated against the component schema
+      # @return [nil]
       def set(handle, property, value)
+        target = nil
         @mutex.synchronize do
           node = node!(handle)
           name, definition = property!(node, handle, property)
@@ -106,8 +125,8 @@ module Lich
           end
           if definition[:scope] == :viewer
             if (page = root_for(node).page) && node.cid
-              page.set(node.cid, name, value, viewer: @viewer)
-              return nil
+              target = [page, node.cid, name]
+              next
             end
             viewer = viewer!
             validated = validate_property(node, handle, name, value)
@@ -139,6 +158,10 @@ module Lich
             assign_child_slots!(node) if named_children?(node)
           end
           dirty!(root_for(node))
+        end
+        if target
+          page, cid, name = target
+          page.set(cid, name, value, viewer: @viewer)
         end
         nil
       rescue SchemaViolationError => error
@@ -387,15 +410,6 @@ module Lich
       def sensitive_property?(node, name, definition)
         definition[:scope] == :sensitive_write_only ||
           (name == :value && (node.type == :password_input || node.props[:sensitive] == true))
-      end
-
-      def viewer_value(node, handle, name)
-        if (page = root_for(node).page) && node.cid
-          return deep_copy(page.get(node.cid, name, viewer: @viewer))
-        end
-
-        viewer = viewer!
-        deep_copy(@viewer_values.fetch([viewer, handle, name], node.props[name]))
       end
 
       def viewer!
