@@ -169,6 +169,36 @@ Authentication runs outside the gate and is not forcibly interrupted; credential
 returned after cancellation are discarded. The gate does not make account YAML
 and keychain writes a single recoverable transaction.
 
+## Launcher recovery and saved entries
+
+An unreadable or malformed `entry.yaml` produces a visible recovery notice while
+leaving Manual Entry available. Catalog writes are refused until the file is
+repaired or restored; **Refresh Entries** then reloads it. An absent file, or an
+empty, comment-only or YAML `null` document, is an empty catalog with Plaintext
+as its default mode. Malformed YAML and invalid non-null structures are refused
+rather than silently replaced with an empty catalog.
+`EntryStore.write_yaml_file` publishes a complete temporary file by rename under
+a stable sidecar lock. This prevents partial publication by callers using that
+writer; it does not serialize a caller's entire read/modify/write transaction or
+make YAML and keychain changes transactional.
+
+Creating Enhanced Encryption requires a nonempty password and a matching
+confirmation, preserving GTK's creation policy. Switching to Plaintext requires
+explicit acknowledgement that saved passwords will be stored without encryption.
+Leaving Enhanced Encryption still validates the current master password. The
+separate Change Master Password action retains its existing length requirement.
+
+Saved Saga entries use `SagaManagedLauncher`: Saga owns authentication and starts
+its Via-Lich session, so Lich does not request a game key first. Saga combined with
+a Custom Launch command is refused. Supported frontends can be stored even when
+not detected locally; availability is checked separately for launch. Saved order
+is retained with AutoSort off, and AutoSort uses the existing entry-store sorter.
+The Favorites panel retains its separate favorite-order display.
+
+A reconnectable viewer detach cancels that viewer's pending work and clears
+retained manual credentials without closing the launcher. Explicit window close
+and owned-process exit still perform shutdown.
+
 ## Theme behavior
 
 `StartupTheme.apply` retains the application's existing `Lich.track_dark_mode`

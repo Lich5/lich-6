@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'tempfile'
 require_relative '../gui/state'
 require_relative '../gui/password_cipher'
 require_relative '../gui/master_password_manager'
@@ -1009,20 +1010,25 @@ module Lich
           return content
         end
 
-        # @api private
-        # Writes YAML data to file with standard headers and secure permissions
-        # Handles preparation and formatting of YAML data for all save operations
-        #
-        # @param yaml_file [String] Path to YAML file to write
-        # @param yaml_data [Hash] YAML data structure to save
+        # Atomically publishes a complete catalog with owner-only permissions.
+        # Writers share a stable sidecar lock; readers see the old or new document.
+        # This protects publication, not a caller's entire read/modify/write transaction.
+        # @param yaml_file [String] destination catalog path
+        # @param yaml_data [Hash] account data to serialize
         # @return [void]
+        # @api private
         def self.write_yaml_file(yaml_file, yaml_data)
-          prepared_yaml = prepare_yaml_for_serialization(yaml_data)
-
-          File.open(yaml_file, 'w', 0o600) do |file|
-            file.puts "# Lich 5 Login Entries - YAML Format"
-            file.puts "# Generated: #{Time.now}"
-            file.write(YAML.dump(prepared_yaml, permitted_classes: [Symbol]))
+          File.open("#{yaml_file}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+            lock.flock(File::LOCK_EX)
+            Tempfile.create(['.entry-', '.yaml'], File.dirname(yaml_file)) do |file|
+              file.chmod(0o600)
+              file.write(generate_yaml_content(yaml_data))
+              file.flush
+              file.fsync
+              temporary_path = file.path
+              file.close
+              File.rename(temporary_path, yaml_file)
+            end
           end
         end
 

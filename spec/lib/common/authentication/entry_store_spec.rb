@@ -26,6 +26,23 @@ RSpec.describe Lich::Common::Authentication::EntryStore do
 
   after { FileUtils.remove_entry(temp_dir) if Dir.exist?(temp_dir) }
 
+  describe '.write_yaml_file' do
+    it 'leaves the previous catalog intact when serialization fails' do
+      original = YAML.dump('accounts' => {})
+      File.write(yaml_file, original)
+      allow(YAML).to receive(:dump).and_raise(IOError, 'synthetic write failure')
+      expect { described_class.write_yaml_file(yaml_file, { 'accounts' => {} }) }.to raise_error(IOError)
+      expect(File.read(yaml_file)).to eq(original)
+    end
+
+    it 'publishes complete documents with private permissions and no temporary files' do
+      described_class.write_yaml_file(yaml_file, { 'accounts' => {}, 'encryption_mode' => 'standard' })
+      expect(YAML.safe_load_file(yaml_file)).to include('accounts' => {}, 'encryption_mode' => 'standard')
+      expect(File.stat(yaml_file).mode & 0o777).to eq(0o600) unless OS.windows?
+      expect(Dir.children(data_dir)).to contain_exactly('entry.yaml', 'entry.yaml.lock')
+    end
+  end
+
   describe '.migrate_from_legacy with enhanced mode' do
     before do
       # Create a dummy entry.dat file for each test
