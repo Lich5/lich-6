@@ -38,12 +38,23 @@ module Lich
         )
       end
 
-      def render(address:, generation:, tree:, facilities: {}, bindings: {}, submissions: {}, resume: nil)
+      # Encodes a delivered page with the native properties the browser must not duplicate.
+      # @param address [String] opaque registered page address
+      # @param generation [Integer] delivered render generation
+      # @param tree [Hash] serialized component tree with viewer-local values
+      # @param facilities [Hash] page-level rendering facilities
+      # @param bindings [Hash] component IDs mapped to accepted event names
+      # @param submissions [Hash] terminal controls mapped to submitted input IDs
+      # @param resume [String, nil] private viewer reconnection token
+      # @param window_presentation [Hash] properties handled by the owned OS window
+      # @return [String] JSON render message
+      def render(address:, generation:, tree:, facilities: {}, bindings: {}, submissions: {}, resume: nil, window_presentation: {})
         payload = {
           type: 'render', page: address, generation: generation,
           tree: tree, facilities: facilities, bindings: bindings, submissions: submissions
         }
         payload[:resume] = resume if resume
+        payload[:window_presentation] = window_presentation unless window_presentation.empty?
         JSON.generate(payload)
       end
 

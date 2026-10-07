@@ -44,15 +44,42 @@ contract extension.
 
 ## Window hosting and lifecycle
 
-The current host uses dedicated Google Chrome app windows, with Microsoft Edge
-also supported on Windows. The launcher searches known installation locations.
-App windows provide an OS title bar without ordinary browser tabs or address
-controls. This implementation uses external browser processes, not an embedded
-WebKit or Electron runtime.
+On macOS, `BrowserLauncher` uses `OS.mac?` to select an AppKit window containing
+Apple's WKWebView. Windows and Linux retain dedicated Chrome app windows,
+with Edge also supported on Windows. An explicit browser executable
+can still be supplied for browser comparisons. No Electron runtime is used.
+
+The macOS helper runs as an accessory application (`LSUIElement` and AppKit's
+accessory activation policy). Its windows remain interactive without adding
+per-window application icons to the Dock or Cmd-Tab switcher. There is no
+application menu bar; keyboard equivalents remain available inside the window.
+Already-running helpers must be closed and reopened to adopt a changed build.
+
+The experimental macOS helper is built with
+`zsh lib/webui/native/macos/build.sh`. This requires Apple's installed command-line
+developer tools and produces an ignored universal Intel/Apple Silicon app under
+`lib/webui/native/macos/build/`, targeting macOS 14 or later. Normal launches never
+compile or download anything. Distribution must supply this app; Developer ID
+signing/notarization and testing on older macOS/physical Intel hardware remain
+release work. The local build has only the linker's ad-hoc signature. A missing
+helper is reported as a launch failure, rather than silently changing hosts.
+
+On Windows, `WindowPresentation` uses `OS.windows?` and Ruby/Fiddle bindings to
+`user32.dll` to apply topmost and whole-window opacity. No Windows helper build,
+SDK, MSYS2 packages, or WebView2 runtime is needed for this approach. The Win32
+mechanism follows [EO #1648](https://github.com/elanthia-online/lich-5/pull/1648).
+Unlike its shared-profile title fallback (corrected by
+[EO #1657](https://github.com/elanthia-online/lich-5/pull/1657)), this host discovers
+only an unambiguous top-level Chromium window belonging to its isolated process.
+Discovery is bounded and canceled on close. Each subsequent validated render
+updates the same controller, which rechecks PID ownership before changing a
+window. Native failures are logged. Actual Windows focus, opacity and cleanup
+still require verification on Windows.
 
 `Service` owns one `BrowserWindow` per registered page. Repeated opens of the
-same page reuse that ownership. Each managed browser process has an isolated
-temporary profile; its exit monitor removes the profile. Closing one page acts
+same page reuse that ownership. Chrome/Edge processes have isolated temporary
+profiles; their exit monitors remove the profiles. The macOS helper uses a
+nonpersistent WebKit data store. Closing one page acts
 on its owned process, not the user's ordinary browser or another page's window.
 
 Geometry precedence is explicit caller geometry, then saved geometry where the
@@ -60,7 +87,33 @@ page does not own configure handling, then the page's default size and position.
 The geometry store is scoped by game and character when that context is available.
 Browser content dimensions and OS-window dimensions are distinct; programmatic
 window positioning and resizing remain subject to browser and platform behavior.
-The current browser host does not provide GTK-equivalent always-on-top behavior.
+The AppKit host maps `presentation(always_on_top: true)` to normal window level
+plus one, without cycling focus. Setting it false restores normal level. On-top
+windows stay above ordinary windows in the current Space and do not follow the
+user to other desktops or another app's full-screen Space. Borderless
+windows remain closable with Cmd-W. Windows uses
+`SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST, ... SWP_NOACTIVATE)` for the same
+request, preserving keyboard focus in the frontend. Alt-F4 closes its windows.
+The shim retains `Gtk::Window#keep_above=`
+in the page's presentation property, validated by the same schema as native
+presentation facilities. The ten adapter operations are unchanged. Windows
+Chrome/Edge still do not support the borderless request: Chromium draws its own
+title bar. Linux retains the existing browser limitations.
+
+The macOS host applies opacity with `NSWindow.alphaValue`; Windows uses
+`SetLayeredWindowAttributes` with `LWA_ALPHA`. Native opacity affects the entire
+OS window, not just its HTML content. The renderer suppresses its CSS fade when
+the macOS bridge or the owned Windows host handles opacity, avoiding a second
+multiplication. Other browser hosts retain their existing content-only fade.
+An absent opacity request restores 100%; an absent topmost request restores
+normal stacking. These properties do not alter a script's saved preferences.
+
+The injected macOS bridge implements ordinary window resize/move operations
+and supplies native outer dimensions and desktop coordinates to the existing
+geometry reporters. Only the requested root controls the native window;
+in-window dialogs cannot change its level or title. Navigation and native bridge
+messages are limited to the original loopback origin and main frame. The helper
+has no file-reading, shell-execution or arbitrary native-call bridge.
 
 Owner termination cancels modals, revokes the owner's file routes, shuts down its
 callback dispatch, unregisters its pages, and destroys viewer state. Explicit
@@ -149,6 +202,11 @@ not select a default or make duplicate values valid under the select contract;
 choice preparation remains the caller's responsibility.
 
 ## Validation
+
+For a short explicit desktop check, run `ruby bench/native_webui_smoke.rb`.
+It opens an offline native page and shim window through the production host.
+Toggle topmost and native-page opacity, type in the frontend, then close the
+windows independently. This fixture does not replace actual Map/Spellson runs.
 
 See the [test suite README](../spec/README.md) for Ruby and JavaScript commands
 and test conventions. Ruby tests cover contracts, callbacks, lifecycle and

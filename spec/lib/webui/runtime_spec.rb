@@ -185,6 +185,8 @@ RSpec.describe Lich::WebUI::Runtime do
   end
 
   it 'reports presentation support and records refused requests as declared degradations' do
+    allow(Lich::WebUI::NativeHost).to receive(:platform).and_return(nil)
+    allow(Lich::WebUI::WindowPresentation).to receive(:support).and_return({})
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'presentation', title: 'Presentation') do
       presentation(always_on_top: true, borderless: true, opacity: 0.8, scrollbars: false)
     end)
@@ -198,6 +200,25 @@ RSpec.describe Lich::WebUI::Runtime do
       { facility: :presentation, property: :always_on_top, reason: :unsupported_by_browser_host },
       { facility: :presentation, property: :borderless, reason: :unsupported_by_browser_host }
     )
+  end
+
+  it 'reports native window support for both declarative and shim presentation requests on macOS' do
+    allow(Lich::WebUI::NativeHost).to receive(:platform).and_return(:macos)
+    page = registry.register(
+      Lich::WebUI::Page.new(owner: owner, id: 'native-host', title: 'Native host',
+                            props: { presentation: { always_on_top: true } }) do
+        presentation(borderless: true)
+      end
+    )
+    attach(first_connection, page)
+    expect(page.presentation_support).to include(always_on_top: true, borderless: true)
+    expect(page.degradations).to be_empty
+  end
+
+  it 'reports Windows topmost and opacity support while retaining the Chrome borderless limitation' do
+    allow(Lich::WebUI::NativeHost).to receive(:platform).and_return(nil)
+    allow(Lich::WebUI::WindowPresentation).to receive(:support).and_return(always_on_top: true, opacity: true)
+    expect(runtime.presentation_support).to include(always_on_top: true, opacity: true, borderless: false)
   end
 
   it 'refuses stale and fabricated component events without invoking callbacks', security_id: 'sec-component-id' do

@@ -581,13 +581,16 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(service.stopped).to be_nil
   end
 
-  it 'terminates only its exactly owned browser process during launcher shutdown' do
-    terminated = []
-    launcher.instance_variable_set(:@browser_pid, 1234)
-    launcher.instance_variable_set(:@browser_terminate, ->(signal, pid) { terminated << [signal, pid] })
+  [true, false].each do |windows|
+    it "terminates only its owned launcher PID with #{windows ? 'KILL' : 'TERM'}" do
+      allow(OS).to receive(:windows?).and_return(windows)
+      terminated = []
+      launcher.instance_variable_set(:@browser_pid, 1234)
+      launcher.instance_variable_set(:@browser_terminate, ->(signal, pid) { terminated << [signal, pid] })
 
-    expect(launcher.close(reason: :launch)).to be(true)
-    expect(terminated).to eq([['TERM', 1234]])
+      expect(launcher.close(reason: :launch)).to be(true)
+      expect(terminated).to eq([[windows ? 'KILL' : 'TERM', 1234]])
+    end
   end
 end
 # rubocop:enable Lint/ConstantDefinitionInBlock

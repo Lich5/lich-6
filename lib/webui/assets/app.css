@@ -93,21 +93,22 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 }
 /* Match the original theme's control padding; widths still come from each
    label and its parent's packing, rather than a captured window allocation. */
-.webui-page[data-density="compact"] button { min-height: 34px; padding: 6px 16px; border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; }
-/* GtkButton's default Adwaita paint, shared by native and bounded shim pages. */
-.webui-page[data-density="compact"] button.default {
+.webui-page[data-density="compact"] button:not(:where(.webui-context-menu *)) { min-height: 34px; padding: 6px 16px; border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; }
+/* GtkButton paint is shared by native and bounded shim pages. Menu items
+   retain their own flat paint and smaller requisition in either density. */
+.webui-page[data-density="compact"] button:not(:where(.webui-context-menu *)).default {
   color: var(--text); border-radius: 5px; border-bottom-color: var(--button-border);
   background: linear-gradient(to top, var(--button-bottom) 2px, var(--surface));
   box-shadow: inset 0 1px var(--button-highlight), 0 1px 2px #00000012;
   text-shadow: 0 1px var(--button-text-shadow);
 }
-.webui-page[data-density="compact"] button.default:hover:not(:disabled) {
+.webui-page[data-density="compact"] button:not(:where(.webui-context-menu *)).default:hover:not(:disabled) {
   background: linear-gradient(to top, var(--surface), var(--button-hover) 1px);
 }
-.webui-page[data-density="compact"] button.default:active:not(:disabled) {
+.webui-page[data-density="compact"] button:not(:where(.webui-context-menu *)).default:active:not(:disabled) {
   background: var(--button-active); border-bottom-color: var(--border); box-shadow: none; text-shadow: none;
 }
-.webui-page[data-density="compact"] button.default:disabled {
+.webui-page[data-density="compact"] button:not(:where(.webui-context-menu *)).default:disabled {
   color: var(--button-disabled-text); background: var(--button-disabled); border-bottom-color: var(--border); box-shadow: none; text-shadow: none;
 }
 .webui-page[data-density="compact"] .webui-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -135,14 +136,14 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-page[data-density="compact"] .field:has(input:disabled),
 .webui-page[data-density="compact"] .field:has(select:disabled) { color: var(--disabled-text); }
 .webui-page[data-viewport="true"] { height: 100vh; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-.webui-context-menu { position: fixed; z-index: 100; padding: 4px 0; min-width: 190px; max-height: 100vh; overflow-y: auto;
+.webui-context-menu { position: fixed; z-index: 100; padding: 4px 0; min-width: min(190px, 100vw); max-width: 100vw; max-height: 100vh; overflow-y: auto;
   background: var(--surface); color: var(--text); border: 1px solid var(--border); box-shadow: 0 3px 8px #0005; font: 12px/1.4 -apple-system, sans-serif; }
 .webui-context-menu button, .webui-context-menu .field { display: flex; align-items: center;
   width: 100%; min-height: 23px; padding: 2px 12px; margin: 0; border: 0; border-radius: 0; background: transparent; text-align: left; cursor: default; }
 .webui-context-menu button:hover, .webui-context-menu .field:hover { background: #3584e4; color: white; }
 .webui-context-menu button:disabled { color: var(--disabled-text); }
 .submenu-trigger::after { content: "▸"; margin-left: auto; }
-.submenu-items { position: fixed; min-width: 180px; max-height: 100vh; overflow-y: auto; background: var(--surface);
+.submenu-items { position: fixed; inset: auto; margin: 0; z-index: 101; min-width: min(180px, 100vw); max-width: 100vw; max-height: 100vh; overflow-y: auto; background: var(--surface);
   color: var(--text); border: 1px solid var(--border); padding: 4px 0; box-shadow: 0 3px 8px #0005; }
 .webui-context-menu .webui-divider { margin-block: 4px; }
 .webui-context-menu [data-indicator]::before { content: ""; display: inline-block; width: 16px; flex: none; }

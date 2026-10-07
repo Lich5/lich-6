@@ -1237,8 +1237,13 @@ module Lich
           data_dir: @data_dir, force_path_flags: true }
       end
 
+      # Terminates the launcher's retained process with the OS-supported signal.
+      # Missing processes are already closed; other failures are logged.
+      # @param pid [Integer] process created for this launcher window
+      # @return [void]
+      # @api private
       def terminate_browser(pid)
-        @browser_terminate.call('TERM', pid)
+        @browser_terminate.call(OS.windows? ? 'KILL' : 'TERM', pid)
       rescue Errno::ESRCH, Errno::ECHILD
         nil
       rescue StandardError => error
