@@ -89,7 +89,8 @@ Browser content dimensions and OS-window dimensions are distinct; programmatic
 window positioning and resizing remain subject to browser and platform behavior.
 The AppKit host maps `presentation(always_on_top: true)` to normal window level
 plus one, without cycling focus. Setting it false restores normal level. On-top
-windows join all Spaces and can appear alongside fullscreen apps. Borderless
+windows stay above ordinary windows in the current Space and do not follow the
+user to other desktops or another app's full-screen Space. Borderless
 windows remain closable with Cmd-W. Windows uses
 `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST, ... SWP_NOACTIVATE)` for the same
 request, preserving keyboard focus in the frontend. Alt-F4 closes its windows.

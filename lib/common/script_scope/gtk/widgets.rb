@@ -378,6 +378,10 @@ module Lich
           end
           alias icon= set_icon
 
+          # Requests native topmost behavior through the shared presentation contract.
+          # Unsupported hosts retain the request and report their normal degradation.
+          # @param value [Boolean] whether to keep this window above ordinary windows
+          # @return [void]
           def keep_above=(value)
             session.refuse(self, :keep_above=) unless value == true || value == false
             write(:presentation, (@props[:presentation] || {}).merge(always_on_top: value))

@@ -8,6 +8,10 @@ module Lich
     # One isolated browser app process per page. Only its PID may be terminated;
     # closing a page never terminates the shared browser or WebUI server.
     class BrowserWindow
+      # Prepares ownership without spawning; callbacks must describe this window only.
+      # @param on_close [#call] notification for an unsolicited process exit
+      # @param opener [#call, nil] launcher accepting start/exit callbacks
+      # @param terminate [#call] process terminator accepting a signal and owned PID
       def initialize(on_close:, opener: nil, terminate: Process.method(:kill))
         @opener = opener || BrowserLauncher.method(:open)
         @terminate = terminate
@@ -19,12 +23,14 @@ module Lich
         @presentation = WindowPresentation::Controller.new if WindowPresentation.available?
       end
 
+      # Forwards validated presentation to the optional Windows controller.
       # @param render [Page::Render] validated presentation from either API
       # @return [void]
       def present(render)
         @presentation&.update(render)
       end
 
+      # Identifies native operations that replace renderer-side presentation.
       # @return [Hash] OS-handled properties the renderer must not apply again
       def presentation_support = @presentation ? WindowPresentation::SUPPORT : {}
 
@@ -75,6 +81,9 @@ module Lich
 
       # Retain an arriving PID even after closure is requested. open performs
       # deferred termination after the opener has installed its exit monitor.
+      # @param pid [Integer] process returned by the opener
+      # @return [void]
+      # @api private
       def started(pid)
         @mutex.synchronize do
           @pid = pid
@@ -82,6 +91,9 @@ module Lich
         end
       end
 
+      # Releases ownership and notifies the page once for an unsolicited exit.
+      # @return [void]
+      # @api private
       def exited
         notify = @mutex.synchronize do
           @pid = nil
@@ -94,6 +106,11 @@ module Lich
         @on_close.call if notify
       end
 
+      # Terminates only the retained PID while the window mutex is held.
+      # Missing processes count as closed; other failures retain the PID for retry.
+      # @return [void]
+      # @raise [SystemCallError] if termination fails for a still-owned process
+      # @api private
       def terminate_process
         return unless @pid
 

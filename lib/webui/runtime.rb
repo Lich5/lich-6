@@ -16,6 +16,15 @@ module Lich
         always_on_top: false, borderless: false, opacity: true, scrollbars: true,
       }.freeze
 
+      # Connects page delivery and callback dispatch to optional host services.
+      # @param registry [Registry] server-owned page registry
+      # @param dispatcher [Dispatcher, nil] callback queue; nil creates a dispatcher
+      # @param viewers [ViewerStore] viewer-local state and resume index
+      # @param validator [Validator] component and event validator
+      # @param file_service [FileService, nil] image-route resolver
+      # @param logger [#call, nil] diagnostic sink accepting level and message
+      # @param on_page_closed [#call, nil] callback releasing a page's owned window
+      # @param window_host [#call, nil] lookup from a Page to its BrowserWindow
       def initialize(registry:, dispatcher: nil, viewers: ViewerStore.new,
                      validator: Validator.new, file_service: nil, logger: nil, on_page_closed: nil, window_host: nil)
         @registry = registry
@@ -38,6 +47,10 @@ module Lich
         @degradations = {}.compare_by_identity
       end
 
+      # Combines browser facilities with presentation available on the current OS.
+      # Opacity support may be content-only; per-window metadata identifies native alpha.
+      # @param _page [Page, nil] reserved for page-specific host selection
+      # @return [Hash{Symbol => Boolean}] supported presentation properties
       def presentation_support(_page = nil)
         support = NativeHost.platform ? PRESENTATION_SUPPORT.merge(always_on_top: true, borderless: true) : PRESENTATION_SUPPORT
         support.merge(WindowPresentation.support).freeze
@@ -378,6 +391,11 @@ module Lich
         raise Protocol::Refusal.new(:stale_generation, 'stale generation')
       end
 
+      # Sends the delivered tree, event bindings and native-presentation ownership.
+      # @param connection [#send_text] authenticated viewer connection
+      # @param attachment [ViewerStore::Attachment] current viewer/page association
+      # @return [Object] transport send result
+      # @api private
       def send_render(connection, attachment)
         bindings = attachment.render.bindings.keys.group_by(&:first).transform_values do |pairs|
           pairs.map(&:last).map(&:to_s)
@@ -434,6 +452,11 @@ module Lich
         raise Error.new('component is not registered', owner: owner_label(page.owner), page_id: page.id, cid: cid)
       end
 
+      # Validates served images and popup ownership before applying native presentation.
+      # @param page [Page] page whose authored render is evaluated
+      # @return [Page::Render] render accepted for delivery
+      # @raise [Error] if an image route or popup page is unavailable
+      # @api private
       def validated_render(page)
         render = page.render
         record_presentation_degradations(page, render)
@@ -462,6 +485,11 @@ module Lich
         render
       end
 
+      # Records unsupported presentation requests after facility overrides are applied.
+      # @param page [Page] owner of the diagnostic record
+      # @param render [Page::Render] evaluated page properties and facilities
+      # @return [void]
+      # @api private
       def record_presentation_degradations(page, render)
         requested = (render.tree.props[:presentation] || {}).merge(render.facilities[:presentation] || {})
         refusals = requested.each_key.filter_map do |property|

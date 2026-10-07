@@ -45,12 +45,15 @@ module Lich
           @bindings = nil
         end
 
+        # Checks binding availability without starting window discovery.
         # @return [Boolean] whether the native Windows bindings loaded
         def available? = !bindings.nil?
 
-        # @return [Hash<Symbol, Boolean>] supported real-window properties
+        # Advertises native capabilities only when their system bindings loaded.
+        # @return [Hash{Symbol => Boolean}] supported real-window properties
         def support = available? ? SUPPORT : {}
 
+        # Reports the error class without exposing page contents or launch credentials.
         # @param error [Exception] failure; do not log window contents or URLs
         # @return [void]
         def warn_failure(error)
@@ -61,6 +64,7 @@ module Lich
       # One controller per BrowserWindow. Discovery is bounded; later changes
       # arrive with validated renders. Closing prevents late discovery/apply.
       class Controller
+        # Prepares a controller that remains inactive until an owned PID arrives.
         # @param win32 [Module] native bindings or a test implementation
         # @param thread_factory [#call] host-owned discovery worker factory
         # @param sleeper [#call] delay between discovery attempts
@@ -74,6 +78,7 @@ module Lich
           @generation = 0
         end
 
+        # Starts bounded discovery; ambiguous matches never receive native writes.
         # @param pid [Integer] process spawned for this isolated browser profile
         # @return [void]
         def start(pid)
@@ -120,13 +125,16 @@ module Lich
           WindowPresentation.warn_failure(error)
         end
 
-        # @return [void] prevents any later native write before process teardown
+        # Prevents later native writes before the owning process is terminated.
+        # @return [void]
         def close
           @mutex.synchronize { @closed = true; @hwnd = nil }
         end
 
         private
 
+        # Builds a reusable enumerator whose callback lives on its invoking thread.
+        # @param pid [Integer] process that must own the matching window
         # @api private
         # @return [Proc] enumerator refusing absent or ambiguous owned windows
         def window_finder(pid)
@@ -142,6 +150,9 @@ module Lich
           end
         end
 
+        # Rejects stale, hidden, child-owned or unrelated application handles.
+        # @param hwnd [Fiddle::Pointer, Integer] candidate native window handle
+        # @param pid [Integer] retained browser process identity
         # @api private
         # @return [Boolean] visible, unowned top-level Chromium window for pid
         def owned?(hwnd, pid)
@@ -157,8 +168,10 @@ module Lich
           length.positive? && buffer[0, length * 2].force_encoding('UTF-16LE').encode('UTF-8') == 'Chrome_WidgetWin_1'
         end
 
+        # Applies changed topmost/alpha values without moving focus or window bounds.
+        # The controller mutex must be held; PID ownership is rechecked before writing.
         # @api private
-        # @return [void] applies only to a still-owned HWND, never by window title
+        # @return [void]
         def apply
           return unless owned?(@hwnd, @pid)
           return if @applied == @desired
@@ -180,6 +193,7 @@ module Lich
           @applied = @desired
         end
 
+        # Converts a failed Win32 BOOL into a diagnostic instead of reporting success.
         # @api private
         # @param result [Integer] Win32 BOOL result
         # @raise [Error] on native failure, never report a successful no-op

@@ -26,6 +26,21 @@ module Lich
 
       module_function
 
+      # Spawns one app host; monitored browser hosts receive an isolated profile.
+      # The start callback runs before the exit monitor is installed, so callers
+      # must defer termination until this method returns.
+      # @param url [String] authenticated loopback launch URL
+      # @param spawn [#call] process creator accepting an argv array and options
+      # @param detach [#call] process reaper when no exit callback is supplied
+      # @param platform [String, nil] discovery override; nil uses the current OS
+      # @param browser_path [String, nil] explicit browser, bypassing the native host
+      # @param chrome_path [String, nil] legacy alias for browser_path
+      # @param geometry [Hash, nil] initial outer dimensions and desktop position
+      # @param on_exit [#call, nil] callback after the owned process exits
+      # @param on_start [#call, nil] callback receiving the spawned PID
+      # @param waitpid [#call] blocking process-exit observer
+      # @param thread_factory [#call] factory for the host-owned monitor thread
+      # @return [Boolean] whether spawn and monitor setup succeeded
       def open(url, spawn: Process.method(:spawn), detach: Process.method(:detach), platform: nil,
                browser_path: nil, chrome_path: nil, geometry: nil, on_exit: nil,
                on_start: nil, waitpid: Process.method(:waitpid),
@@ -50,6 +65,15 @@ module Lich
         false
       end
 
+      # Selects native or browser argv without invoking a shell or starting a process.
+      # @param url [String] authenticated loopback launch URL
+      # @param platform [String, nil] discovery override; nil uses the current OS
+      # @param browser_path [String, nil] explicit browser, bypassing native selection
+      # @param chrome_path [String, nil] legacy alias for browser_path
+      # @param geometry [Hash, nil] initial outer dimensions and desktop position
+      # @param profile_dir [String, nil] isolated browser profile directory
+      # @return [Array<String>] executable followed by its arguments
+      # @raise [Error] if the required native helper or browser is unavailable
       def command_for(url, platform: nil, browser_path: nil, chrome_path: nil, geometry: nil,
                       profile_dir: nil)
         if native_host(platform, browser_path || chrome_path)
@@ -73,6 +97,8 @@ module Lich
 
       # An explicit platform is a test/discovery override; normal dispatch uses
       # the os gem rather than guessing from a Ruby build-platform string.
+      # @param platform [String, nil] discovery override
+      # @param browser_path [String, nil] explicit browser that disables native selection
       # @return [Symbol, nil] native host kind, absent for explicit browsers
       def native_host(platform, browser_path)
         NativeHost.platform(platform) unless browser_path

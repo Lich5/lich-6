@@ -1,13 +1,16 @@
 import AppKit
 import WebKit
 
-// One process owns one WebUI window. Ruby retains the process/owner lifecycle;
-// this helper provides only native window operations and Apple's web renderer.
+/// One process owns one WebUI window; Ruby retains process and owner lifetime.
+/// Allows borderless windows to receive keyboard input like titled windows.
 final class WebWindow: NSWindow {
+    /// Permits keyboard focus even when the window has no title bar.
     override var canBecomeKey: Bool { true }
+    /// Permits main-window status for the borderless presentation variant.
     override var canBecomeMain: Bool { true }
 }
 
+/// Hosts one loopback page with native presentation and a nonpersistent WebKit store.
 final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate,
                   WKUIDelegate, WKScriptMessageHandler {
     let launchURL: URL
@@ -15,13 +18,20 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
     var window: WebWindow!
     var web: WKWebView!
     var revealed = false
+    /// Reference edge for converting AppKit coordinates to browser top-left coordinates.
     var primaryTop: CGFloat { NSScreen.screens.first?.frame.maxY ?? 0 }
 
+    /// Retains launch configuration without creating or showing a window.
+    /// - Parameters:
+    ///   - url: Validated loopback launch URL, including its private launch token.
+    ///   - geometry: Initial outer dimensions and optional desktop position.
     init(url: URL, geometry: [String: Any]) {
         launchURL = url
         self.geometry = geometry
     }
 
+    /// Builds the hidden window and main-frame bridge, then loads the authenticated page.
+    /// The first presentation message reveals it after the renderer supplies its settings.
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let path = Bundle.main.path(forResource: "window", ofType: "js"),
               let bridge = try? String(contentsOfFile: path, encoding: .utf8) else {
@@ -57,18 +67,23 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         web.load(URLRequest(url: launchURL))
     }
 
-    // Only the original loopback origin may navigate or invoke window methods.
-    // External navigation and new windows cannot inherit this native bridge.
+    /// Checks exact origin equality with the launch URL, including its loopback port.
+    /// - Parameter url: Navigation or script-message origin to check.
+    /// - Returns: False for missing URLs or any scheme, host or port mismatch.
     func trusted(_ url: URL?) -> Bool {
         guard let url = url else { return false }
         return url.scheme == launchURL.scheme && url.host == launchURL.host && url.port == launchURL.port
     }
 
+    /// Allows only main-frame navigation on the original loopback origin.
+    /// External destinations and new windows cannot inherit the native bridge.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         decisionHandler(trusted(action.request.url) && action.targetFrame?.isMainFrame == true ? .allow : .cancel)
     }
 
+    /// Applies bounded window operations from the trusted main frame only.
+    /// Unknown actions and malformed payloads are ignored; presentation preserves focus.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, trusted(message.frameInfo.request.url),
               let value = message.body as? [String: Any] else { return }
@@ -113,18 +128,26 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         }
     }
 
+    /// Accepts finite desktop coordinates within the host's supported range.
+    /// - Returns: The coordinate, or nil for an invalid or out-of-range value.
     func coordinate(_ value: Any?) -> Double? {
         guard let number = value as? Double, number.isFinite, abs(number) <= 65536 else { return nil }
         return number
     }
+    /// Restricts window dimensions to positive values within the coordinate range.
+    /// - Returns: The dimension, or nil when it cannot describe a window size.
     func dimension(_ value: Any?) -> Double? {
         guard let number = coordinate(value), number >= 1 else { return nil }
         return number
     }
+    /// Moves the outer top-left corner using browser-style desktop coordinates.
+    /// Invalid coordinates leave the window in place.
     func move(x: Double, y: Double) {
         guard coordinate(x) != nil, coordinate(y) != nil else { return }
         window.setFrameTopLeftPoint(NSPoint(x: x, y: primaryTop - y))
     }
+    /// Encodes native outer bounds for the renderer's browser-compatible geometry API.
+    /// - Returns: A bridge update script, or an empty string if encoding fails.
     func geometryScript() -> String {
         let frame = window.frame
         let values = ["outerWidth": frame.width, "outerHeight": frame.height,
@@ -133,18 +156,25 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
               let json = String(data: data, encoding: .utf8) else { return "" }
         return "window.lichNativeWindow?.update(\(json));"
     }
+    /// Publishes current bounds without waiting for JavaScript evaluation to complete.
     func reportGeometry() { web.evaluateJavaScript(geometryScript(), completionHandler: nil) }
+    /// Keeps renderer coordinates in sync after a native move.
     func windowDidMove(_ notification: Notification) { reportGeometry() }
+    /// Keeps renderer dimensions in sync after a native resize.
     func windowDidResize(_ notification: Notification) { reportGeometry() }
+    /// Ends this window's helper so Ruby's process monitor observes its closure.
     func windowWillClose(_ notification: Notification) { NSApplication.shared.terminate(nil) }
-    // Borderless NSWindows have no close button; Cmd-W must still close them.
+    /// Closes titled and borderless windows through the same Cmd-W or bridge action.
     @objc func closeWindow(_ sender: Any?) { window.close() }
+    /// Ends the helper if its renderer dies instead of leaving an inert native window.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { fail("WebKit content process ended") }
+    /// Reports failed initial navigation without exposing its authenticated URL.
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         fail("WebUI navigation failed")
     }
 
-    // JS confirmation is part of existing button behavior, not an implicit OK.
+    /// Presents JavaScript confirmation as a native sheet and returns the user's choice.
+    /// Only the OK button resolves true; cancellation never implies consent.
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         let alert = NSAlert()
@@ -154,6 +184,7 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         alert.beginSheetModal(for: window) { response in completionHandler(response == .alertFirstButtonReturn) }
     }
 
+    /// Installs editing and close shortcuts even when accessory mode hides the menu bar.
     func installMenu() {
         let menu = NSMenu()
         let appItem = NSMenuItem()
@@ -178,6 +209,8 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         NSApplication.shared.mainMenu = menu
     }
 
+    /// Writes a sanitized diagnostic and terminates this helper.
+    /// - Parameter message: Static context without URLs, page contents or raw errors.
     func fail(_ message: String) {
         // Never print authenticated URLs, page contents or navigation errors.
         fputs("Lich WebUI: \(message)\n", stderr)

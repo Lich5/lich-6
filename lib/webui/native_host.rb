@@ -16,6 +16,7 @@ module Lich
       # @return [Boolean] whether the current OS uses the AppKit host
       def mac? = OS.mac?
 
+      # Selects the native host by OS; executable availability is checked at launch.
       # @param platform [String, nil] explicit test/discovery override
       # @return [Symbol, nil] native host kind, or nil for a browser host
       def platform(platform = nil)
