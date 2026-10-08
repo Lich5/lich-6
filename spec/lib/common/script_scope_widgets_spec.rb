@@ -3,6 +3,7 @@
 require_relative '../../spec_helper'
 require 'timeout'
 require_relative '../../../lib/common/script_scope'
+require_relative '../../support/webui_browser'
 
 RSpec.describe 'bounded script compatibility pilot' do
   let(:scope) { Lich::Common::ScriptScope }
@@ -273,10 +274,8 @@ RSpec.describe 'bounded script compatibility pilot' do
                                             :min_width_chars, :max_width_chars)
     expect(page.last_render.tree.each.find { |node| node.type == :checkbox }.props).to include(label: 'Shim checked')
     expect(page.last_render.tree.each.find { |node| node.type == :group }.props).to include(label: '')
-    service.start
-    puts "SHIM_ENTRY_BROWSER_URL=#{service.launch_url(page: page)}"
-    $stdout.flush
-    Timeout.timeout(120) { sleep 0.05 until window.destroyed? }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-entry')
+    expect(window).to be_destroyed
     expect(entry.text).to eq('shim value')
     expect(checkbox.active?).to be(true)
   end
@@ -296,10 +295,8 @@ RSpec.describe 'bounded script compatibility pilot' do
     page = nil
     Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
     expect(page.last_render.tree.each.count { |node| node.type == :divider }).to eq(1)
-    service.start
-    puts "SHIM_SEPARATOR_BROWSER_URL=#{service.launch_url(page: page)}"
-    $stdout.flush
-    Timeout.timeout(120) { sleep 0.05 until window.destroyed? }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-separator')
+    expect(window).to be_destroyed
     expect(entry.text).to eq('shim separator')
   end
 

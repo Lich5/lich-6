@@ -40,7 +40,47 @@ RSpec does not invoke these suites. Browser layout requires actual browser
 checks; GTK visual parity requires comparison with the original GTK interface;
 OS-window geometry, restoration and cleanup require actual OS-window checks.
 The JavaScript suites alone do not establish any of those behaviors.
-GitHub Actions integration is not yet configured.
+The separate `WebUI Tests` GitHub Actions workflow runs these suites on Ubuntu 26.04.
+It runs on pull requests, pushes to `main`, and manual dispatch.
+Existing Ruby workflows are unchanged.
+
+## WebUI Browser Tests
+
+The same workflow has a separate Linux Chrome job. Playwright drives the existing
+shim entry/checkbox and separator fixtures, plus a native-page callback fixture.
+Each starts with the production private `file:///` bootstrap and a fresh browser
+cookie jar, asserting the `/auth` intermediate document, authenticated final page,
+rendered controls and Ruby callback results. No game account or native GTK is used.
+
+After `npm ci --prefix spec/webui`, install Chrome if it is not already available:
+
+```bash
+cd spec/webui
+npx --no-install playwright install chrome
+cd ../..
+```
+
+CI also installs browser system dependencies using `--with-deps` and runs RSpec
+through Bundler. Run the same browser selection locally from the repository root
+in the initialized Ruby shell:
+
+```bash
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+```
+
+Chrome runs headlessly in an isolated Playwright context. The browser runner has
+bounded waits and closes its browser; RSpec stops the service and removes the
+private bootstrap directory. Failures propagate to RSpec and save screenshots and
+traces under ignored `spec/webui/test-results/`; CI retains failure artifacts for
+seven days. Only disposable fixture state is used. Missing browser/dependencies
+fail the explicit run rather than silently skipping it.
+
+Ordinary `rspec` keeps the three browser cases pending, so local Ruby testing does
+not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
+These checks cover browser rendering and transport; they do not establish native
+app-window focus, always-on-top, OS geometry or process-cleanup acceptance.
+Windows/Linux platform acceptance beyond these checks and the macOS AppKit host
+remain separate from this Linux-only workflow.
 
 ## Directory Structure
 
