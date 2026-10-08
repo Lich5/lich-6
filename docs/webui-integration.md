@@ -60,6 +60,23 @@ does not depend on the shim. It is not a sandbox against arbitrary Ruby, renamed
 native binaries, or direct FFI calls. Native GTK loading, event loops, and fallback
 are unsupported; installed GTK gems do not extend the compatibility contract.
 
+### Script bindings and helpers
+
+Each script binding has independent local variables. Trusted scripts evaluate
+inside `Lich::Common::ScriptScope`: bare top-level methods and constants live in
+that shared script scope, not on `Object` or `Lich::Common`. They are not isolated
+per script. An absolute lookup such as `::MyHelper` does not find a script-scope
+constant, and explicitly reopening a global class does not import script helpers.
+Label-based scripts retain their own receiver for instance methods while sharing
+the lexical constant boundary. This differs from the former global binding;
+it is not a Ruby sandbox.
+
+New script-owned nested classes and modules receive script helpers. For inherited
+classes, real superclass methods take precedence and only declared public script
+helpers are forwarded; the module's administrative methods are not forwarded to
+instances. Assigning an existing core module or class to a script constant is an
+alias, not permission to modify its ancestors or inject helpers into core objects.
+
 Destroy callbacks run independently. A script error in one handler is logged and
 does not skip later handlers or sibling-window cleanup. Fatal VM failures are not
 treated as recoverable callback errors. Repeated destruction remains idempotent.
@@ -147,6 +164,10 @@ on its owned process, not the user's ordinary browser or another page's window.
 Geometry precedence is explicit caller geometry, then saved geometry where the
 page does not own configure handling, then the page's default size and position.
 The geometry store is scoped by game and character when that context is available.
+Pages with configure handlers own their geometry policy; the host neither restores
+nor saves their geometry. This includes shim windows, whose ephemeral page IDs
+must not accumulate unused host geometry files. Script geometry reads and existing
+script-owned persistence remain unchanged. Older unused files are not deleted.
 Browser content dimensions and OS-window dimensions are distinct; programmatic
 window positioning and resizing remain subject to browser and platform behavior.
 The AppKit host maps `presentation(always_on_top: true)` to normal window level
@@ -201,6 +222,10 @@ leaves: `abort` cancels, `default` selects the declared response, and `wait`
 remains pending. Resumable disconnected attachments are not active viewers.
 There is no new user-response deadline. A settings form whose host cannot open
 its window cancels immediately instead of leaving its script waiting.
+The shim's supported informational OK dialog uses the existing wait policy so
+opening it before the first viewer attaches does not silently cancel it. Parent
+destruction or owner shutdown cancels that pending dialog; callback code still
+must use its asynchronous response handler rather than blocking the dispatcher.
 
 ## Authentication and trust boundaries
 
@@ -221,6 +246,16 @@ URL with its Strict cookie. Other routes retain the ordinary origin checks.
 WebSocket admission also
 requires an allowed loopback Origin. Image serving requires authentication,
 permitted roots and extensions, and realpath containment.
+File aliases are service-wide but owned: another owner cannot replace a live
+alias. Its owner may update or revoke it; revocation permits later reuse. Root
+containment handles filesystem roots and still excludes sibling-prefix paths and
+symlink escapes. This ownership rule does not add per-viewer authorization.
+
+Orderly WebSocket closure attempts a normal Close frame before retiring the socket.
+Shutdown does not wait for a busy writer or append a Close frame inside a partial
+message. Failed or canceled admitted writes retire their stream before another
+writer can use it; abrupt/busy transport failures can therefore still appear as
+an abnormal browser close and use the existing reconnect behavior.
 
 At most 64 accepted HTTP/WebSocket sockets occupy request workers, including
 clients that have not supplied complete headers. Excess sockets close before a

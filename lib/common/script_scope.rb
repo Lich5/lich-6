@@ -49,6 +49,8 @@ module Lich
         #
         # Runs for every constant defined on a module that extends {Nesting}; anything defined
         # before {.activate!} (or that is not a Module) is passed straight to +super+.
+        # Only a definition named inside this namespace is adopted; aliases to
+        # existing core/script classes keep their original ancestry.
         #
         # @param name [Symbol] the constant just defined
         # @return [void]
@@ -57,6 +59,10 @@ module Lich
 
           value = const_get(name)
           return super unless value.is_a?(Module)
+          # A constant alias is not a class/module definition. Adopting an alias
+          # such as MyCmp = ::Comparable would change unrelated core ancestors.
+          module_name = Module.instance_method(:name)
+          return super unless module_name.bind_call(value) == "#{module_name.bind_call(self)}::#{name}"
 
           value.singleton_class.include(Nesting)
           if !value.is_a?(Class) || value.superclass == Object
@@ -77,7 +83,8 @@ module Lich
       # runs before a widget's unsupported-operation handler; a helper whose name
       # matches an unimplemented call is reached rather than rejected.
       # That is the right order -- the script wrote both -- and it is pinned
-      # in spec/lib/common/script_scope_spec.rb.
+      # in spec/lib/common/script_scope_redux_spec.rb. Only helpers declared on
+      # ScriptScope are forwarded, never its inherited Module/Object API.
       module InheritedHelpers
         # Forwards a call the superclass chain does not answer to the script's top-level helpers.
         #
@@ -86,16 +93,17 @@ module Lich
         # @return [Object] whatever the helper returns, or +super+'s result when no helper matches
         # @raise [NoMethodError] from +super+ when neither the ancestors nor ScriptScope answer
         def method_missing(name, *args, &block)
-          return ScriptScope.public_send(name, *args, &block) if ScriptScope.respond_to?(name)
+          return ScriptScope.public_send(name, *args, &block) if ScriptScope.public_instance_methods(false).include?(name)
 
           super
         end
 
+        # Advertises declared public helpers without exposing Module's own API.
         # @param name [Symbol] the method being asked about
         # @param include_private [Boolean] whether private methods count
         # @return [Boolean] true when a script helper of that name exists, else +super+'s answer
         def respond_to_missing?(name, include_private = false)
-          ScriptScope.respond_to?(name) || super
+          ScriptScope.public_instance_methods(false).include?(name) || super
         end
       end
 

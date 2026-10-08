@@ -208,8 +208,15 @@ module Lich
         file_service.register(alias_name, directory, owner: owner, script_root: script_root)
       end
 
-      # A persistence failure must not leave the browser process or script alive.
+      # Saves only host-managed geometry, matching the restoration rule in #open.
+      # Pages with configure handlers own their geometry policy; saving their
+      # ephemeral IDs creates files the host never reads. Persistence failures
+      # are reported through the host logger.
+      # @param page [Page] window whose final bounds may be persisted
+      # @return [Object, nil] store result, or nil for script-managed geometry
       def save_geometry(page)
+        return if page.lifecycle_bindings.key?(:configure)
+
         @geometry_store&.save(page)
       rescue StandardError => error
         @logger.call(:warning, "WebUI geometry save failed: #{error.class}")
