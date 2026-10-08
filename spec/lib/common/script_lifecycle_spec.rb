@@ -49,6 +49,90 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
   end
 
   describe 'GTK-free script loading' do
+    %i[save cancel shutdown].each do |action|
+      it "preserves legacy box form values and owner cleanup on #{action}" do
+        Dir.mktmpdir('script-legacy-boxes') do |root|
+          FileUtils.mkdir_p(File.join(root, 'custom'))
+          stub_const('SCRIPT_DIR', root)
+          stub_const('LEGACY_BOX_RESULTS', Queue.new)
+          Lich::Common::ScriptScope.activate!
+          host = Lich::WebUI.service
+          allow(Lich::WebUI).to receive(:adapter) do |owner:, viewer: nil|
+            Lich::WebUI::Adapter.new(owner: owner, viewer: viewer, service: host)
+          end
+          File.write(File.join(root, 'custom', 'legacy-boxes.lic'), <<~RUBY)
+            # quiet
+            finished = Queue.new
+            Gtk.queue do
+              window = Gtk::Window.new
+              column = Gtk::VBox.new(false, 5)
+              row = Gtk::HBox.new(false, 5)
+              entry = Gtk::Entry.new
+              entry.text = 'original'
+              check = Gtk::CheckButton.new('Enabled')
+              save = Gtk::Button.new('Save')
+              row.pack_start(Gtk::Label.new('Name'), false, false, 0)
+              row.pack_start(entry, true, true, 0)
+              column.pack_start(row, false, false, 0)
+              column.add(check)
+              column.pack_start(save, false, false, 0)
+              window.add(column)
+              save.signal_connect('clicked') do
+                Gtk.queue do
+                  LEGACY_BOX_RESULTS << [:save, entry.text, check.active?, Script.current]
+                  finished << true
+                end
+              end
+              window.signal_connect('delete_event') do
+                LEGACY_BOX_RESULTS << [:cancel, Script.current]
+                finished << true
+                false
+              end
+              window.signal_connect('destroy') { LEGACY_BOX_RESULTS << :destroyed }
+              Script.current.at_exit { Gtk.queue { window.destroy } }
+              window.show_all
+            end
+            finished.pop
+          RUBY
+          child = script_class.start('legacy-boxes')
+          expect(child).to be_a(script_class)
+          page = nil
+          Timeout.timeout(2) { sleep 0.001 until (page = host.registry.pages_for(child).first)&.last_render }
+          connection = double('connection', viewer_id: 'legacy-boxes', alive?: true, send_text: true)
+          address = host.registry.address_for(page)
+          host.runtime.handle(connection, type: 'attach', page: address)
+          page.last_render.tree.each do |component|
+            next unless %i[text_input checkbox].include?(component.type)
+
+            host.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                            cid: component.cid, event: 'change',
+                                            payload: { value: component.type == :checkbox ? true : 'edited' })
+          end
+          case action
+          when :save
+            button = page.last_render.tree.each.find { |node| node.type == :button }
+            result = host.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                                     cid: button.cid, event: 'activate', payload: {}, submission: ['edited', true])
+            expect(result).to eq(:queued)
+            expect(LEGACY_BOX_RESULTS.pop(timeout: 2)).to eq([:save, 'edited', true, child])
+          when :cancel
+            host.runtime.handle(connection, type: 'detach', page: address, generation: page.generation)
+            expect(LEGACY_BOX_RESULTS.pop(timeout: 2)).to eq([:cancel, child])
+          when :shutdown
+            child.kill(context: :shutdown)
+          end
+          expect(child.join(3)).to equal(child)
+          expect(child).to be_completed_successfully unless action == :shutdown
+          expect(LEGACY_BOX_RESULTS.pop(timeout: 2)).to eq(:destroyed)
+          expect(LEGACY_BOX_RESULTS).to be_empty
+          expect(host.registry.pages_for(child)).to be_empty
+        ensure
+          child&.kill(context: :shutdown) if child&.running?
+          Lich::WebUI.reset!
+        end
+      end
+    end
+
     %i[finish window_close runtime shutdown].each do |stop_mode|
       it "finishes queued exit cleanup without stopping the host on #{stop_mode}" do
         Dir.mktmpdir('script-queue-cleanup') do |root|

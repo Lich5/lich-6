@@ -251,15 +251,17 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(window.session.instance_variable_get(:@windows)).to be_empty
   end
 
-  it 'keeps shim entry and checkbox defaults while accepting their browser values', browser: true do
+  it 'keeps shim entry and checkbox defaults in legacy boxes while accepting browser values', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
     window = compatibility.const_get(:Window).new('Shim entry width')
     entry = compatibility.const_get(:Entry).new
     checkbox = compatibility.const_get(:CheckButton).new('Shim checked')
-    content = compatibility.const_get(:Box).new(:vertical)
+    content = compatibility.const_get(:VBox).new(false, 5)
+    row = compatibility.const_get(:HBox).new(false, 5)
     content.pack_start(checkbox)
-    content.pack_start(entry)
+    row.pack_start(entry, true, true, 0)
+    content.pack_start(row, false, false, 0)
     frame = compatibility.const_get(:Frame).new('')
     frame.add(content)
     entry.signal_connect('activate') { window.destroy }
@@ -344,6 +346,35 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(vertical.send(:component_type)).to eq(:stack)
     expect(horizontal.send(:component_type)).to eq(:grid)
     expect { compatibility.const_get(:Box).new(2) }.to raise_error(StandardError, /operation=new/)
+  end
+
+  { HBox: :grid, VBox: :stack }.each do |name, type|
+    it "renders legacy #{name} defaults and positional spacing through shared controls" do
+      window = compatibility.const_get(:Window).new
+      outer = compatibility.const_get(name).new
+      inner = compatibility.const_get(name).new(false, 5)
+      first, last = %w[First Last].map { |text| compatibility.const_get(:Label).new(text) }
+      inner.pack_start(first, false, false, 0)
+      inner.pack_end(last, true, true, 0)
+      outer.add(inner)
+      window.add(outer)
+      window.show_all
+      page = nil
+      Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+      containers = page.last_render.tree.each.select { |node| node.type == type }
+      expect(containers.map { |node| node.props[:gap] }).to eq([0, 5])
+      expect(inner.children).to eq([first, last])
+      expect(containers.last.children.map { |node| node.props[:content] }).to eq(%w[First Last])
+      expect(containers.last.props[:cols]).to eq(2) if name == :HBox
+    end
+
+    it "refuses unsupported #{name} homogeneity before creating a page" do
+      [true, nil, 0, 'false'].each do |homogeneous|
+        expect { compatibility.const_get(name).new(homogeneous, 5) }
+          .to raise_error(compatibility::UnsupportedOperation, /class=.*#{name}.*operation=new/)
+      end
+      expect(service.registry.pages_for(owner)).to be_empty
+    end
   end
 
   it 'renders armor chart markup as plain text and refuses executable or unknown tags' do
