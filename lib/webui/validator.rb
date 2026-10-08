@@ -366,6 +366,12 @@ module Lich
         unless props[:value].between?(props[:min], props[:max])
           violation!('value must be within min and max', context, :value)
         end
+        if props[:snap_to_step] == false && !props[:stepper_buttons]
+          violation!('free numeric stepping requires stepper_buttons', context, :snap_to_step)
+        end
+        if (props.key?(:acceleration) || props.key?(:page_step)) && props[:snap_to_step] != false
+          violation!('acceleration and page_step require free numeric stepping', context, :acceleration)
+        end
       end
 
       def validate_log!(props, context)
@@ -483,6 +489,8 @@ module Lich
 
         value = payload[:value]
         case type
+        when :radio_option
+          violation!('radio changes select an option', context, event_name) unless value == true
         when :radio, :select
           return if type == :select && props[:editable]
           options = props[:options].map { |option| (option[:value] || option['value']).to_s }

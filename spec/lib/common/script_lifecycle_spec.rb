@@ -133,6 +133,59 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
       end
     end
 
+    it 'commits radio, toggle, search and decimal values through a real Script owner' do
+      Dir.mktmpdir('script-control-conventions') do |root|
+        FileUtils.mkdir_p(File.join(root, 'custom'))
+        stub_const('SCRIPT_DIR', root)
+        stub_const('LEGACY_CONTROL_RESULTS', Queue.new)
+        Lich::Common::ScriptScope.activate!
+        host = Lich::WebUI.service
+        allow(Lich::WebUI).to receive(:adapter) do |owner:, viewer: nil|
+          Lich::WebUI::Adapter.new(owner: owner, viewer: viewer, service: host)
+        end
+        File.write(File.join(root, 'custom', 'control-conventions.lic'), <<~RUBY)
+          # quiet
+          finished = Queue.new
+          Gtk.queue do
+            window = Gtk::Window.new('Controls')
+            column = Gtk::VBox.new(false, 4)
+            first = Gtk::RadioButton.new('First')
+            second = Gtk::RadioButton.new(member: first, label: 'Second')
+            toggle = Gtk::ToggleButton.new(label: 'Enabled')
+            spin = Gtk::SpinButton.new(Gtk::Adjustment.new(0.5, 0.5, 10, 0.1, 1, 0), 0.1, 1)
+            search = Gtk::SearchEntry.new
+            save = Gtk::Button.new('Save')
+            [first, second, toggle, spin, search, save].each { |widget| column.add(widget) }
+            window.add(column)
+            save.signal_connect('clicked') do
+              window.destroy
+              LEGACY_CONTROL_RESULTS << [first.active?, second.active?, toggle.active?, spin.value, spin.text, search.text, Script.current]
+              finished << true
+            end
+            window.show_all
+          end
+          finished.pop
+        RUBY
+        child = script_class.start('control-conventions')
+        page = nil
+        Timeout.timeout(2) { sleep 0.001 until (page = host.registry.pages_for(child).first)&.last_render }
+        connection = double('connection', viewer_id: 'control-conventions', alive?: true, send_text: true)
+        address = host.registry.address_for(page)
+        host.runtime.handle(connection, type: 'attach', page: address)
+        save = page.last_render.tree.each.find { |node| node.type == :button }
+        result = host.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                                 cid: save.cid, event: 'activate', payload: {}, submission: [false, true, true, 2.75, 'query'])
+        expect(result).to eq(:queued)
+        expect(LEGACY_CONTROL_RESULTS.pop(timeout: 2)).to eq([false, true, true, 2.75, '2.8', 'query', child])
+        expect(child.join(3)).to equal(child)
+        expect(child).to be_completed_successfully
+        expect(host.registry.pages_for(child)).to be_empty
+      ensure
+        child&.kill(context: :shutdown) if child&.running?
+        Lich::WebUI.reset!
+      end
+    end
+
     %i[finish window_close runtime shutdown].each do |stop_mode|
       it "finishes queued exit cleanup without stopping the host on #{stop_mode}" do
         Dir.mktmpdir('script-queue-cleanup') do |root|

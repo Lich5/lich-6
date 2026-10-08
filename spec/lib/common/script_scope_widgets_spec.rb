@@ -251,6 +251,67 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(window.session.instance_variable_get(:@windows)).to be_empty
   end
 
+  it 'preserves values while hiding content and maps legacy form setter spellings' do
+    window = compatibility::Window.new
+    grid = compatibility::Grid.new
+    label = compatibility::Label.new('Long label')
+    entry = compatibility::SearchEntry.new
+    expect(label.set_halign(:end).set_line_wrap(true)).to equal(label)
+    expect(entry.set_placeholder_text('Find a name').set_text('retained')).to equal(entry)
+    entry.set_margin_start(20)
+    grid.set_row_spacing(6).set_column_spacing(12)
+    grid.attach(label, 0, 0, 1, 1)
+    grid.attach(entry, 1, 0, 1, 1)
+    window.add(grid)
+    window.set_keep_above(true)
+    window.show_all
+    entry.hide
+    handle = entry.instance_variable_get(:@handle)
+    expect(entry.session.port.get(handle, :hidden)).to be(true)
+    expect(entry.text).to eq('retained')
+    entry.show
+    expect(entry.session.port.get(handle, :hidden)).to be(false)
+    expect(entry.session.port.get(handle, :search)).to be(true)
+    expect(entry.session.port.get(handle, :placeholder)).to eq('Find a name')
+    expect { window.hide }.to raise_error(compatibility::UnsupportedOperation, /operation=hide/)
+    expect(window).not_to be_destroyed
+  end
+
+  it 'disables and restores literal legacy tooltips without losing the registered text' do
+    tips = compatibility::Tooltips.new.enable
+    window = compatibility::Window.new
+    entry = compatibility::Entry.new
+    window.add(entry)
+    expect(tips.set_tip(entry, '<literal tip>', '')).to equal(tips)
+    window.show_all
+    handle = entry.instance_variable_get(:@handle)
+    expect(entry.session.port.get(handle, :tooltip)).to eq('<literal tip>')
+    expect(tips.disable).to equal(tips)
+    expect(entry.session.port.get(handle, :tooltip)).to eq('')
+    tips.set_tip(entry, 'Replacement')
+    expect(entry.session.port.get(handle, :tooltip)).to eq('')
+    tips.enable
+    expect(entry.session.port.get(handle, :tooltip)).to eq('Replacement')
+    expect { tips.set_tip(entry, 'Tip', 'private help') }.to raise_error(compatibility::UnsupportedOperation)
+    tips.set_tip(entry, nil)
+    expect(entry.session.port.get(handle, :tooltip)).to eq('')
+  end
+
+  it 'normalizes close signal spelling and stops at the first veto without destroying the window' do
+    window = compatibility::Window.new
+    order = []
+    window.signal_connect('delete-event') { order << :first; false }
+    window.signal_connect('delete_event') { order << :veto; true }
+    window.signal_connect('delete-event') { order << :unreachable; false }
+    window.show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    service.runtime.browser_closed(page)
+    Timeout.timeout(2) { sleep 0.001 until order.include?(:veto) }
+    expect(order).to eq(%i[first veto])
+    expect(window).not_to be_destroyed
+  end
+
   it 'keeps shim entry and checkbox defaults in legacy boxes while accepting browser values', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
@@ -699,5 +760,152 @@ RSpec.describe 'bounded script compatibility pilot' do
     window.destroy
     window.destroy
     expect(destroyed).to eq([true])
+  end
+  it 'clamps scalar adjustments and preserves decimal precision with ordered value signals' do
+    adjustment = compatibility.const_get(:Adjustment).new(0, 0.5, 10, 0.1, 1, 0)
+    spin = compatibility.const_get(:SpinButton).new(adjustment, 0.1, 1)
+    observed = []
+    adjustment.signal_connect('value-changed') { |source| observed << [:adjustment, source.value] }
+    spin.signal_connect('value-changed') { |source| observed << [:first, source.value] }
+    spin.signal_connect('value_changed') { |source| observed << [:second, source.text] }
+    expect(spin.value).to eq(0.5)
+    expect(spin.text).to eq('0.5')
+    spin.set_value(2.75)
+    spin.set_value(2.75)
+    expect(observed).to eq([[:first, 2.75], [:second, '2.8'], [:adjustment, 2.75]])
+    spin.set_value(20)
+    expect(adjustment.value).to eq(10)
+    expect(spin.value_as_int).to eq(10)
+    expect(spin.set_digits(2)).to equal(spin)
+    expect(spin.text).to eq('10.00')
+    error = compatibility.const_get(:UnsupportedOperation)
+    expect { spin.set_digits(21) }.to raise_error(error)
+    expect { spin.set_text('3.0') }.to raise_error(error)
+    expect { adjustment.set_value(Float::NAN) }.to raise_error(error)
+    expect { compatibility.const_get(:SpinButton).new(adjustment) }.to raise_error(error)
+    expect { compatibility.const_get(:SpinButton).new(compatibility.const_get(:Adjustment).new(1, 0, 10, 1, 2, 1)) }.to raise_error(error)
+  end
+
+  it 'supports legacy radio constructors and emits changed members only after exclusive selection' do
+    radio = compatibility.const_get(:RadioButton)
+    first = radio.new('First')
+    second = radio.new(first.group, 'Second')
+    third = radio.new(member: first, label: 'Third')
+    expect { radio.new(member: false, label: 'Invalid') }.to raise_error(compatibility.const_get(:UnsupportedOperation))
+    expect { radio.new(label: false) }.to raise_error(compatibility.const_get(:UnsupportedOperation))
+    seen = []
+    [first, second, third].each { |widget| widget.signal_connect('toggled') { |source| seen << [source.label, first.active?, second.active?, third.active?] } }
+    second.set_active(true)
+    second.set_active(true)
+    expect(seen).to eq([['First', false, true, false], ['Second', false, true, false]])
+    expect(first.group).to eq([first, second, third])
+    second.destroy
+    expect(first.group).to eq([first, third])
+    third.set_active(true)
+    expect(third.active?).to be(true)
+    toggle = compatibility.const_get(:ToggleButton).new(label: 'Pressed')
+    signals = []
+    toggle.signal_connect('toggled') { signals << :toggled }
+    toggle.signal_connect('clicked') { signals << :clicked }
+    toggle.set_active(true)
+    toggle.set_active(true)
+    expect(signals).to eq([:toggled])
+    expect(compatibility.session.port.get(toggle.materialize, :appearance)).to eq('button')
+  end
+
+  it 'ignores radio deactivation without clearing selection or emitting toggled signals' do
+    radio = compatibility.const_get(:RadioButton)
+    first = radio.new('First')
+    seen = []
+    first.signal_connect('toggled') { |source| seen << [source.label, source.active?] }
+    expect(first.set_active(false)).to equal(first)
+    expect(first.active?).to be(true)
+    expect(seen).to be_empty
+
+    second = radio.new(first, 'Second')
+    second.signal_connect('toggled') { |source| seen << [source.label, source.active?] }
+    first.active = false
+    expect(second.set_active(false)).to equal(second)
+    expect([first.active?, second.active?]).to eq([true, false])
+    expect(seen).to be_empty
+
+    second.set_active(true)
+    expect([first.active?, second.active?]).to eq([false, true])
+    expect(seen).to eq([['First', false], ['Second', true]])
+    seen.clear
+    second.active = false
+    first.set_active(false)
+    expect([first.active?, second.active?]).to eq([false, true])
+    expect(seen).to be_empty
+  end
+
+  it 'shows hidden descendants and runs every descendant destroy handler exactly once' do
+    window = compatibility.const_get(:Window).new('Lifecycle')
+    box = compatibility.const_get(:VBox).new
+    child = compatibility.const_get(:Label).new('Retained')
+    box.add(child)
+    window.add(box)
+    child.hide
+    destroyed = []
+    child.signal_connect('destroy') { destroyed << :child; raise 'fixture cleanup error' }
+    box.signal_connect('destroy') { destroyed << :box }
+    window.signal_connect('destroy') { destroyed << :window }
+    window.show_all
+    expect([window, box, child]).to all(be_visible)
+    window.destroy
+    child.destroy
+    window.destroy
+    expect(destroyed).to eq(%i[child box window])
+    expect(child.text).to eq('Retained')
+  end
+
+  it 'dispatches exclusive radio changes and numeric adjustments with viewer-local reads' do
+    window = compatibility.const_get(:Window).new('Controls')
+    grid = compatibility.const_get(:Grid).new
+    first = compatibility.const_get(:RadioButton).new('First')
+    second = compatibility.const_get(:RadioButton).new(first, 'Second')
+    spin = compatibility.const_get(:SpinButton).new(compatibility.const_get(:Adjustment).new(0.5, 0.5, 10, 0.1, 1, 0), 0.1, 1)
+    [first, second, spin].each_with_index { |widget, row| grid.attach(widget, 0, row, 1, 1) }
+    seen = Queue.new
+    [first, second].each { |widget| widget.signal_connect('toggled') { |source| seen << [source.label, first.active?, second.active?] } }
+    spin.signal_connect('value-changed') { seen << [spin.value, spin.adjustment.value, spin.text] }
+    window.add(grid)
+    window.show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    connection = double('connection', viewer_id: 'controls', alive?: true, send_text: true)
+    address = service.registry.address_for(page)
+    service.runtime.handle(connection, type: 'attach', page: address)
+    radio_node = page.last_render.tree.each.find { |node| node.type == :radio_option && node.props[:label] == 'Second' }
+    spin_node = page.last_render.tree.each.find { |node| node.type == :number_input }
+    service.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                       cid: radio_node.cid, event: 'change', payload: { value: true })
+    expect(Timeout.timeout(2) { [seen.pop, seen.pop] }).to eq([['First', false, true], ['Second', false, true]])
+    service.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                       cid: spin_node.cid, event: 'change', payload: { value: 2.75 })
+    expect(Timeout.timeout(2) { seen.pop }).to eq([2.75, 2.75, '2.8'])
+    expect([first.active?, second.active?, spin.value]).to eq([true, false, 0.5])
+  end
+  it 'submits shim radio, toggle, search, and decimal controls through a browser', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    window = compatibility.const_get(:Window).new('Control conventions')
+    column = compatibility.const_get(:VBox).new(false, 4)
+    first = compatibility.const_get(:RadioButton).new('First')
+    second = compatibility.const_get(:RadioButton).new(member: first, label: 'Second')
+    toggle = compatibility.const_get(:ToggleButton).new(label: 'Enabled')
+    spin = compatibility.const_get(:SpinButton).new(compatibility.const_get(:Adjustment).new(0.5, 0.5, 10, 0.1, 1, 0), 0.1, 1)
+    search = compatibility.const_get(:SearchEntry).new
+    search.set_placeholder_text('Search fixture')
+    save = compatibility.const_get(:Button).new('Save')
+    save.signal_connect('clicked') { window.destroy }
+    [first, second, toggle, spin, search, save].each { |widget| column.pack_start(widget) }
+    window.add(column)
+    window.show_all
+    page = nil
+    Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-controls')
+    expect(window).to be_destroyed
+    expect([first.active?, second.active?, toggle.active?, spin.value, search.text]).to eq([false, true, true, 2.85, 'query'])
   end
 end

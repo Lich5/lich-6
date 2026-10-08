@@ -99,14 +99,17 @@ module Lich
           # @return [Integer] compatibility connection count
           # @raise [UnsupportedOperation] for an unmapped signal
           def signal_connect(name, &block)
-            if name.to_s == 'destroy'
+            raise ArgumentError, 'signal handler is required' unless block
+
+            name = name.to_s.tr('-', '_')
+            if name == 'destroy'
               (@destroy_handlers ||= []) << block
               return @destroy_handlers.length
             end
-            event = signal_map[name.to_s] || session.refuse(self, "signal:#{name}")
-            @signals[event] = block
+            event = signal_map.transform_keys { |key| key.tr('-', '_') }[name] || session.refuse(self, "signal:#{name}")
+            (@signals[event] ||= []) << [name, block]
             bind_event(event) if @handle
-            @signals.length
+            @signals.values.sum(&:length)
           end
 
           # Maps content border spacing to the shared control's margin.
@@ -181,6 +184,10 @@ module Lich
             session.refuse(self, :halign=) unless %i[start center end].include?(value)
             write(:align, value)
           end
+          alias set_halign halign=
+
+          alias set_margin_start set_margin_left
+          alias set_margin_end set_margin_right
 
           # Decodes text entities but refuses tags instead of forwarding markup to the browser.
           # @raise [UnsupportedOperation] when tags are present
@@ -259,6 +266,15 @@ module Lich
             write(:hidden, false)
           end
 
+          # Hides widget content without discarding its input or destroying its owner.
+          # Native window visibility needs a host operation, not a blank page.
+          # @return [Widget] self
+          # @raise [UnsupportedOperation] for top-level windows
+          def hide
+            session.refuse(self, :hide) if is_a?(Window)
+            write(:hidden, true)
+          end
+
           # Shows this widget and every shadow descendant.
           # @return [Widget] self
           def show_all
@@ -278,15 +294,17 @@ module Lich
             @parent = nil
             mark_destroyed
             session.forget(self)
-            @destroy_handlers&.each { |handler| session.cleanup(self) { handler.call(self) } }
             self
           end
 
           # Marks the shadow subtree retired while preserving script-readable metadata.
           # @return [void]
           def mark_destroyed
+            return if @destroyed
+
             @destroyed = true
-            @children.each(&:mark_destroyed)
+            @children.dup.each(&:mark_destroyed)
+            @destroy_handlers&.each { |handler| session.cleanup(self) { handler.call(self) } }
           end
 
           # Drafts stay in the core viewer store. Only a terminal action copies
@@ -344,6 +362,19 @@ module Lich
 
           def port_property(property) = property
 
+          # Calls handlers in connection order; a true close result vetoes default destruction.
+          # @return [Object, nil] last handler result, or the first close veto
+          def emit_handlers(event, signal: nil)
+            result = nil
+            @signals.fetch(event, []).dup.each do |name, handler|
+              next if signal && name != signal
+
+              result = handler.call(self)
+              break if event == :close && result == true
+            end
+            result
+          end
+
           # Commits terminal input before invoking legacy save/close handlers.
           # @param event [Symbol] shared-control event mapped to a GTK signal
           # @return [String] adapter binding identifier
@@ -352,7 +383,7 @@ module Lich
             widget = self
             session.port.bind(@handle, event, proc do |context|
               session.callback(context, terminal: !context.viewer_id.nil? && %i[activate submit close].include?(event), widget: widget) do
-                result = @signals[event]&.call(widget)
+                result = widget.send(:emit_handlers, event)
                 widget.destroy if event == :close && result != true
               end
             end)
@@ -478,6 +509,7 @@ module Lich
             session.refuse(self, :keep_above=) unless value == true || value == false
             write(:presentation, (@props[:presentation] || {}).merge(always_on_top: value))
           end
+          alias set_keep_above keep_above=
 
           # Window borders belong to its content, not the page schema.
           def set_border_width(value)
@@ -490,9 +522,20 @@ module Lich
           # @return [Window] self
           def show_all
             @children.each { |child| child.set_border_width(@content_margin) } if @content_margin
+            @children.each(&:show_all)
+            show
+          end
+
+          # Publishes the window through its existing owner lifecycle.
+          # @return [Window] self
+          def show
             materialize
+            @shown = true
             self
           end
+
+          # @return [Boolean] whether this window has been published and remains live
+          def visible? = !destroyed? && @shown == true
 
           protected
 
@@ -728,6 +771,8 @@ module Lich
           # @return [Label] self
           def set_wrap(value) = write(:wrap, value)
           alias wrap= set_wrap
+          alias set_line_wrap set_wrap
+          alias line_wrap= set_wrap
 
           # Uses the larger requested axis as uniform text margin.
           # @return [Label] self
@@ -773,6 +818,7 @@ module Lich
           def placeholder_text=(value)
             write(:placeholder, String(value))
           end
+          alias set_placeholder_text placeholder_text=
 
           # Maps a unit-interval fraction to start/center/end text alignment.
           # @raise [UnsupportedOperation] for out-of-range values
@@ -807,29 +853,58 @@ module Lich
           end
         end
 
-        class CheckButton < Widget
-          # Creates an unchecked checkbox with the supplied literal label.
-          def initialize(label = '')
+        # A button-shaped boolean input shares the ordinary checkbox state contract.
+        class ToggleButton < Widget
+          # Creates an unpressed button with literal text; keyword labels are supported.
+          # @param text [String] positional label
+          # @param label [String] keyword label, overriding text
+          def initialize(text = '', label: text)
             super()
+            session.refuse(self, :new) unless label.is_a?(String)
             @props.merge!(label: label, checked: false)
           end
 
           # Reads current callback selection or retained checkbox state.
           # @return [Boolean]
           def active? = read(:checked)
+          alias active active?
+
+          # Reads or replaces the literal control label.
+          # @return [String] label text
+          def label = read(:label)
+
+          # @param value [String] literal label text
+          # @return [ToggleButton] self
+          def label=(value)
+            write(:label, String(value))
+          end
+
+          alias set_label label=
 
           # Coerces legacy truthiness to the shared boolean checked property.
-          # @return [CheckButton] self
-          def active=(value)
+          # @return [ToggleButton] self
+          def set_active(value)
+            changed = active? != !!value
             write(:checked, !!value)
+            emit_handlers(:change, signal: 'toggled') if changed
+            self
           end
-          alias set_active active=
+          alias active= set_active
 
           protected
 
-          def component_type = :checkbox
+          def component_type = :toggle
+          def component_props = super.merge(appearance: :button)
           def input_property = :checked
           def signal_map = { 'toggled' => :change, 'clicked' => :change }
+        end
+
+        # Checkbox presentation shares the toggle value and programmatic signal semantics.
+        class CheckButton < ToggleButton
+          protected
+
+          def component_type = :checkbox
+          def component_props = @props.dup
         end
 
         class Button < Widget
@@ -850,6 +925,7 @@ module Lich
           def label=(value)
             write(:label, String(value))
           end
+          alias set_label label=
 
           protected
 
@@ -857,16 +933,69 @@ module Lich
           def signal_map = { 'clicked' => :activate }
         end
 
-        # eforgery tests this class while saving ordinary entries. No accepted
-        # path constructs one yet, so the constant exists but construction is
-        # refused until a measured radio-group consumer establishes semantics.
+        # Individually placed radio members share a same-owner group and real radio inputs.
         class RadioButton < CheckButton
-          # Refuses construction until a supported radio-group consumer defines its semantics.
-          # @raise [UnsupportedOperation] always
-          def initialize(*)
-            super()
-            Gtk.session.refuse(self, :new)
+          # Accepts a label, a member/group plus label, or keyword member/label.
+          # The first member starts active; joining members start inactive.
+          # @raise [UnsupportedOperation] for foreign or invalid groups
+          def initialize(group_or_label = nil, text = '', member: nil, label: nil)
+            leader = member.nil? ? (group_or_label unless group_or_label.is_a?(String)) : member
+            if leader.is_a?(Array)
+              Gtk.session.refuse(self, :new) unless leader.all? { |peer| peer.is_a?(RadioButton) && peer.group.include?(leader.first) }
+              leader = leader.first
+            end
+            super(label.nil? ? (group_or_label.is_a?(String) ? group_or_label : text) : label)
+            valid_group = leader.nil? || (leader.is_a?(RadioButton) && leader.session.equal?(session) && !leader.destroyed?)
+            session.refuse(self, :new) unless valid_group
+            @group = leader ? leader.instance_variable_get(:@group) : []
+            @props[:checked] = @group.empty?
+            @props[:group] = leader ? leader.send(:read, :group) : "radio-#{object_id}"
+            @group << self
           end
+
+          # Returns a snapshot suitable for the legacy group constructor.
+          # @return [Array<RadioButton>]
+          def group = @group.dup
+
+          # Retires group membership before destroyed controls can be selected again.
+          # @return [void]
+          def mark_destroyed
+            @group.delete(self)
+            super
+          end
+
+          # A shared radio group must occupy one page; linked windows are unsupported.
+          # @return [Lich::WebUI::Adapter::Handle] opaque control handle
+          def materialize
+            session.refuse(self, :group) if @group.any? { |peer| !peer.equal?(self) && peer.parent && !peer.toplevel.equal?(toplevel) }
+            super
+          end
+
+          # Changes all affected member values before emitting ordered toggled signals.
+          # @param value [Object] legacy truthiness; true selects this member exclusively
+          # @return [RadioButton] self
+          def set_active(value)
+            # GTK radio deactivation preserves the selection and emits no toggled signal.
+            # Select another member with true to switch the group instead.
+            return self unless value
+
+            session.synchronize do
+              changes = @group.filter_map do |peer|
+                desired = peer.equal?(self) ? !!value : (value ? false : peer.active?)
+                [peer, desired] if peer.active? != desired
+              end
+              changes.sort_by! { |_peer, desired| desired ? 1 : 0 }
+              changes.each { |peer, desired| peer.send(:write, :checked, desired) }
+              changes.each { |peer, _desired| peer.send(:emit_handlers, :change, signal: 'toggled') }
+            end
+            self
+          end
+          alias active= set_active
+
+          protected
+
+          def component_type = :radio_option
+          def signal_map = { 'toggled' => :change }
         end
       end
     end

@@ -34,6 +34,6 @@ RSpec.describe 'bounded native typography' do
   it 'keeps typography out of input controls and retains the component vocabulary' do
     expect { validator.validate_component!(:text_input, { label: 'Name', font_size: 12 }, **context) }
       .to raise_error(Lich::WebUI::UnknownPropertyError)
-    expect(Lich::WebUI::Contract::TYPES.size).to eq(29)
+    expect(Lich::WebUI::Contract::TYPES.size).to eq(30)
   end
 end

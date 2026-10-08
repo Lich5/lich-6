@@ -186,6 +186,7 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-number-stepper button { min-height: 32px; padding: 0; font-size: 20px; background: var(--input-surface); border: 1px solid var(--border); border-left: 0; }
 .webui-number-stepper button:last-child { border-radius: 0 4px 4px 0; }
 .webui-number-stepper input { border-radius: 4px 0 0 4px !important; }
+.webui-toggle[aria-pressed="true"] { box-shadow: inset 0 0 0 2px currentColor; font-weight: bold; }
 .field input:not([type="checkbox"]):not([type="radio"]), .field select, .field textarea { width: 100%; min-height: 32px; }
 .radio-options { display: flex; flex-wrap: wrap; gap: 12px; }
 [data-cid$="button:refresh-entries"] { align-self: flex-start; margin-block: 8px; }

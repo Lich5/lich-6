@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -33,6 +33,24 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
+  } else if (scenario === 'shim-controls') {
+    const first = page.getByRole('radio', { name: 'First' });
+    const second = page.getByRole('radio', { name: 'Second' });
+    await expect(first).toBeChecked();
+    await second.check();
+    await expect(first).not.toBeChecked();
+    await expect(second).toBeChecked();
+    const toggle = page.getByRole('button', { name: 'Enabled' });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    const spin = page.getByRole('spinbutton');
+    await expect(spin).toHaveValue('0.5');
+    await spin.fill('2.75');
+    await page.getByRole('button', { name: 'Increase' }).click();
+    await expect(spin).toHaveValue('2.9');
+    await page.getByRole('searchbox').fill('query');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(spin).toHaveCount(0);
   } else {
     const entry = page.getByRole('textbox');
     await expect(entry).toHaveValue('');

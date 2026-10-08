@@ -9,7 +9,7 @@ module Lich
     class TreeBuilder
       Draft = Struct.new(:type, :cid, :props, :children, :slot, :placement, keyword_init: true)
       FOCUSABLE_TYPES = %i[
-        button toggle checkbox radio text_input password_input textarea number_input slider select
+        button toggle checkbox radio radio_option text_input password_input textarea number_input slider select
         table dialog composite
       ].freeze
 
@@ -204,6 +204,10 @@ module Lich
         validate_submissions!
         validate_accelerators!
         validate_focus!
+        selected_groups = @cids.values.select { |draft| draft.type == :radio_option && draft.props[:checked] }.group_by { |draft| draft.props[:group] }
+        if selected_groups.any? { |_group, members| members.length > 1 }
+          raise SchemaViolationError.new('radio group has multiple selected options', owner: owner_label, page_id: @page_id, field: :checked)
+        end
         materialize(@root)
       end
 

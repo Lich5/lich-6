@@ -531,3 +531,94 @@ test('modal page announcements do not reattach an already attached form', () => 
   assert.deepEqual(sent.filter(message => message.type === 'attach').map(message => message.page), ['form', 'modal']);
   dom.window.close();
 });
+
+test('independent radio options submit one exclusive choice and button toggles submit booleans', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'choices' }] });
+  const render = generation => ({ type: 'render', page: 'choices', generation,
+    bindings: { first: ['change'], second: ['change'], toggle: ['change'], save: ['activate'] },
+    submissions: { save: ['first', 'second', 'toggle'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'radio_option', cid: 'first', props: { group: 'mode', label: 'First', checked: true } },
+      { type: 'stack', cid: 'row', props: {}, children: [
+        { type: 'radio_option', cid: 'second', props: { group: 'mode', label: 'Second', checked: false } }
+      ] },
+      { type: 'toggle', cid: 'toggle', props: { label: 'Enabled', appearance: 'button', checked: false } },
+      { type: 'button', cid: 'save', props: { label: 'Save' } }
+    ] } });
+  receive(render(1));
+  let inputs = [...dom.window.document.querySelectorAll('input[type=radio]')];
+  inputs[1].click();
+  assert.deepEqual(inputs.map(input => input.checked), [false, true]);
+  assert.deepEqual(sent.at(-1).payload, { value: true });
+  dom.window.document.querySelector('.webui-toggle').click();
+  assert.deepEqual(sent.at(-1).payload, { value: true });
+  receive(render(2));
+  inputs = [...dom.window.document.querySelectorAll('input[type=radio]')];
+  assert.deepEqual(inputs.map(input => input.checked), [false, true], 'refresh retains the unsent radio draft');
+  assert.equal(dom.window.document.querySelector('.webui-toggle').getAttribute('aria-pressed'), 'true');
+  [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === 'Save').click();
+  assert.deepEqual(sent.at(-1).submission, [false, true, true]);
+});
+
+test('spin decimal presentation preserves numeric precision and accepts off-step typed values', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'numeric' }] });
+  receive({ type: 'render', page: 'numeric', generation: 1,
+    bindings: { spin: ['change'], save: ['activate'] }, submissions: { save: ['spin'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'number_input', cid: 'spin', props: { value: 0.55, min: 0.5, max: 10, step: 0.1, digits: 1,
+        snap_to_step: false, acceleration: 0.1, page_step: 1, stepper_buttons: true } },
+      { type: 'button', cid: 'save', props: { label: 'Save' } }
+    ] } });
+  const input = dom.window.document.querySelector('input');
+  const save = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === 'Save');
+  assert.equal(input.value, '0.6');
+  save.click();
+  assert.deepEqual(sent.at(-1).submission, [0.55]);
+  input.value = '2.75';
+  input.dispatchEvent(new dom.window.Event('input'));
+  assert.deepEqual(sent.at(-1).payload, { value: 2.75 });
+  input.dispatchEvent(new dom.window.Event('blur'));
+  assert.equal(input.value, '2.8');
+  save.click();
+  assert.deepEqual(sent.at(-1).submission, [2.75]);
+  dom.window.document.querySelector('[aria-label=Increase]').click();
+  assert.deepEqual(sent.at(-1).payload, { value: 2.85 });
+});
+
+test('held spin buttons accelerate, stop on release, and dispose timers on replacement', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  const timers = new Map();
+  let sequence = 0;
+  dom.window.setTimeout = (callback, delay) => { timers.set(++sequence, { callback, delay }); return sequence; };
+  dom.window.clearTimeout = id => timers.delete(id);
+  receive({ type: 'hello', pages: [{ address: 'held' }] });
+  const render = generation => ({ type: 'render', page: 'held', generation, bindings: { spin: ['change'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'number_input', cid: 'spin', props: { value: 0, min: 0, max: 100, step: 1, digits: 0,
+        snap_to_step: false, acceleration: 2, page_step: 5, stepper_buttons: true } }
+    ] } });
+  receive(render(1));
+  const increase = dom.window.document.querySelector('[aria-label=Increase]');
+  increase.dispatchEvent(new dom.window.MouseEvent('pointerdown', { button: 0 }));
+  assert.equal(sent.at(-1).payload.value, 1);
+  const tick = delay => {
+    const entry = [...timers].find(([, timer]) => timer.delay === delay);
+    assert.ok(entry, `expected ${delay} ms timer`);
+    timers.delete(entry[0]); entry[1].callback();
+  };
+  tick(500);
+  for (let count = 0; count < 6; count++) tick(50);
+  assert.equal(sent.at(-1).payload.value, 10, 'six repeats precede the accelerated step');
+  increase.dispatchEvent(new dom.window.MouseEvent('pointerup', { button: 0 }));
+  increase.click();
+  assert.equal(sent.at(-1).payload.value, 10, 'release click must not duplicate the pointer step');
+  assert.equal([...timers.values()].some(timer => timer.delay === 50), false);
+  increase.dispatchEvent(new dom.window.MouseEvent('pointerdown', { button: 0 }));
+  receive(render(2));
+  assert.equal([...timers.values()].some(timer => [50, 500].includes(timer.delay)), false);
+});

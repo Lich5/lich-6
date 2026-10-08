@@ -91,6 +91,8 @@ module Lich
 
           alias row_spacing= row_spacings=
           alias column_spacing= column_spacings=
+          alias set_row_spacing row_spacings=
+          alias set_column_spacing column_spacings=
 
           # Validates the legacy flag while leaving track allocation to browser layout.
           # @raise [UnsupportedOperation] for nonboolean values
@@ -123,9 +125,10 @@ module Lich
 
         # Adjustment reads report the last real viewer measurements. They do
         # not invent screen geometry or poll the browser synchronously.
-        class Adjustment
+        class ScrollAdjustment < Adjustment
           # Creates a viewer-measurement cache for one scroll container.
           def initialize(scroll)
+            super()
             @scroll = scroll
             @measurements = {}
           end
@@ -144,7 +147,7 @@ module Lich
           # Registers the supported changed notification for scroll extent updates.
           # @raise [UnsupportedOperation] for other signals
           def signal_connect(name, &block)
-            @scroll.session.refuse(self, "signal:#{name}") unless name == 'changed'
+            @scroll.session.refuse(self, "signal:#{name}") unless name.to_s.tr('-', '_') == 'changed'
             @changed = block
           end
 
@@ -168,6 +171,7 @@ module Lich
             @scroll.send(:write, :scroll_position, target)
             measurement[:position] = target
           end
+          alias set_value value=
 
           private
 
@@ -183,7 +187,7 @@ module Lich
           # Creates a shared scroll control with a vertical measurement facade.
           def initialize
             super
-            @vadjustment = Adjustment.new(self)
+            @vadjustment = ScrollAdjustment.new(self)
           end
 
           # Accepts known GTK policy tokens while reporting browser-owned overflow behavior.
