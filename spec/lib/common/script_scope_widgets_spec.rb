@@ -786,6 +786,92 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect { compatibility.const_get(:SpinButton).new(compatibility.const_get(:Adjustment).new(1, 0, 10, 1, 2, 1)) }.to raise_error(error)
   end
 
+  describe 'adjustment notification context' do
+    let(:adjustment) { compatibility.const_get(:Adjustment).new(0, 0, 10, 1, 5, 0) }
+    let(:spin) { compatibility.const_get(:SpinButton).new(adjustment) }
+    let(:viewer_value) { [5] }
+    let(:notified) { [] }
+
+    before do
+      # Model callback-local viewer input separately from the real widget's retained value.
+      allow(spin).to receive(:value) { viewer_value.first }
+      allow(spin).to receive(:apply_adjustment_value).and_wrap_original do |original, number|
+        original.call(number)
+        viewer_value[0] = number
+      end
+      spin.signal_connect('value-changed') { notified << spin.value }
+    end
+
+    it 'notifies a retained-state change after the viewer notification has finished' do
+      adjustment.notify_value_changed
+      adjustment.set_value(5)
+      adjustment.set_value(5)
+
+      expect(notified).to eq([5, 5])
+      allow(spin).to receive(:value).and_call_original
+      expect(adjustment.value).to eq(5)
+    end
+
+    it 'notifies a viewer reset even when the target equals the retained value' do
+      adjustment.notify_value_changed
+      adjustment.set_value(0)
+
+      expect(notified).to eq([5, 0])
+      expect(viewer_value).to eq([0])
+    end
+
+    it 'does not redispatch the value already being notified' do
+      spin.signal_connect('value-changed') { adjustment.set_value(spin.value) }
+      adjustment.notify_value_changed
+
+      expect(notified).to eq([5])
+      allow(spin).to receive(:value).and_call_original
+      expect(adjustment.value).to eq(5)
+    end
+
+    it 'notifies nested changes even when returning to the outer notification value' do
+      nested = false
+      spin.signal_connect('value-changed') do
+        next if nested
+
+        nested = true
+        adjustment.set_value(6)
+        adjustment.set_value(5)
+      end
+      adjustment.notify_value_changed
+
+      expect(notified).to eq([5, 6, 5])
+    end
+
+    it 'restores the outer notification context after a nested notification' do
+      nested = false
+      spin.signal_connect('value-changed') do
+        next if nested
+
+        nested = true
+        adjustment.notify_value_changed
+        adjustment.set_value(5)
+      end
+      adjustment.notify_value_changed
+
+      expect(notified).to eq([5, 5])
+    end
+
+    it 'clears notification context when a handler raises' do
+      fail_once = true
+      adjustment.signal_connect('value-changed') do
+        next unless fail_once
+
+        fail_once = false
+        raise 'notification fixture error'
+      end
+
+      expect { adjustment.notify_value_changed }.to raise_error(RuntimeError, 'notification fixture error')
+      adjustment.set_value(5)
+      expect(notified).to eq([5, 5])
+    end
+  end
+
   it 'supports legacy radio constructors and emits changed members only after exclusive selection' do
     radio = compatibility.const_get(:RadioButton)
     first = radio.new('First')

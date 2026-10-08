@@ -35,7 +35,8 @@ module Lich
             session.refuse(self, :value=) unless finite_number?(number)
             target = number.clamp(lower, [lower, upper - page_size].max)
             session.synchronize do
-              changed = value != target
+              # value includes callback-local viewer input; @value alone misses resets to retained state.
+              changed = value != target || (@value != target && @notifying_value != target)
               @widget&.send(:apply_adjustment_value, target)
               @value = target
               notify_value_changed if changed
@@ -62,10 +63,17 @@ module Lich
           end
 
           # Dispatches an observed input change after its viewer value has been validated.
+          # Matching writes reuse this notification; nested calls and failures restore the prior context.
           # @api private
           # @return [void]
           def notify_value_changed
-            @signals['value_changed'].dup.each { |handler| handler.call(self) }
+            session.synchronize do
+              previous = @notifying_value
+              @notifying_value = value
+              @signals['value_changed'].dup.each { |handler| handler.call(self) }
+            ensure
+              @notifying_value = previous
+            end
           end
 
           private
