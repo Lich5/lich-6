@@ -627,4 +627,42 @@ RSpec.describe Lich::WebUI::Runtime do
     })).to eq(:refused)
     expect(first_connection.sent.last['reason']).to eq('contract')
   end
+  it 'keeps independently placed radio groups exclusive per viewer and rejects contradictory submissions' do
+    seen = Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'radio-options', title: 'Options') do
+      first = radio_option(key: 'one', group: 'choice', label: 'One', checked: true,
+                           on: { change: ->(event) { seen << [event.component.props[:label], event.payload[:value]] } })
+      second = radio_option(key: 'two', group: 'choice', label: 'Two', checked: false,
+                            on: { change: ->(event) { seen << [event.component.props[:label], event.payload[:value]] } })
+      button(key: 'save', label: 'Save', submit: [first, second], on: { activate: proc {} })
+    end)
+    address, render = attach(first_connection, page)
+    attach(second_connection, page)
+    one, two, save = render.fetch('tree').fetch('children')
+    request = { type: 'event', page: address, generation: render['generation'], cid: two['cid'], event: 'change', payload: { value: true } }
+    expect(runtime.handle(first_connection, request)).to eq(:queued)
+    expect(Timeout.timeout(2) { [seen.pop, seen.pop] }).to eq([['One', false], ['Two', true]])
+    first, second = viewers.attachments_for(page)
+    expect([one, two].map { |node| page.get(node['cid'], viewer: first.viewer_id) }).to eq([false, true])
+    expect([one, two].map { |node| page.get(node['cid'], viewer: second.viewer_id) }).to eq([true, false])
+    runtime.handle(first_connection, request)
+    barrier = Queue.new
+    runtime.dispatch(owner: owner) { barrier << true }
+    Timeout.timeout(2) { barrier.pop }
+    expect(seen).to be_empty
+    runtime.handle(first_connection, type: 'event', page: address, generation: render['generation'], cid: save['cid'],
+                                     event: 'activate', payload: {}, submission: [true, true])
+    expect(first_connection.sent.last).to include('type' => 'refusal', 'reason' => 'submission_scope')
+    expect([one, two].map { |node| page.get(node['cid'], viewer: first.viewer_id) }).to eq([false, true])
+    runtime.handle(first_connection, request.merge(payload: { value: false }))
+    expect(first_connection.sent.last['type']).to eq('refusal')
+  end
+
+  it 'refuses a rendered radio group with multiple selected defaults' do
+    page = Lich::WebUI::Page.new(owner: owner, id: 'invalid-options', title: 'Options') do
+      radio_option(group: 'choice', label: 'One', checked: true)
+      radio_option(group: 'choice', label: 'Two', checked: true)
+    end
+    expect { page.render }.to raise_error(Lich::WebUI::SchemaViolationError, /multiple selected/)
+  end
 end

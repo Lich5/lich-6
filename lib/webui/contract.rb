@@ -6,13 +6,13 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.9.0'
+      VERSION = '2.10.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
         page group stack columns grid tabs expander split overlay scroll divider
         text markdown log progress image
-        button toggle checkbox radio text_input password_input textarea number_input slider select
+        button toggle checkbox radio radio_option text_input password_input textarea number_input slider select
         table dialog composite
       ].freeze
 
@@ -163,6 +163,7 @@ module Lich
         toggle: %i[key tooltip disabled hidden align margin width tone],
         checkbox: %i[key tooltip disabled hidden align margin width tone],
         radio: %i[key tooltip disabled hidden align margin width tone],
+        radio_option: %i[key tooltip disabled hidden align margin width tone],
         text_input: %i[key tooltip disabled hidden align margin width tone sensitive],
         password_input: %i[key tooltip disabled hidden align margin width sensitive],
         textarea: %i[key tooltip disabled hidden align margin width height sensitive],
@@ -324,11 +325,18 @@ module Lich
           }, children: :none, events: { activate: event(nil, terminal: true) }, value: nil,
         },
         toggle: {
-          properties: { label: property(SHORT), checked: property(BOOL, required: true, scope: :viewer) },
+          properties: { label: property(SHORT), checked: property(BOOL, required: true, scope: :viewer),
+                        appearance: property(enum(:checkbox, :button), default: :checkbox) },
           children: :none, events: { change: event(record(value: property(BOOL, required: true))) }, value: BOOL,
         },
         checkbox: {
           properties: { label: property(SHORT, required: true), checked: property(BOOL, required: true, scope: :viewer) },
+          children: :none, events: { change: event(record(value: property(BOOL, required: true))) }, value: BOOL,
+        },
+        # Independently placed members share exclusive selection within one page/viewer.
+        radio_option: {
+          properties: { label: property(SHORT, required: true), group: property(IDENT, required: true),
+                        checked: property(BOOL, required: true, scope: :viewer) },
           children: :none, events: { change: event(record(value: property(BOOL, required: true))) }, value: BOOL,
         },
         radio: {
@@ -377,6 +385,9 @@ module Lich
         number_input: {
           properties: {
             stepper_buttons: property(BOOL, default: false),
+            digits: property(integer(min: 0, max: 20)),
+            acceleration: property(number(min: 0)), page_step: property(number(min: 0)),
+            snap_to_step: property(BOOL, default: true),
             label: property(SHORT), value: property(ANY_NUMBER, required: true, scope: :viewer),
             min: property(ANY_NUMBER, required: true), max: property(ANY_NUMBER, required: true),
             step: property(ANY_NUMBER, default: 1),

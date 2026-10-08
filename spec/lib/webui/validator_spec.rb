@@ -28,6 +28,7 @@ RSpec.describe Lich::WebUI::Validator do
     button: { label: 'Go' },
     toggle: { checked: false },
     checkbox: { label: 'Check', checked: false },
+    radio_option: { label: 'Choice', group: 'choice', checked: true },
     radio: { label: 'Pick', group: 'g', options: [{ value: 'a', label: 'A' }] },
     text_input: { value: '' },
     password_input: {},
@@ -53,6 +54,16 @@ RSpec.describe Lich::WebUI::Validator do
       isolated_properties = Marshal.load(Marshal.dump(properties))
       expect(validator.validate_component!(type, isolated_properties, **context)).to be_a(Hash)
     end
+  end
+
+  it 'refuses numeric presentations whose requested stepping behavior cannot run' do
+    props = { value: 1, min: 0, max: 10 }
+    expect { validator.validate_component!(:number_input, props.merge(acceleration: 1), **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError, /free numeric stepping/)
+    expect { validator.validate_component!(:number_input, props.merge(snap_to_step: false), **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError, /requires stepper_buttons/)
+    expect(validator.validate_component!(:number_input, props.merge(snap_to_step: false, stepper_buttons: true, digits: 2), **context))
+      .to include(digits: 2)
   end
 
   it 'attributes unknown properties to owner, page, cid, and field' do

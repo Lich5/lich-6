@@ -66,6 +66,20 @@ RSpec.describe Lich::WebUI::ViewerStore do
     expect { store.serialize(attachment) }.to raise_error(Lich::WebUI::Error, /no delivered render/)
   end
 
+  it 'refuses radio selection before a render has been delivered without changing viewer state' do
+    target = Lich::WebUI::Page.new(owner: owner, id: 'radio', title: 'Radio') do
+      radio_option(group: 'choice', label: 'One', checked: true)
+    end
+    store = described_class.new
+    attachment = store.attach(connection_id: 'one', address: 'radio', page: target)
+    component = target.render.tree.children.first
+
+    expect { store.select_radio_option(attachment, component) }
+      .to raise_error(Lich::WebUI::Error, 'viewer has no delivered render')
+    expect(attachment.values).to be_empty
+    expect(attachment.render).to be_nil
+  end
+
   it 'ignores an older delivery without reverting the tree or viewer selections' do
     choices = [{ value: 'old', label: 'Old' }]
     target = Lich::WebUI::Page.new(owner: owner, id: 'choices', title: 'Choices') do
@@ -179,5 +193,24 @@ RSpec.describe Lich::WebUI::ViewerStore do
 
     serialized = store.serialize(attachment)
     expect(serialized.dig(:children, 0, :props, :open)).to be false
+  end
+  it 'retains a viewer radio choice when a new selected default joins its group' do
+    add_option = false
+    target = Lich::WebUI::Page.new(owner: owner, id: 'radio', title: 'Radio') do
+      radio_option(key: 'one', group: 'mode', label: 'One', checked: !add_option)
+      radio_option(key: 'two', group: 'mode', label: 'Two', checked: false)
+      radio_option(key: 'three', group: 'mode', label: 'Three', checked: true) if add_option
+    end
+    store = described_class.new
+    viewer = store.attach(connection_id: 'one', address: 'radio', page: target)
+    render = target.render
+    store.deliver(viewer, render)
+    store.select_radio_option(viewer, render.tree.children[1])
+    add_option = true
+    store.deliver(viewer, target.render)
+    expect(store.serialize(viewer)[:children].map { |node| node[:props][:checked] }).to eq([false, true, false])
+    fresh = store.attach(connection_id: 'fresh', address: 'radio', page: target)
+    store.deliver(fresh, target.render)
+    expect(store.serialize(fresh)[:children].map { |node| node[:props][:checked] }).to eq([false, false, true])
   end
 end

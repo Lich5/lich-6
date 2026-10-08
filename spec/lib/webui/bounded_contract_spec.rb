@@ -102,8 +102,8 @@ RSpec.describe 'bounded compatibility contract additions' do
     expect(parts.map(&:length).max).to be <= Lich::WebUI::Contract::BOUNDS[:log_line]
   end
 
-  it 'keeps the type count and sensitive input event vocabulary unchanged' do
-    expect(Lich::WebUI::Contract::TYPES.length).to eq(29)
+  it 'includes independent radio options while keeping sensitive input event vocabulary unchanged' do
+    expect(Lich::WebUI::Contract::TYPES.length).to eq(30)
     expect(Lich::WebUI::Contract.schema(:password_input)[:events].keys).to eq([:submit])
   end
 end

@@ -142,7 +142,10 @@ module Lich
       # Stores an already-validated viewer-local override under the store lock.
       # @return [Object] stored value
       def set_property(attachment, component, name, value)
-        @mutex.synchronize { attachment.values[[component.cid, name]] = value }
+        @mutex.synchronize do
+          select_radio_option!(attachment, component) if component.type == :radio_option && name == :checked && value
+          attachment.values[[component.cid, name]] = value
+        end
       end
 
       # Records the newest render accepted for one viewer and seeds its values.
@@ -160,7 +163,15 @@ module Lich
 
           attachment.render = render
           attachment.delivered_generation = render.generation
+          previous = attachment.values.select { |(_cid, property), value| property == :checked && value }.keys
           seed_values!(attachment, render.tree)
+          render.tree.each.select { |node| node.type == :radio_option }.group_by { |node| node.props[:group] }.each_value do |members|
+            selected = members.select { |node| attachment.values[[node.cid, :checked]] }
+            next if selected.length < 2
+
+            retained = selected.find { |node| previous.include?([node.cid, :checked]) } || selected.first
+            select_radio_option!(attachment, retained)
+          end
         end
       end
 
@@ -170,6 +181,9 @@ module Lich
       def update(attachment, component, event, payload)
         @mutex.synchronize do
           case [component.type, event]
+          when [:radio_option, :change]
+            select_radio_option!(attachment, component) if payload[:value]
+            attachment.values[[component.cid, :checked]] = payload[:value]
           when [:toggle, :change], [:checkbox, :change] then attachment.values[[component.cid, :checked]] = payload[:value]
           when [:radio, :change] then attachment.values[[component.cid, :selected]] = payload[:value]
           when [:text_input, :change], [:textarea, :change], [:number_input, :change], [:slider, :change], [:select, :change]
@@ -190,7 +204,25 @@ module Lich
       # @return [void]
       def set_input(attachment, component, value)
         property = input_property(component.type)
-        @mutex.synchronize { attachment.values[[component.cid, property]] = value } if property
+        set_property(attachment, component, property, value) if property
+      end
+
+      # Selects one member and returns changed peers followed by the selected member.
+      # @return [Array<Array(Component, Boolean)>] only actual boolean transitions
+      # @raise [Error] before a render has been delivered
+      def select_radio_option(attachment, component)
+        @mutex.synchronize do
+          raise Error, 'viewer has no delivered render' unless attachment.render
+
+          changed = attachment.render.tree.each.filter_map do |peer|
+            next unless peer.type == :radio_option && peer.props[:group] == component.props[:group]
+
+            checked = peer.cid == component.cid
+            [peer, checked] if attachment.values.fetch([peer.cid, :checked], peer.props[:checked]) != checked
+          end
+          select_radio_option!(attachment, component)
+          changed.sort_by { |_peer, checked| checked ? 1 : 0 }
+        end
       end
 
       # Copies one coherent render and its nonsensitive viewer values for queued work.
@@ -233,6 +265,17 @@ module Lich
       end
 
       private
+
+      # Clears only peers in the same delivered page and viewer before selecting a member.
+      # Must be called under the store mutex; no synthetic callbacks are dispatched here.
+      # @return [void]
+      def select_radio_option!(attachment, component)
+        attachment.render.tree.each do |peer|
+          next unless peer.type == :radio_option && peer.props[:group] == component.props[:group]
+
+          attachment.values[[peer.cid, :checked]] = peer.cid == component.cid
+        end
+      end
 
       # Seeds only absent viewer fields and repairs removed select choices without fabricating events.
       # Requires the store mutex; existing unrelated viewer edits remain intact.
@@ -286,7 +329,7 @@ module Lich
 
       def input_property(type)
         case type
-        when :toggle, :checkbox then :checked
+        when :toggle, :checkbox, :radio_option then :checked
         when :radio then :selected
         when :text_input, :textarea, :number_input, :slider, :select then :value
         end

@@ -377,6 +377,8 @@ module Lich
         end
 
         snapshot = build_submission(attachment, component, message)
+        return dispatch_radio_change(attachment, component) if component.type == :radio_option
+
         attachment.page.observe_window_geometry(payload) if component.type == :page && message[:event].to_sym == :configure
         @viewers.update(attachment, component, message[:event].to_sym, payload)
         event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
@@ -406,6 +408,24 @@ module Lich
         snapshot&.discard_sensitive! unless dispatched
       end
 
+      # Selects a radio member atomically and dispatches deselection before selection.
+      # The viewer store owns all group state; no adapter keeps a parallel draft map.
+      # @return [Symbol] :queued, including an unchanged selection with no callbacks
+      def dispatch_radio_change(attachment, component)
+        changed = @viewers.select_radio_option(attachment, component)
+        callbacks = changed.filter_map do |member, checked|
+          callback = attachment.render.bindings[[member.cid, :change]]
+          [callback, EventContext.new(attachment.viewer_id, attachment.page, member, :change, { value: checked }.freeze, nil)] if callback
+        end
+        return :queued if callbacks.empty?
+
+        @dispatcher.enqueue(owner: attachment.page.owner, page_id: attachment.page.id,
+                            viewer_id: attachment.viewer_id, cid: component.cid, event: :change, coalescable: false) do
+          callbacks.each { |callback, context| callback.call(context) }
+        end
+        :queued
+      end
+
       # Validates exactly the server-declared terminal scope before retaining submitted values.
       # Secrets become disposable carriers; mutable raw secret strings are scrubbed in ensure.
       # @return [Submission, nil] terminal snapshot, or nil for a nonterminal event
@@ -430,6 +450,12 @@ module Lich
             owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: component.cid
           )
           [component, value]
+        end
+        selected_groups = validated.filter_map do |component, value|
+          component.props[:group] if component.type == :radio_option && value
+        end
+        unless selected_groups.uniq.length == selected_groups.length
+          raise Protocol::Refusal.new(:submission_scope, 'radio group has multiple selected options')
         end
         values = validated.to_h do |component, value|
           if sensitive?(component)
@@ -684,7 +710,7 @@ module Lich
         return key unless key == :value
 
         case component.type
-        when :toggle, :checkbox then :checked
+        when :toggle, :checkbox, :radio_option then :checked
         when :radio then :selected
         else :value
         end
