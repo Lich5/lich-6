@@ -233,6 +233,40 @@ RSpec.describe 'WebUI script window lifecycle' do
     expect(target.window_geometry).to eq(measurement)
   end
 
+  it 'cancels a modal on stale detach even when another viewer keeps its owner connected' do
+    target = page
+    connections = %w[first second].map do |id|
+      connection = Struct.new(:viewer_id, :sent) do
+        # Keeps this transport attached while another viewer closes the modal.
+        # @return [Boolean] true for this connected fixture
+        def alive? = true
+
+        # Captures decoded server frames so the test can reuse an old generation.
+        # @param payload [String] outbound JSON frame
+        # @return [Array<Hash>] accumulated frames
+        def send_text(payload) = sent << JSON.parse(payload)
+      end.new(id, [])
+      service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(target))
+      connection
+    end
+    future = service.modal(owner: target.owner, id: 'notice', title: 'Notice',
+                           buttons: [{ id: 'ok', label: 'OK' }], no_viewer: :abort)
+    modal = service.registry.fetch(target.owner, 'notice')
+    address = service.registry.address_for(modal)
+    connections.each { |connection| service.runtime.handle(connection, type: 'attach', page: address) }
+    previous_generation = connections.first.sent.last.fetch('generation')
+    service.refresh(modal)
+
+    # In-window modals send no OS geometry with pagehide; their detach must
+    # survive a render overtaking the closing browser, just like the root's.
+    result = service.runtime.handle(connections.first, type: 'detach', page: address, generation: previous_generation)
+
+    expect(result).to eq(:detached)
+    expect(future.await(timeout: 2).reason).to eq(:cancelled)
+    expect(service.modals.pending_count).to eq(0)
+    expect(service.runtime.viewers_present?(target.owner)).to be(true)
+  end
+
   it 'does not save unusable host geometry for pages that own configure handling' do
     store = instance_double(Lich::WebUI::WindowGeometryStore)
     service.instance_variable_set(:@geometry_store, store)

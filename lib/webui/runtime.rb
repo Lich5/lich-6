@@ -301,7 +301,10 @@ module Lich
         :attached
       end
 
-      # Removes an explicit viewer attachment and rechecks its owner's modal policies.
+      # Removes an explicit viewer attachment regardless of render generation.
+      # Close targets attachment lifetime, so an in-flight render must not discard
+      # it. Component events still require the delivered generation to match.
+      # Rechecks the owner's modal policies after removal.
       # @param connection [Object] authenticated transport
       # @param message [Hash] validated detach envelope
       # @return [Symbol] :detached after removal
@@ -317,8 +320,6 @@ module Lich
                                                cid: attachment.render.tree.cid)
           attachment.page.observe_window_geometry(payload)
           jobs << lifecycle_job(attachment, :configure, payload)
-        else
-          stale!(connection, attachment) unless message[:generation] == attachment.delivered_generation
         end
         # A close handler can unregister the page immediately on its worker.
         # Capture all contexts before dispatch can clear the attachment render.

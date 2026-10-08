@@ -1084,6 +1084,8 @@ module Lich
       end
 
       # Authenticates a saved configuration and gates child/terminal launch against close.
+      # Rechecks discovered frontend availability before unlocking/authenticating,
+      # including unlock retries. Explicit custom commands retain their own launch path.
       # @api private
       # @param operation [Operation] cancelable launch token
       # @param entry_key [String] configuration identity, never a list position
@@ -1100,6 +1102,10 @@ module Lich
         if Frontend.canonical_name(entry.frontend) == 'saga'
           failure_notice = 'Saga could not be launched. Check its configuration in Frontends and the debug log.'
           return perform_saga_launch(operation, entry)
+        end
+        if entry.custom_launch.to_s.strip.empty? && !frontend_available?(entry.frontend, refresh: true)
+          failure_notice = 'The selected front end is unavailable. Check its configuration in Frontends, or choose another front end.'
+          raise 'saved frontend is unavailable'
         end
 
         failure_notice = 'The saved account password could not be unlocked. Check the encryption settings and retry.'

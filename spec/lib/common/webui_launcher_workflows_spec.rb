@@ -308,6 +308,49 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(tree_text).not_to include('origin-b-saved-canary')
   end
 
+  it 'refuses a saved frontend that disappears before Play without unlocking or authenticating' do
+    launcher
+    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+
+    launcher.saved_launch(event, entry.key)
+
+    expect(catalog.calls).to be_empty
+    expect(authenticator.calls).to be_empty
+    expect(launches).to be_empty
+    expect(launcher.active_operations).to be_empty
+    expect(launcher.send(:render_state)[:notice][:text]).to match(/front end is unavailable.*Frontends/)
+    expect(WorkflowFrontendLocator).to have_received(:resolve).with('stormfront', refresh: true).at_least(:once)
+  end
+
+  it 'retains an explicit saved custom command when its stock frontend is not detected' do
+    catalog.entries_value = [entry.with(custom_launch: '/fixture/custom')]
+    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+
+    launcher.saved_launch(event, entry.key)
+
+    expect(authenticator.calls.length).to eq(1)
+    expect(launches.last.first).to eq(:saved_entry)
+    expect(launches.last.last).to include('CUSTOMLAUNCH=/fixture/custom')
+  end
+
+  it 'rechecks frontend availability after unlock without authenticating or retaining the credential' do
+    catalog.require_master = true
+    launcher.saved_launch(event, entry.key)
+    expect(launcher.send(:render_state)[:modal]).to include(kind: :unlock)
+    credential = Lich::WebUI::SensitiveValue.server('unlocked-fixture')
+    allow(catalog).to receive(:credential).and_return(credential)
+    allow(credential).to receive(:discard!).and_call_original
+    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+
+    launcher.unlock_response(event({ 'password' => viewer_secret('correct') }, payload: { button: 'unlock' }), 'password')
+
+    expect(authenticator.calls).to be_empty
+    expect(launches).to be_empty
+    expect(credential).to have_received(:discard!)
+    expect(launcher.send(:render_state)[:modal]).to be_nil
+    expect(launcher.send(:render_state)[:notice][:text]).to match(/front end is unavailable/)
+  end
+
   it 'supports master-password unlock failure, retry, success, and cancel' do
     catalog.require_master = true
     launcher.saved_launch(event, 'entry-0')
@@ -783,7 +826,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     persistent = described_class.new(
       data_dir: '/fixture', catalog: catalog, service: persistent_service, authenticator: authenticator,
       executor: ImmediateExecutor.new, session_launcher: session_launcher, persistent: true,
-      on_launch: proc {}, browser_open: proc { true }
+      on_launch: proc {}, browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator
     )
     persistent.saved_launch(event, 'entry-0')
     persistent.saved_launch(event, 'entry-0')
