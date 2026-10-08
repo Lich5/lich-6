@@ -40,8 +40,8 @@ RSpec does not invoke these suites. Browser layout requires actual browser
 checks; GTK visual parity requires comparison with the original GTK interface;
 OS-window geometry, restoration and cleanup require actual OS-window checks.
 The JavaScript suites alone do not establish any of those behaviors.
-The separate `WebUI Tests` GitHub Actions workflow runs these suites on Linux.
-It runs on pull requests, pushes to `main` or `ci/webui-*`, and manual dispatch.
+The separate `WebUI Tests` GitHub Actions workflow runs these suites on Ubuntu 26.04.
+It runs on pull requests, pushes to `main`, and manual dispatch.
 Existing Ruby workflows are unchanged.
 
 ## WebUI Browser Tests

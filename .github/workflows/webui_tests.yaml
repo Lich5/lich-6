@@ -2,7 +2,7 @@ name: WebUI Tests
 
 on:
   push:
-    branches: [main, 'ci/webui-*']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   renderer:
     name: JavaScript renderer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,7 +30,7 @@ jobs:
 
   browser:
     name: Chrome browser integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       BUNDLE_WITHOUT: 'vscode:profanity'
