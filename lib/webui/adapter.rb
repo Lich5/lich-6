@@ -14,6 +14,8 @@ module Lich
       OPERATIONS = %i[create get set attach detach bind unbind destroy modal schema].freeze
 
       class Handle
+        # Keeps diagnostic output opaque instead of exposing adapter internals.
+        # @return [String]
         def inspect = '#<Lich::WebUI::Adapter::Handle opaque>'
         alias to_s inspect
       end
@@ -23,6 +25,13 @@ module Lich
                         keyword_init: true)
       private_constant :Node
 
+      # Creates an owner-bound imperative facade over the shared component contract.
+      # Handles use object identity; equal-looking windows remain independent.
+      # @param owner [Object] lifecycle identity for every created page
+      # @param service [Service] host used for publication and cleanup
+      # @param viewer [String, nil] explicit viewer for scoped reads/writes
+      # @param validator [Validator] shared property validator
+      # @param on_publish [#call, nil] observer notified when roots are published
       def initialize(owner:, service:, viewer: nil, validator: Validator.new, on_publish: nil)
         @owner = owner
         @service = service
@@ -37,6 +46,11 @@ module Lich
         @mutex = Monitor.new
       end
 
+      # Validates a component and allocates an opaque handle without opening a window.
+      # Page roots are marked dirty for later publication; placement is stored separately.
+      # @param type [Symbol, String] supported component type
+      # @param props [Hash] properties and optional placement hints
+      # @return [Handle] identity-bound reference
       def create(type, props)
         normalized = Contract.normalize_type(type)
         schema(normalized)
@@ -168,6 +182,11 @@ module Lich
         raise attributed(error, handle, property)
       end
 
+      # Inserts an unparented child after checking cycles, capacity, and placement.
+      # @param parent [Handle] owning container
+      # @param child [Handle] child to attach
+      # @param index [Integer, nil] insertion position; nil appends
+      # @return [nil]
       def attach(parent, child, index = nil)
         @mutex.synchronize do
           parent_node = node!(parent)
@@ -192,6 +211,9 @@ module Lich
         raise attributed_error('child index is out of range', parent, :index)
       end
 
+      # Unparents a child without destroying its handle or descendants.
+      # The former root is marked dirty for the next flush.
+      # @return [nil]
       def detach(parent, child)
         @mutex.synchronize do
           parent_node = node!(parent)
@@ -208,6 +230,9 @@ module Lich
         nil
       end
 
+      # Registers one allowed callback, replacing the previous binding for that event.
+      # @return [String] opaque binding ID usable with #unbind
+      # @raise [UnknownEventError] for events outside the component allowlist
       def bind(handle, event, callable)
         raise ArgumentError, 'callback must respond to call' unless callable.respond_to?(:call)
 
@@ -234,6 +259,9 @@ module Lich
         end
       end
 
+      # Removes a binding and marks its root dirty for publication.
+      # @param binding_id [String] ID returned by #bind
+      # @return [nil]
       def unbind(binding_id)
         @mutex.synchronize do
           handle, event, = @bindings.delete(binding_id.to_s) || raise(
@@ -246,6 +274,9 @@ module Lich
         nil
       end
 
+      # Destroys a handle subtree and closes its published page when destroying a root.
+      # Unlike the shim's idempotent widget wrapper, repeated adapter destruction is refused.
+      # @return [nil]
       def destroy(handle)
         @mutex.synchronize do
           raise attributed_error('handle is already destroyed', handle) if @destroyed.key?(handle)
@@ -264,6 +295,9 @@ module Lich
         nil
       end
 
+      # Flushes pending roots, then opens an owner-scoped asynchronous modal.
+      # @param props [Hash] modal options; ID is generated when absent
+      # @return [Future] completion
       def modal(props)
         raise ArgumentError, 'props must be a Hash' unless props.is_a?(Hash)
 
@@ -275,6 +309,8 @@ module Lich
         raise attributed(error, nil, :modal)
       end
 
+      # Returns the shared schema with adapter-owner attribution on unknown types.
+      # @return [Hash] frozen type schema
       def schema(type)
         Contract.schema(type)
       rescue UnknownTypeError => error
@@ -283,6 +319,9 @@ module Lich
 
       private
 
+      # Snapshots dirty roots by identity, then refreshes outside the adapter monitor.
+      # Avoids lock inversion with Page rendering; initial publication is announced once per root.
+      # @return [nil]
       def flush!
         pages = @mutex.synchronize do
           selected = @dirty_roots.keys.filter_map do |candidate|
@@ -313,6 +352,9 @@ module Lich
         nil
       end
 
+      # Registers and binds one page for a root while preserving its handle-derived identity.
+      # @return [Page] root page
+      # @raise [Error] for non-page roots
       def ensure_page!(root)
         return root.page if root.page
         raise attributed_error('only page roots can be rendered') unless root.type == :page
@@ -329,12 +371,17 @@ module Lich
         root.page = page
       end
 
+      # Snapshots the mutable adapter tree before constructing its declarative render.
+      # Terminal actions receive the snapshot's complete input scope.
+      # @return [void]
       def render_children(builder, node)
         snapshot = @mutex.synchronize { snapshot_children(node) }
         scope = input_cids(snapshot, "page:#{adapter_page_id(node)}")
         render_snapshot(builder, snapshot, scope)
       end
 
+      # Captures ordered properties, bindings, slots, and descendants under the adapter monitor.
+      # @return [Array] render snapshot tuples
       def snapshot_children(node)
         node.children.map do |handle|
           child = @nodes.fetch(handle)
@@ -354,6 +401,8 @@ module Lich
         end
       end
 
+      # Builds snapshot controls and retains generated CIDs for subsequent scoped reads/writes.
+      # @return [void]
       def render_snapshot(builder, snapshot, scope)
         adapter = self
         snapshot.each do |child, props, slot, bindings, children|
@@ -407,11 +456,16 @@ module Lich
         )
       end
 
+      # Recognizes sensitive value fields even when sensitivity is set per component.
+      # @return [Boolean]
       def sensitive_property?(node, name, definition)
         definition[:scope] == :sensitive_write_only ||
           (name == :value && (node.type == :password_input || node.props[:sensitive] == true))
       end
 
+      # Requires explicit viewer attribution for viewer-scoped adapter access.
+      # @return [Object] configured viewer ID or viewer resolver
+      # @raise [AmbiguousViewerError] when no viewer was supplied
       def viewer!
         return @viewer if @viewer
 
@@ -457,6 +511,9 @@ module Lich
         raise attributed_error('unknown handle', handle)
       end
 
+      # Recursively retires handles, bindings, and local values while remembering destruction.
+      # Requires the adapter monitor; page closure is handled by the caller.
+      # @return [void]
       def destroy_node!(handle)
         node = @nodes.delete(handle)
         node.children.each { |child| destroy_node!(child) }
@@ -475,6 +532,8 @@ module Lich
         current
       end
 
+      # Coalesces adapter publication work through the core runtime for a page root.
+      # @return [void]
       def dirty!(root)
         return unless root.type == :page
 
@@ -482,6 +541,8 @@ module Lich
         @service.runtime.schedule_render(self, owner: @owner) { flush! }
       end
 
+      # Resolves a live node by its retained handle and exact identity, never Struct equality.
+      # @return [Handle, nil] nil after retirement
       def handle_for(node)
         handle = node.handle
         handle if @nodes[handle].equal?(node)

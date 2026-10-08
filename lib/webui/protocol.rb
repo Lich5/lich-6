@@ -23,6 +23,9 @@ module Lich
       class Refusal < Error
         attr_reader :reason
 
+        # Retains a machine-readable refusal reason alongside attributed diagnostics.
+        # @param reason [Symbol] protocol refusal category
+        # @param message [String] human-readable explanation
         def initialize(reason, message, **context)
           @reason = reason
           super(message, **context)
@@ -31,6 +34,8 @@ module Lich
 
       module_function
 
+      # Serializes the greeting with server version, viewer ID, and page descriptors.
+      # @return [String] JSON wire message
       def hello(viewer_id:, pages:)
         JSON.generate(
           type: 'hello', contract_version: Contract::VERSION,
@@ -58,15 +63,24 @@ module Lich
         JSON.generate(payload)
       end
 
+      # Serializes a refusal, retaining supplied request/component correlation.
+      # @return [String] JSON wire message
       def refusal(reason:, message:, page: nil, cid: nil, event: nil, request: nil)
         JSON.generate(type: 'refusal', reason: reason.to_s, message: message, page: page, cid: cid,
                       event: event, request: request)
       end
 
+      # Serializes a terminal notification for a registered page address.
+      # @return [String] JSON wire message
       def page_closed(address:, reason:)
         JSON.generate(type: 'page_closed', page: address, reason: reason.to_s)
       end
 
+      # Parses a bounded client frame and validates routing fields before dispatch.
+      # Containers are frozen; leaf strings remain mutable for secret disposal.
+      # @param raw [String] JSON text frame
+      # @return [Hash] validated message with symbol keys
+      # @raise [Refusal] for oversized, malformed, or unsupported messages
       def parse_client_message(raw)
         unless raw.is_a?(String) && raw.bytesize <= MAX_MESSAGE_BYTES
           raise Refusal.new(:frame_size, "message exceeds #{MAX_MESSAGE_BYTES} bytes")
@@ -91,6 +105,9 @@ module Lich
         raise Refusal.new(:malformed, "invalid JSON: #{error.class}")
       end
 
+      # Compares equal-length byte sequences without stopping at the first mismatch.
+      # Unequal lengths are rejected immediately.
+      # @return [Boolean] whether all bytes match
       def secure_compare(expected, actual)
         expected = expected.to_s
         actual = actual.to_s
@@ -141,6 +158,8 @@ module Lich
       end
       private_class_method :validate_type!
 
+      # Freezes routing containers while preserving mutable secret-bearing leaf strings.
+      # @return [Object] supplied value
       def deep_freeze_containers(value)
         case value
         when Hash then value.each { |key, child| key.freeze; deep_freeze_containers(child) }

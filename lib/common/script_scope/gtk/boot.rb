@@ -26,6 +26,8 @@ module Lich
           MAJOR = 3
           STRING = '3.24.0'.freeze
 
+          # Refuses version constants outside the bounded compatibility surface.
+          # @raise [UnsupportedOperation] always
           def self.const_missing(name)
             Gtk.session.refuse(self, name)
           end
@@ -34,6 +36,10 @@ module Lich
         @sessions = {}.compare_by_identity
         @mutex = Mutex.new
 
+        # Finds or creates the running Script's identity-owned compatibility session.
+        # Retains callback attribution on the current thread without loading native GTK.
+        # @return [Session]
+        # @raise [UnsupportedOperation] when no Script owns the call
         def self.session
           owner = Script.current
           raise UnsupportedOperation, 'script owner is required for Gtk' unless owner
@@ -75,19 +81,27 @@ module Lich
           nil
         end
 
+        # Reports the main-loop degradation without stopping Lich, its game, or the core dispatcher.
+        # @return [nil]
         def self.main_quit
           session.degrade(:main_loop, 'native main-loop control is replaced by the core dispatcher')
           nil
         end
 
+        # Refuses unsupported GTK constants at the script boundary.
+        # @raise [UnsupportedOperation] always
         def self.const_missing(name)
           session.refuse(self, name)
         end
 
+        # Refuses unsupported GTK calls with script and source attribution.
+        # @raise [UnsupportedOperation] always
         def self.method_missing(name, *, **, &)
           session.refuse(self, name)
         end
 
+        # Keeps reflection limited to implemented methods; unsupported GTK calls remain explicit refusals.
+        # @return [Boolean]
         def self.respond_to_missing?(*args)
           super
         end

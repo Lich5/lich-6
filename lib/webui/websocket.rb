@@ -22,18 +22,31 @@ module Lich
       class ProtocolError < StandardError; end
 
       Frame = Data.define(:opcode, :payload) do
+        # Identifies a text-message opcode for JSON protocol dispatch.
+        # @return [Boolean]
         def text? = opcode == OPCODE_TEXT
+        # Identifies a close control frame ending the connection loop.
+        # @return [Boolean]
         def close? = opcode == OPCODE_CLOSE
+        # Identifies a ping control frame requiring an echoed pong.
+        # @return [Boolean]
         def ping? = opcode == OPCODE_PING
+        # Identifies a pong control frame without interpreting its payload as JSON.
+        # @return [Boolean]
         def pong? = opcode == OPCODE_PONG
       end
 
       module_function
 
+      # Computes the RFC 6455 server accept value from the client handshake key.
+      # @return [String] base64-encoded handshake response
       def accept_key(client_key)
         Base64.strict_encode64(Digest::SHA1.digest(client_key.to_s.strip + HANDSHAKE_GUID))
       end
 
+      # Encodes a bounded, unmasked server frame with a supported opcode.
+      # @return [String] binary frame
+      # @raise [ProtocolError] for excessive size, unsupported opcode, or fragmented control frames
       def encode_frame(payload, opcode: OPCODE_TEXT, final: true)
         data = payload.to_s.b
         raise ProtocolError, 'server frame too large' if data.bytesize > MAX_PAYLOAD_BYTES
@@ -73,6 +86,12 @@ module Lich
         end.join
       end
 
+      # Encodes a masked client frame for probes and tests.
+      # The deterministic default mask is for fixtures, not a production browser client.
+      # @param payload [Object] payload converted to binary text
+      # @param opcode [Integer] frame opcode
+      # @param mask_key [String] exactly four mask bytes
+      # @return [String] binary frame
       def encode_client_frame(payload, opcode: OPCODE_TEXT, mask_key: "\x01\x02\x03\x04".b)
         raise ArgumentError, 'mask_key must contain four bytes' unless mask_key.bytesize == 4
         data = payload.to_s.b
@@ -89,6 +108,11 @@ module Lich
         head << mask_key << unmask(data, mask_key)
       end
 
+      # Reads one bounded, unfragmented frame and validates text encoding/control limits.
+      # @param io [#read] input stream
+      # @param require_mask [Boolean] require client masking; false for test-client reads
+      # @return [Frame, nil] decoded frame, or nil at clean EOF
+      # @raise [ProtocolError] for invalid or unsupported frames
       def read_frame(io, require_mask: true)
         head = read_exact(io, 2)
         return nil unless head
@@ -120,6 +144,8 @@ module Lich
         Frame.new(opcode, payload)
       end
 
+      # Applies the repeating four-byte XOR mask (also usable to mask fixture payloads).
+      # @return [String] transformed binary payload
       def unmask(payload, mask_key)
         mask = mask_key.bytes
         payload.bytes.each_with_index.map { |byte, index| byte ^ mask[index % 4] }.pack('C*')

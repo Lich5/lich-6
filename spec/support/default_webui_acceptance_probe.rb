@@ -20,6 +20,9 @@ module LichCiDefaultWebUIAcceptance
   REQUIRED_TABS = ['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'].freeze
   GTK_FAMILY_PATTERN = /(?:gtk|gdk|gobject|glib)/i
 
+  # Intercepts only browser opening after its class loads; leaves production startup/await intact.
+  # This subprocess probe uses authenticated HTTP/WebSocket traffic, not a browser cookie jar.
+  # @return [void]
   def install!
     @installer = TracePoint.new(:end) do |trace|
       next unless trace.path.end_with?('/webui/browser_launcher.rb')
@@ -38,6 +41,8 @@ module LichCiDefaultWebUIAcceptance
     @installer.enable
   end
 
+  # Starts the probe client and writes a structured success/failure report to the parent pipe.
+  # @return [Thread] client worker
   def start_client(url)
     @client = Thread.new do
       result = exercise(url)
@@ -51,6 +56,10 @@ module LichCiDefaultWebUIAcceptance
     end
   end
 
+  # Checks no-argument startup, authentication, launcher tabs, and one real event/refresh cycle.
+  # This proves transport/startup integration, not rendering or OS-window behavior.
+  # @return [Hash] acceptance evidence
+  # @raise [RuntimeError] when an expected protocol or launcher step fails
   def exercise(url)
     raise 'default acceptance unexpectedly received arguments' unless ARGV.empty?
 
@@ -115,6 +124,8 @@ module LichCiDefaultWebUIAcceptance
     socket&.close unless socket&.closed?
   end
 
+  # Makes one loopback request with explicit headers and a bounded response wait.
+  # @return [String] raw HTTP response
   def http_get(uri, target, headers)
     socket = TCPSocket.new(uri.host, uri.port)
     lines = ["GET #{target} HTTP/1.1", "Host: #{uri.host}:#{uri.port}", 'Connection: close']
@@ -125,6 +136,9 @@ module LichCiDefaultWebUIAcceptance
     socket&.close
   end
 
+  # Performs the authenticated loopback WebSocket upgrade used by the probe.
+  # @return [TCPSocket] upgraded connection
+  # @raise [RuntimeError] if the server refuses the upgrade
   def websocket(uri, cookie)
     socket = TCPSocket.new(uri.host, uri.port)
     key = Base64.strict_encode64('lich-r3-acceptance')
@@ -140,6 +154,8 @@ module LichCiDefaultWebUIAcceptance
     socket
   end
 
+  # Reads one text frame with a timeout and parses its JSON payload.
+  # @return [Hash] server message
   def read_message(socket)
     frame = Timeout.timeout(5) { Lich::WebUI::WebSocket.read_frame(socket, require_mask: false) }
     raise 'WebSocket closed before acceptance completed' unless frame&.text?
@@ -147,6 +163,9 @@ module LichCiDefaultWebUIAcceptance
     JSON.parse(frame.payload)
   end
 
+  # Reads messages until the predicate accepts one or the probe deadline expires.
+  # @yield [message] acceptance predicate
+  # @return [Hash] accepted message
   def read_until(socket)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
     loop do
@@ -157,10 +176,14 @@ module LichCiDefaultWebUIAcceptance
     end
   end
 
+  # Sends a JSON protocol message using the masked fixture frame encoder.
+  # @return [Integer] bytes written
   def send_message(socket, payload)
     socket.write(Lich::WebUI::WebSocket.encode_client_frame(JSON.generate(payload)))
   end
 
+  # Searches the delivered tree depth-first for the first predicate match.
+  # @return [Hash, nil] matching component
   def find_component(component, &predicate)
     return component if predicate.call(component)
 
@@ -171,6 +194,9 @@ module LichCiDefaultWebUIAcceptance
     nil
   end
 
+  # Verifies that the probed launcher method still comes from production source.
+  # @return [String] repository-relative file and line
+  # @raise [RuntimeError] if the method was replaced
   def launcher_source(method_name)
     path, line = Lich::Common::WebUILauncher.instance_method(method_name).source_location
     raise "launcher #{method_name} was replaced" unless path&.end_with?('/lib/common/webui_launcher.rb')
@@ -178,6 +204,8 @@ module LichCiDefaultWebUIAcceptance
     "lib/common/webui_launcher.rb:#{line}"
   end
 
+  # Writes one JSON result to the inherited report descriptor, then closes that writer.
+  # @return [void]
   def report(result)
     writer = IO.for_fd(Integer(ENV.fetch('LICH_CI_DEFAULT_WEBUI_FD')), 'w')
     writer.puts(JSON.generate(result))

@@ -28,6 +28,8 @@ module Lich
 
       # @return [Boolean] whether a constant defined in this scope now belongs
       #   to a script rather than to a plugin loaded by {.activate!}
+      # Reports whether script-owned nested classes/modules receive scoped helpers.
+      # @return [Boolean, nil] current adoption flag
       def self.adopt_nested_constants?
         @adopt_nested_constants
       end
@@ -130,6 +132,8 @@ module Lich
       end
 
       # @return [Boolean] whether new trusted scripts get a ScriptScope binding
+      # Reports whether script-scope activation has occurred.
+      # @return [Boolean, nil] current activation flag
       def self.active?
         @active
       end
@@ -147,11 +151,17 @@ module Lich
       class Sandbox
         include ScriptScope
 
+        # Creates fresh locals on this receiver within the shared lexical script scope.
+        # Despite the historical class name, this binding is not a security sandbox.
+        # @return [Binding]
         def script_binding
           Proc.new {}.binding
         end
       end
 
+      # Creates a fresh receiver/binding for label-based scripts, retaining scoped constants.
+      # This preserves evaluation semantics; it does not restrict arbitrary Ruby execution.
+      # @return [Binding]
       def self.untrusted_binding
         Sandbox.new.script_binding
       end

@@ -1,5 +1,8 @@
 const { defineConfig } = require('@playwright/test');
 
+// RSpec owns each fixture service and passes its one-use launch-file URL.
+// Run one browser scenario at a time; retries would hide first-attempt failures.
+// Headless Chrome verifies real DOM/cookies/navigation, not OS app-window behavior.
 module.exports = defineConfig({
   testDir: __dirname,
   testMatch: 'browser.spec.cjs',

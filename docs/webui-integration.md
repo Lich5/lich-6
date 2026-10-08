@@ -406,6 +406,22 @@ choice preparation remains the caller's responsibility.
 
 ## Validation
 
+### Source documentation
+
+Ruby API documentation is generated with `yard doc` using the repository's
+`.yardopts`; the output is `doc/yard/index.html`. Document the contracts of added
+or changed methods: owner/viewer scope, return values, refusals, callback timing,
+and resource disposal where relevant. Keep private-helper comments focused on
+invariants that callers or maintainers cannot infer from the name alone.
+
+Renderer comments describe draft preservation, event replay, and measured layout;
+the native host documents its origin checks and OS-window boundary. RSpec example
+descriptions document tested behavior, while reusable fixture helpers explain
+their ownership and limitations. Documentation coverage is a diagnostic, not a
+substitute for accurate contracts.
+
+### Runtime checks
+
 For a short explicit desktop check, run `ruby bench/native_webui_smoke.rb`.
 It opens an offline native page and shim window through the production host.
 Toggle topmost and native-page opacity, type in the frontend, then close the

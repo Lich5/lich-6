@@ -3,6 +3,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+/**
+ * Runs the shipped renderer against deterministic DOM/socket doubles.
+ * Tests explicitly drain animation frames and deliver server envelopes; dimensions
+ * are fixture values, so this helper cannot establish browser layout or OS geometry.
+ * @param {string|null} target Requested page address, or null for the page selector.
+ * @returns {Object} Recorded messages, synthetic DOM, and frame/delivery controls.
+ */
 function fixture(target) {
   class Element {
     constructor(tag) {

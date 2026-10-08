@@ -13,6 +13,10 @@ module Lich
       }.freeze
       ALIAS_PATTERN = /\A[A-Za-z0-9_-]{1,128}\z/
 
+      # Resolves the explicit filesystem roots allowed for later image registration.
+      # @param application_roots [Array<String>] application-approved directories
+      # @param user_allowlist [Array<String>] additional user-approved directories
+      # @param logger [#call, nil] optional diagnostic sink
       def initialize(application_roots:, user_allowlist: [], logger: nil)
         @application_roots = resolve_roots(application_roots)
         @user_allowlist = resolve_roots(user_allowlist)
@@ -52,6 +56,8 @@ module Lich
         "/files/#{alias_string}/"
       end
 
+      # Revokes an alias only when it belongs to this exact owner object.
+      # @return [Boolean] whether an owned registration was removed
       def unregister(alias_name, owner:)
         @mutex.synchronize do
           route = @routes[alias_name.to_s]
@@ -62,10 +68,17 @@ module Lich
         end
       end
 
+      # Revokes all file aliases belonging to the terminating owner.
+      # @return [void]
       def revoke_owner(owner)
         @mutex.synchronize { @routes.delete_if { |_name, route| route[:owner].equal?(owner) } }
       end
 
+      # Resolves an image route after one URL decode and realpath containment checks.
+      # HTTP authentication is enforced by Server before calling this resolver.
+      # @param alias_name [String] registered route alias
+      # @param encoded_relative_path [String] URL-encoded path beneath the alias root
+      # @return [Array, nil] path, MIME type, and owner label; nil for an invalid/missing file
       def resolve(alias_name, encoded_relative_path)
         route = @mutex.synchronize { @routes[alias_name.to_s]&.dup }
         return nil unless route
@@ -85,6 +98,8 @@ module Lich
         nil
       end
 
+      # Resolves a /files/ URL through the same bounded alias/path checks.
+      # @return [Array, nil] path, MIME type, and owner label, or nil
       def resolve_url(url)
         match = url.to_s.match(%r{\A/files/([A-Za-z0-9_-]{1,128})/(.+)\z})
         return nil unless match
@@ -92,6 +107,8 @@ module Lich
         resolve(match[1], match[2])
       end
 
+      # Revokes all image routes during host shutdown.
+      # @return [void]
       def clear!
         @mutex.synchronize { @routes.clear }
       end

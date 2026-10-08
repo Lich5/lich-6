@@ -264,6 +264,11 @@ module Lich
     end
   end
 
+  # Uses the native Windows message box; other hosts emit a diagnostic without a GUI prompt.
+  # When stderr is the debug log, a terminal notice points to it. Non-Windows output
+  # does not supply consent or emulate Yes/No responses.
+  # @param args [Hash] message, optional title, buttons, and icon
+  # @return [Symbol, nil] Windows response, or nil for diagnostic-only/failure paths
   def Lich.msgbox(args)
     if defined?(Win32)
       if args[:buttons] == :ok_cancel

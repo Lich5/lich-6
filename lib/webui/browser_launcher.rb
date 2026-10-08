@@ -152,6 +152,8 @@ module Lich
         nil
       end
 
+      # Builds Chromium size/position arguments only from integer geometry.
+      # @return [Array<String>] command-line arguments
       def geometry_arguments(geometry)
         return [] unless geometry.is_a?(Hash)
 
@@ -167,16 +169,23 @@ module Lich
         arguments
       end
 
+      # Selects the first executable Chrome candidate, then Edge on Windows.
+      # Injected platform/environment/probes allow discovery tests without launching a browser.
+      # @return [String, nil] executable path
       def app_browser_path(platform: RUBY_PLATFORM, executable: File.method(:executable?), environment: ENV)
         candidates = chrome_candidates(platform: platform, environment: environment)
         candidates += edge_candidates(environment: environment) if windows?(platform)
         candidates.find { |path| executable.call(path) }
       end
 
+      # Finds Chrome specifically for callers that require that browser.
+      # @return [String, nil] executable path
       def google_chrome_path(platform: RUBY_PLATFORM, executable: File.method(:executable?))
         chrome_candidates(platform: platform).find { |path| executable.call(path) }
       end
 
+      # Lists conventional installation paths for the requested host platform.
+      # @return [Array<String>] ordered discovery candidates
       def chrome_candidates(platform: RUBY_PLATFORM, environment: ENV)
         return MACOS_PATHS if platform.match?(/darwin/i)
         return LINUX_PATHS unless windows?(platform)
@@ -187,6 +196,8 @@ module Lich
         end
       end
 
+      # Lists Windows Edge paths beneath the available installation environment roots.
+      # @return [Array<String>] ordered discovery candidates
       def edge_candidates(environment: ENV)
         %w[PROGRAMFILES PROGRAMFILES(X86) LOCALAPPDATA].filter_map do |variable|
           root = environment[variable]
@@ -194,6 +205,8 @@ module Lich
         end
       end
 
+      # Recognizes Windows Ruby platform strings for browser executable discovery.
+      # @return [Boolean]
       def windows?(platform)
         platform.match?(/mingw|mswin|cygwin/i)
       end

@@ -102,6 +102,8 @@ module Lich
 
       private
 
+      # Composes caller-supplied or default layout while retaining the form's submission lifecycle.
+      # @return [void]
       def render(builder)
         refs = {}
         if @layout
@@ -133,6 +135,8 @@ module Lich
       # They reuse field rendering and lifecycle without exposing viewer drafts.
       def render_actions(_builder, _refs); end
 
+      # Binds Save to the collected field references so validation sees one explicit snapshot.
+      # @return [TreeBuilder::Draft] save button reference
       def render_save(builder, refs, label: 'Save & Close', **props)
         builder.button(key: 'save', label: label, **props, submit: refs.values,
                        on: { activate: proc { |event| save(event.submission, refs) } })
@@ -158,6 +162,9 @@ module Lich
         end
       end
 
+      # Maps a field to its current value and preserves caller-owned live-change timing.
+      # Exclusive checkbox groups uncheck peers only in the originating viewer.
+      # @return [TreeBuilder::Draft, nil] control reference, or nil for an absent field
       def render_field(builder, field, refs, **overrides)
         return unless field # Some original controls are absent outside GS.
 
@@ -187,15 +194,22 @@ module Lich
         refs[key] = builder.component(type, **props)
       end
 
+      # Adds a revision only when the form needs to replace browser-retained input state.
+      # @return [String] stable field identity within the revision
       def input_key(key)
         @input_revision.zero? ? key.to_s : "#{key}--revision-#{@input_revision}"
       end
 
+      # Projects array-backed textarea settings into newline-separated display text.
+      # @return [Object] displayed field value
       def field_value(key, type)
         value = @values.fetch(key)
         type == :textarea && value.is_a?(Array) ? value.join("\n") : value
       end
 
+      # Normalizes a copied submission and completes once; validation errors retain the draft.
+      # Only successful normalization closes the page and resolves its completion.
+      # @return [void]
       def save(submission, refs)
         return if @completion.resolved?
 
@@ -212,6 +226,8 @@ module Lich
         WebUI.refresh(@page)
       end
 
+      # Copies nested settings hashes, arrays, and strings so form edits do not mutate caller data.
+      # @return [Object] copied setting value
       def copy(value)
         case value
         when Hash then value.to_h { |key, item| [key, copy(item)] }

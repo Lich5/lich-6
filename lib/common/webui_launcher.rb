@@ -120,6 +120,8 @@ module Lich
         )
       end
 
+      # Supplies a stable diagnostic label; ownership still uses this instance's identity.
+      # @return [String]
       def webui_owner_id = 'core.launcher'
 
       # Registers the launcher page and opens its owned browser process.
@@ -208,8 +210,11 @@ module Lich
       end
 
       # @return [Symbol] current launcher lifecycle state
+      # Reads the launcher state while holding its lifecycle mutex.
+      # @return [Symbol] current lifecycle state
       def lifecycle = @mutex.synchronize { @lifecycle }
       # @return [Hash] immutable snapshot of pending operations
+      # Snapshots pending operation tokens without exposing the mutable operation index.
       def active_operations = @mutex.synchronize { @active.dup.freeze }
 
       # Waits for a selected session or cancellation without a toolkit main loop.
@@ -222,6 +227,8 @@ module Lich
       end
 
       # @return [Lich::WebUI::Component] the current authored launcher tree
+      # Evaluates the current launcher page for inspection without opening a window.
+      # @return [Lich::WebUI::Component] rendered root
       def render_tree
         @page.render.tree
       end
@@ -669,12 +676,17 @@ module Lich
         end
       end
 
+      # Records the selected authenticated character row and refreshes launch availability.
+      # @return [void]
       def manual_select(event)
         selected = event.payload.fetch(:rows).first
         @mutex.synchronize { @manual[:selected] = selected }
         refresh
       end
 
+      # Accepts known frontend choices and disables custom launch for native-only adapters.
+      # @return [void]
+      # @raise [ArgumentError] for an unsupported manual option
       def manual_option_changed(event, option)
         value = event.payload.fetch(:value)
         @mutex.synchronize do
@@ -772,34 +784,48 @@ module Lich
         end
       end
 
+      # Queues a favorite mutation through the launcher's tracked operation lifecycle.
+      # @return [void]
       def toggle_favorite(event, entry_key)
         mutate(:favorite, event, 'Favorite update failed.') do
           raise 'favorite update failed' if @catalog.toggle_favorite(entry_key).nil?
         end
       end
 
+      # Opens the character-removal confirmation; persistence waits for its response.
+      # @return [void]
       def remove_entry(_event, entry_key)
         @mutex.synchronize { @modal = { kind: :confirm_delete, entry_key: entry_key, body: 'Remove this saved character?' } }
         refresh
       end
 
+      # Selects a saved character as the edit/removal target and refreshes its form.
+      # @return [void]
       def select_managed_entry(event)
         @mutex.synchronize { @draft_entry_key = event.payload.fetch(:rows).first }
         refresh
       end
 
+      # Refreshes the editor using the currently selected character.
+      # @return [void]
       def begin_edit = refresh
 
+      # Clears the character edit target without modifying catalog data.
+      # @return [void]
       def cancel_edit
         @mutex.synchronize { @draft_entry_key = nil }
         refresh
       end
 
+      # Requests confirmation for the selected character, if any.
+      # @return [void]
       def remove_selected_entry(event)
         key = @mutex.synchronize { @draft_entry_key }
         remove_entry(event, key) if key
       end
 
+      # Requests confirmation before removing the selected character's entire account.
+      # @return [void]
       def remove_selected_account(_event)
         entry = @mutex.synchronize { @entries.find { |candidate| candidate.key == @draft_entry_key } }
         return unless entry
@@ -811,6 +837,8 @@ module Lich
         refresh
       end
 
+      # Cancels or queues the confirmed account/character removal from a modal response.
+      # @return [void]
       def delete_response(event)
         return cancel_modal unless event.payload[:button] == 'remove'
 
@@ -964,6 +992,8 @@ module Lich
         end
       end
 
+      # Queues a catalog reload and page refresh on the launcher executor.
+      # @return [void]
       def refresh_catalog
         @executor.post do
           reload_catalog
@@ -1192,6 +1222,9 @@ module Lich
         operation
       end
 
+      # Accepts completion only for the current operation token while the launcher is open.
+      # State mutation occurs under the lifecycle mutex; stale work cannot replace current state.
+      # @return [Boolean] whether completion was accepted
       def complete(operation)
         accepted = @mutex.synchronize do
           next false unless @active[operation.kind]&.id == operation.id && @lifecycle != :closed
@@ -1279,6 +1312,9 @@ module Lich
         end
       end
 
+      # Consumes a submission carrier into a new carrier owned by background work.
+      # The source is disposed on block exit; the recipient must dispose the returned carrier.
+      # @return [Lich::WebUI::SensitiveValue] transferred viewer-origin secret
       def transfer_secret(carrier)
         transferred = nil
         carrier.consume { |plaintext| transferred = Lich::WebUI::SensitiveValue.viewer(plaintext) }
@@ -1390,16 +1426,23 @@ module Lich
           options.any? { |option| option[:value] == manual[:frontend] }
       end
 
+      # Finds a submitted field by its component-ID suffix.
+      # @return [Object, nil] submitted value, or nil when absent
       def submitted(values, suffix)
         values.find { |key, _| key.end_with?(suffix) }&.last
       end
 
+      # Copies the submission index while retaining its one-shot secret carriers.
+      # @return [Hash] component IDs mapped to submitted values
       def submission_values(submission)
         submission.cids.to_h { |cid| [cid, submission.fetch(cid)] }
       end
 
       def blank(value) = value.to_s.empty? ? nil : value.to_s
 
+      # Nests three secret consumptions so every opened plaintext buffer is cleared on exit.
+      # @yield [first, second, third] operation requiring all three secrets
+      # @return [Object] block result
       def consume_three(carriers, &block)
         carriers.fetch(0).consume do |first|
           carriers.fetch(1).consume do |second|
@@ -1408,10 +1451,15 @@ module Lich
         end
       end
 
+      # Rejects differing byte lengths, then compares the complete equal-length secrets.
+      # @return [Boolean]
       def secure_equal?(left, right)
         left.bytesize == right.bytesize && OpenSSL.fixed_length_secure_compare(left, right)
       end
 
+      # Builds frontend launch metadata with explicit installation path flags.
+      # Credentials are supplied through the separate authenticated launch path.
+      # @return [Hash] launch arguments
       def launch_context(entry)
         { char_name: entry.char_name, game_code: entry.game_code, frontend: entry.frontend,
           custom_launch: entry.custom_launch, custom_launch_dir: entry.custom_launch_dir,

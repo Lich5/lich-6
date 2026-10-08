@@ -18,6 +18,8 @@ module Lich
         @callbacks = []
       end
 
+      # Reports whether a result has been recorded under the future lock.
+      # @return [Boolean]
       def resolved?
         @mutex.synchronize { !@result.nil? }
       end
@@ -42,6 +44,9 @@ module Lich
         accepted
       end
 
+      # Resolves an unresolved future with a cancellation reason.
+      # @param reason [Symbol] terminal cancellation status
+      # @return [Boolean] whether this call resolved the future
       def cancel(reason: :cancelled)
         resolve(reason: reason)
       end
@@ -67,6 +72,11 @@ module Lich
         self
       end
 
+      # Waits for a result without canceling the future on timeout.
+      # Never call from an owner callback: that worker must remain free to resolve it.
+      # @param timeout [Numeric, nil] maximum monotonic wait in seconds
+      # @return [Result, nil] result, or nil when the deadline expires
+      # @raise [Dispatcher::ReentryError] when called from dispatcher context
       def await(timeout: nil)
         if Thread.current.thread_variable_get(Dispatcher::THREAD_CONTEXT_KEY)
           raise Dispatcher::ReentryError, 'a WebUI callback cannot block awaiting a modal'

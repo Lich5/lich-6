@@ -23,6 +23,9 @@ module Lich
           value: value, add: add, delete: delete, clear_after_add: clear_after_add }
       end
 
+      # Adds table/entry/action fields for caller-owned lists to a settings form.
+      # @param lists [Hash] list keys mapped to columns and read/add/delete callbacks
+      # @param options [Hash] SettingsForm options including ordinary fields
       def initialize(lists:, **options)
         @lists = lists
         @selection = {}
@@ -37,6 +40,9 @@ module Lich
 
       private
 
+      # Renders list rows or their entry/action controls with an explicit submission scope.
+      # Ordinary fields keep the base settings-form renderer.
+      # @return [Object] rendered field reference, when applicable
       def render_field(tree, field, refs, **overrides)
         return unless field
         key = field[:key]
@@ -64,6 +70,9 @@ module Lich
         end
       end
 
+      # Invokes the caller's list mutation and refreshes; never normalizes list contents.
+      # A revision changes entry identity only when the caller requests clearing after Add.
+      # @return [void]
       def change_list(key, action, event)
         definition = @lists.fetch(key)
         if action == 'add'
@@ -79,6 +88,8 @@ module Lich
         WebUI.refresh(@page)
       end
 
+      # Reads current caller-owned lists before delegating ordinary field persistence.
+      # @return [void]
       def save(submission, refs)
         @lists.each { |key, definition| @values[key] = definition.fetch(:value).call }
         super

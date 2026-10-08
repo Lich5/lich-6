@@ -29,6 +29,9 @@ module Lich
             Lich.log(notice)
           end
 
+          # Runs shadow-state work under the reentrant session monitor.
+          # @yield operation requiring consistent widget state
+          # @return [Object] block result
           def synchronize(&block)
             @mutex.synchronize(&block)
           end
@@ -63,6 +66,8 @@ module Lich
             end
           end
 
+          # Retains a top-level window for owner-death cleanup.
+          # @return [void]
           def register(window)
             @windows << window
           end
@@ -86,13 +91,24 @@ module Lich
             end
           end
 
+          # Removes a destroyed window from cleanup and viewer-attribution indexes.
+          # @return [void]
           def forget(window)
             @window_viewers.delete(window)
             @windows.delete(window)
           end
 
+          # Reports whether the session is currently executing a viewer-attributed callback.
+          # @return [Boolean]
           def in_callback? = !@callback_viewer.nil?
 
+          # Adopts script ownership and viewer context while executing a mapped GTK signal.
+          # Terminal actions commit input shadow state before the handler; context clears on exit.
+          # @param event [Lich::WebUI::Runtime::EventContext] validated core event
+          # @param terminal [Boolean] whether to capture current inputs before the handler
+          # @param widget [Widget, nil] source used to select its own window
+          # @yield legacy signal handler
+          # @return [Object] handler result
           def callback(event, terminal: false, widget: nil)
             @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
             synchronize do
@@ -107,6 +123,8 @@ module Lich
             end
           end
 
+          # Logs each unsupported presentation approximation once per session.
+          # @return [void]
           def degrade(operation, reason)
             return if @degradations[operation]
 
@@ -114,6 +132,8 @@ module Lich
             Lich.log("#{@owner.name}: compatibility #{operation}: #{reason}")
           end
 
+          # Fails loudly with script, receiver, operation, and source-call attribution.
+          # @raise [UnsupportedOperation] always
           def refuse(receiver, operation)
             raise UnsupportedOperation, attribution(receiver, operation)
           end

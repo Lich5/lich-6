@@ -73,6 +73,8 @@ module Lich
       end
 
       # @return [Boolean] whether closure was requested or the process exited
+      # Reads the owned window's close state under its lifecycle mutex.
+      # @return [Boolean]
       def closed?
         @mutex.synchronize { @closed }
       end

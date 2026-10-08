@@ -14,6 +14,8 @@ module Lich
         attr_accessor :connection_id, :render, :delivered_generation, :expires_at
         attr_reader :viewer_id, :resume_token, :address, :page, :values
 
+        # Creates independent viewer identity, resume capability, and local state for a page.
+        # The resume token is server-generated; no render is delivered yet.
         def initialize(connection_id:, address:, page:)
           @connection_id = connection_id
           @viewer_id = "attachment-#{SecureRandom.hex(16)}".freeze
@@ -27,6 +29,8 @@ module Lich
         end
       end
 
+      # Creates connection/resume indexes with an injectable monotonic expiry clock.
+      # @param clock [#call] elapsed seconds used for reconnect deadlines
       def initialize(clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
         @clock = clock
         @by_connection = {}
@@ -63,6 +67,9 @@ module Lich
         end
       end
 
+      # Finds a live connection/page attachment after expiring stale resume entries.
+      # @return [Attachment]
+      # @raise [Error] when the connection is not attached to that page
       def fetch(connection_id:, address:)
         @mutex.synchronize do
           expire_locked!
@@ -72,6 +79,8 @@ module Lich
         raise Error, 'viewer is not attached to page'
       end
 
+      # Removes connection routing while retaining state for the bounded resume window.
+      # @return [Array<Attachment>] disconnected attachments for lifecycle notifications
       def transient_disconnect(connection_id)
         @mutex.synchronize do
           attachments = @by_connection.each_value.select { |attachment| attachment.connection_id == connection_id }.uniq
@@ -83,6 +92,8 @@ module Lich
         end
       end
 
+      # Destroys one attachment immediately, including its resume capability and values.
+      # @return [Attachment, nil] removed attachment
       def close(connection_id:, address:)
         @mutex.synchronize do
           attachment = @by_connection.delete([connection_id, address])
@@ -91,6 +102,8 @@ module Lich
         end
       end
 
+      # Destroys all live and resumable attachments for this exact page instance.
+      # @return [void]
       def destroy_page(page)
         @mutex.synchronize do
           @by_resume.values.select { |attachment| attachment.page.equal?(page) }.uniq.each do |attachment|
@@ -99,6 +112,8 @@ module Lich
         end
       end
 
+      # Snapshots active page attachments; disconnected resume entries do not count.
+      # @return [Array<Attachment>]
       def attachments_for(page)
         @mutex.synchronize do
           expire_locked!
@@ -106,6 +121,9 @@ module Lich
         end
       end
 
+      # Resolves an active viewer within an exact page instance.
+      # @return [Attachment]
+      # @raise [Error] for absent, expired, or disconnected viewers
       def attachment_for_viewer(page, viewer_id)
         @mutex.synchronize do
           expire_locked!
@@ -115,10 +133,14 @@ module Lich
         end || raise(Error.new('viewer is not attached to page', page_id: page.id))
       end
 
+      # Reads a viewer override, falling back to the delivered component property.
+      # @return [Object] current value
       def property(attachment, component, name)
         @mutex.synchronize { attachment.values.fetch([component.cid, name], component.props[name]) }
       end
 
+      # Stores an already-validated viewer-local override under the store lock.
+      # @return [Object] stored value
       def set_property(attachment, component, name, value)
         @mutex.synchronize { attachment.values[[component.cid, name]] = value }
       end
@@ -142,6 +164,9 @@ module Lich
         end
       end
 
+      # Applies a validated interaction to the corresponding viewer-local control state.
+      # Password values are intentionally excluded from this persistent state map.
+      # @return [void]
       def update(attachment, component, event, payload)
         @mutex.synchronize do
           case [component.type, event]
@@ -161,6 +186,8 @@ module Lich
         end
       end
 
+      # Maps a validated submission value to the control's supported input property.
+      # @return [void]
       def set_input(attachment, component, value)
         property = input_property(component.type)
         @mutex.synchronize { attachment.values[[component.cid, property]] = value } if property
@@ -193,6 +220,9 @@ module Lich
         end
       end
 
+      # Overlays viewer-local values onto the delivered tree for wire serialization.
+      # @return [Hash] viewer-specific component tree
+      # @raise [Error] before a render has been delivered
       def serialize(attachment)
         @mutex.synchronize do
           render = attachment.render
@@ -204,6 +234,9 @@ module Lich
 
       private
 
+      # Seeds only absent viewer fields and repairs removed select choices without fabricating events.
+      # Requires the store mutex; existing unrelated viewer edits remain intact.
+      # @return [void]
       def seed_values!(attachment, component)
         schema = Contract.schema(component.type)
         schema[:properties].each do |name, definition|
@@ -221,6 +254,8 @@ module Lich
         component.children.each { |child| seed_values!(attachment, child) }
       end
 
+      # Overlays viewer properties and row expansion while excluding secret/ephemeral fields.
+      # @return [Hash] recursively serialized control
       def serialize_component(component, values)
         props = component.props.each_with_object({}) do |(name, value), result|
           definition = Contract.schema(component.type)[:properties][name]
@@ -257,6 +292,8 @@ module Lich
         end
       end
 
+      # Destroys expired disconnected attachments while the store mutex is held.
+      # @return [void]
       def expire_locked!
         now = @clock.call
         @by_resume.values.select { |attachment| attachment.expires_at && attachment.expires_at <= now }.uniq.each do |attachment|
@@ -264,6 +301,8 @@ module Lich
         end
       end
 
+      # Clears connection/resume indexes, values, and render references under the store mutex.
+      # @return [void]
       def destroy_locked!(attachment)
         return unless attachment
 
@@ -274,6 +313,8 @@ module Lich
         attachment.delivered_generation = nil
       end
 
+      # Deletes only mappings to this exact attachment object, including superseded aliases.
+      # @return [void]
       def remove_connection_mapping!(attachment)
         @by_connection.delete_if { |_key, candidate| candidate.equal?(attachment) }
       end

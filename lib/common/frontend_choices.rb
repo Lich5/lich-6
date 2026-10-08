@@ -72,6 +72,8 @@ module Lich
 
         private
 
+        # Filters GUI choices for the platform and retains catalog order after the default frontend.
+        # @return [Array<Hash>] selectable definitions
         def definitions(frontend)
           selectable = frontend.definitions(gui_selectable: true).select do |definition|
             platforms = definition.dig(:metadata, :gui_platforms)
@@ -83,6 +85,8 @@ module Lich
           stormfront + others
         end
 
+        # Builds an advisory availability index; failed discovery does not remove choices.
+        # @return [Hash] canonical frontend IDs found by the locator
         def resolved_ids(refresh:, locator:, frontend:)
           locator.available(gui_selectable: true, refresh: refresh).to_h do |resolution|
             [frontend.canonical_name(resolution.frontend_id), true]
@@ -93,6 +97,8 @@ module Lich
           {}
         end
 
+        # Annotates a frontend choice with its display name and discovery/configuration state.
+        # @return [Choice]
         def choice_for(definition, resolved)
           display = definition.dig(:metadata, :display_name) || definition[:id].capitalize
           state = state_for(definition, resolved)
@@ -113,6 +119,8 @@ module Lich
           :unavailable
         end
 
+        # Recognizes a custom adapter with a nonblank configured launch command.
+        # @return [Boolean]
         def configured_custom?(definition)
           definition.dig(:metadata, :launcher_adapter) == :custom &&
             !definition.dig(:metadata, :launch_command).to_s.strip.empty?

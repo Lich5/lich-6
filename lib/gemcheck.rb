@@ -105,7 +105,7 @@ module Lich
     # Chooses the dependency groups that must be present before normal startup.
     # The native WebUI launcher has no GUI gem dependency.
     #
-    # @param argv [Array<String>] command-line arguments
+    # @param _argv [Array<String>] retained compatibility argument; WebUI needs only the default group
     # @return [Array<Symbol>]
     def startup_groups(_argv = ARGV)
       [:default]

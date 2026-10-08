@@ -67,12 +67,17 @@ module Lich
         @mutex.synchronize { check_active!(owner) }
       end
 
+      # Finds a page by server-side owner identity and owner-local ID.
+      # @return [Page] registered page
+      # @raise [Error] if no such page is registered
       def fetch(owner, page_id)
         @mutex.synchronize { @pages.fetch(registry_key(owner, page_id)) }
       rescue KeyError
         raise Error.new('page is not registered', owner: owner_label(owner), page_id: page_id)
       end
 
+      # Removes one page and its address/modal indexes without performing owner cleanup.
+      # @return [Page, nil] removed page, or nil if absent
       def unregister(owner, page_id)
         @mutex.synchronize do
           page = @pages.delete(registry_key(owner, page_id))
@@ -81,6 +86,8 @@ module Lich
         end
       end
 
+      # Removes every page and address belonging to this exact owner object.
+      # @return [Array<Page>] removed pages for subsequent runtime cleanup
       def unregister_owner(owner)
         owner_identity = owner.object_id
         @mutex.synchronize do
@@ -91,6 +98,8 @@ module Lich
         end
       end
 
+      # Snapshots pages belonging to this exact owner object.
+      # @return [Array<Page>] currently registered pages
       def pages_for(owner)
         owner_identity = owner.object_id
         @mutex.synchronize do
@@ -98,6 +107,8 @@ module Lich
         end
       end
 
+      # Returns the registered page count under the registry lock.
+      # @return [Integer]
       def size
         @mutex.synchronize { @pages.size }
       end
@@ -108,18 +119,27 @@ module Lich
         @mutex.synchronize { @pages.values }
       end
 
+      # Retrieves the opaque wire address for an exact registered page instance.
+      # @return [String] address
+      # @raise [Error] if the page is no longer registered
       def address_for(page)
         @mutex.synchronize { @page_addresses.fetch(page) }
       rescue KeyError
         raise Error.new('page is not registered', owner: owner_label(page.owner), page_id: page.id)
       end
 
+      # Resolves an opaque wire address to a registered page.
+      # @return [Page]
+      # @raise [Error] if the address is unknown
       def fetch_address(address)
         @mutex.synchronize { @addresses.fetch(address.to_s) }
       rescue KeyError
         raise Error.new('page address is not registered', page_id: address)
       end
 
+      # Builds viewer-visible page descriptors without exposing owner identities.
+      # Modal targets include only normal pages belonging to the same owner.
+      # @return [Array<Hash>] addresses, titles, versions, and optional modal targets
       def descriptors
         @mutex.synchronize do
           @addresses.map do |address, page|

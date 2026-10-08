@@ -175,6 +175,8 @@ module Lich
 
         private
 
+        # Combines persisted overrides and discovery while retaining catalog-owned capabilities.
+        # @return [Hash] editable built-in fields plus read-only detection metadata
         def built_in_fields(id, document, frontend, locator)
           persisted = document.fetch('builtins', {}).fetch(id, {})
           resolution = resolve(locator, id)
@@ -191,12 +193,16 @@ module Lich
           }
         end
 
+        # Returns catalog capabilities for display, or an empty list if lookup fails.
+        # @return [Array<String>]
         def built_in_capabilities(id, frontend)
           Array(frontend.definition_for(id)[:capabilities]).map(&:to_s)
         rescue StandardError
           []
         end
 
+        # Projects persisted custom configuration into the editor's field shape.
+        # @return [Hash] draft fields
         def custom_fields(id, document)
           persisted = document.fetch('custom', {}).fetch(id, {})
           {
@@ -208,6 +214,8 @@ module Lich
           }
         end
 
+        # Builds catalog-order rows from overrides and advisory executable discovery.
+        # @return [Array<Hash>] built-in frontend summaries
         def built_in_rows(frontend, builtins, locator)
           frontend.built_in_frontends.map do |id|
             persisted = builtins.fetch(id, {})
@@ -221,6 +229,8 @@ module Lich
           end
         end
 
+        # Builds summaries of configured custom frontends without executing their commands.
+        # @return [Array<Hash>]
         def custom_rows(custom)
           custom.map do |id, definition|
             {
@@ -230,6 +240,8 @@ module Lich
           end
         end
 
+        # Distinguishes a configured executable from discovery or an unavailable resolution.
+        # @return [String] display status
         def built_in_status(resolution)
           return 'Unavailable' unless resolution
           return 'Configured' if resolution.source == :configured
@@ -237,12 +249,16 @@ module Lich
           'Detected'
         end
 
+        # Treats invalid or inaccessible executable discovery as an unavailable frontend.
+        # @return [Object, nil] locator resolution
         def resolve(locator, frontend_id)
           locator.resolve(frontend_id)
         rescue ArgumentError, SystemCallError
           nil
         end
 
+        # Quotes argument tokens for round-trip editing as a shell-style argument string.
+        # @return [String] escaped argument text
         def join_arguments(arguments)
           Array(arguments).map(&:to_s).shelljoin
         end
@@ -264,6 +280,8 @@ module Lich
           end
         end
 
+        # Validates required fields and parses arguments before producing persisted configuration.
+        # @return [Hash] custom frontend definition
         def custom_definition(fields)
           {
             'label'        => required_scalar('Label', fields[:label]),
