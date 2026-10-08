@@ -286,6 +286,25 @@ A reconnectable viewer detach cancels that viewer's pending work and clears
 retained manual credentials without closing the launcher. Explicit window close
 and owned-process exit still perform shutdown.
 
+Launcher feedback distinguishes saved-password unlocking, account authentication,
+launch preparation and session launch. An account-authentication failure after a
+successful unlock closes the unlock prompt and reports the authentication stage;
+it does not imply that the master password was rejected. A wrong master password
+still keeps the prompt available for retry or cancellation. Manual Entry reports
+when a selected front end is no longer available, without changing its launch gate.
+
+Startup failures and optional save failures use the existing `Lich.msgbox` notifier:
+the Windows native message box, or terminal/debug-log reporting on other hosts.
+A host process exiting before the first viewer attachment reports before releasing
+the launch waiter. Every accepted close attempts to log its reason; reconnectable
+detach is not a close. Notification and diagnostic failures cannot interrupt
+closure or mask a startup error. Closure always signals the launch waiter, even
+when teardown raises. Each teardown step and the close callback are attempted
+before the first teardown or callback error propagates to the caller.
+Optional save failure notification occurs after plaintext disposal
+and outside the commit gate; login can proceed unless canceled, even if notification
+fails. No GTK alert, fallback browser tab, or authentication URL is introduced.
+
 ## Theme behavior
 
 `StartupTheme.apply` retains the application's existing `Lich.track_dark_mode`

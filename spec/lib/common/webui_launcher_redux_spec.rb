@@ -234,27 +234,50 @@ RSpec.describe Lich::Common::WebUILauncher do
     expect(find(rendered, 'tabs:launcher-tabs').props[:selected]).to eq(1)
   end
 
-  it 'stops loudly instead of falling back to an ordinary browser tab' do
+  [true, false].each do |custom_recovery|
+    it "stops loudly with #{custom_recovery ? 'custom' : 'default'} recovery instead of an ordinary browser tab" do
+      registry = instance_double(Lich::WebUI::Registry, register: nil)
+      service = instance_double(
+        Lich::WebUI::Service,
+        registry: registry,
+        runtime: instance_double(Lich::WebUI::Runtime),
+        start: nil,
+        refresh: nil,
+        launch_url: 'http://127.0.0.1:1234/auth?token=redacted',
+        terminate_owner: nil,
+        stop: nil
+      )
+      recovery = []
+      allow(Lich).to receive(:msgbox) { |args| recovery << args.fetch(:message) }
+      failed = described_class.new(
+        data_dir: '/fixture', catalog: catalog, service: service, on_launch: proc {}, browser_open: proc { false },
+        recovery: custom_recovery ? ->(message) { recovery << message } : nil
+      )
+
+      expect { failed.start }.to raise_error(Lich::WebUI::Error, /dedicated launcher window failed/)
+      expect(failed.lifecycle).to eq(:closed)
+      expect(recovery).to contain_exactly(match(/ERROR:.*WebUI host.*launcher has stopped/))
+    end
+  end
+
+  it 'preserves the startup error and completes cleanup when recovery and logging both fail' do
     registry = instance_double(Lich::WebUI::Registry, register: nil)
     service = instance_double(
-      Lich::WebUI::Service,
-      registry: registry,
-      runtime: instance_double(Lich::WebUI::Runtime),
-      start: nil,
-      refresh: nil,
-      launch_url: 'http://127.0.0.1:1234/auth?token=redacted',
-      terminate_owner: nil,
-      stop: nil
+      Lich::WebUI::Service, registry: registry, runtime: instance_double(Lich::WebUI::Runtime),
+      start: nil, refresh: nil, launch_url: 'http://127.0.0.1:1234/auth?token=redacted',
+      terminate_owner: nil, stop: nil
     )
-    recovery = []
+    startup_error = Lich::WebUI::Error.new('host failed')
     failed = described_class.new(
-      data_dir: '/fixture', catalog: catalog, service: service, on_launch: proc {}, browser_open: proc { false },
-      recovery: ->(message) { recovery << message }
+      data_dir: '/fixture', catalog: catalog, service: service, on_launch: proc {},
+      browser_open: proc { raise startup_error }, recovery: proc { raise IOError, 'notifier failed' },
+      logger: proc { raise IOError, 'logger failed' }
     )
 
-    expect { failed.start }.to raise_error(Lich::WebUI::Error, /dedicated launcher window failed/)
+    expect { failed.start }.to(raise_error { |error| expect(error).to equal(startup_error) })
+    expect(service).to have_received(:terminate_owner).with(failed)
+    expect(service).to have_received(:stop)
     expect(failed.lifecycle).to eq(:closed)
-    expect(recovery).to contain_exactly(match(/ERROR:.*Google Chrome.*launcher has stopped/))
   end
 end
 # rubocop:enable Lint/ConstantDefinitionInBlock
