@@ -21,6 +21,15 @@ module Lich
         @mutex = Mutex.new
       end
 
+      # Registers an allowed image root without replacing another owner's route.
+      # The same owner may update its alias; revocation releases it for reuse.
+      # @param alias_name [String, Symbol] URL path segment unique within this service
+      # @param directory [String] existing image directory
+      # @param owner [Object] lifetime identity responsible for the route
+      # @param script_root [String, nil] additional permitted script directory
+      # @return [String] relative URL prefix for this alias
+      # @raise [Error] when the root is disallowed or another owner holds the alias
+      # @raise [ArgumentError] when the alias, owner or directory is invalid
       def register(alias_name, directory, owner:, script_root: nil)
         alias_string = alias_name.to_s
         raise ArgumentError, 'file alias has invalid syntax' unless alias_string.match?(ALIAS_PATTERN)
@@ -34,6 +43,10 @@ module Lich
         end
 
         @mutex.synchronize do
+          existing = @routes[alias_string]
+          if existing && !existing[:owner].equal?(owner)
+            raise Error.new('file alias is already registered to another owner', owner: owner_label(owner))
+          end
           @routes[alias_string] = { root: root, owner: owner, owner_id: owner.object_id }
         end
         "/files/#{alias_string}/"
@@ -104,8 +117,15 @@ module Lich
         raise ArgumentError, "file root does not resolve: #{directory}"
       end
 
+      # Checks resolved paths at a directory boundary, including filesystem roots.
+      # @param candidate [String] canonical path to test
+      # @param root [String] canonical allowed directory
+      # @param allow_root [Boolean] whether the directory itself is allowed
+      # @return [Boolean] whether the path is contained
+      # @api private
       def within?(candidate, root, allow_root:)
-        candidate == root ? allow_root : candidate.start_with?("#{root}#{File::SEPARATOR}")
+        prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+        candidate == root ? allow_root : candidate.start_with?(prefix)
       end
 
       def owner_label(owner)

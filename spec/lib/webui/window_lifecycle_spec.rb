@@ -233,6 +233,23 @@ RSpec.describe 'WebUI script window lifecycle' do
     expect(target.window_geometry).to eq(measurement)
   end
 
+  it 'does not save unusable host geometry for pages that own configure handling' do
+    store = instance_double(Lich::WebUI::WindowGeometryStore)
+    service.instance_variable_set(:@geometry_store, store)
+    expect(store).not_to receive(:read)
+    expect(store).not_to receive(:save)
+    target = service.registry.register(Lich::WebUI::Page.new(
+      owner: Struct.new(:name).new('geometry-owner'), id: 'script-window', title: 'Script geometry',
+      props: { size: [340, 240] }, on: { configure: proc {} }
+    ) {})
+    service.refresh(target)
+    service.start
+    service.open(target)
+    expect(opened.last[:geometry]).to include(width: 340, height: 240)
+    target.observe_window_geometry(width: 500, height: 400, position: [1, 2])
+    service.close_window(target)
+  end
+
   it 'restores a resized form ahead of its first-run defaults but respects an explicit script override' do
     store = instance_double(Lich::WebUI::WindowGeometryStore)
     service.instance_variable_set(:@geometry_store, store)

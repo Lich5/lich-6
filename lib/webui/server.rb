@@ -185,17 +185,34 @@ module Lich
           write(WebSocket.encode_frame(payload, opcode: WebSocket::OPCODE_PONG))
         end
 
+        # Sends a best-effort normal Close frame, then shuts down the socket.
+        # Never waits for a busy writer or appends a control frame inside a data
+        # frame. A blocked/broken connection is instead retired immediately.
+        # @return [nil] after shutdown, including repeated calls
         def close
           return unless @alive
 
-          @alive = false
-          @socket.shutdown(Socket::SHUT_RDWR)
+          locked = @write_mutex.try_lock
+          if locked
+            frame = WebSocket.encode_frame([1000].pack('n'), opcode: WebSocket::OPCODE_CLOSE)
+            @socket.write_nonblock(frame, exception: false)
+          end
+          nil
         rescue IOError, SystemCallError
           nil
+        ensure
+          abort_connection
+          @write_mutex.unlock if locked
         end
 
         private
 
+        # Serializes a complete outbound message within a bounded write deadline.
+        # If cancellation unwinds an admitted writer, retire the incomplete stream
+        # before releasing its lock so later writers cannot append corrupt frames.
+        # @param bytes [String] encoded WebSocket frame bytes
+        # @return [Boolean] whether the whole message was written
+        # @api private
         def write(bytes)
           return false unless @alive
 
@@ -221,16 +238,33 @@ module Lich
               return failed_write
             end
           end
-          true
+          completed = true
         rescue IOError, SystemCallError
           failed_write
         ensure
-          @write_mutex.unlock if locked
+          if locked
+            abort_connection unless completed
+            @write_mutex.unlock
+          end
         end
 
+        # Retires failed writes without attempting another frame on the stream.
+        # @return [false] delivery failed
+        # @api private
         def failed_write
-          close
+          abort_connection
           false
+        end
+
+        # Ends transport I/O without acquiring the writer's lock or sending bytes.
+        # @return [nil] after socket shutdown or an already-closed socket
+        # @api private
+        def abort_connection
+          @alive = false
+          @socket.shutdown(Socket::SHUT_RDWR)
+          nil
+        rescue IOError, SystemCallError
+          nil
         end
       end
 

@@ -607,6 +607,46 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(responses).to be_empty
   end
 
+  it 'retains an informational dialog opened before the first browser attachment' do
+    parent = compatibility.const_get(:Window).new
+    parent.show_all
+    dialog = compatibility.const_get(:MessageDialog).new(parent: parent, flags: :modal, type: :info, buttons: :ok, message: 'Ready')
+    responses = []
+    dialog.signal_connect('response') { |_widget, response| responses << response }
+    dialog.show_all
+    expect(dialog).not_to be_destroyed
+    expect(service.modals.pending_count).to eq(1)
+    modal = service.registry.pages_for(owner).find { |page| page.id.start_with?('adapter-modal-') }
+    sent = []
+    connection = Object.new
+    connection.define_singleton_method(:viewer_id) { 'late-dialog-viewer' }
+    connection.define_singleton_method(:send_text) { |payload| sent << JSON.parse(payload) }
+    address = service.registry.address_for(modal)
+    service.runtime.handle(connection, type: 'attach', page: address, version: Lich::WebUI::Contract::VERSION)
+    render = modal.last_render
+    component = render.tree.each.find { |item| item.type == :dialog }
+    service.runtime.handle(connection, type: 'event', page: address, generation: render.generation,
+                           cid: component.cid, event: 'response', payload: { button: 'ok' })
+    Timeout.timeout(2) { sleep 0.005 until dialog.destroyed? }
+    expect(responses).to eq([:ok])
+    expect(service.modals.pending_count).to eq(0)
+  end
+
+  it 'releases a dialog waiter when its parent is destroyed before attachment' do
+    parent = compatibility.const_get(:Window).new
+    parent.show_all
+    dialog = compatibility.const_get(:MessageDialog).new(parent: parent, flags: :modal, type: :info, buttons: :ok, message: 'Ready')
+    dialog.show_all
+    expect(service.modals.pending_count).to eq(1)
+    waiter = Thread.new { dialog.run }
+    parent.destroy
+
+    expect(Timeout.timeout(2) { waiter.value }).to eq(:cancel)
+    expect(service.modals.pending_count).to eq(0)
+  ensure
+    waiter&.kill&.join
+  end
+
   it 'keeps sellunder grid spacing and width-height attachment semantics' do
     grid = compatibility.const_get(:Grid).new
     grid.column_spacing = 20

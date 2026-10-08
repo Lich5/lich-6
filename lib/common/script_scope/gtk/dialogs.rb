@@ -25,11 +25,15 @@ module Lich
             1
           end
 
+          # Retains an informational prompt while its parent's first viewer attaches.
+          # Parent destruction and owner termination cancel the existing future;
+          # this adds neither a nested event loop nor credential-dialog support.
+          # @return [MessageDialog] this dialog
           def show_all
             return self if @future || destroyed?
 
             @future = session.port.modal(title: @title, body: @message,
-                                         buttons: [{ id: 'ok', label: 'OK' }], no_viewer: :abort)
+                                         buttons: [{ id: 'ok', label: 'OK' }], no_viewer: :wait)
             @future.then do |result|
               session.synchronize { @response&.call(self, :ok) if result.button == 'ok' && !destroyed? }
             ensure

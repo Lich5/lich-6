@@ -234,6 +234,41 @@ RSpec.describe Lich::WebUI::Server do
     worker&.kill&.join
   end
 
+  it 'retires a stream if its writer is killed partway through a frame' do
+    sender, receiver = Socket.pair(:UNIX, :STREAM, 0)
+    sender.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDBUF, 4096)
+    connection = described_class::Connection.new(sender)
+    worker = Thread.new { connection.send_text('x' * (1024 * 1024)) }
+    expect(Timeout.timeout(2) { receiver.read(2) }.bytesize).to eq(2)
+    worker.kill.join(2)
+
+    expect(connection).not_to be_alive
+    expect(connection.send_text('must not append to an incomplete frame')).to be(false)
+    expect(Timeout.timeout(2) { receiver.read }).to be_a(String)
+  ensure
+    worker&.kill&.join
+    sender&.close
+    receiver&.close
+  end
+
+  it 'sends a Close frame before shutting down an idle WebSocket' do
+    sender, receiver = Socket.pair(:UNIX, :STREAM, 0)
+    connection = described_class::Connection.new(sender)
+    server = build_server(@assets_dir)
+    server.instance_variable_get(:@connections) << connection
+    server.stop
+
+    reply = Timeout.timeout(2) { Lich::WebUI::WebSocket.read_frame(receiver, require_mask: false) }
+    expect(reply).not_to be_nil
+    expect(reply).to be_close
+    expect(reply.payload.unpack1('n')).to eq(1000)
+    expect(Timeout.timeout(2) { receiver.read }).to eq('')
+  ensure
+    server&.stop
+    sender&.close
+    receiver&.close
+  end
+
   it 'includes waiting for another WebSocket writer in the write deadline' do
     stub_const('Lich::WebUI::Server::Connection::WRITE_TIMEOUT', 0.05)
     sender, receiver = Socket.pair(:UNIX, :STREAM, 0)
@@ -276,6 +311,10 @@ RSpec.describe Lich::WebUI::Server do
     expect(JSON.parse(hello.payload)).to include('type' => 'hello', 'contract_version' => '2.9.0')
     expect(viewer_id).to start_with('viewer-')
     expect(message).to eq(type: 'attach', page: 'page-abc', version: '2.5.0')
+    socket.write(Lich::WebUI::WebSocket.encode_client_frame([1000].pack('n'), opcode: Lich::WebUI::WebSocket::OPCODE_CLOSE))
+    reply = Timeout.timeout(2) { Lich::WebUI::WebSocket.read_frame(socket, require_mask: false) }
+    expect(reply).not_to be_nil
+    expect(reply).to be_close
   ensure
     socket&.close
     server&.stop
