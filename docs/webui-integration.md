@@ -160,6 +160,11 @@ reuse that ownership. Chrome/Edge processes have isolated temporary
 profiles; their exit monitors remove the profiles. The macOS helper uses a
 nonpersistent WebKit data store. Closing one page acts
 on its owned process, not the user's ordinary browser or another page's window.
+These monitors run inside Lich. A forced process kill or fatal crash can leave
+host windows and private temporary launch/profile directories behind; there is
+no parent-death watchdog or startup cleanup sweep. Disconnected windows continue
+retrying their connection. Normal script termination and game exit use the
+owned-window cleanup path described above.
 
 Geometry precedence is explicit caller geometry, then saved geometry where the
 page does not own configure handling, then the page's default size and position.
@@ -206,6 +211,9 @@ callbacks or cleanup; full service shutdown also cancels pending modals. Explici
 window closure is distinguished from a temporary transport disconnect. Ordinary
 disconnect retains a bounded 60-second resume window; repeated attachment to the
 same page on an occupied connection is rejected.
+An explicit detach closes the authenticated attachment even if a newer render
+has overtaken the viewer, including an in-window modal without OS geometry.
+This does not relax generation checks for component events or submissions.
 
 Close and detach callbacks receive a temporary snapshot of the last validated
 viewer state, so legacy close/save handlers can still read inputs after the live
@@ -316,6 +324,11 @@ a Custom Launch command is refused. Supported frontends can be stored even when
 not detected locally; availability is checked separately for launch. Saved order
 is retained with AutoSort off, and AutoSort uses the existing entry-store sorter.
 The Favorites panel retains its separate favorite-order display.
+Saved entries without an explicit Custom Launch command recheck availability
+before unlocking credentials or authenticating, and again after an unlock prompt.
+An unavailable frontend produces an actionable notice without starting a session.
+Explicit custom commands and configured custom frontends retain their launch
+behavior; discovery is not a guarantee that a later process spawn will succeed.
 
 A reconnectable viewer detach cancels that viewer's pending work and clears
 retained manual credentials without closing the launcher. Explicit window close
