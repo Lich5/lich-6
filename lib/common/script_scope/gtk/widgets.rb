@@ -570,6 +570,30 @@ module Lich
           end
         end
 
+        # Legacy horizontal constructor using the existing Box packing contract.
+        class HBox < Box
+          # Creates a horizontal group without requesting equal child sizes.
+          # @param homogeneous [Boolean] must be false; equal sizing is unsupported
+          # @param spacing [Integer] gap between children in shared layout units
+          # @raise [UnsupportedOperation] when homogeneous is not false
+          def initialize(homogeneous = false, spacing = 0)
+            super(:horizontal, spacing)
+            session.refuse(self, :new) unless homogeneous.equal?(false)
+          end
+        end
+
+        # Legacy vertical constructor using the existing Box packing contract.
+        class VBox < Box
+          # Creates a vertical group without requesting equal child sizes.
+          # @param homogeneous [Boolean] must be false; equal sizing is unsupported
+          # @param spacing [Integer] gap between children in shared layout units
+          # @raise [UnsupportedOperation] when homogeneous is not false
+          def initialize(homogeneous = false, spacing = 0)
+            super(:vertical, spacing)
+            session.refuse(self, :new) unless homogeneous.equal?(false)
+          end
+        end
+
         class Alignment < Widget
           # Maps a bounded horizontal fraction to start/center/end in a stack wrapper.
           # All four legacy arguments are validated; arbitrary GTK allocation is not reproduced.
