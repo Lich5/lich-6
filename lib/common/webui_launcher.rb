@@ -151,10 +151,12 @@ module Lich
 
       # Closes the owned browser, page, service and operation worker once.
       # Racing browser-exit and page-detach callbacks share this lifecycle gate.
-      # Diagnostics cannot interrupt cleanup; teardown failures still propagate,
-      # but always release callers waiting for the launcher's terminal state.
+      # Attempts every teardown step and the close callback, then propagates the
+      # first failure. Diagnostics cannot interrupt cleanup; waiting callers are
+      # always released before the close callback runs.
       # @param reason [Symbol] lifecycle reason delivered to the close callback
       # @return [Boolean] whether this call began shutdown
+      # @raise [StandardError] first teardown or close-callback failure, after cleanup
       def close(reason: :user)
         browser_pid = nil
         unattached_exit = false
@@ -174,12 +176,19 @@ module Lich
         end
         return false unless accepted
 
+        teardown_error = nil
         begin
-          terminate_browser(browser_pid) if browser_pid
-          @frontend_tab.close
-          @service.terminate_owner(self)
-          @service.stop
-          @executor.stop(wait: false)
+          [
+            -> { terminate_browser(browser_pid) if browser_pid },
+            -> { @frontend_tab.close },
+            -> { @service.terminate_owner(self) },
+            -> { @service.stop },
+            -> { @executor.stop(wait: false) },
+          ].each do |step|
+            step.call
+          rescue StandardError => error
+            teardown_error ||= error
+          end
           log_diagnostic(:info, "WebUI launcher closed reason=#{reason}")
           report_feedback('The WebUI launcher window closed before connecting. Check the debug log and retry.') if unattached_exit
         ensure
@@ -188,7 +197,13 @@ module Lich
             @closed_condition.broadcast
           end
         end
-        @on_close.call(reason)
+        begin
+          @on_close.call(reason)
+        rescue StandardError => error
+          teardown_error ||= error
+        end
+        raise teardown_error if teardown_error
+
         true
       end
 
@@ -1064,7 +1079,7 @@ module Lich
       rescue StandardError => error
         notice = 'Login succeeded, but the entry or favorite was not saved.'
         notice += " #{Catalog::LEGACY_CONVERSION_NOTICE}" if error.is_a?(Catalog::LegacyConversionRequired)
-        @logger.call(:warning, "#{notice} error=#{error.class}")
+        log_diagnostic(:warning, "#{notice} error=#{error.class}")
         notice
       end
 

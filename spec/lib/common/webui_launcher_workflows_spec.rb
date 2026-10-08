@@ -436,6 +436,38 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(Timeout.timeout(2) { launcher.await_launch }).to be_nil
   end
 
+  %i[terminate_owner stop executor_stop all].each do |failure|
+    it "attempts all teardown and close reporting when #{failure} fails" do
+      attempts = []
+      error = IOError.new('first teardown failure')
+      allow(service).to receive(:terminate_owner) do
+        attempts << :terminate_owner
+        raise error if %i[terminate_owner all].include?(failure)
+      end
+      allow(service).to receive(:stop) do
+        attempts << :stop
+        raise(failure == :all ? IOError.new('later failure') : error) if %i[stop all].include?(failure)
+      end
+      allow(executor).to receive(:stop).with(wait: false) do
+        attempts << :executor_stop
+        raise(failure == :all ? IOError.new('later failure') : error) if %i[executor_stop all].include?(failure)
+      end
+      launcher.instance_variable_set(:@on_close, proc do |reason|
+        attempts << :on_close
+        expect(reason).to eq(:browser_process_exit)
+        expect(launcher.lifecycle).to eq(:closed)
+        raise IOError, 'callback failure' if failure == :all
+      end)
+
+      expect { launcher.close(reason: :browser_process_exit) }.to(raise_error { |actual| expect(actual).to equal(error) })
+      expect(attempts).to eq(%i[terminate_owner stop executor_stop on_close])
+      expect(messages).to include([:info, 'WebUI launcher closed reason=browser_process_exit'])
+      expect(feedback).to contain_exactly(match(/closed before connecting/))
+      expect(Timeout.timeout(2) { launcher.await_launch }).to be_nil
+      expect(launcher.close).to be(false)
+    end
+  end
+
   it 'discards an unlock submission if its modal has already closed' do
     secret = viewer_secret('late-secret')
 
@@ -477,6 +509,19 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
 
     expect(launches.size).to eq(1)
     expect(messages).to include([:warning, a_string_matching(/not saved/)])
+    expect(feedback).to contain_exactly(match(/not saved/))
+  end
+
+  it 'still reports an optional save failure and launches when its warning logger fails' do
+    allow(catalog).to receive(:upsert_manual_entry).and_return(false)
+    launcher.instance_variable_set(:@logger, proc { raise IOError, 'logger failed' })
+    launcher.manual_connect(event({ 'account' => 'doug', 'password' => viewer_secret('manual-canary') }),
+                            'account', 'password')
+    launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
+    launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront', 'checkbox:manual-save' => true }))
+
+    expect(launches.size).to eq(1)
+    expect(launches.first.first).to eq(:manual)
     expect(feedback).to contain_exactly(match(/not saved/))
   end
 

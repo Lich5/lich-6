@@ -299,7 +299,8 @@ A host process exiting before the first viewer attachment reports before releasi
 the launch waiter. Every accepted close attempts to log its reason; reconnectable
 detach is not a close. Notification and diagnostic failures cannot interrupt
 closure or mask a startup error. Closure always signals the launch waiter, even
-when teardown raises; teardown errors still propagate to the caller.
+when teardown raises. Each teardown step and the close callback are attempted
+before the first teardown or callback error propagates to the caller.
 Optional save failure notification occurs after plaintext disposal
 and outside the commit gate; login can proceed unless canceled, even if notification
 fails. No GTK alert, fallback browser tab, or authentication URL is introduced.
