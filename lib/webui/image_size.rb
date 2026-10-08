@@ -9,6 +9,10 @@ module Lich
       HEADER_LIMIT = 1_048_576
       JPEG_FRAMES = [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].freeze
 
+      # Reads bounded PNG, GIF, or JPEG headers without decoding pixels or loading GTK.
+      # @param path [String] image file to inspect
+      # @return [Array<Integer>] frozen width and height, each between 1 and 65,536
+      # @raise [ArgumentError] for unsupported, truncated, or out-of-range image headers
       def self.read(path)
         bytes = File.open(path, 'rb') { |file| file.read(HEADER_LIMIT) }
         size = if bytes&.start_with?([137, 80, 78, 71, 13, 10, 26, 10].pack('C*')) && bytes.byteslice(12, 4) == 'IHDR' && bytes.bytesize >= 24
@@ -24,6 +28,9 @@ module Lich
         size.freeze
       end
 
+      # Walks JPEG marker segments until a supported frame header supplies dimensions.
+      # Stops at scan/end markers or malformed/truncated segments; it never decodes data.
+      # @return [Array<Integer>, nil] width and height when found
       def self.jpeg_dimensions(bytes)
         offset = 2
         while offset + 4 <= bytes.bytesize

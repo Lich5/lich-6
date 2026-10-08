@@ -56,6 +56,9 @@ module Lich
         )
       end
 
+      # Starts the loopback server; a stopped service requires a new instance.
+      # @return [Service] self
+      # @raise [Error] once shutdown has begun
       def start
         raise Error, 'stopped services cannot be restarted; create a fresh service' if @stopped
 
@@ -85,6 +88,8 @@ module Lich
         self
       end
 
+      # Reports whether this service has entered terminal shutdown.
+      # @return [Boolean]
       def stopped? = @stopped
 
       # Failed terminations and in-flight spawns remain owned for later cleanup.
@@ -93,6 +98,9 @@ module Lich
         @windows_mutex.synchronize { !@windows.empty? }
       end
 
+      # Issues a short-lived authentication URL targeting a page or the page selector.
+      # @param page [Page, nil] registered target; nil opens the selector
+      # @return [String] URL containing a single-use launch credential
       def launch_url(page: nil)
         target = page ? "/?page=#{registry.address_for(page)}" : '/'
         server.launch_url(to: target)
@@ -170,6 +178,10 @@ module Lich
         runtime.browser_closed(page) if window && page
       end
 
+      # Renders and delivers a registered page to its current attachments.
+      # @param page [Page] registered page to render and publish
+      # @return [Integer] evaluated generation
+      # @see Runtime#refresh
       def refresh(page)
         runtime.refresh(page)
       end
@@ -200,10 +212,15 @@ module Lich
         pages
       end
 
+      # Opens an asynchronous modal using this service's owner/viewer lifecycle.
+      # @return [Future] modal completion
+      # @see ModalCoordinator#open
       def modal(**options, &content)
         modals.open(**options, &content)
       end
 
+      # Registers an owner-bound image alias within approved filesystem roots.
+      # @see FileService#register
       def register_files(alias_name, directory, owner:, script_root: nil)
         file_service.register(alias_name, directory, owner: owner, script_root: script_root)
       end

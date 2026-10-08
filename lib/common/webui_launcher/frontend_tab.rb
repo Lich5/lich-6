@@ -56,6 +56,8 @@ module Lich
           end
         end
 
+        # Renders stable frontend rows and selection from a credential-free snapshot.
+        # @return [void]
         def render_frontend_catalog(ui, state)
           launcher = self
           rows = state[:frontends].map do |row|
@@ -75,6 +77,9 @@ module Lich
           end
         end
 
+        # Renders explicit Save/Delete actions and keeps Add/Reload available without a selection.
+        # Built-in capabilities are displayed read-only.
+        # @return [void]
         def render_frontend_editor(ui, state, draft)
           launcher = self
           # With no row selected there is nothing to edit, but Add Custom and
@@ -180,6 +185,8 @@ module Lich
           end
         end
 
+        # Starts an unsaved custom-frontend draft if the controller accepts edits.
+        # @return [void]
         def begin_new_frontend
           update_draft do
             @state.merge!(frontend_creating: true, frontend_error: nil, frontend_draft: {
@@ -205,6 +212,9 @@ module Lich
           end
         end
 
+        # Queues deletion through FrontendEditor, which refuses built-in removal.
+        # Reloads settings before writing and refreshes the snapshot afterward.
+        # @return [void]
         def delete_frontend
           queue_edit do |snapshot|
             id = snapshot.fetch(:frontend_draft).fetch(:id)
@@ -215,6 +225,8 @@ module Lich
           end
         end
 
+        # Queues a settings/discovery reload while attempting to retain the selected frontend.
+        # @return [void]
         def reload_frontends
           queue_edit do |snapshot|
             FrontendSettings.load!(data_dir: @data_dir)
@@ -224,6 +236,8 @@ module Lich
 
         private
 
+        # Applies a draft change only while open and idle, then notifies outside the lock.
+        # @return [void]
         def update_draft
           accepted = @mutex.synchronize do
             next false if @closed || @busy
@@ -265,6 +279,9 @@ module Lich
           end
         end
 
+        # Refreshes discovery and rebuilds editor fields before publishing a locked snapshot.
+        # @param selected [String, nil] preferred frontend ID
+        # @return [void]
         def load_snapshot(selected: nil)
           @frontend_locator.refresh! if @frontend_locator.respond_to?(:refresh!)
           rows = FrontendEditor.rows(locator: @frontend_locator)
@@ -277,11 +294,15 @@ module Lich
           end
         end
 
+        # Allows deletion only for a persisted custom frontend, never a new draft or built-in.
+        # @return [Boolean, nil]
         def frontend_deletable?(state)
           draft = state[:frontend_draft]
           draft && !state[:frontend_creating] && !draft[:built_in] && !draft[:id].empty?
         end
 
+        # Extracts the explicitly submitted editor fields and allowlisted capability checkboxes.
+        # @return [Hash] frontend field values
         def frontend_fields_from(event)
           submission = event.submission
           values = submission.cids.to_h { |cid| [cid, submission.fetch(cid)] }

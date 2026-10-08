@@ -37,6 +37,10 @@ module Lich
 
         attr_reader :data_dir
 
+        # Scopes account persistence and credential operations to one installation.
+        # @param data_dir [String] installation-owned data directory
+        # @param entry_store [Object] credential storage/persistence implementation
+        # @param master_password_manager [Object] master-password/keychain implementation
         def initialize(data_dir:, entry_store: Authentication::EntryStore,
                        master_password_manager: GUI::MasterPasswordManager)
           @data_dir = data_dir
@@ -65,6 +69,8 @@ module Lich
           end
         end
 
+        # Lists saved account names, retaining the legacy read path when YAML is absent.
+        # @return [Array<String>] account identifiers
         def accounts
           @mutex.synchronize do
             file = @entry_store.yaml_file_path(data_dir)
@@ -74,23 +80,34 @@ module Lich
           end
         end
 
+        # Writes only an allowlisted launcher preference through its existing Lich setter.
+        # @return [Boolean] true after the setter returns
+        # @raise [KeyError] for unsupported settings
         def update_launcher_setting(setting, value)
           Lich.public_send(SETTING_WRITERS.fetch(setting), value)
           true
         end
 
+        # Detects a legacy entry.dat without its replacement YAML catalog.
+        # @return [Boolean]
         def legacy_conversion_needed?
           !File.exist?(@entry_store.yaml_file_path(data_dir)) && File.exist?(File.join(data_dir, 'entry.dat'))
         end
 
+        # Reads the catalog encryption mode, defaulting an absent field to plaintext.
+        # @return [Symbol] configured mode
         def encryption_mode
           @mutex.synchronize { yaml_data.fetch('encryption_mode', 'plaintext').to_sym }
         end
 
+        # Reads the encrypted validation material used to check the master password.
+        # @return [Object, nil] catalog validation value
         def validation_test
           @mutex.synchronize { yaml_data['master_password_validation_test'] }
         end
 
+        # Reports whether the master-password backend has keychain support.
+        # @return [Boolean]
         def enhanced_encryption_available?
           @master_password_manager.keychain_available?
         end
@@ -116,6 +133,8 @@ module Lich
           end
         end
 
+        # Validates the supplied password before passing it to the master-password store.
+        # @return [Boolean] whether validation accepted the password
         def validate_master_password(password)
           test = validation_test
           return false unless @master_password_manager.validate_master_password(password, test)
@@ -124,6 +143,10 @@ module Lich
           true
         end
 
+        # Persists authenticated manual-launch credentials and matching character metadata.
+        # Character identity includes game, frontend, and custom command; other entries remain.
+        # @return [Boolean] persistence result
+        # @raise [MasterPasswordRequired] when enhanced encryption has no unlocked master password
         def upsert_manual_entry(entry, password)
           @mutex.synchronize do
             data = writable_yaml_data
@@ -156,6 +179,10 @@ module Lich
           end
         end
 
+        # Updates account credentials and appends newly discovered characters for a frontend.
+        # Existing character/game/frontend combinations are retained without duplication.
+        # @return [Boolean] persistence result
+        # @raise [MasterPasswordRequired] when enhanced encryption is locked
         def add_or_update_account(account, password, characters, frontend:)
           @mutex.synchronize do
             data = writable_yaml_data
@@ -186,6 +213,8 @@ module Lich
           end
         end
 
+        # Removes an account and all its characters, writing only if the account exists.
+        # @return [Boolean] whether removal was persisted
         def remove_account(account)
           @mutex.synchronize do
             data = writable_yaml_data
@@ -194,6 +223,8 @@ module Lich
           end
         end
 
+        # Adds a nonduplicate character to an existing account.
+        # @return [Boolean] false for an absent account, duplicate, or unsuccessful write
         def add_character(account, character)
           @mutex.synchronize do
             data = writable_yaml_data
@@ -221,6 +252,8 @@ module Lich
           end
         end
 
+        # Replaces editable character fields after resolving the current catalog entry key.
+        # @return [Boolean] whether the matched entry was persisted
         def update_character(entry_key, character)
           @mutex.synchronize do
             metadata = entries_without_lock.find { |entry| entry[:key] == entry_key }
@@ -243,6 +276,9 @@ module Lich
           end
         end
 
+        # Verifies the current password before encrypting and saving its replacement.
+        # The decrypted comparison buffer is scrubbed on all exits.
+        # @return [Boolean] whether the verified change was persisted
         def change_account_password(account, current_password, new_password)
           @mutex.synchronize do
             data = writable_yaml_data
@@ -266,6 +302,8 @@ module Lich
           end
         end
 
+        # Removes only the character matching a current entry key, preserving its account.
+        # @return [Boolean] whether removal was persisted
         def remove_entry(entry_key)
           @mutex.synchronize do
             metadata = entries_without_lock.find { |entry| entry[:key] == entry_key }
@@ -284,6 +322,8 @@ module Lich
           end
         end
 
+        # Toggles a matched character's favorite flag and maintains ordering metadata.
+        # @return [Boolean, nil] resulting flag; false also covers an absent entry, nil a failed write
         def toggle_favorite(entry_key)
           @mutex.synchronize do
             metadata = entries_without_lock.find { |entry| entry[:key] == entry_key }
@@ -319,12 +359,19 @@ module Lich
           end
         end
 
+        # Delegates entry.dat migration to the existing entry store with the selected mode.
+        # @param mode [Symbol, String] desired encryption mode
+        # @param master_password [String, nil] master password for enhanced encryption
+        # @see Authentication::EntryStore.migrate_from_legacy
         def migrate_legacy(mode, master_password: nil)
           @entry_store.migrate_from_legacy(
             data_dir, encryption_mode: mode.to_sym, master_password: master_password
           )
         end
 
+        # Re-encrypts enhanced-mode accounts after validating the current master password.
+        # Each decrypted buffer is scrubbed; a failed write attempts to restore the old keychain value.
+        # @return [Boolean] whether validation, keychain storage, and catalog write succeeded
         def change_master_password(current_password, new_password)
           @mutex.synchronize do
             data = writable_yaml_data
@@ -441,6 +488,10 @@ module Lich
           [metadata.fetch(:password).to_s, metadata.fetch(:encryption_mode).to_sym]
         end
 
+        # Refuses partial YAML creation while legacy migration is required.
+        # Supplies missing catalog defaults only after the safe read path succeeds.
+        # @return [Hash] writable catalog
+        # @raise [LegacyConversionRequired] when entry.dat still needs migration
         def writable_yaml_data
           # A partial YAML catalog would hide every remaining entry.dat record
           # and also prevent the existing CLI conversion from running.
@@ -485,6 +536,8 @@ module Lich
           end
         end
 
+        # Delegates atomic persistence to EntryStore and reports ordinary failures to the caller.
+        # @return [Boolean] persistence result
         def write_yaml(data)
           @entry_store.write_yaml_file(@entry_store.yaml_file_path(data_dir), data)
           true
@@ -504,6 +557,8 @@ module Lich
           value.to_s.strip.split.map(&:capitalize).join(' ')
         end
 
+        # Restricts legacy records to scalar keys/values before exposing catalog metadata.
+        # @return [Boolean]
         def valid_legacy_entry?(entry)
           return false unless entry.is_a?(Hash)
 
@@ -532,6 +587,8 @@ module Lich
           left.bytesize == right.bytesize && OpenSSL.fixed_length_secure_compare(left, right)
         end
 
+        # Overwrites and clears a mutable decrypted buffer without modifying frozen/shared constants.
+        # @return [void]
         def scrub!(value)
           value.replace("\0" * value.bytesize).clear if value.is_a?(String) && !value.frozen?
         end

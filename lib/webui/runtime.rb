@@ -73,10 +73,17 @@ module Lich
         support.merge(WindowPresentation.support).freeze
       end
 
+      # Snapshots recorded presentation limitations without exposing mutable internal records.
+      # @return [Array<Hash>] copied notices for the page
       def degradations(page)
         @degradation_mutex.synchronize { Array(@degradations[page]).map(&:dup).freeze }
       end
 
+      # Routes an already-parsed attach, detach, or event message.
+      # Refusals expose a generic wire message; stale-generation refusals precede a new tree.
+      # @param connection [Object] authenticated transport
+      # @param message [Hash] message accepted by Protocol.parse_client_message
+      # @return [Object] dispatch result, or :refused for a handled protocol/contract error
       def handle(connection, message)
         case message[:type]
         when 'attach' then attach(connection, message)
@@ -122,6 +129,11 @@ module Lich
         @registry.pages_for(owner).any? { |page| !@viewers.attachments_for(page).empty? }
       end
 
+      # Reads a shared property or the explicit/current callback viewer's value.
+      # Viewer-local reads require an unambiguous attachment; secrets cannot be read here.
+      # @return [Object] current property value
+      # @raise [SensitiveReadError] for sensitive write-only fields
+      # @raise [UnknownPropertyError] for an unknown property
       def read(page, cid, property, viewer: nil)
         component = page_component(page, cid)
         name = component_property(component, property)
@@ -145,6 +157,11 @@ module Lich
         )
       end
 
+      # Validates a scoped property update, then schedules a page refresh.
+      # Sensitive/ephemeral state must use its dedicated submission path instead.
+      # @return [nil]
+      # @raise [SensitiveReadError] for sensitive or ephemeral fields
+      # @raise [UnknownPropertyError] for an unknown property
       def write(page, cid, property, value, viewer: nil)
         component = page_component(page, cid)
         name = component_property(component, property)
@@ -286,6 +303,8 @@ module Lich
 
       private
 
+      # Resolves a registered page and creates/resumes its viewer attachment before delivery.
+      # @return [Symbol] :attached after render delivery and lifecycle enqueue
       def attach(connection, message)
         @connections_mutex.synchronize { @connections[connection.viewer_id] = connection }
         page = fetch_page(message[:page])
@@ -387,6 +406,10 @@ module Lich
         snapshot&.discard_sensitive! unless dispatched
       end
 
+      # Validates exactly the server-declared terminal scope before retaining submitted values.
+      # Secrets become disposable carriers; mutable raw secret strings are scrubbed in ensure.
+      # @return [Submission, nil] terminal snapshot, or nil for a nonterminal event
+      # @raise [Protocol::Refusal] for a mismatched or unauthorized submission scope
       def build_submission(attachment, terminal, message)
         raw_values = message.fetch(:submission, [])
         event_schema = Contract.schema(terminal.type)[:events].fetch(message[:event].to_sym)
@@ -421,6 +444,8 @@ module Lich
         scrub_sensitive_raw!(components, raw_values) if defined?(components) && components
       end
 
+      # Overwrites mutable raw strings at known sensitive positions after snapshot construction.
+      # @return [void]
       def scrub_sensitive_raw!(components, raw_values)
         components.each_with_index do |component, index|
           next unless sensitive?(component)
@@ -431,6 +456,8 @@ module Lich
         end
       end
 
+      # Requests clearing only the secret controls present in this submission.
+      # @return [void]
       def clear_sensitive_client(connection, snapshot)
         sensitive_cids = snapshot&.sensitive_cids || []
         return if sensitive_cids.empty?
@@ -464,6 +491,9 @@ module Lich
         )
       end
 
+      # Resolves a component within the viewer's delivered tree, not an arbitrary newer render.
+      # @return [Component]
+      # @raise [Protocol::Refusal] for an unknown delivered identity
       def find_component!(attachment, cid)
         component = attachment.render.tree.each.find { |candidate| candidate.cid == cid }
         return component if component
@@ -480,6 +510,9 @@ module Lich
         rewrite_popup_addresses(tree, snapshot.page.owner)
       end
 
+      # Replaces owner-local popup IDs with registered opaque addresses recursively.
+      # Popup resolution cannot select another owner's page by its local ID.
+      # @return [Hash] updated component tree
       def rewrite_popup_addresses(component, owner)
         if component[:type] == 'composite' && component.dig(:props, :popup)
           popup = component[:props][:popup]
@@ -576,6 +609,9 @@ module Lich
         raise Protocol::Refusal.new(:page_gone, 'page is no longer registered', page_id: address)
       end
 
+      # Requires both a registered page and its current connection-specific attachment.
+      # @return [ViewerStore::Attachment]
+      # @raise [Protocol::Refusal] with page_gone or viewer_gone attribution
       def fetch_attachment(connection, address)
         fetch_page(address)
         @viewers.fetch(connection_id: connection.viewer_id, address: address)
@@ -641,6 +677,8 @@ module Lich
         end
       end
 
+      # Maps generic value access onto checkbox/toggle checked or radio selected state.
+      # @return [Symbol] concrete contract property
       def component_property(component, property)
         key = property.to_sym
         return key unless key == :value
@@ -652,6 +690,9 @@ module Lich
         end
       end
 
+      # Resolves ownership while giving sensitive value classification precedence.
+      # @return [Symbol] property scope
+      # @raise [KeyError] for an unknown property
       def property_scope(component, name)
         schema = Contract.schema(component.type)
         return :sensitive_write_only if name == :value && sensitive?(component)
@@ -698,6 +739,9 @@ module Lich
         schedule_render(page, owner: page.owner, delay: 0) { refresh(page) }
       end
 
+      # Runs coalesced work until clean/canceled and removes only its own scheduling record.
+      # A late worker must not erase a replacement worker's state.
+      # @return [void]
       def refresh_loop(key, state)
         loop do
           sleep(state[:delay]) if state[:delay].positive?

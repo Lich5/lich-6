@@ -8,6 +8,8 @@ module Lich
     # Core page definition and monotonic render source.
     class Page
       Render = Data.define(:page_id, :generation, :tree, :bindings, :submissions, :facilities) do
+        # Serializes a render snapshot before per-viewer state is overlaid.
+        # @return [Hash] generation, tree, facilities, and owner-local page ID
         def to_h
           {
             page_id: page_id, generation: generation, tree: tree.to_h,
@@ -18,6 +20,15 @@ module Lich
 
       attr_reader :owner, :id, :title, :lifecycle_bindings
 
+      # Defines an owner-scoped page without rendering, registering, or opening it.
+      # @param owner [Object] server-side lifecycle identity
+      # @param id [String] contract identifier unique within that owner
+      # @param title [String] window title
+      # @param props [Hash] root component properties
+      # @param validator [Validator] contract validator
+      # @param on [Hash] lifecycle event callbacks
+      # @yield render DSL evaluated for each refresh
+      # @raise [ArgumentError] for missing owner/block or invalid ID/title
       def initialize(owner:, id:, title:, props: {}, validator: Validator.new, on: {}, &render_block)
         raise ArgumentError, 'owner is required' if owner.nil?
         unless id.is_a?(String) && id.match?(Contract::IDENTIFIER)
@@ -42,10 +53,14 @@ module Lich
         @window_geometry = nil
       end
 
+      # Reads the latest successful render generation under the page lock.
+      # @return [Integer] zero before the first render
       def generation
         @mutex.synchronize { @generation }
       end
 
+      # Reads the latest successful render without evaluating the render block.
+      # @return [Render, nil] nil before the first render
       def last_render
         @mutex.synchronize { @last_render }
       end
@@ -56,10 +71,16 @@ module Lich
         @mutex.synchronize { @window_geometry&.dup }
       end
 
+      # Retains validated viewer geometry, copying and freezing desktop coordinates.
+      # @param value [Hash] width, height, and position from a configure event
+      # @return [void]
       def observe_window_geometry(value)
         @mutex.synchronize { @window_geometry = value.merge(position: value.fetch(:position).dup.freeze).freeze }
       end
 
+      # Stages host-restored geometry for subsequent rendering.
+      # @param value [Hash, nil] saved geometry, or nil to clear the host override
+      # @return [void]
       def restore_window_geometry(value)
         @mutex.synchronize { @host_geometry = value&.dup }
       end
@@ -116,6 +137,10 @@ module Lich
         self
       end
 
+      # Binds a page once; repeated binding to that same runtime is safe.
+      # @param runtime [Runtime] host runtime responsible for this page's state and events
+      # @return [Page] self
+      # @raise [Error] if a different runtime already owns the page
       def bind_runtime(runtime)
         @mutex.synchronize do
           if @runtime && !@runtime.equal?(runtime)
@@ -127,26 +152,52 @@ module Lich
         self
       end
 
+      # Reads a property using the runtime's shared/viewer ownership rules.
+      # @param cid [String] component ID from the current render
+      # @param property [Symbol] contract property name
+      # @param viewer [String, nil] explicit viewer ID, or current callback context
+      # @return [Object] current value
+      # @raise [SensitiveReadError] for a write-only sensitive property
+      # @see Runtime#read
+      # @example Read one attached viewer's draft outside a callback
+      #   page.get(input.cid, :value, viewer: viewer_id)
       def get(cid, property = :value, viewer: nil)
         bound_runtime.read(self, cid, property, viewer: viewer)
       end
 
+      # Validates a property write and schedules a refresh through the bound runtime.
+      # @param cid [String] component ID from the current render
+      # @param property [Symbol] contract property name
+      # @param value [Object] proposed value
+      # @param viewer [String, nil] explicit viewer ID, or current callback context
+      # @return [nil]
+      # @see Runtime#write
       def set(cid, property, value, viewer: nil)
         bound_runtime.write(self, cid, property, value, viewer: viewer)
       end
 
+      # Reports host presentation capabilities, which may differ by platform.
+      # @return [Hash{Symbol => Boolean}] supported requests
       def presentation_support
         bound_runtime.presentation_support(self)
       end
 
+      # Snapshots presentation degradations recorded by the runtime.
+      # @return [Array<Hash>] copied notices
       def degradations
         bound_runtime.degradations(self)
       end
 
+      # Reads a server-owned override, falling back to the rendered property.
+      # @return [Object] override or fallback
+      # @api private
       def fetch_shared_value(cid, property, fallback)
         @mutex.synchronize { @shared_values.fetch([cid.to_s, property.to_sym], fallback) }
       end
 
+      # Stores a server-owned override; the runtime performs validation and refresh.
+      # @return [Object] stored value
+      # @api private
       def write_shared_value(cid, property, value)
         @mutex.synchronize { @shared_values[[cid.to_s, property.to_sym]] = value }
       end

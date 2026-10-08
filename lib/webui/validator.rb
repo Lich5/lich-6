@@ -8,6 +8,9 @@ module Lich
     class Validator
       Context = Data.define(:owner, :page_id, :cid)
 
+      # Validates property names/shapes/defaults and type-specific relationships.
+      # @return [Hash] normalized, frozen properties
+      # @raise [Error] for unknown types/properties or invalid values
       def validate_component!(type, props, owner:, page_id:, cid:)
         normalized_type = Contract.normalize_type(type)
         schema = Contract.schema(normalized_type)
@@ -17,6 +20,11 @@ module Lich
         normalized.freeze
       end
 
+      # Validates a supported event payload against the current control properties.
+      # This checks dynamic limits and choices as well as the static payload shape.
+      # @return [Hash] validated payload
+      # @raise [UnknownEventError] for an unsupported event
+      # @raise [SchemaViolationError] for invalid payloads
       def validate_event!(type, event_name, payload, props:, owner:, page_id:, cid:)
         normalized_type = Contract.normalize_type(type)
         schema = Contract.schema(normalized_type)
@@ -43,6 +51,9 @@ module Lich
         validated
       end
 
+      # Validates a supported page facility with owner/page diagnostic attribution.
+      # @return [Object] normalized facility value
+      # @raise [UnknownPropertyError] for an unsupported facility
       def validate_facility!(name, value, owner:, page_id:, cid: nil)
         key = normalize_name(name)
         facility = Contract::FACILITIES[key]
@@ -54,6 +65,9 @@ module Lich
         validate_shape(facility.fetch(:shape), value, context, name.to_s)
       end
 
+      # Validates a submitted input against both its shape and current choices/range.
+      # @return [Object] normalized input
+      # @raise [SchemaViolationError] for non-input components or invalid values
       def validate_input_value!(type, value, props:, owner:, page_id:, cid:)
         normalized_type = Contract.normalize_type(type)
         schema = Contract.schema(normalized_type)
@@ -66,10 +80,16 @@ module Lich
         validated
       end
 
+      # Checks a parent-provided placement shape using a placement-qualified error field.
+      # @return [Object] normalized placement value
       def validate_placement!(name, shape, value, owner:, page_id:, cid:)
         validate_shape(shape, value, Context.new(owner, page_id, cid), "placement.#{name}")
       end
 
+      # Revalidates the complete property set before accepting one changed property.
+      # Cross-property invariants cannot be bypassed by a single-field update.
+      # @return [Object] normalized requested value
+      # @raise [UnknownPropertyError] for an unsupported property
       def validate_property!(type, name, value, props:, owner:, page_id:, cid:)
         normalized_type = Contract.normalize_type(type)
         key = normalize_name(name)

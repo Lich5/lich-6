@@ -8,32 +8,53 @@ module Lich
     class Submission
       attr_reader :viewer_id
 
+      # Captures a viewer submission whose sensitive carriers remain explicitly disposable.
+      # @param viewer_id [String] originating viewer
+      # @param values [Hash] component IDs mapped to validated values or sensitive carriers
       def initialize(viewer_id:, values:)
         @viewer_id = viewer_id.freeze
         @values = values.freeze
         @committed = false
       end
 
+      # Fetches a submitted component value using its string ID.
+      # @return [Object] submitted value
+      # @raise [KeyError] if the component was not included
       def [](cid)
         @values.fetch(cid.to_s)
       end
 
+      # Fetches a submitted value, optionally yielding a missing ID to a fallback block.
+      # Positional default arguments are not supported.
+      # @param cid [#to_s] submitted component ID
+      # @yield [missing_cid] fallback when the ID is absent
+      # @yieldparam missing_cid [String] missing component ID
+      # @return [Object] submitted value or fallback block result
+      # @raise [KeyError] if the ID is absent and no block is supplied
       def fetch(cid, &block)
         @values.fetch(cid.to_s, &block)
       end
 
+      # Lists submitted component IDs in submission order.
+      # @return [Array<String>] frozen ID list
       def cids
         @values.keys.freeze
       end
 
+      # Lists component IDs whose submitted values use sensitive carriers.
+      # @return [Array<String>] frozen ID list
       def sensitive_cids
         @values.filter_map { |cid, value| cid if value.is_a?(SensitiveValue) }.freeze
       end
 
+      # Reports whether this snapshot has been committed.
+      # @return [Boolean]
       def committed?
         @committed
       end
 
+      # Disposes any unused sensitive carriers; safe after normal consumption as well.
+      # @return [nil]
       def discard_sensitive!
         @values.each_value { |value| value.discard! if value.is_a?(SensitiveValue) }
         nil

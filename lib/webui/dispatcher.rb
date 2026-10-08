@@ -23,6 +23,7 @@ module Lich
         attr_accessor :thread
         attr_reader :events, :mutex, :condition
 
+        # Creates the isolated queue, synchronization, and worker state for one owner.
         def initialize
           @events = []
           @mutex = Mutex.new
@@ -117,6 +118,8 @@ module Lich
         owners.each { |owner| shutdown_owner(owner) }
       end
 
+      # Rejects synchronous event waits, including same-page callback re-entry.
+      # @raise [ReentryError] always; callbacks must compose asynchronous work
       def await(page_id)
         context = Thread.current.thread_variable_get(THREAD_CONTEXT_KEY)
         if context&.page_id == page_id
@@ -126,6 +129,8 @@ module Lich
         raise ReentryError.new('dispatcher does not provide synchronous event waits', page_id: page_id)
       end
 
+      # Returns callback attribution for the current thread only.
+      # @return [Context, nil] active dispatch context, or nil outside a callback
       def current_context
         Thread.current.thread_variable_get(THREAD_CONTEXT_KEY)
       end
@@ -150,6 +155,9 @@ module Lich
         end
       end
 
+      # Executes queued owner callbacks sequentially and clears thread attribution on every exit.
+      # Standard callback failures are reported without aborting the next queued event.
+      # @return [void]
       def run_owner(state)
         loop do
           queued = state.mutex.synchronize do
@@ -238,6 +246,8 @@ module Lich
         "#{owner.class}:#{owner.object_id}"
       end
 
+      # Isolates diagnostic-sink failures from dispatch and shutdown.
+      # @return [void]
       def log(level, message)
         @logger.call(level, message)
       rescue StandardError

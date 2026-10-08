@@ -8,6 +8,14 @@ module Lich
     class Component
       attr_reader :type, :cid, :props, :children, :slot, :placement
 
+      # Captures a validated tree node and freezes its immediate containers.
+      # Validation and recursive property normalization belong to TreeBuilder.
+      # @param type [Symbol] contract component type
+      # @param cid [String] page-local component identifier
+      # @param props [Hash] validated component properties
+      # @param children [Array<Component>] ordered child nodes
+      # @param slot [String, nil] named parent slot
+      # @param placement [Hash] validated layout hints
       def initialize(type:, cid:, props:, children: [], slot: nil, placement: {})
         @type = type
         @cid = cid.freeze
@@ -18,6 +26,8 @@ module Lich
         freeze
       end
 
+      # Builds the wire representation, omitting sensitive input values at every level.
+      # @return [Hash] serializable component tree
       def to_h
         serialized_props = props.reject do |name, _value|
           name == :value && sensitive_value?
@@ -28,6 +38,10 @@ module Lich
         result
       end
 
+      # Visits this node before its children, preserving child order.
+      # @yield [component] each node in depth-first order
+      # @yieldparam component [Component] visited node
+      # @return [Enumerator] when no block is supplied
       def each(&block)
         return enum_for(:each) unless block
 

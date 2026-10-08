@@ -9,6 +9,12 @@ module Lich
     class ModalCoordinator
       Pending = Data.define(:owner, :page, :future, :timer, :props)
 
+      # Connects modal completion to registry ownership and viewer availability.
+      # @param registry [Registry] page registration/admission service
+      # @param runtime [Runtime] render and callback runtime
+      # @param viewers_present [#call] owner-scoped viewer availability query
+      # @param pages_changed [#call] notification after modal registration changes
+      # @param logger [#call, nil] isolated diagnostic sink
       def initialize(registry:, runtime:, viewers_present:, pages_changed:, logger: nil)
         @registry = registry
         @runtime = runtime
@@ -151,12 +157,16 @@ module Lich
         end
       end
 
+      # Counts unresolved modals under the coordinator lock.
+      # @return [Integer]
       def pending_count
         @mutex.synchronize { @pending.length }
       end
 
       private
 
+      # Completes an unavailable modal using its declared default or cancellation policy.
+      # @return [Future] supplied completion
       def resolve_absent_viewer(future, props)
         if props[:no_viewer] == 'default'
           future.resolve(button: props[:default_button], reason: :no_viewer)
@@ -166,6 +176,9 @@ module Lich
         future
       end
 
+      # Retires a resolved modal, stops its timer, and announces page removal.
+      # Repeated completion after retirement is ignored.
+      # @return [void]
       def complete(future, result)
         pending = @mutex.synchronize { @pending.delete(future) }
         return unless pending

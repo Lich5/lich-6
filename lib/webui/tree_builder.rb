@@ -39,6 +39,12 @@ module Lich
         end
       end
 
+      # Starts one render with a page root and fresh identity, binding, and submission indexes.
+      # @param owner [Object] server-owned identity used for diagnostics
+      # @param page_id [String] owner-local page identifier
+      # @param title [String] root title
+      # @param root_props [Hash] additional root properties
+      # @param validator [Validator] shared contract validator
       def initialize(owner:, page_id:, title:, root_props: {}, validator: Validator.new)
         @owner = owner
         @page_id = page_id
@@ -55,6 +61,18 @@ module Lich
         @facilities = {}
       end
 
+      # Adds a validated control under the current parent and evaluates its children.
+      # Stable keys are mandatory inside variable collections; positional IDs serve fixed layouts.
+      # @param type [Symbol, String] contract component type
+      # @param key [String, nil] stable author identity within the parent
+      # @param slot [Symbol, String, nil] parent-defined child slot
+      # @param placement [Hash] parent-specific layout hints
+      # @param on [Hash] supported event names mapped to callbacks
+      # @param submit [Array<Draft>, nil] inputs captured by a terminal action
+      # @param props [Hash] component properties
+      # @yield [draft] child composition evaluated in this builder
+      # @return [Draft] reference usable in submissions
+      # @raise [IdentityError] for missing collection keys or duplicate identity
       def component(type, key: nil, slot: nil, placement: {}, on: {}, submit: nil, **props, &block)
         normalized_type = Contract.normalize_type(type)
         Contract.schema(normalized_type)
@@ -113,6 +131,10 @@ module Lich
         component(:text, content: content, **props)
       end
 
+      # Builds variable children while requiring explicit keys and enforcing cardinality.
+      # @param items [Enumerable] caller-owned items; order is retained
+      # @yield [item, index] composition for each item
+      # @return [nil]
       def collection(items)
         raise ArgumentError, 'collection requires a block' unless block_given?
         raise ArgumentError, 'collection items must be enumerable' unless items.respond_to?(:each)
@@ -136,6 +158,8 @@ module Lich
         nil
       end
 
+      # Validates and records a page facility such as presentation or accelerators.
+      # @return [nil]
       def facility(name, value)
         key = normalize_name(name)
         @facilities[key] = @validator.validate_facility!(
@@ -147,6 +171,14 @@ module Lich
       # Bind an action after its fields have been rendered. This permits buttons
       # above or beside their inputs while retaining the same checked, explicit
       # submission scope as the component's submit: keyword.
+      # @param terminal [Draft] terminal action created by this builder
+      # @param inputs [Array<Draft, String>] input drafts or component IDs to snapshot
+      # @return [nil]
+      # @raise [ArgumentError] if the action does not belong to this builder
+      # @example Bind an action to an input rendered after it
+      #   action = builder.button(key: 'load', label: 'Load')
+      #   name = builder.text_input(key: 'name', value: '')
+      #   builder.submit(action, [name])
       def submit(terminal, inputs)
         unless terminal.respond_to?(:cid) && @cids[terminal.cid].equal?(terminal)
           raise ArgumentError, 'submission terminal must belong to this builder'
@@ -160,6 +192,9 @@ module Lich
         define_method(name) { |value| facility(name, value) }
       end
 
+      # Validates cross-component relationships, then freezes the draft as a render tree.
+      # Checks child placement, submissions, accelerators, and focus before publication.
+      # @return [Component] immutable page root
       def build
         root_props = @validator.validate_component!(
           :page, @root.props, owner: owner_label, page_id: @page_id, cid: @root.cid

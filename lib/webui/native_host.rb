@@ -13,6 +13,7 @@ module Lich
 
       module_function
 
+      # Uses the OS gem to select the macOS native host path.
       # @return [Boolean] whether the current OS uses the AppKit host
       def mac? = OS.mac?
 

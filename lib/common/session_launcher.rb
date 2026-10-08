@@ -175,6 +175,8 @@ module Lich
         end
 
         # Returns an explicit per-launch path override when it differs from default.
+        # WebUI supplies force_path_flags to retain even default-valued explicit
+        # paths, keeping a spawned session tied to its launcher's installation.
         #
         # @param context [Hash]
         # @param path_flag [Hash]
@@ -188,6 +190,7 @@ module Lich
           # asked for nothing, so don't fall back to this process's own value.
           value = context[context_key]
           return nil if value.to_s.empty?
+          # Explicit empty values remain opt-outs even when path flags are forced.
           return value if context[:force_path_flags] == true
 
           value_expanded = File.expand_path(value.to_s)

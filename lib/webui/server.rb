@@ -77,6 +77,10 @@ module Lich
         @stopping = false
       end
 
+      # Starts or repairs the accept worker while retaining a usable loopback listener.
+      # Startup failures stop owned resources before propagating the error.
+      # @return [Server] self
+      # @raise [Error] if the bound listener is not loopback
       def start
         @mutex.synchronize do
           return self if running_locked?
@@ -101,14 +105,23 @@ module Lich
         raise
       end
 
+      # Checks whether the accept worker is alive under the server mutex.
+      # @return [Boolean]
       def running?
         @mutex.synchronize { running_locked? }
       end
 
+      # Counts currently live WebSocket connections under the server mutex.
+      # @return [Integer]
       def connection_count
         @mutex.synchronize { @connections.count(&:alive?) }
       end
 
+      # Issues a single-use expiring credential for a validated local redirect target.
+      # Treat the returned URL as a secret; it establishes the browser session cookie.
+      # @param to [String] local target path; invalid targets fall back to /
+      # @return [String] authentication URL
+      # @raise [Error] if the server is not running
       def launch_url(to: '/')
         raise Error, 'WebUI server is not running' unless running?
         target = valid_redirect_target?(to) ? to : '/'
@@ -120,6 +133,9 @@ module Lich
         "http://#{url_host}:#{port}/auth?token=#{token}&to=#{URI.encode_www_form_component(target)}"
       end
 
+      # Sends a JSON message to a snapshot of authenticated connections.
+      # @param payload [String, Object] already encoded JSON or a JSON-serializable value
+      # @return [void]
       def broadcast(payload)
         json = payload.is_a?(String) ? payload : JSON.generate(payload)
         connections = @mutex.synchronize { @connections.dup }
@@ -168,6 +184,7 @@ module Lich
 
         attr_reader :socket, :viewer_id
 
+        # Wraps an accepted socket with server-generated viewer identity and serialized writes.
         def initialize(socket)
           @socket = socket
           @viewer_id = "viewer-#{SecureRandom.hex(16)}"
@@ -175,12 +192,20 @@ module Lich
           @alive = true
         end
 
+        # Reports whether this transport has been marked open.
+        # @return [Boolean]
         def alive? = @alive
 
+        # Writes a text message using the transport's bounded fragmentation encoder.
+        # @param payload [String] JSON message text
+        # @return [Object] underlying write result
         def send_text(payload)
           write(WebSocket.encode_text_message(payload))
         end
 
+        # Writes a pong control frame through the same serialized connection writer.
+        # @param payload [String] ping payload to echo
+        # @return [Object] underlying write result
         def send_pong(payload)
           write(WebSocket.encode_frame(payload, opcode: WebSocket::OPCODE_PONG))
         end
@@ -350,6 +375,9 @@ module Lich
         end
       end
 
+      # Reads bounded HTTP headers under a monotonic deadline without accepting a body.
+      # @return [Hash, nil] parsed request, or nil on timeout/EOF
+      # @raise [Error] for excessive headers
       def read_request(socket)
         deadline = monotonic_time + READ_TIMEOUT
         buffer = +''
@@ -367,6 +395,9 @@ module Lich
         parse_request(buffer)
       end
 
+      # Parses HTTP/1.1 origin-form requests, rejecting duplicate headers and request bodies.
+      # @return [Hash] method, path, query, and normalized headers
+      # @raise [Error] for malformed or unsupported request framing
       def parse_request(raw)
         head = raw.split("\r\n\r\n", 2).first
         lines = head.split("\r\n")
@@ -419,6 +450,9 @@ module Lich
         respond_error(socket, 400, 'Bad Request')
       end
 
+      # Serves only allowlisted static assets after authentication and optional-Origin checks.
+      # ETags avoid retransmitting unchanged assets; arbitrary filesystem paths are not accepted.
+      # @return [void]
       def handle_asset(socket, request)
         return respond_error(socket, 405, 'Method Not Allowed') unless request[:method] == 'GET'
         return respond_error(socket, 403, 'Forbidden') unless authorized?(request)
@@ -437,6 +471,8 @@ module Lich
         end
       end
 
+      # Authenticates an image request before delegating realpath containment to FileService.
+      # @return [void]
       def handle_file(socket, request, alias_name, relative_path)
         return respond_error(socket, 405, 'Method Not Allowed') unless request[:method] == 'GET'
         return respond_error(socket, 403, 'Forbidden') unless authorized?(request)
@@ -450,6 +486,9 @@ module Lich
         respond(socket, 200, 'OK', File.binread(path), content_type: content_type, cache_control: 'private, max-age=60')
       end
 
+      # Requires cookie authentication and an allowed Origin before creating a connection.
+      # Disconnect notification and socket/index cleanup run even when dispatch fails.
+      # @return [void]
       def handle_websocket(socket, request)
         unless request[:method] == 'GET' && authorized?(request) && origin_allowed?(request)
           return respond_error(socket, 403, 'Forbidden')
@@ -488,6 +527,8 @@ module Lich
         end
       end
 
+      # Processes bounded text/ping frames until close, EOF, or a protocol refusal.
+      # @return [void]
       def websocket_loop(connection)
         while connection.alive?
           next unless IO.select([connection.socket], nil, nil, WS_POLL_INTERVAL)
@@ -505,6 +546,8 @@ module Lich
         log(:warning, "WebUI websocket refusal=#{error.class}")
       end
 
+      # Validates wire input and returns generic refusals without echoing raw payloads/errors.
+      # @return [void]
       def dispatch_message(connection, raw)
         message = Protocol.parse_client_message(raw)
         @message_handler.call(connection, message)
@@ -516,10 +559,15 @@ module Lich
         connection.send_text(Protocol.refusal(reason: :handler, message: 'Message refused'))
       end
 
+      # Compares the request cookie with this service's session credential.
+      # This is service-wide authentication, not owner-specific authorization.
+      # @return [Boolean]
       def authorized?(request)
         Protocol.secure_compare(@session_token, cookie_token(request))
       end
 
+      # Extracts this port-named session cookie without treating other cookies as credentials.
+      # @return [String, nil] supplied token
       def cookie_token(request)
         request[:headers]['cookie'].to_s.split(';').each do |pair|
           name, value = pair.split('=', 2)
@@ -532,6 +580,8 @@ module Lich
       # must not overwrite each other's authentication in the same browser.
       def cookie_name = "#{COOKIE_NAME}_#{port}"
 
+      # Requires an exact allowlisted loopback host and listener port.
+      # @return [Boolean]
       def host_allowed?(request)
         allowed_hosts.include?(request[:headers]['host'].to_s)
       end
@@ -542,11 +592,16 @@ module Lich
         hosts
       end
 
+      # Requires an exact HTTP loopback Origin including the service port.
+      # @return [Boolean]
       def origin_allowed?(request)
         origin = request[:headers]['origin'].to_s
         allowed_hosts.any? { |allowed| origin == "http://#{allowed}" }
       end
 
+      # Permits omitted Origin for ordinary GETs; supplied origins must match the service.
+      # Other authentication, Host, and Fetch Metadata checks still apply.
+      # @return [Boolean]
       def origin_allowed_if_present?(request)
         origin = request[:headers]['origin']
         origin.nil? || origin_allowed?(request)
@@ -575,6 +630,9 @@ module Lich
         request && request[:path] == '/ws' && request[:headers]['upgrade'].to_s.casecmp('websocket').zero?
       end
 
+      # Writes a bounded-handler response with common CSP, no-referrer, and nosniff headers.
+      # Responses default to no-store and close the HTTP connection.
+      # @return [Object] socket write result
       def respond(socket, status, reason, body, content_type: 'text/plain; charset=utf-8',
                   cache_control: 'no-store', extra_headers: [])
         headers = [
@@ -623,6 +681,8 @@ module Lich
         @mutex.synchronize { @stopping }
       end
 
+      # Gives a host worker a bounded join before terminating a still-running thread.
+      # @return [void]
       def join_or_kill(thread)
         return unless thread
 

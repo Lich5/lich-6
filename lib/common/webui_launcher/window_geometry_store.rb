@@ -16,15 +16,21 @@ module Lich
         MAX_DIMENSION = 16_384
         POSITION_RANGE = (-65_536..65_536)
 
+        # Scopes launcher geometry to the installation's data directory.
+        # @param data_dir [String] installation-owned storage directory
         def initialize(data_dir:)
           @data_dir = data_dir
         end
 
+        # Tries WebUI geometry, then legacy launcher geometry, then defaults.
+        # @return [Hash] validated dimensions and optional position
         def load
           read_geometry(File.join(@data_dir, FILE_NAME)) ||
             read_geometry(File.join(@data_dir, LEGACY_FILE_NAME)) || DEFAULT.dup
         end
 
+        # Writes valid launcher geometry to its private YAML file.
+        # @return [Hash, false] normalized saved geometry, or false on validation/write failure
         def save(geometry)
           validated = validate(geometry)
           return false unless validated
@@ -38,6 +44,9 @@ module Lich
           false
         end
 
+        # Normalizes integer dimensions and optional position within launcher limits.
+        # Accepts symbol or string keys for in-memory and YAML input.
+        # @return [Hash, nil] normalized geometry, or nil if invalid
         def validate(geometry)
           return unless geometry.is_a?(Hash)
 

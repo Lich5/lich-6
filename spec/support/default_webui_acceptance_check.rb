@@ -6,6 +6,10 @@ require 'open3'
 require 'rbconfig'
 require 'tmpdir'
 
+# Subprocess supervisor for the real no-argument entrypoint with a protocol-only
+# browser substitute. Temporary data and the inherited report pipe isolate it from
+# installed accounts. Process-group cleanup makes this a POSIX acceptance helper;
+# it does not verify a browser cookie jar, native window geometry, or Windows cleanup.
 root = File.expand_path('../..', __dir__)
 probe = File.join(root, 'spec/support/default_webui_acceptance_probe.rb')
 acceptance_root = Dir.mktmpdir('lich-r3-default-webui-acceptance')

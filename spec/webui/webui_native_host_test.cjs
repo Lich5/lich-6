@@ -43,4 +43,3 @@ test('the injected bridge reports native geometry and forwards ordinary window o
     { action: 'resize', width: 700, height: 500 }, { action: 'move', x: -20, y: 90 }, { action: 'close' }
   ]);
 });
-

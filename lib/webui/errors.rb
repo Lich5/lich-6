@@ -6,6 +6,13 @@ module Lich
     class Error < StandardError
       attr_reader :owner, :page_id, :cid, :field
 
+      # Adds available owner, page, component, and field attribution to an error.
+      # Context is diagnostic information, not authority supplied by a viewer.
+      # @param message [String] failure description
+      # @param owner [Object, nil] diagnostic owner label
+      # @param page_id [String, nil] affected page
+      # @param cid [String, nil] affected component
+      # @param field [Object, nil] affected property or event field
       def initialize(message, owner: nil, page_id: nil, cid: nil, field: nil)
         @owner = owner
         @page_id = page_id

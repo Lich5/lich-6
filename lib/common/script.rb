@@ -16,6 +16,8 @@ module Lich
   module Common
     # module Gemstone
     class Scripting
+      # Activates the GTK-free compatibility boundary and creates a fresh label-script binding.
+      # @return [Binding] isolated locals/receiver within the shared lexical script scope
       def script
         ScriptScope.activate!
         ScriptScope.untrusted_binding

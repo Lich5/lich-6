@@ -9,6 +9,8 @@ module Lich
         end
 
         class Settings
+          # Returns a lightweight preference facade; no native GTK settings object exists.
+          # @return [Settings]
           def self.default = new
 
           # Reports the same preference as native pages so scripts can choose
@@ -24,6 +26,10 @@ module Lich
         class CssProvider
           attr_reader :fill_color
 
+          # Accepts the measured progress stylesheet grammar and extracts a bounded fill color.
+          # Arbitrary CSS never reaches the renderer.
+          # @param data [String] supported stylesheet, at most 8,192 characters
+          # @raise [UnsupportedOperation] for any unsupported grammar or color
           def load(data:)
             valid = data.is_a?(String) && data.length <= 8192
             valid &&= data.match?(/\Alabel\s*\{\s*font-weight:\s*bold;\s*\}\s*trough\s*\{\s*font-weight:\s*bold;\s*min-height:\s*22px;\s*\}\s*progress\s*\{\s*font-weight:\s*bold;\s*min-height:\s*20px;\s*background-image:\s*none;\s*background-color:\s*(?:#[0-9a-fA-F]{6}|[a-z]+);\s*\}\z/)
@@ -33,14 +39,19 @@ module Lich
             @loaded = true
           end
 
+          # Reports successful validation of this provider's stylesheet.
+          # @return [Boolean]
           def loaded? = @loaded == true
         end
 
         class StyleContext
+          # Binds the restricted style facade to its compatibility widget.
           def initialize(widget)
             @widget = widget
           end
 
+          # Maps the accepted user-priority provider to progress fill and trough height.
+          # @raise [UnsupportedOperation] for other providers, unloaded CSS, or priorities
           def add_provider(provider, priority)
             Gtk.session.refuse(self, :add_provider) unless provider.is_a?(CssProvider) && provider.loaded? && priority == StyleProvider::PRIORITY_USER
             @widget.send(:write, :fill_color, provider.fill_color)
@@ -61,6 +72,8 @@ module Lich
             'turquoise' => '40e0d0', 'lightsalmon' => 'ffa07a', 'blue' => '0000ff',
           }.freeze
 
+          # Maps an allowed name or six-digit RGB literal to numeric contract channels.
+          # @return [Hash, nil] frozen RGBA record, or nil for an unsupported color
           def self.parse(value)
             hex = value.match?(/\A#[0-9a-fA-F]{6}\z/) ? value.delete_prefix('#') : NAMES[value]
             return unless hex
@@ -75,10 +88,16 @@ module Lich
       module Gdk
         # Colour values are validated locally and never interpreted as CSS.
         class RGBA
+          # Validates four finite unit-interval channels for the accepted background-color call.
+          # The object is a compatibility token; it does not retain arbitrary native color state.
+          # @raise [UnsupportedOperation] for invalid channels
           def initialize(*channels)
             Gtk.session.refuse(self, :new) unless channels.length == 4 && channels.all? { |channel| channel.is_a?(Numeric) && channel.finite? && channel.between?(0, 1) }
           end
 
+          # Accepts the measured red/green compatibility names only.
+          # @return [RGBA]
+          # @raise [UnsupportedOperation] for other values
           def self.parse(value)
             channels = { 'green' => [0, 1, 0, 1], 'red' => [1, 0, 0, 1] }[value]
             Gtk.session.refuse(self, :parse) unless channels
@@ -89,15 +108,23 @@ module Lich
         # Screen dimensions are a declared degradation: this nominal work area
         # supplies initial size hints only; the browser host controls placement.
         class Screen
+          # Reports nominal screen geometry as a degradation instead of querying an OS display.
+          # @return [Screen] initial-size hint provider
           def self.default
             Gtk.session.degrade(:screen_geometry, 'nominal initial size; browser host owns screen geometry')
             new
           end
 
+          # Supplies a nominal initial width, not a measurement of the user's display.
+          # @return [Integer] 1024
           def width = 1024
+          # Supplies a nominal initial height, not a measurement of the user's display.
+          # @return [Integer] 768
           def height = 768
         end
 
+        # Refuses GDK facilities outside the bounded compatibility constants.
+        # @raise [Gtk::UnsupportedOperation] always
         def self.const_missing(name)
           Gtk.session.refuse(self, name)
         end
@@ -109,10 +136,14 @@ module Lich
         class FontDescription
           attr_reader :weight
 
+          # Creates the supported font-weight token, initially normal.
           def initialize
             @weight = :normal
           end
 
+          # Accepts a bounded nonempty description without parsing font family or size.
+          # @return [FontDescription] normal-weight token
+          # @raise [Gtk::UnsupportedOperation] for an invalid description
           def self.from_string(value)
             Gtk.session.refuse(self, :from_string) unless value.is_a?(String) && value.length.between?(1, 512)
             new
@@ -123,15 +154,21 @@ module Lich
             @weight = value
           end
 
+          # Refuses font operations outside the supported weight token.
+          # @raise [Gtk::UnsupportedOperation] always
           def method_missing(name, *, **, &)
             Gtk.session.refuse(self, name)
           end
 
+          # Does not advertise native font methods beyond this compatibility object's implementation.
+          # @return [Boolean]
           def respond_to_missing?(*args)
             super
           end
         end
 
+        # Refuses unsupported Pango types without loading its native library.
+        # @raise [Gtk::UnsupportedOperation] always
         def self.const_missing(name)
           Gtk.session.refuse(self, name)
         end

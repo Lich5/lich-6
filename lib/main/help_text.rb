@@ -231,6 +231,8 @@ module Lich
         TEXT
       end
 
+      # Returns advanced launch-option help text, including WebUI suppression and its legacy --no-gtk alias.
+      # @return [String] help text; this method does not print it
       def self.advanced_help
         <<~TEXT
           Lich Help: advanced

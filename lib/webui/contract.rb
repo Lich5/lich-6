@@ -48,46 +48,69 @@ module Lich
 
       module_function
 
+      # Describes a scalar kind and its validator constraints.
+      # @return [Hash] shape definition
       def scalar(kind, **constraints)
         { kind: kind, **constraints }
       end
 
+      # Describes a string, optionally using a named contract length bound.
+      # @return [Hash] shape definition
       def string(bound = nil, **constraints)
         scalar(:string, **({ bound: bound }.compact), **constraints)
       end
 
+      # Describes an integer with optional inclusive limits.
+      # @return [Hash] shape definition
       def integer(min: nil, max: nil, **constraints)
         scalar(:integer, **({ min: min, max: max }.compact), **constraints)
       end
 
+      # Describes a finite number with optional inclusive limits.
+      # @return [Hash] shape definition
       def number(min: nil, max: nil)
         scalar(:number, finite: true, **({ min: min, max: max }.compact))
       end
 
+      # Describes a closed set of string values, accepting nested value lists.
+      # @return [Hash] shape definition
       def enum(*values)
         scalar(:enum, values: values.flatten.map(&:to_s))
       end
 
+      # Describes an ordered collection with cardinality and item constraints.
+      # @return [Hash] shape definition
       def array(items, min: 0, max: nil)
         scalar(:array, items: items, min: min, **({ max: max }.compact))
       end
 
+      # Describes named fields; unknown fields are refused unless explicitly allowed.
+      # Supply fields as either a positional hash or keywords, never both.
+      # @return [Hash] shape definition
+      # @raise [ArgumentError] if fields are supplied twice
       def record(fields = nil, allow_extra: false, **field_keywords)
         raise ArgumentError, 'record fields supplied twice' if fields && !field_keywords.empty?
 
         scalar(:record, fields: fields || field_keywords, allow_extra: allow_extra)
       end
 
+      # Describes alternatives accepted when any one shape validates.
+      # @return [Hash] shape definition
       def union(*variants)
         scalar(:union, variants: variants)
       end
 
+      # Describes property ownership, requiredness, and an optional default.
+      # The sentinel distinguishes no default from an explicit nil default.
+      # @return [Hash] property definition
       def property(shape, required: false, scope: :shared, default: :__none__)
         result = { shape: shape, required: required, scope: scope }
         result[:default] = default unless default == :__none__
         result
       end
 
+      # Describes an event payload and its dispatch/lifecycle classification.
+      # @return [Hash] event definition
       def event(payload = nil, terminal: false, lifecycle: false, structural: false)
         { payload: payload, terminal: terminal, lifecycle: lifecycle, structural: structural }
       end
@@ -571,6 +594,9 @@ module Lich
         detach: event(nil, lifecycle: true),
       }.freeze
 
+      # Assembles and recursively freezes the bounded control/facility contract once.
+      # Shared property families are added here so native and shim consumers agree.
+      # @return [Hash] cached schemas keyed by type
       def schemas
         @schemas ||= begin
           schemas = {}
@@ -624,6 +650,9 @@ module Lich
         end
       end
 
+      # Looks up a supported type after identifier normalization.
+      # @return [Hash] frozen schema
+      # @raise [UnknownTypeError] if the type is outside the contract
       def schema(type)
         normalized = normalize_type(type)
         schemas.fetch(normalized)
@@ -631,6 +660,8 @@ module Lich
         raise UnknownTypeError, "unknown component type #{type.inspect}"
       end
 
+      # Converts identifier-shaped strings to symbols; leaves other inputs for rejection.
+      # @return [Object] normalized candidate type
       def normalize_type(type)
         return type if type.is_a?(Symbol)
         return type.to_sym if type.is_a?(String) && type.match?(IDENTIFIER)
@@ -645,6 +676,10 @@ module Lich
         value.length <= limit ? value : value.scan(/.{1,#{limit}}/m)
       end
 
+      # Accepts the current major protocol version and returns the server version.
+      # Minor version differences do not prevent attachment.
+      # @return [String] server contract version
+      # @raise [VersionError] for malformed or incompatible major versions
       def negotiate!(client_version)
         version = client_version.to_s
         major = Integer(version.split('.').first, exception: false)
@@ -654,6 +689,8 @@ module Lich
         VERSION
       end
 
+      # Recursively freezes schema hashes, arrays, keys, and leaf values.
+      # @return [Object] the supplied object
       def deep_freeze(value)
         case value
         when Hash
@@ -664,6 +701,9 @@ module Lich
         value.freeze
       end
 
+      # Copies hash/array containers recursively, retaining scalar objects.
+      # This is a schema composition helper, not a general mutable deep copy.
+      # @return [Object] copied container or original scalar
       def deep_dup(value)
         case value
         when Hash
