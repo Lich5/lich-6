@@ -179,6 +179,7 @@ module Lich
       end
 
       # Renders and delivers a registered page to its current attachments.
+      # @param page [Page] registered page to render and publish
       # @return [Integer] evaluated generation
       # @see Runtime#refresh
       def refresh(page)

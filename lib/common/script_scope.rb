@@ -26,10 +26,8 @@ module Lich
 
       @adopt_nested_constants = false
 
-      # @return [Boolean] whether a constant defined in this scope now belongs
-      #   to a script rather than to a plugin loaded by {.activate!}
       # Reports whether script-owned nested classes/modules receive scoped helpers.
-      # @return [Boolean, nil] current adoption flag
+      # @return [Boolean] whether new constants belong to scripts rather than plugins loaded by {.activate!}
       def self.adopt_nested_constants?
         @adopt_nested_constants
       end
@@ -131,9 +129,8 @@ module Lich
         end
       end
 
-      # @return [Boolean] whether new trusted scripts get a ScriptScope binding
       # Reports whether script-scope activation has occurred.
-      # @return [Boolean, nil] current activation flag
+      # @return [Boolean] whether new trusted scripts get a ScriptScope binding
       def self.active?
         @active
       end

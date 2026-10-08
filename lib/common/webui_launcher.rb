@@ -209,7 +209,6 @@ module Lich
         true
       end
 
-      # @return [Symbol] current launcher lifecycle state
       # Reads the launcher state while holding its lifecycle mutex.
       # @return [Symbol] current lifecycle state
       def lifecycle = @mutex.synchronize { @lifecycle }
@@ -226,7 +225,6 @@ module Lich
         end
       end
 
-      # @return [Lich::WebUI::Component] the current authored launcher tree
       # Evaluates the current launcher page for inspection without opening a window.
       # @return [Lich::WebUI::Component] rendered root
       def render_tree

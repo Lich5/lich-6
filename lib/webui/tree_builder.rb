@@ -171,6 +171,14 @@ module Lich
       # Bind an action after its fields have been rendered. This permits buttons
       # above or beside their inputs while retaining the same checked, explicit
       # submission scope as the component's submit: keyword.
+      # @param terminal [Draft] terminal action created by this builder
+      # @param inputs [Array<Draft, String>] input drafts or component IDs to snapshot
+      # @return [nil]
+      # @raise [ArgumentError] if the action does not belong to this builder
+      # @example Bind an action to an input rendered after it
+      #   action = builder.button(key: 'load', label: 'Load')
+      #   name = builder.text_input(key: 'name', value: '')
+      #   builder.submit(action, [name])
       def submit(terminal, inputs)
         unless terminal.respond_to?(:cid) && @cids[terminal.cid].equal?(terminal)
           raise ArgumentError, 'submission terminal must belong to this builder'

@@ -24,8 +24,13 @@ module Lich
         @values.fetch(cid.to_s)
       end
 
-      # Fetches a submitted value with ordinary Hash#fetch fallback/block semantics.
-      # @return [Object] submitted value or caller-supplied fallback
+      # Fetches a submitted value, optionally yielding a missing ID to a fallback block.
+      # Positional default arguments are not supported.
+      # @param cid [#to_s] submitted component ID
+      # @yield [missing_cid] fallback when the ID is absent
+      # @yieldparam missing_cid [String] missing component ID
+      # @return [Object] submitted value or fallback block result
+      # @raise [KeyError] if the ID is absent and no block is supplied
       def fetch(cid, &block)
         @values.fetch(cid.to_s, &block)
       end

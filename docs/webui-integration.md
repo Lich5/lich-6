@@ -414,6 +414,10 @@ or changed methods: owner/viewer scope, return values, refusals, callback timing
 and resource disposal where relevant. Keep private-helper comments focused on
 invariants that callers or maintainers cannot infer from the name alone.
 
+The default `.yardopts` excludes private methods. See the
+[YARD style guide](YARD-STYLE-GUIDE.md) for documentation tiers, private-method
+documentation, examples, and coverage checks.
+
 Renderer comments describe draft preservation, event replay, and measured layout;
 the native host documents its origin checks and OS-window boundary. RSpec example
 descriptions document tested behavior, while reusable fixture helpers explain

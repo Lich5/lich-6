@@ -19,9 +19,8 @@ module Lich
     module Script
       OWNER = Struct.new(:name, :thread_group).new('native-host-smoke', ThreadGroup::Default)
 
-      # @return [Object] fixture owner shared with callback threads
       # Returns the standalone fixture owner without starting a game or a real Script.
-      # @return [Object] fixture lifecycle identity
+      # @return [Object] fixture lifecycle identity shared with callback threads
       def self.current = OWNER
     end
   end

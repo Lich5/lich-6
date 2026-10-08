@@ -138,6 +138,7 @@ module Lich
       end
 
       # Binds a page once; repeated binding to that same runtime is safe.
+      # @param runtime [Runtime] host runtime responsible for this page's state and events
       # @return [Page] self
       # @raise [Error] if a different runtime already owns the page
       def bind_runtime(runtime)
@@ -158,6 +159,8 @@ module Lich
       # @return [Object] current value
       # @raise [SensitiveReadError] for a write-only sensitive property
       # @see Runtime#read
+      # @example Read one attached viewer's draft outside a callback
+      #   page.get(input.cid, :value, viewer: viewer_id)
       def get(cid, property = :value, viewer: nil)
         bound_runtime.read(self, cid, property, viewer: viewer)
       end

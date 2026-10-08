@@ -16,13 +16,17 @@ module Lich
       attr_reader :origin
 
       # Wraps a copied viewer submission for one-time consumption.
+      # @param value [String] plaintext copied into the carrier; the caller's string is unchanged
       # @return [SensitiveValue] viewer-origin carrier
+      # @raise [ArgumentError] if value is not a String
       def self.viewer(value)
         new(value, origin: :viewer)
       end
 
       # Wraps a copied server value for one-time consumption.
+      # @param value [String] plaintext copied into the carrier; the caller's string is unchanged
       # @return [SensitiveValue] server-origin carrier
+      # @raise [ArgumentError] if value is not a String
       def self.server(value)
         new(value, origin: :server)
       end
