@@ -625,6 +625,56 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(result).to eq(:queued)
   end
 
+  [false, true].each do |stale|
+    it "preserves table selection, cursor and activation ordering#{stale ? ' after a stale-generation retry' : ''}" do
+      # Make automatic refreshes immediate so a selection redraw cannot hide
+      # behind scheduler timing, as it did in the local Chrome run for PR #35.
+      allow(runtime).to receive(:schedule_render) { |_key, **_options, &render| render.call }
+      observed = Queue.new
+      page = nil
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'table-activation', title: 'Table') do
+        status = text(key: 'status', content: 'waiting')
+        table(key: 'spells', columns: [{ key: 'name', label: 'Spell' }],
+              rows: [{ key: 'barrier', cells: { name: 'Spirit Barrier' } }], selection: :single,
+              on: {
+                selection_change: ->(_event) { observed << :selection },
+                cursor_change: ->(_event) { observed << :cursor },
+                row_activate: lambda { |event|
+                  observed << [page.get(event.component.cid, :selected), page.get(event.component.cid, :cursor)]
+                  page.set(status.cid, :content, 'activated')
+                },
+              })
+      end)
+      address, render = attach(first_connection, page)
+      table_cid = render.fetch('tree').fetch('children').last.fetch('cid')
+      events = {
+        selection_change: { rows: ['barrier'] },
+        cursor_change: { row: 'barrier', column: 'name' },
+        row_activate: { row: 'barrier', column: 'name' },
+      }
+      if stale
+        runtime.refresh(page)
+        events.each do |event, payload|
+          expect(runtime.handle(first_connection, type: 'event', page: address, cid: table_cid,
+                                                 generation: render['generation'], event: event, payload: payload)).to eq(:refused)
+        end
+        render = first_connection.sent.last
+      end
+
+      events.each do |event, payload|
+        expect(runtime.handle(first_connection, type: 'event', page: address, cid: table_cid,
+                                               generation: render['generation'], event: event, payload: payload)).to eq(:queued)
+      end
+      expect(observed.pop(timeout: 2)).to eq(:selection)
+      expect(observed.pop(timeout: 2)).to eq(:cursor)
+      expect(observed.pop(timeout: 2)).to eq([['barrier'], { row: 'barrier', column: 'name' }])
+      Timeout.timeout(2) do
+        sleep(0.001) until first_connection.sent.last.dig('tree', 'children', 0, 'props', 'content') == 'activated'
+      end
+      expect(first_connection.sent.last['generation']).to be > render['generation']
+    end
+  end
+
   it 'writes shared state asynchronously and delivers it without changing viewer drafts' do
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'shared', title: 'Shared') do
       text(key: 'status', content: 'before')

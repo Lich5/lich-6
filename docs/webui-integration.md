@@ -477,7 +477,10 @@ The unchanged `ewaggle` setup additionally exercises named choices, numeric
 callbacks, viewer-local search, cross-list transfers, original same-list duplication,
 double-click transfers, and Close/save. Chrome also checks option containment and
 overlap at the original 730-pixel width. Unchanged row selection/cursor events are
-not re-emitted: redundant structural redraws must not invalidate activation.
+not re-emitted. Accepted selection/cursor changes update viewer state without an
+automatic structural redraw: the browser already displays those changes, and a
+new generation could invalidate the following activation and its bounded retry.
+Script callbacks still run in order, and callback-authored changes still render.
 Game lookups and persistence are isolated. Its converted native
 candidate informed reuse of table transfers and Markdown links; its form-specific
 layout and settings logic were not copied into production shim code.
