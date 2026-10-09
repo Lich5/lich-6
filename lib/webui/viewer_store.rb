@@ -197,10 +197,11 @@ module Lich
           current = attachment.delivered_generation
           next if current && render.generation < current
 
+          previous_components = attachment.render ? attachment.render.tree.each.to_h { |node| [node.cid, node] } : {}
           attachment.render = render
           attachment.delivered_generation = render.generation
           previous = attachment.values.select { |(_cid, property), value| property == :checked && value }.keys
-          seed_values!(attachment, render.tree)
+          seed_values!(attachment, render.tree, previous_components)
           render.tree.each.select { |node| node.type == :radio_option }.group_by { |node| node.props[:group] }.each_value do |members|
             selected = members.select { |node| attachment.values[[node.cid, :checked]] }
             next if selected.length < 2
@@ -229,10 +230,13 @@ module Lich
           when [:expander, :toggle] then attachment.values[[component.cid, :open]] = payload[:open]
           when [:split, :move] then attachment.values[[component.cid, :position]] = payload[:position]
           when [:table, :selection_change] then attachment.values[[component.cid, :selected]] = payload[:rows]
+          when [:table, :cursor_change]
+            attachment.values[[component.cid, :cursor]] = payload.dup.freeze
           when [:table, :sort_change]
             attachment.values[[component.cid, :sort]] = { column: payload[:column], direction: payload[:direction] }.freeze
           when [:table, :row_toggle]
-            attachment.values[[component.cid, "expanded:#{payload[:row]}"]] = payload[:expanded]
+            expanded = attachment.values.fetch([component.cid, :expanded]) { component.props[:rows].select { |row| row[:expanded] }.map { |row| row[:key] } }
+            attachment.values[[component.cid, :expanded]] = payload[:expanded] ? expanded | [payload[:row]] : expanded - [payload[:row]]
           end
         end
       end
@@ -334,7 +338,7 @@ module Lich
       # Seeds only absent viewer fields and repairs removed select choices without fabricating events.
       # Requires the store mutex; existing unrelated viewer edits remain intact.
       # @return [void]
-      def seed_values!(attachment, component)
+      def seed_values!(attachment, component, previous_components = {})
         schema = Contract.schema(component.type)
         schema[:properties].each do |name, definition|
           next unless definition[:scope] == :viewer && component.props.key?(name)
@@ -343,12 +347,41 @@ module Lich
           attachment.values[key] = component.props[name] unless attachment.values.key?(key)
           # Option removal invalidates only viewers selecting the removed item.
           # Other viewers retain their own choice; no callback is fabricated.
-          if component.type == :select && name == :value &&
-             component.props[:options].none? { |option| option[:value] == attachment.values[key] }
-            attachment.values[key] = component.props[name]
+          if component.type == :select && name == :value
+            old_options = previous_components[component.cid]&.props&.fetch(:options, []) || []
+            was_option = old_options.any? { |option| option[:value] == attachment.values[key] }
+            if (!component.props[:editable] || was_option) && component.props[:options].none? { |option| option[:value] == attachment.values[key] }
+              attachment.values[key] = component.props[:empty_value] || component.props[name]
+            end
           end
         end
-        component.children.each { |child| seed_values!(attachment, child) }
+        reconcile_table!(attachment.values, component, previous_components[component.cid]) if component.type == :table
+        component.children.each { |child| seed_values!(attachment, child, previous_components) }
+      end
+
+      # Removes only identities retired from this table; another viewer's choices are untouched.
+      # @param values [Hash] this attachment's overrides, under the store lock
+      # @param component [Component] replacement table
+      # @param previous [Component, nil] previously delivered table, for new-row defaults
+      # @return [void]
+      # @api private
+      def reconcile_table!(values, component, previous)
+        props, cid = component.props, component.cid
+        keys = props[:rows].map { |row| row[:key] }
+        selected = values.fetch([cid, :selected], props[:selected] || []) & keys
+        selected = [] if props[:selection] == 'none'
+        selected = selected.first(1) unless props[:selection] == 'multi'
+        selected = keys.first(1) if props[:selection] == 'browse' && selected.empty?
+        values[[cid, :selected]] = selected
+        initial = props[:expanded] || props[:rows].select { |row| row[:expanded] }.map { |row| row[:key] }
+        previous_keys = previous&.props&.fetch(:rows, [])&.map { |row| row[:key] } || []
+        # New identities receive their defaults; retained rows keep the viewer's choice.
+        values[[cid, :expanded]] = (values.fetch([cid, :expanded], initial) & keys) | (initial & (keys - previous_keys))
+        cursor = values.fetch([cid, :cursor], props[:cursor] || {})
+        cursor = {} unless keys.include?(cursor[:row])
+        columns = props[:columns].map { |column| column[:key] }
+        cursor = cursor.reject { |name, value| name == :column && !columns.include?(value) }
+        values[[cid, :cursor]] = cursor
       end
 
       # Overlays viewer properties and row expansion while excluding secret/ephemeral fields.
@@ -371,7 +404,7 @@ module Lich
         end
         if component.type == :table
           props[:rows] = props[:rows].map do |row|
-            expanded = values.fetch([component.cid, "expanded:#{row[:key]}"], row[:expanded])
+            expanded = values.key?([component.cid, :expanded]) ? values[[component.cid, :expanded]].include?(row[:key]) : row[:expanded]
             row.merge(expanded: expanded)
           end
         end

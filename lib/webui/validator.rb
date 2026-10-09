@@ -261,7 +261,7 @@ module Lich
                      step: Contract.property(Contract::ANY_NUMBER, default: 1),
                    }
                  when 'checkbox'
-                   { type: Contract.property(Contract.enum(:checkbox), required: true) }
+                   { type: Contract.property(Contract.enum(:checkbox), required: true), disabled: Contract.property(Contract::BOOL, default: false) }
                  when 'select'
                    {
                      type: Contract.property(Contract.enum(:select), required: true),
@@ -347,6 +347,15 @@ module Lich
 
       def validate_options!(props, selected_key, context)
         validate_unique_options!(props[:options], context, :options)
+        if props.key?(:empty_value) && props[:options].none? { |option| option[:value] == props[:empty_value] }
+          violation!('empty value must name an option', context, :empty_value)
+        end
+        if props[:free_text_prefix]
+          violation!('free text prefix requires an editable select', context, :free_text_prefix) unless props[:editable]
+          if props[:free_text_prefix].empty? || props[:options].any? { |option| option[:value].start_with?(props[:free_text_prefix]) }
+            violation!('free text prefix must be nonempty and disjoint from option IDs', context, :free_text_prefix)
+          end
+        end
         return if selected_key == :value && props[:editable]
         return unless props.key?(selected_key)
         return if props[:options].any? { |option| option[:value] == props[selected_key] }
@@ -409,7 +418,13 @@ module Lich
         selected = props[:selected] || []
         violation!('selected rows must exist', context, :selected) unless (selected - row_keys).empty?
         violation!('selected is invalid when selection is none', context, :selected) if props[:selection] == 'none' && !selected.empty?
-        violation!('single selection accepts at most one row', context, :selected) if props[:selection] == 'single' && selected.length > 1
+        violation!('single selection accepts at most one row', context, :selected) if %w[single browse].include?(props[:selection]) && selected.length > 1
+        violation!('expanded rows must exist', context, :expanded) unless ((props[:expanded] || []) - row_keys).empty?
+        cursor = props[:cursor] || {}
+        violation!('cursor row must exist', context, :cursor) if cursor[:row] && !row_keys.include?(cursor[:row])
+        if cursor[:column] && (!cursor[:row] || !column_keys.include?(cursor[:column]))
+          violation!('cursor column must exist and accompany a row', context, :cursor)
+        end
         if props[:sort]
           column = columns.find { |candidate| candidate[:key] == props[:sort][:column] }
           violation!('sort column does not exist', context, :sort) unless column
@@ -469,9 +484,11 @@ module Lich
           end
         when [:tabs, :select]
           violation!('selected tab index is out of range', context, event_name) if payload[:index] >= normalized_props[:names].length
-        when [:table, :row_activate], [:table, :row_toggle]
+        when [:table, :row_activate], [:table, :row_toggle], [:table, :cursor_change]
           row_keys = normalized_props[:rows].map { |row| (row[:key] || row['key']).to_s }
           violation!('event row does not exist', context, event_name) unless row_keys.include?(payload[:row])
+          columns = normalized_props[:columns].map { |column| (column[:key] || column['key']).to_s }
+          violation!('event column does not exist', context, event_name) if payload[:column] && !columns.include?(payload[:column])
         when [:table, :selection_change]
           validate_table_selection_event!(payload, normalized_props, context, event_name)
         when [:table, :cell_edit]
@@ -543,7 +560,7 @@ module Lich
         keys = props[:rows].map { |row| (row[:key] || row['key']).to_s }
         violation!('selection contains unknown row', context, event_name) unless (payload[:rows] - keys).empty?
         violation!('selection is disabled', context, event_name) if props.fetch(:selection, 'none').to_s == 'none'
-        if props.fetch(:selection, 'none').to_s == 'single' && payload[:rows].length > 1
+        if %w[single browse].include?(props.fetch(:selection, 'none').to_s) && payload[:rows].length > 1
           violation!('single selection accepts one row', context, event_name)
         end
       end
@@ -555,6 +572,7 @@ module Lich
         violation!('edit column does not exist', context, event_name) unless column
         editor = column[:editor] || column['editor']
         violation!('column is read-only', context, event_name) unless editor
+        violation!('column editor is disabled', context, event_name) if editor[:disabled] || editor['disabled']
         validate_editor_value_against!(payload[:value], editor, context, event_name)
       end
 

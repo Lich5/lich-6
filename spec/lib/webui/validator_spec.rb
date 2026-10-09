@@ -8,6 +8,43 @@ RSpec.describe Lich::WebUI::Validator do
 
   let(:context) { { owner: 'spec-owner', page_id: 'spec-page', cid: 'test:component' } }
 
+  it 'validates table identity references and refuses forged cursor, selection and disabled edits' do
+    props = validator.validate_component!(:table, {
+      columns: [{ key: 'flag', label: 'Flag', editor: { type: 'checkbox', disabled: true } }],
+      rows: [{ key: 'one', cells: { flag: false } }, { key: 'two', cells: { flag: true } }],
+      selection: :browse, expanded: ['one'], cursor: { row: 'one', column: 'flag' },
+    }, **context)
+    expect do
+      validator.validate_event!(:table, :cursor_change, { row: 'one', column: 'missing' }, props: props, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /column/)
+    expect do
+      validator.validate_event!(:table, :selection_change, { rows: %w[one two] }, props: props, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /single selection/)
+    expect do
+      validator.validate_event!(:table, :cell_edit, { row: 'one', column: 'flag', value: true }, props: props, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /disabled/)
+    expect do
+      validator.validate_property!(:table, :expanded, ['missing'], props: props, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /expanded/)
+    expect do
+      validator.validate_property!(:table, :cursor, { column: 'flag' }, props: props, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /cursor/)
+  end
+
+  it 'requires free-text encodings to be disjoint from option identities and clearing values to be declared' do
+    props = { options: [{ value: 'row', label: 'Label' }], editable: true, free_text_prefix: 'text:' }
+    expect(validator.validate_component!(:select, props.merge(value: 'text:row'), **context)[:value]).to eq('text:row')
+    expect do
+      validator.validate_component!(:select, props.merge(free_text_prefix: 'r'), **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /disjoint/)
+    expect do
+      validator.validate_component!(:select, props.merge(empty_value: 'missing'), **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /empty value/)
+    expect do
+      validator.validate_component!(:select, props.merge(editable: false), **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /editable/)
+  end
+
   valid_properties = {
     page: { title: 'Page' },
     group: { label: 'Group' },

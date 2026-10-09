@@ -388,3 +388,16 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-page[data-density="compact"] .field:has(> input[type="checkbox"]) { gap: 8px; }
 .webui-page[data-density="compact"] .field > input[type="checkbox"] + span { margin-right: 4px; }
 .webui-page[data-density="compact"] .field-label { font-weight: normal; }
+.webui-page .webui-table .webui-tree-disclosure {
+  display: inline-block;
+  width: 18px;
+  min-width: 18px;
+  min-height: 0;
+  box-shadow: none;
+  line-height: inherit;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: center;
+}

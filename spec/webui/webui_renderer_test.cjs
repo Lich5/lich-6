@@ -24,6 +24,126 @@ function fixture() {
     receive: message => listeners.message({ data: JSON.stringify(message) }) };
 }
 
+// Model paths are positional; browser state must instead retain stable row/column IDs.
+function modelTable(receive, generation, props) {
+  receive({ type: 'render', page: 'models', generation,
+    bindings: { grid: ['row_toggle', 'selection_change', 'cursor_change', 'row_activate', 'cell_edit', 'sort_change'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'table', cid: 'grid', props: {
+      columns: [{ key: 'name', label: 'Name' }], selection: 'single', selected: [], ...props
+    } }] } });
+}
+
+test('tree expansion hides descendants, navigates by keyboard and preserves focused identity across refresh', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const { document, KeyboardEvent } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  const rows = [{ key: 'parent', cells: { name: 'Parent' } }, { key: 'child', parent: 'parent', cells: { name: 'Child' } }, { key: 'other', cells: { name: 'Other' } }];
+  modelTable(receive, 1, { rows });
+  assert.equal(document.querySelectorAll('tbody tr').length, 2);
+  document.querySelector('[aria-label="Expand Parent"]').click();
+  assert.equal(document.querySelectorAll('tbody tr').length, 3);
+  assert.ok(sent.some(message => message.event === 'row_toggle' && message.payload.expanded));
+  document.querySelector('[data-row-key="parent"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  assert.equal(document.activeElement.dataset.rowKey, 'child');
+  modelTable(receive, 2, { rows, expanded: ['parent'], cursor: { row: 'child' } });
+  assert.equal(document.activeElement.dataset.rowKey, 'child');
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  assert.equal(document.activeElement.dataset.rowKey, 'parent');
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  assert.equal(document.querySelectorAll('tbody tr').length, 2);
+  assert.equal(document.querySelector('[data-row-key="parent"]').getAttribute('aria-expanded'), 'false');
+});
+
+test('multiple selection supports additive and range gestures without changing single selection', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  const rows = ['a', 'b', 'c'].map(key => ({ key, cells: { name: key } }));
+  modelTable(receive, 1, { rows, selection: 'multi' });
+  const click = (key, modifiers = {}) => dom.window.document.querySelector(`[data-row-key="${key}"]`).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, ...modifiers }));
+  click('a'); click('c', { ctrlKey: true });
+  assert.deepEqual(sent.filter(message => message.event === 'selection_change').at(-1).payload.rows, ['a', 'c']);
+  click('b', { shiftKey: true });
+  assert.deepEqual(sent.filter(message => message.event === 'selection_change').at(-1).payload.rows, ['b', 'c']);
+  modelTable(receive, 2, { rows, selection: 'single' });
+  click('a'); click('c', { ctrlKey: true });
+  assert.deepEqual(sent.filter(message => message.event === 'selection_change').at(-1).payload.rows, ['c']);
+});
+
+test('boolean cells expose one-click proposals and an unchanged server value reverses a rejected proposal', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  const props = { rows: [{ key: 'a', cells: { flag: false } }], columns: [{ key: 'flag', label: 'Enabled', editor: { type: 'checkbox' } }] };
+  modelTable(receive, 1, props);
+  dom.window.document.querySelector('tbody input').click();
+  const edits = sent.filter(message => message.event === 'cell_edit');
+  assert.equal(edits.length, 1);
+  assert.deepEqual(edits[0].payload, { row: 'a', column: 'flag', value: true });
+  modelTable(receive, 2, props);
+  assert.equal(dom.window.document.querySelector('tbody input').checked, false);
+});
+
+test('hierarchical sorting keeps siblings together and model sorting waits for authoritative row order', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  const props = { rows: [{ key: 'z', cells: { name: 'Z' } }, { key: 'a', parent: 'z', cells: { name: 'A' } }, { key: 'b', cells: { name: 'B' } }],
+    columns: [{ key: 'name', label: 'Name', sortable: true }], sortable: true, expanded: ['z'] };
+  modelTable(receive, 1, props);
+  dom.window.document.querySelector('th button').click();
+  const order = () => [...dom.window.document.querySelectorAll('tbody tr')].map(row => row.dataset.rowKey);
+  assert.deepEqual(order(), ['b', 'z', 'a']);
+  modelTable(receive, 2, { ...props, sort_mode: 'model', headers: false });
+  assert.deepEqual(order(), ['z', 'a', 'b']);
+  assert.equal(dom.window.document.querySelector('thead'), null);
+  modelTable(receive, 3, { ...props, sort_mode: 'model' });
+  dom.window.document.querySelector('th button').click();
+  assert.deepEqual(order(), ['z', 'a', 'b']);
+  assert.ok(sent.some(message => message.event === 'sort_change'));
+});
+
+test('row activation reports the actual column and a removed cursor never focuses a replacement row', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  const props = { rows: [{ key: 'a', cells: { first: 'A', second: 'B' } }], columns: [{ key: 'first', label: 'First' }, { key: 'second', label: 'Second' }] };
+  modelTable(receive, 1, props);
+  dom.window.document.querySelector('[data-column-key="second"]').dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+  assert.deepEqual(sent.filter(message => message.event === 'row_activate').at(-1).payload, { row: 'a', column: 'second' });
+  dom.window.document.querySelector('tbody tr').focus();
+  modelTable(receive, 2, { ...props, rows: [{ key: 'new', cells: { first: 'New' } }], cursor: {} });
+  assert.notEqual(dom.window.document.activeElement.dataset.rowKey, 'new');
+});
+
+test('modifier clicks on editable cells select multiple rows without opening an editor', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  modelTable(receive, 1, { selection: 'multi', selected: ['a'],
+    columns: [{ key: 'name', label: 'Name', editor: { type: 'text' } }],
+    rows: [{ key: 'a', cells: { name: 'A' } }, { key: 'b', cells: { name: 'B' } }] });
+  dom.window.document.querySelector('[data-row-key="b"] td').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, ctrlKey: true }));
+  assert.equal(dom.window.document.querySelector('tbody input'), null);
+  assert.deepEqual(sent.filter(message => message.event === 'selection_change').at(-1).payload.rows, ['a', 'b']);
+});
+
+test('editable combo text cannot impersonate an option ID or the clearing sentinel', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  receive({ type: 'render', page: 'models', generation: 1, bindings: { combo: ['change'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'select', cid: 'combo', props: {
+      editable: true, free_text_prefix: 'text:', empty_value: 'none', value: 'none',
+      options: [{ value: 'none', label: '' }, { value: 'row', label: 'Label' }]
+    } }] } });
+  const input = dom.window.document.querySelector('input');
+  for (const text of ['row', 'none', 'text:literal']) {
+    input.value = text;
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    assert.equal(sent.filter(message => message.event === 'change').at(-1).payload.value, `text:${text}`);
+    assert.equal(input.value, text);
+  }
+  const picker = dom.window.document.querySelector('select');
+  picker.value = 'row'; picker.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(input.value, 'Label');
+  assert.equal(sent.filter(message => message.event === 'change').at(-1).payload.value, 'row');
+});
+
 test('Markdown does not forward host cookies to another local port or scheme', t => {
   const { dom, receive } = fixture();
   t.after(() => dom.window.close());

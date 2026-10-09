@@ -105,6 +105,50 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(adapter.get(select, :options)).to eq(options.take(1))
   end
 
+  context 'browse selection before publication' do
+    let(:columns) { [{ key: 'name', label: 'Name' }] }
+    let(:rows) { [{ key: 'first', cells: { name: 'First' } }, { key: 'second', cells: { name: 'Second' } }] }
+
+    it 'selects the first remaining row and permits an empty table to be repopulated' do
+      table = adapter.create(:table, columns: columns, rows: rows, selection: 'browse', selected: ['first'])
+      # Read before publication so ViewerStore reconciliation cannot mask a stale default.
+      adapter.set(table, :rows, rows.drop(1))
+      expect(adapter.get(table, :selected)).to eq(['second'])
+      adapter.set(table, :rows, [])
+      expect(adapter.get(table, :selected)).to eq([])
+      adapter.set(table, :rows, rows)
+      expect(adapter.get(table, :selected)).to eq(['first'])
+      expect { adapter.set(table, :rows, [{ cells: {} }]) }.to raise_error(Lich::WebUI::SchemaViolationError)
+      expect(adapter.get(table, :selected)).to eq(['first'])
+    end
+
+    it 'supplies a selection when entering browse mode unless the table is empty' do
+      [[], rows].each do |initial_rows|
+        table = adapter.create(:table, columns: columns, rows: initial_rows, selection: 'single', selected: [])
+        adapter.set(table, :selection, 'browse')
+        expect(adapter.get(table, :selected)).to eq(initial_rows.empty? ? [] : ['first'])
+      end
+    end
+
+    it 'preserves a surviving selection when entering browse mode or replacing rows' do
+      table = adapter.create(:table, columns: columns, rows: rows, selection: 'single', selected: ['second'])
+      adapter.set(table, :selection, 'browse')
+      expect(adapter.get(table, :selected)).to eq(['second'])
+      adapter.set(table, :rows, rows)
+      expect(adapter.get(table, :selected)).to eq(['second'])
+    end
+
+    it 'keeps none and single modes from automatically selecting a replacement row' do
+      %w[none single].each do |mode|
+        table = adapter.create(:table, columns: columns, rows: rows, selection: 'browse', selected: ['first'])
+        adapter.set(table, :selection, mode)
+        expect(adapter.get(table, :selected)).to eq(mode == 'none' ? [] : ['first'])
+        adapter.set(table, :rows, rows.drop(1))
+        expect(adapter.get(table, :selected)).to eq([])
+      end
+    end
+  end
+
   it 'attaches, detaches, binds, unbinds, and destroys with attributed failures' do
     page = adapter.create(:page, title: 'Adapter page')
     group = adapter.create(:group, label: 'Actions')

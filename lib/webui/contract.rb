@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.11.0'
+      VERSION = '2.12.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -412,6 +412,9 @@ module Lich
           properties: {
             label: property(SHORT), options: property(OPTIONS, required: true),
             editable: property(BOOL, default: false),
+            # Optional disjoint encoding for free text when labels and option IDs differ.
+            free_text_prefix: property(SHORT),
+            empty_value: property(string(:input_text)),
             value: property(string(:input_text), scope: :viewer),
           }, children: :none,
           events: { change: event(record(value: property(string(:input_text), required: true))) },
@@ -447,6 +450,10 @@ module Lich
       ).freeze
 
       TABLE_PROPERTIES = {
+        headers: property(BOOL),
+        # Stable row IDs separate viewer interaction from positional model paths.
+        expanded: property(array(IDENT, max: BOUNDS[:table_rows]), scope: :viewer),
+        cursor: property(record(row: property(IDENT), column: property(IDENT)), scope: :viewer),
         scrollable: property(BOOL, default: true),
         # Single-line cells retain their natural width and scroll horizontally.
         # Omission preserves existing wrapping tables, including shim consumers.
@@ -454,10 +461,10 @@ module Lich
         row_height: property(integer(min: 1, max: BOUNDS[:geometry].end)),
         border_width: property(integer(min: 0, max: 8)),
         grid_lines: property(enum(:none, :horizontal, :vertical, :both)),
-        sort_mode: property(enum(:natural, :lexical), default: 'natural'),
+        sort_mode: property(enum(:natural, :lexical, :model), default: 'natural'),
         columns: property(array(TABLE_COLUMN, min: 1, max: BOUNDS[:table_columns]), required: true),
         rows: property(array(TABLE_ROW, max: BOUNDS[:table_rows]), required: true),
-        selection: property(enum(:none, :single, :multi), default: 'none'),
+        selection: property(enum(:none, :single, :browse, :multi), default: 'none'),
         selected: property(array(IDENT, max: BOUNDS[:table_rows]), scope: :viewer),
         sortable: property(BOOL, default: false),
         sort: property(record(
@@ -469,7 +476,10 @@ module Lich
 
       TABLE_EVENTS = {
         row_drop: event(record(source: property(CID, required: true), row: property(IDENT, required: true)), terminal: true),
-        row_activate: event(record(row: property(IDENT, required: true)), terminal: true),
+        row_activate: event(record(row: property(IDENT, required: true), column: property(IDENT)), terminal: true),
+        # Cursor movement is already visible in the client. An automatic refresh
+        # would race the immediately following edit/activation against a new generation.
+        cursor_change: event(record(row: property(IDENT, required: true), column: property(IDENT))),
         selection_change: event(record(rows: property(array(IDENT, max: BOUNDS[:table_rows]), required: true)), structural: true),
         cell_edit: event(record(
                            row: property(IDENT, required: true), column: property(IDENT, required: true),

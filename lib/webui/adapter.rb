@@ -147,6 +147,25 @@ module Lich
             @viewer_values[[viewer, handle, name]] = validated
           else
             candidate = node.props.merge(name => value)
+            # Model mutation retires identities atomically with its row snapshot.
+            # Defaults must remain valid before per-viewer reconciliation runs.
+            if node.type == :table && name == :rows && value.is_a?(Array)
+              keys = value.filter_map { |row| row[:key] || row['key'] if row.is_a?(Hash) }
+              candidate[:selected] = (candidate[:selected] || []) & keys
+              candidate[:expanded] = candidate[:expanded] & keys if candidate.key?(:expanded)
+              candidate[:cursor] = {} unless keys.include?(candidate.dig(:cursor, :row))
+            end
+            if node.type == :table && name == :selection
+              candidate[:selected] = [] if value.to_s == 'none'
+              candidate[:selected] = (candidate[:selected] || []).first(1) if %w[single browse].include?(value.to_s)
+            end
+            # Browse requires a selection when rows exist. Match viewer reconciliation
+            # here so reads before publication see the same first-row fallback.
+            if node.type == :table && %i[rows selection].include?(name) && candidate[:selection].to_s == 'browse' && (candidate[:selected] || []).empty?
+              first = candidate[:rows].first if candidate[:rows].is_a?(Array)
+              key = first[:key] || first['key'] if first.is_a?(Hash)
+              candidate[:selected] = [key] if key
+            end
             # A select's option list and default must remain one valid schema.
             # sbounty replaces its choices; use the first declared choice only
             # when the old default was removed, after validating the list.
@@ -155,8 +174,9 @@ module Lich
                 :select, { options: value }, owner: owner_label,
                 page_id: adapter_page_id, cid: handle_label(handle)
               ).fetch(:options)
-              unless candidate[:options].any? { |option| option[:value] == candidate[:value] }
-                candidate[:value] = candidate[:options].first&.fetch(:value)
+              was_option = node.props[:options].any? { |option| option[:value] == candidate[:value] }
+              if (!candidate[:editable] || was_option) && candidate[:options].none? { |option| option[:value] == candidate[:value] }
+                candidate[:value] = candidate[:empty_value] || candidate[:options].first&.fetch(:value)
               end
             end
             validated = @validator.validate_component!(
