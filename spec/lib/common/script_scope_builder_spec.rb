@@ -81,6 +81,135 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
 
   def saved_settings_path = File.join(@settings_directory, 'GS', 'Fixture', 'ecleanse.yaml')
 
+  # Preserve the original setup and its handlers; only game services and the save
+  # destination are substituted. This is not an execution of the casting loop.
+  def original_ewaggle
+    sandbox = Module.new
+    sandbox.const_set(:Gtk, gtk)
+    sandbox.const_set(:Gdk, scope.const_get(:Gdk))
+    sandbox.const_set(:Script, Lich::Common::Script)
+    spells = [Struct.new(:num, :name, :time_per).new(101, 'Spirit Warding I', 1), Struct.new(:num, :name, :time_per).new(102, 'Spirit Barrier', 1)]
+    spells.each { |spell| spell.define_singleton_method(:known?) { true } }
+    catalog = Object.new
+    catalog.define_singleton_method(:list) { spells }
+    catalog.define_singleton_method(:[]) { |number| spells.find { |spell| spell.num == number } || Struct.new(:known?).new(number != 511) }
+    sandbox.const_set(:Spell, catalog)
+    sandbox.const_set(:Armor, double(known?: false))
+    sandbox.const_set(:Society, double(member: 'Council of Light', rank: 20))
+    @messages = []
+    messages = @messages
+    messaging = Module.new
+    messaging.define_singleton_method(:msg) { |_type, message| messages << message }
+    stub_const('Lich::Messaging', messaging)
+    path = File.expand_path('../../fixtures/webui/ewaggle_setup.lic', __dir__)
+    sandbox.module_eval(File.read(path), path)
+    mod = sandbox.const_get(:Ewaggle)
+    @ewaggle_settings = { cast_list: ['101  Spirit Warding I'], sonic_armor: 'Robes' }
+    settings, destination = @ewaggle_settings, File.join(@settings_directory, 'ewaggle.yaml')
+    mod.define_singleton_method(:get_script_version) { 'fixture' }
+    mod.define_singleton_method(:armor_spells) { {} }
+    mod.define_singleton_method(:data) { Struct.new(:settings).new(settings) }
+    mod.define_singleton_method(:save_profile) { File.write(destination, YAML.dump(settings)) }
+    klass = mod.const_get(:Setup)
+    klass.define_method(:respond) { |*_args| nil }
+    klass.define_method(:wait_while) { |&block| sleep 0.005 while block.call }
+    form = klass.new(settings)
+    drain_gtk
+    expect(form['main']).to be_a(gtk::Window)
+    expect(form['cast_list_store'].size).to eq(1)
+    form
+  end
+
+  it 'loads the original ewaggle setup, named choices and numeric callbacks without source edits' do
+    form = original_ewaggle
+    expect(Digest::SHA256.hexdigest(form.class.ewaggle_ui)).to eq('c617157ee342adb4bfcb9d3281de5d63c17ef777d4f75fcad60544ec6049eddf')
+    expect(form['sonic_armor'].active_id).to eq('Robes')
+    expect(form['sonic_armor'].set_active_id('Full Plate')).to be(true)
+    expect(@ewaggle_settings[:sonic_armor]).to eq('Full Plate')
+    expect(form['sonic_armor'].set_active_id('missing')).to be(false)
+    expect(form['sonic_armor'].active_id).to eq('Full Plate')
+    form['start_at'].value = 90
+    expect(@ewaggle_settings[:start_at]).to eq(90)
+    form['sonic_armor'].remove_all
+    expect(form['sonic_armor'].active_id).to be_nil
+    form['main'].destroy
+    drain_gtk
+    expect(File.exist?(File.join(@settings_directory, 'ewaggle.yaml'))).to be(false)
+    expect(@messages.join).to include('WITHOUT saving')
+  end
+
+  it 'routes validated row drops through the original ewaggle callbacks without automatic model edits' do
+    diagnostics = []
+    allow(Lich).to receive(:log) { |message| diagnostics << message }
+    form = original_ewaggle
+    allow(gtk.session).to receive(:refuse).and_wrap_original do |method, receiver, operation|
+      diagnostics << "#{receiver.class}: #{operation}"
+      method.call(receiver, operation)
+    end
+    form['main'].show_all
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    sent = []
+    connection = double('connection', viewer_id: 'ewaggle-drop', alive?: true)
+    allow(connection).to receive(:send_text) { |message| sent << JSON.parse(message) }
+    address = service.registry.address_for(page)
+    service.runtime.handle(connection, type: 'attach', page: address)
+    tables = page.last_render.tree.each.select { |component| component.type == :table }
+    source = tables.find { |table| table.props[:rows].any? { |row| row[:cells].values.include?('102  Spirit Barrier') } }
+    target = tables.find { |table| table != source }
+    service.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                       cid: target.cid, event: 'row_drop', payload: { source: source.cid, row: source.props[:rows].first[:key] })
+    drain_gtk
+    expect(form['cast_list_store'].rows.map { |row| row[0] }).to contain_exactly('101  Spirit Warding I', '102  Spirit Barrier'), diagnostics.join("\n")
+    expect(form['not_to_cast_store'].size).to eq(0)
+    expect(sent.select { |message| message['type'] == 'error' }).to be_empty
+  end
+
+  it 'refuses unsafe label markup and unimplemented transfer protocols without publishing a partial form' do
+    [
+      '<a href="javascript:alert(1)">bad</a>',
+      '<a href="https://user:pass@example.org/">bad</a>',
+      '<a href="https://example.org/" onclick="bad()">bad</a>',
+      '<a href="https://example.org/"><b>nested</b></a>',
+    ].each do |text|
+      expect do
+        load_xml("<object class=\"GtkLabel\"><property name=\"label\">#{CGI.escapeHTML(text)}</property><property name=\"use-markup\">True</property></object>")
+      end.to raise_error(gtk::BuilderError)
+      expect(builder.objects).to be_empty
+    end
+    expect { gtk::TargetEntry.new('text/uri-list', gtk::TargetFlags::SAME_APP, 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect { gtk::DragContext.new.finish(success: true, delete: true, time: 0) }.to raise_error(gtk::UnsupportedOperation)
+    combo = gtk::ComboBoxText.new
+    combo.append('one', 'Duplicate label')
+    combo.append('two', 'Duplicate label')
+    expect { combo.append('one', 'new') }.to raise_error(gtk::UnsupportedOperation)
+    expect(combo.model.size).to eq(2)
+    combo.set_active_id('two')
+    expect(combo.active).to eq(1)
+    spin = gtk::SpinButton.new(0, 100, 1)
+    spin.text = '0'
+    expect { spin.text = '10' }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'preserves ewaggle search, transfers, choice edits and original save callbacks in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    form = original_ewaggle
+    runner = Thread.new { form.start }
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-ewaggle')
+    drain_gtk
+    runner.join(2)
+    saved = YAML.unsafe_load_file(File.join(@settings_directory, 'ewaggle.yaml'))
+    expect(saved).to include(sonic_armor: 'Full Plate', start_at: 90)
+    expect(saved[:cast_list]).to contain_exactly('101  Spirit Warding I', '102  Spirit Barrier', '102  Spirit Barrier')
+    expect(saved[:not_to_cast]).to be_empty
+    expect(form['main']).to be_destroyed
+  ensure
+    form&.[]('main')&.destroy
+    runner&.join(2)
+  end
+
   it 'loads unchanged ecleanse XML and preserves original initialization, changes and Close saving' do
     settings = { stop_scripts: 'bigshot', cleanse_disease: true, cleanse_poison: false }
     form = original_ecleanse(settings)
@@ -137,13 +266,13 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     end
   end
 
-  it 'uses shared character metrics and borderless frames without accepting Bigshot focus or alignment gaps' do
+  it 'uses shared character metrics and borderless frames while refusing unsupported focus and alignment values' do
     load_xml('<object class="GtkLabel" id="label"><property name="width-chars">17</property></object><object class="GtkFrame" id="frame"><property name="shadow-type">none</property></object>')
     expect(builder['label'].send(:component_props)).to include(min_width_chars: 17)
     expect(builder['label'].send(:component_props)).not_to have_key(:width)
     expect(builder['frame'].send(:component_props)).to include(border_width: 0)
     [
-      '<object class="GtkComboBoxText"><property name="has-entry">True</property><property name="can-focus">False</property></object>',
+      '<object class="GtkComboBoxText"><property name="has-entry">True</property><property name="can-focus">True</property></object>',
       '<object class="GtkComboBoxText"><property name="has-entry">True</property><child internal-child="entry"><object class="GtkEntry"><property name="can-focus">False</property></object></child></object>',
       '<object class="GtkLabel"><property name="can-focus">True</property></object>',
       '<object class="GtkCheckButton"><property name="valign">center</property></object>',

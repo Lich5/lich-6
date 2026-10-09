@@ -125,6 +125,15 @@ module Lich
           def value_as_int = value.round
           # @return [String] current value formatted to the requested decimal precision
           def text = format("%.#{digits}f", value)
+
+          # Numeric browser changes arrive parsed and range-validated before callbacks.
+          # There is no separate GTK entry buffer to flush; re-publish the current
+          # viewer value without recursively emitting value-changed.
+          # @return [SpinButton] self
+          def update
+            write(:value, value)
+          end
+
           # @return [Integer] displayed decimal places
           def digits = read(:digits)
 
@@ -136,9 +145,14 @@ module Lich
           end
           alias set_digits digits=
 
-          # Text assignment and editable-mode changes need entry parsing semantics not provided here.
-          # @raise [UnsupportedOperation] always
-          def text=(_value)
+          # Glade can repeat the adjustment's initial numeric value as entry text.
+          # Accept only that equivalent pre-render declaration; independent entry
+          # drafts still require an explicit text-buffer implementation.
+          # @raise [UnsupportedOperation] for differing or live text assignments
+          def text=(text)
+            number = Float(text) if text.is_a?(String)
+            session.refuse(self, :text=) unless !@handle && number&.finite? && number == value
+          rescue ArgumentError, TypeError
             session.refuse(self, :text=)
           end
           alias set_text text=

@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.12.0'
+      VERSION = '2.13.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -472,15 +472,17 @@ module Lich
                        ), scope: :viewer),
         max_height: property(GEOMETRY),
         transfer_group: property(IDENT),
+        search_column: property(IDENT),
       }.freeze
 
       TABLE_EVENTS = {
         row_drop: event(record(source: property(CID, required: true), row: property(IDENT, required: true)), terminal: true),
         row_activate: event(record(row: property(IDENT, required: true), column: property(IDENT)), terminal: true),
-        # Cursor movement is already visible in the client. An automatic refresh
-        # would race the immediately following edit/activation against a new generation.
+        # Cursor and selection changes are already visible in the client. An
+        # automatic refresh would invalidate the following activation (including
+        # its one stale-generation retry). Callback-authored edits still refresh.
         cursor_change: event(record(row: property(IDENT, required: true), column: property(IDENT))),
-        selection_change: event(record(rows: property(array(IDENT, max: BOUNDS[:table_rows]), required: true)), structural: true),
+        selection_change: event(record(rows: property(array(IDENT, max: BOUNDS[:table_rows]), required: true))),
         cell_edit: event(record(
                            row: property(IDENT, required: true), column: property(IDENT, required: true),
                            value: property(scalar(:editor_value), required: true)

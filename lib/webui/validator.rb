@@ -395,6 +395,9 @@ module Lich
         column_keys = columns.map { |column| column[:key] }
         row_keys = rows.map { |row| row[:key] }
         violation!('column keys must be unique', context, :columns) unless column_keys.uniq.length == column_keys.length
+        if props[:search_column] && !column_keys.include?(props[:search_column])
+          violation!('search column must name a displayed column', context, :search_column)
+        end
         violation!('row keys must be unique', context, :rows) unless row_keys.uniq.length == row_keys.length
 
         columns.each_with_index do |column, index|

@@ -75,10 +75,18 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         return url.scheme == launchURL.scheme && url.host == launchURL.host && url.port == launchURL.port
     }
 
-    /// Allows only main-frame navigation on the original loopback origin.
-    /// External destinations and new windows cannot inherit the native bridge.
+    /// User-activated HTTP(S) help links open in the system browser. They never
+    /// navigate the privileged WebView or inherit its bridge/cookies. Scripted
+    /// redirects, subframes, credentials and same-host cross-port links stay blocked.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if ExternalLinks.permits(action.request.url, source: action.sourceFrame.request.url,
+                                 launch: launchURL, mainFrame: action.sourceFrame.isMainFrame,
+                                 userActivated: action.navigationType == .linkActivated), let url = action.request.url {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
         decisionHandler(trusted(action.request.url) && action.targetFrame?.isMainFrame == true ? .allow : .cancel)
     }
 
@@ -218,21 +226,26 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
     }
 }
 
-let arguments = CommandLine.arguments
-// The parent owns this private file until process exit; credentials never enter argv.
-guard arguments.count == 3,
-      let launchURL = try? String(contentsOfFile: arguments[1], encoding: .utf8),
-      let url = URL(string: launchURL), url.scheme == "http",
-      ["127.0.0.1", "localhost", "::1"].contains(url.host ?? ""), url.port != nil,
-      let data = arguments[2].data(using: .utf8),
-      let geometry = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-    fputs("Lich WebUI: expected a private loopback launch file and geometry\n", stderr)
-    exit(1)
+@main
+struct WebUIHostMain {
+    static func main() {
+        let arguments = CommandLine.arguments
+        // The parent owns this private file until process exit; credentials never enter argv.
+        guard arguments.count == 3,
+              let launchURL = try? String(contentsOfFile: arguments[1], encoding: .utf8),
+              let url = URL(string: launchURL), url.scheme == "http",
+              ["127.0.0.1", "localhost", "::1"].contains(url.host ?? ""), url.port != nil,
+              let data = arguments[2].data(using: .utf8),
+              let geometry = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            fputs("Lich WebUI: expected a private loopback launch file and geometry\n", stderr)
+            exit(1)
+        }
+        let app = NSApplication.shared
+        let host = Host(url: url, geometry: geometry)
+        app.delegate = host
+        // Script windows are accessory panels, not separate Dock applications. The
+        // menu still supplies keyboard equivalents even though no menu bar is shown.
+        app.setActivationPolicy(.accessory)
+        app.run()
+    }
 }
-let app = NSApplication.shared
-let host = Host(url: url, geometry: geometry)
-app.delegate = host
-// Script windows are accessory panels, not separate Dock applications. The
-// menu still supplies keyboard equivalents even though no menu bar is shown.
-app.setActivationPolicy(.accessory)
-app.run()

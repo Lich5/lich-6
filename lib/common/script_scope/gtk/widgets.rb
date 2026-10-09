@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require 'cgi'
+require 'rexml/document'
+require 'uri'
 
 module Lich
   module Common
@@ -252,7 +254,7 @@ module Lich
           # @raise [UnsupportedOperation] when no equivalent control behavior exists
           def can_focus=(value)
             kind = self.class.name&.split('::')&.last
-            focusable = %w[Button ToggleButton CheckButton RadioButton Entry SearchEntry SpinButton TextView Notebook ScrolledWindow Expander]
+            focusable = %w[Button ToggleButton CheckButton RadioButton Entry ComboEntry SearchEntry SpinButton TextView Notebook ScrolledWindow Expander TreeView ComboBoxText ComboBox]
             passive = %w[Window Box HBox VBox Grid Table Frame Viewport Label Separator HSeparator]
             expected = if focusable.include?(kind) then true
                        elsif passive.include?(kind) then false
@@ -803,6 +805,13 @@ module Lich
         end
 
         class Frame < Widget
+          # A frame's requested width is a minimum; it must still contain its
+          # child's natural requisition instead of clipping the grid decoration.
+          def set_width_request(value)
+            write(:min_width, Integer(value))
+          end
+          alias width_request= set_width_request
+
           # GTK creates no label widget when the constructor label is absent.
           # @param label [String, nil] frame label; an empty string creates a blank label
           def initialize(label = nil)
@@ -885,7 +894,11 @@ module Lich
           # Writes literal label content through the shared text control.
           # @return [Label] self
           def text=(value)
-            write(:content, String(value))
+            if @use_markup
+              set_markup(String(value))
+            else
+              write(:content, String(value))
+            end
           end
           alias set_text text=
 
@@ -909,6 +922,7 @@ module Lich
           # @return [Label] self
           # @raise [UnsupportedOperation] for unsupported tags
           def set_markup(value)
+            return set_link_markup(value) if value.include?('<a ') || @link_markup
             # Boon's measured blue bold tip maps to literal text and the native
             # bounded color record. Source markup never reaches the browser.
             if (tip = value.match(/\A<span color="blue" weight="bold">([^<>]*)<\/span>\z/m))
@@ -926,6 +940,42 @@ module Lich
             session.degrade(:markup_style, 'chart colours and font faces follow browser theme; chart text is retained') if tags.any? { |tag| tag.start_with?('<span') }
             write(:emphasis, value.include?('<b>') ? :strong : :normal)
             write(:content, CGI.unescapeHTML(value.gsub(/<[^>]*>/, '')))
+          end
+
+          # Builder markup uses the same bounded formatter as direct Label calls.
+          # @param value [Boolean] enable markup before materialization
+          def use_markup=(value)
+            session.refuse(self, :use_markup=) unless [true, false].include?(value) && !@handle && (value || !@link_markup)
+            @use_markup = value
+            set_markup(read(:content)) if value
+          end
+
+          # Only literal text and HTTP(S) anchors become existing typed Markdown.
+          # Unsupported markup is refused, never passed to innerHTML or stripped.
+          def set_link_markup(value)
+            session.refuse(self, :set_markup) if @handle && !@link_markup
+            document = REXML::Document.new("<label>#{value}</label>")
+            content = document.root.children.map do |part|
+              if part.is_a?(REXML::Text)
+                text = part.value
+                session.refuse(self, :set_markup) if text.match?(/[\[\]]/)
+                text
+              elsif part.is_a?(REXML::Element)
+                valid = part.name == 'a' && part.attributes.keys == ['href'] && part.children.all? { |child| child.is_a?(REXML::Text) }
+                session.refuse(self, :set_markup) unless valid
+                href, label = part.attributes['href'], part.texts.map(&:value).join
+                uri = URI.parse(href)
+                valid = %w[http https].include?(uri.scheme) && uri.host && !uri.userinfo && !href.match?(/[\s<>]/) && !label.match?(/[\[\]]/)
+                session.refuse(self, :set_markup) unless valid
+                "[#{label}](#{href.gsub('(', '%28').gsub(')', '%29')})"
+              else
+                session.refuse(self, :set_markup)
+              end
+            end.join
+            @link_markup = true
+            write(:content, content)
+          rescue REXML::ParseException, URI::InvalidURIError
+            session.refuse(self, :set_markup)
           end
 
           # Sets the shared text wrapping property.
@@ -953,7 +1003,12 @@ module Lich
 
           protected
 
-          def component_type = :text
+          def component_type = @link_markup ? :markdown : :text
+
+          def component_props
+            props = super
+            @link_markup ? props.slice(:content, :key, :hidden, :align, :margin, :width) : props
+          end
         end
 
         class Entry < Widget

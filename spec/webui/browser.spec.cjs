@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -33,6 +33,60 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
+  } else if (scenario === 'shim-ewaggle') {
+    await page.setViewportSize({ width: 730, height: 800 });
+    await expect.poll(() => page.evaluate(() => {
+      const fields = [...document.querySelectorAll('.field.inline')].map(field => {
+        const rect = field.getBoundingClientRect();
+        const frame = field.closest('fieldset')?.getBoundingClientRect();
+        return { rect, frame };
+      });
+      return fields.every(({ rect, frame }, index) => (!frame || rect.right <= frame.right + 1) &&
+        fields.slice(index + 1).every(({ rect: other }) =>
+          Math.min(rect.right, other.right) - Math.max(rect.left, other.left) <= 1 ||
+          Math.min(rect.bottom, other.bottom) - Math.max(rect.top, other.top) <= 1));
+    })).toBe(true);
+    const tables = page.locator('.webui-table-wrap');
+    await expect(tables).toHaveCount(2);
+    const available = tables.filter({ hasText: '102  Spirit Barrier' });
+    const casting = tables.filter({ hasText: '101  Spirit Warding I' });
+    const row = available.locator('tbody tr').first();
+    await row.focus();
+    await page.keyboard.type('102');
+    await expect(available.locator('tr[aria-selected="true"]')).toContainText('Spirit Barrier');
+    // The bottom blank area must be a target, not just the populated row.
+    const blankArea = async target => {
+      let box;
+      await expect.poll(async () => {
+        box = await target.boundingBox();
+        return box?.height || 0;
+      }).toBeGreaterThan(200);
+      return { x: box.width / 2, y: box.height - 20 };
+    };
+    await row.dragTo(casting, { targetPosition: await blankArea(casting) });
+    await expect(tables.nth(0).locator('tbody tr')).toHaveCount(2);
+    const destination = tables.nth(0);
+    const empty = tables.nth(1);
+    await expect(empty.locator('tbody tr')).toHaveCount(0);
+    await destination.locator('tbody tr').filter({ hasText: 'Spirit Barrier' }).dragTo(empty,
+      { targetPosition: await blankArea(empty) });
+    await expect(empty.locator('tbody tr')).toHaveCount(1);
+    await empty.locator('tbody tr').dragTo(destination, { targetPosition: await blankArea(destination) });
+    await expect(destination.locator('tbody tr')).toHaveCount(2);
+    const barrier = destination.locator('tbody tr').filter({ hasText: 'Spirit Barrier' });
+    await barrier.dragTo(destination);
+    await expect(destination.locator('tbody tr')).toHaveCount(3);
+    await destination.locator('tbody tr').filter({ hasText: 'Spirit Barrier' }).first().dblclick();
+    await expect(destination.locator('tbody tr')).toHaveCount(2);
+    await tables.nth(1).locator('tbody tr').filter({ hasText: 'Spirit Barrier' }).dblclick();
+    await expect(destination.locator('tbody tr')).toHaveCount(3);
+    await page.getByLabel('Choose option').selectOption({ label: 'Full Plate (20)' });
+    const spin = page.locator('input[type="number"]').first();
+    await spin.fill('90');
+    await spin.press('Tab');
+    await expect(page.getByRole('link')).toHaveCount(3);
+    await expect(page.getByRole('link').first()).toHaveAttribute('rel', 'noopener noreferrer');
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
   } else if (scenario === 'shim-builder') {
     await expect(page.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
     for (const viewport of [{ width: 650, height: 675 }, { width: 1000, height: 850 }]) {

@@ -33,6 +33,66 @@ function modelTable(receive, generation, props) {
     } }] } });
 }
 
+for (const completion of ['drop', 'dragend']) {
+  test(`${completion} releases a queued table render without another click or pointerup`, async t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    const { document, Event } = dom.window;
+    receive({ type: 'hello', pages: [{ address: 'models' }] });
+    modelTable(receive, 1, { rows: [{ key: 'a', cells: { name: 'Before' } }] });
+    const row = document.querySelector('tbody tr');
+    row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    modelTable(receive, 2, { rows: [] });
+    assert.equal(document.querySelectorAll('tbody tr').length, 1, 'preserve the active gesture target');
+    // WebKit's native drag may finish without a matching pointerup/cancel.
+    // Drop covers a completed transfer; dragend also covers a cancelled drag.
+    row.dispatchEvent(new Event(completion, { bubbles: true }));
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+    assert.equal(document.querySelectorAll('tbody tr').length, 0, 'apply the queued authoritative move');
+    modelTable(receive, 3, { rows: [{ key: 'b', cells: { name: 'After' } }] });
+    assert.equal(document.querySelector('tbody tr').textContent, 'After', 'later updates must also flow');
+    assert.equal(sent.filter(message => ['row_drop', 'row_activate'].includes(message.event)).length, 0,
+      'releasing a render must not synthesize another transfer or activation');
+  });
+}
+
+test('pointer release preserves the current target through click before applying a queued render', async t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  const { document, Event } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  modelTable(receive, 1, { rows: [{ key: 'a', cells: { name: 'Before' } }] });
+  const row = document.querySelector('tbody tr');
+  row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+  modelTable(receive, 2, { rows: [] });
+  row.dispatchEvent(new Event('pointerup', { bubbles: true }));
+  let connectedAtClick = false;
+  row.addEventListener('click', () => { connectedAtClick = row.isConnected; });
+  row.dispatchEvent(new Event('click', { bubbles: true }));
+  assert.equal(connectedAtClick, true);
+  await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  assert.equal(document.querySelectorAll('tbody tr').length, 0);
+});
+
+test('table typeahead retains its viewer-local prefix across renders and does not edit cells', t => {
+  const a = fixture(), b = fixture();
+  t.after(() => { a.dom.window.close(); b.dom.window.close(); });
+  const props = { search_column: 'name', rows: [
+    { key: 'a', cells: { name: 'Apple' } }, { key: 'b', cells: { name: 'Beta' } }, { key: 'c', cells: { name: 'Bravo' } }
+  ] };
+  for (const f of [a, b]) { f.receive({ type: 'hello', pages: [{ address: 'models' }] }); modelTable(f.receive, 1, props); }
+  const key = value => a.dom.window.document.activeElement.dispatchEvent(new a.dom.window.KeyboardEvent('keydown', { key: value, bubbles: true }));
+  a.dom.window.document.querySelector('tbody tr').focus();
+  key('b');
+  assert.equal(a.dom.window.document.activeElement.dataset.rowKey, 'b');
+  modelTable(a.receive, 2, props);
+  key('r');
+  assert.equal(a.dom.window.document.activeElement.dataset.rowKey, 'c');
+  assert.equal(b.sent.filter(message => message.event === 'selection_change').length, 0);
+  key('Escape'); key('a');
+  assert.equal(a.dom.window.document.activeElement.dataset.rowKey, 'a');
+  assert.equal(a.sent.filter(message => message.event === 'cell_edit').length, 0);
+  assert.deepEqual(props.rows.map(row => row.cells.name), ['Apple', 'Beta', 'Bravo']);
+});
+
 test('tree expansion hides descendants, navigates by keyboard and preserves focused identity across refresh', t => {
   const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
   const { document, KeyboardEvent } = dom.window;

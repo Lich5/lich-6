@@ -88,7 +88,7 @@ module Lich
             Grid               => { 'row-spacing' => [:row_spacing=, :integer], 'column-spacing' => [:column_spacing=, :integer],
                       'column-homogeneous' => [:column_homogeneous=, :boolean] },
             Label              => { 'label' => [:text=, :text], 'wrap' => [:wrap=, :boolean], 'xalign' => [:label_align, :number],
-                       'selectable' => [:set_selectable, :boolean], 'width-chars' => [:set_width_chars, :integer] },
+                       'selectable' => [:set_selectable, :boolean], 'width-chars' => [:set_width_chars, :integer], 'use-markup' => [:use_markup=, :boolean] },
             Entry              => { 'text' => [:text=, :text], 'placeholder-text' => [:placeholder_text=, :text],
                        'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number], 'width-chars' => [:set_width_chars, :integer] },
             Button             => { 'label' => [:label=, :text], 'receives-default' => [:receives_default=, :boolean] },
@@ -103,10 +103,11 @@ module Lich
                           'wrap-mode' => [:wrap_mode=, :symbol] },
             TextBuffer         => { 'text' => [:set_text, :text] },
             Expander           => { 'label' => [:set_label, :text], 'expanded' => [:set_expanded, :boolean] },
-            TreeView           => { 'headers-visible' => [:headers_visible=, :boolean] },
+            TreeView           => { 'headers-visible' => [:headers_visible=, :boolean], 'search-column' => [:search_column=, :integer],
+                                   'fixed-height-mode' => [:fixed_height_mode=, :boolean] },
             TreeViewColumn     => { 'title' => [:title=, :text], 'resizable' => [:resizable=, :boolean],
                                 'visible' => [:visible=, :boolean], 'fixed-width' => [:fixed_width=, :integer],
-                                'sort-column-id' => [:sort_column_id=, :integer] },
+                                'sort-column-id' => [:sort_column_id=, :integer], 'sizing' => [:sizing=, :symbol] },
             TreeSelection      => { 'mode' => [:mode=, :symbol] },
             CellRendererText   => { 'editable' => [:editable=, :boolean] },
             CellRendererToggle => { 'activatable' => [:activatable=, :boolean] },
@@ -510,8 +511,8 @@ module Lich
             props = properties(element)
             if object.is_a?(ComboBox)
               element.elements.each('items/item') do |item|
-                fail_at(element, 'item id', 'named combo items are unsupported') if item.attributes['id']
-                object.append_text(item.texts.map(&:value).join)
+                text = item.texts.map(&:value).join
+                item.attributes['id'] ? object.append(item.attributes['id'], text) : object.append_text(text)
               end
               %w[entry-text-column active].each do |name|
                 next unless props.key?(name)

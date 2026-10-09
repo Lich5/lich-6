@@ -17,3 +17,17 @@ initialization, changes and close lifecycle. The explicit Chrome run drives the
 same controls and original callbacks through the production WebUI transport.
 Passing these tests demonstrates setup support, not whole-script gameplay or
 native desktop-window parity.
+
+Unchanged ewaggle setup fixture
+
+`ewaggle_setup.lic` is the exact setup section (lines 199–634) of the retained
+original GTK script, including Builder XML, original initialization, signals,
+list-transfer handlers and save/destroy behavior. No callbacks were rewritten.
+Whole-script SHA-256: fe74b93bbc73ce83981ff8e23dba11dcc0e51a905454685afb39988eb87726e4.
+Setup.ewaggle_ui SHA-256: c617157ee342adb4bfcb9d3281de5d63c17ef777d4f75fcad60544ec6049eddf
+(28,928 bytes; 77 constructed objects).
+The harness substitutes game lookups and Ewaggle.save_profile's destination only.
+Chrome exercises prefix search, cross-list drag/drop, same-list duplication,
+named ComboBox selection, numeric edits and the original Close callback.
+Ruby also verifies destruction without saving and unsupported input refusal.
+These checks establish setup behavior, not casting-loop or whole-script acceptance.

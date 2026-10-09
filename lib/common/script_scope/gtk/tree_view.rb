@@ -262,6 +262,14 @@ module Lich
           end
           alias set_fixed_width fixed_width=
 
+          # Fixed GTK column measurement uses browser allocation and any explicit width.
+          # @param value [Symbol] only :fixed is accepted
+          # @return [void]
+          def sizing=(value)
+            session.refuse(self, :sizing=) unless value == :fixed
+            session.degrade(:column_sizing, 'fixed column measurement uses browser layout and explicit column widths')
+          end
+
           # Maps the header gesture to built-in sorting on a model column.
           # @param column [Integer] model column used by built-in scalar sorting
           # @return [Integer]
@@ -436,6 +444,23 @@ module Lich
           end
           alias set_headers_visible headers_visible=
           def headers_visible? = read(:headers)
+
+          # Selects a displayed String model column for viewer-local incremental search.
+          # @param column [Integer] model column, or -1 to disable
+          # @return [Integer] accepted model index
+          def search_column=(column)
+            session.refuse(self, :search_column=) unless column.is_a?(Integer) && column >= -1
+            check_column_structure!
+            @search_column = column
+          end
+
+          # GTK's fixed-row measurement optimization is omitted; browser layout measures rows.
+          # @param value [Boolean] requested measurement optimization
+          # @return [void]
+          def fixed_height_mode=(value)
+            session.refuse(self, :fixed_height_mode=) unless [true, false].include?(value)
+            session.degrade(:fixed_height_mode, 'GTK row measurement optimization omitted; browser measures row heights') if value
+          end
 
           # Maps a bounded grid-line policy to the shared table presentation.
           # @param value [Symbol] :none, :horizontal, :vertical or :both
@@ -620,11 +645,19 @@ module Lich
 
           def component_type = :table
           def signal_map = { 'row_activated' => :row_activate, 'row_expanded' => :row_toggle, 'row_collapsed' => :row_toggle, 'cursor_changed' => :cursor_change }
-          def builtin_events = %i[selection_change cell_edit sort_change]
+          def builtin_events = %i[selection_change cell_edit sort_change] + (@drag_destination ? [:row_drop] : [])
 
           def component_props
             validate_columns(model)
-            @props.merge(columns: column_definitions, rows: row_definitions, sortable: visible_columns.any?(&:sort_column_id))
+            @props.merge(columns: column_definitions, rows: row_definitions, sortable: visible_columns.any?(&:sort_column_id)).merge(search_props)
+          end
+
+          # Search is deliberately bounded to a visible plain-text column.
+          def search_props
+            return {} if @search_column.nil? || @search_column == -1
+            column = visible_columns.find { |item| item.value_column == @search_column }
+            session.refuse(self, :search_column) unless column && model&.get_column_type(@search_column) == String
+            { search_column: column.key }
           end
 
           # Events resolve current paths from stable IDs; removed rows cannot target their replacements.
@@ -634,10 +667,11 @@ module Lich
           def bind_event(event)
             return super if event == :pointer_press
             session.port.bind(@handle, event, proc do |context|
-              session.callback(context, terminal: event == :row_activate, widget: self) do
+              session.callback(context, terminal: %i[row_activate row_drop].include?(event), widget: self) do
                 payload = context.payload
                 iter = model&.find_key(payload[:row])
                 case event
+                when :row_drop then dispatch_row_drop(context)
                 when :selection_change then selection.changed!
                 when :cell_edit
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
