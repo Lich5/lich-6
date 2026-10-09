@@ -805,6 +805,27 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(port.get(box.materialize, :cols)).to eq(2)
   end
 
+  %i[width height].each do |axis|
+    it "retains a #{axis}-only window minimum without inventing the other dimension" do
+      window = compatibility::Window.new
+      window.public_send("set_#{axis}_request", 1000)
+      window.show_all
+      port = window.session.port
+      expect(port.get(window.materialize, :"min_#{axis}")).to eq(1000)
+      expect(window.send(:component_props)).not_to have_key(:size)
+      other_axis = axis == :width ? :height : :width
+      window.public_send("set_#{other_axis}_request", 0)
+      expect(window.send(:component_props)).not_to have_key(:size)
+      window.public_send("set_#{other_axis}_request", 700)
+      expected = axis == :width ? [1000, 700] : [700, 1000]
+      expect(port.get(window.materialize, :size)).to eq(expected)
+      window.resize(1200, 1100)
+      window.public_send("set_#{axis}_request", 1400)
+      expect(port.get(window.materialize, :size)).to eq([1200, 1100])
+      expect(port.get(window.materialize, :"min_#{axis}")).to eq(1400)
+    end
+  end
+
   it 'separates window minimum requests from resizing and follows notebook expansion live' do
     window = compatibility::Window.new
     window.set_size_request(650, 675)

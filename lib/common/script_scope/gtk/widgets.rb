@@ -510,7 +510,8 @@ module Lich
           alias set_default_size resize
 
           # GTK window requisitions are minimum client sizes, not fixed HTML widths.
-          # The native host receives an initial size when no explicit resize exists.
+          # Both positive minima supply an initial size when no explicit resize exists;
+          # a single minimum leaves the other axis under host/user control.
           # @return [Window] self
           def set_width_request(value)
             write(:min_width, Integer(value))
@@ -648,8 +649,8 @@ module Lich
 
           def layout_props
             props = { viewport: expands?(:vertical) }
-            if !@props.key?(:size) && (@props.key?(:min_width) || @props.key?(:min_height))
-              props[:size] = [@props.fetch(:min_width, 0), @props.fetch(:min_height, 0)]
+            if !@props.key?(:size) && @props.fetch(:min_width, 0).positive? && @props.fetch(:min_height, 0).positive?
+              props[:size] = [@props[:min_width], @props[:min_height]]
             end
             props
           end

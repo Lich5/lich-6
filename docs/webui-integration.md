@@ -359,9 +359,16 @@ that request to their covered columns. Explicit expansion flags override inherit
 descendant demand, and changing flags or moving/removing children updates live
 layout without replacing their control identities or input values.
 
-Window width/height requests become minimum client dimensions and an initial
-window size when no explicit resize exists, rather than fixing the page's HTML
-width/height. Vertical expansion enables the existing page viewport policy and
+Window width/height requests become minimum client dimensions. Both positive
+minima also supply an initial window size when no explicit resize exists. A
+single minimum leaves the other dimension unspecified, preserving host defaults
+or applicable saved geometry instead of fabricating a zero dimension. The shared
+renderer enforces minima at first display, after render updates and on resize,
+even without a script geometry subscription. It grows only deficient dimensions;
+larger user dimensions remain unchanged. Explicit size requests are clamped to
+the minima without a competing resize based on stale host measurements. These
+requests do not fix the page's HTML width/height.
+Vertical expansion enables the existing page viewport policy and
 fills enclosing vertical boxes; notebook content then scrolls within its allocated
 space while a sibling footer remains outside the scroll. These mappings do not
 claim arbitrary GTK packing equivalence: unequal expand/fill packing remains a
