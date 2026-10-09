@@ -48,7 +48,9 @@ Existing Ruby workflows are unchanged.
 
 The same workflow has a separate Linux Chrome job. Playwright drives the existing
 shim entry/checkbox and separator fixtures, plus a native-page callback fixture.
-Each starts with the production private `file:///` bootstrap and a fresh browser
+The model/tree/ComboBox case also checks expansion, text edits, toggles, multiple
+selection and duplicate option labels against real Ruby callbacks. Each starts
+with the production private `file:///` bootstrap and a fresh browser
 cookie jar, asserting the `/auth` intermediate document, authenticated final page,
 rendered controls and Ruby callback results. No game account or native GTK is used.
 
@@ -75,7 +77,7 @@ traces under ignored `spec/webui/test-results/`; CI retains failure artifacts fo
 seven days. Only disposable fixture state is used. Missing browser/dependencies
 fail the explicit run rather than silently skipping it.
 
-Ordinary `rspec` keeps the three browser cases pending, so local Ruby testing does
+Ordinary `rspec` keeps the five browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

@@ -235,6 +235,85 @@ opening it before the first viewer attaches does not silently cancel it. Parent
 destruction or owner shutdown cancels that pending dialog; callback code still
 must use its asynchronous response handler rather than blocking the dispatcher.
 
+## Script-owned models and viewer-owned tables
+
+The GTK compatibility layer supports bounded `ListStore` and `TreeStore` models
+with String, Integer, Float and boolean columns. Models belong to one script
+session and may feed several views in that session. A mutation validates all
+attached projections before publishing; a value that fits a table but exceeds a
+ComboBox label limit is rejected without partially updating those views.
+Replacing a view's model detaches its old observer. Window/widget destruction
+detaches observers without destroying a model that another view still uses.
+
+Model lookups use row-identity and parent/children indexes. Each candidate
+mutation rebuilds those indexes once; sibling ordering and path positions are
+cached for that model revision. Equal sort values retain explicit insertion
+positions, including prepend/insert. Rollback restores rows and sort state and
+rebuilds the indexes under a new revision, so rejected projections cannot be
+reused. The rollback snapshot still copies each row and its scalar cell array.
+
+Before a TreeView is materialized, model notifications validate column/editor
+configuration and retained selection, expansion and cursor references without
+projecting every cell. Model setters still enforce scalar, row-count and tree
+depth bounds; ComboBox and cell-editor choice limits still reject incompatible
+mutations. Materialized tables reuse their validated row projection when
+publishing that mutation. They still validate and publish complete row sets on
+each mutation; this optimization does not introduce batched or incremental
+updates to the shared table contract.
+
+Rows have stable identities independent of their positional `TreePath`.
+`TreeIter#next!` moves an independent handle and invalidates it at the end;
+it does not overwrite stored rows. Removing a row removes its descendants and
+advances the supplied iterator to the next sibling, returning whether one exists.
+Other handles to removed rows become invalid. Insertions and built-in scalar
+sorting change paths while preserving row identity. Tree sorting orders siblings,
+not the entire flattened tree. Custom sort functions and filter/sort proxy models
+are unsupported.
+
+`TreeView` maps plain text, boolean toggles and closed choice editors onto the
+shared `table` component. Selection modes are none, single, browse and multiple.
+The browser supports tree expansion, keyboard row navigation, additive/range
+selection, editable cells and row activation. An edited/toggled signal proposes
+a change: the script's handler alone decides whether to mutate its model. Toggle
+handlers receive the path and observe the old boolean; text/choice handlers
+receive the path and proposed text. A rejected edit repaints the retained model
+value. Event row identities resolve to current paths; a removed row cannot
+silently redirect an old event to a replacement at the same position.
+
+Selection, expansion and cursor state belong to each viewer, survive refreshes,
+and lose only references to removed rows. Callbacks read their originating
+viewer's state; terminal callbacks retain it for subsequent script reads and
+closure. Programmatic updates after publication use the existing explicit
+viewer attribution rules. They do not broadcast one viewer's selection to other
+viewers. Model contents and model sort order remain shared between the model's
+views. Column structure and renderer-to-model bindings are configured before
+materialization; captions, resizing, widths and editor configuration may update
+afterward. Starting a cell editor programmatically is unsupported.
+
+`ComboBox` binds a real flat `ListStore`; `active_iter` returns an actual model
+iterator. A chosen String column supplies labels, while stable row IDs preserve
+duplicate choices. `ComboBox.new(true)` and `ComboBoxText` provide single-column
+text convenience methods. Editable forms expose their entry through `child`,
+using the combo's single input rather than a separately rendered Entry. Removing
+the selected row clears that viewer's choice; unrelated choices and literal
+free text survive model updates. `active = -1` explicitly clears selection.
+
+Contract **2.12.0** adds generic table `headers`, viewer-scoped `expanded` and
+`cursor` properties, browse selection, model-owned sorting, cursor events, and
+an optional activation column. Existing nested row expansion defaults remain
+accepted. Checkbox editors can be explicitly disabled. Selects optionally declare
+an `empty_value` option and a `free_text_prefix` disjoint from option IDs. The
+shim uses that encoding so literal entry text cannot collide with a row ID or
+the blank-selection sentinel. Existing native consumers retain their previous
+defaults. This is the internal host/browser contract version, not a Lich release.
+
+Builder, multiple renderers within one column, rich cell styling/markup, pixbuf
+cells, arbitrary cell-data callbacks, coordinate hit testing, and drag-and-drop
+remain unsupported. Unsupported meaningful operations raise attributed errors;
+they are not discarded or represented by empty placeholder widgets. This bounded
+surface does not establish whole-script compatibility for consumers needing any
+of those additional operations.
+
 ## Authentication and trust boundaries
 
 The loopback service uses short-lived, single-use launch tokens to establish

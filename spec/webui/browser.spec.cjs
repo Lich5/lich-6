@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -33,6 +33,27 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
+  } else if (scenario === 'shim-models') {
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Expand Parent' }).click();
+    await expect(page.locator('tbody tr')).toHaveCount(2);
+    const childKey = await page.locator('tbody tr').filter({ hasText: 'Child' }).getAttribute('data-row-key');
+    const child = page.locator(`tr[data-row-key="${childKey}"]`);
+    await child.locator('td').first().click();
+    const editor = child.locator('input[type="text"]');
+    await editor.fill('Edited child');
+    await editor.press('Enter');
+    const edited = page.locator('tbody tr').filter({ hasText: 'Edited child' });
+    await edited.getByRole('checkbox', { name: 'Enabled' }).check();
+    await expect(edited.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
+    await page.locator('.webui-choice-picker select').selectOption({ index: 2 });
+    // Choose rows without entering an editor, then retain both across the Save render.
+    await edited.click({ position: { x: 2, y: 2 } });
+    await page.locator('tbody tr').first().click({ position: { x: 2, y: 2 }, modifiers: ['ControlOrMeta'] });
+    await expect(page.locator('tbody tr[aria-selected="true"]')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Read models' }).click();
+    await expect(page.getByText('Edited child / true / second / true / 2', { exact: true })).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(2);
   } else if (scenario === 'shim-controls') {
     const first = page.getByRole('radio', { name: 'First' });
     const second = page.getByRole('radio', { name: 'Second' });

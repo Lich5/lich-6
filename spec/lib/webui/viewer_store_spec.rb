@@ -12,6 +12,24 @@ RSpec.describe Lich::WebUI::ViewerStore do
     end
   end
 
+  it 'applies new tree-row expansion defaults without resetting retained viewer choices' do
+    rows = [{ key: 'old', cells: { name: 'Old' }, expanded: true }]
+    table_page = Lich::WebUI::Page.new(owner: owner, id: 'tree', title: 'Tree') do
+      table(key: 'tree', columns: [{ key: 'name', label: 'Name' }], rows: rows)
+    end
+    store = described_class.new
+    viewer = store.attach(connection_id: 'one', address: 'tree', page: table_page)
+    first = table_page.render
+    store.deliver(viewer, first)
+    component = first.tree.each.find { |node| node.type == :table }
+    store.update(viewer, component, :row_toggle, row: 'old', expanded: false)
+    rows = rows + [{ key: 'new', cells: { name: 'New' }, expanded: true }]
+    store.deliver(viewer, table_page.render)
+    rendered = store.serialize(viewer)[:children].first[:props]
+    expect(rendered[:expanded]).to eq(['new'])
+    expect(rendered[:rows].map { |row| row[:expanded] }).to eq([false, true])
+  end
+
   it 'refuses repeated attachment without retaining unreachable viewers' do
     now = 100.0
     store = described_class.new(clock: -> { now })
