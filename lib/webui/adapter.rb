@@ -159,6 +159,13 @@ module Lich
               candidate[:selected] = [] if value.to_s == 'none'
               candidate[:selected] = (candidate[:selected] || []).first(1) if %w[single browse].include?(value.to_s)
             end
+            # Browse requires a selection when rows exist. Match viewer reconciliation
+            # here so reads before publication see the same first-row fallback.
+            if node.type == :table && %i[rows selection].include?(name) && candidate[:selection].to_s == 'browse' && (candidate[:selected] || []).empty?
+              first = candidate[:rows].first if candidate[:rows].is_a?(Array)
+              key = first[:key] || first['key'] if first.is_a?(Hash)
+              candidate[:selected] = [key] if key
+            end
             # A select's option list and default must remain one valid schema.
             # sbounty replaces its choices; use the first declared choice only
             # when the old default was removed, after validating the list.
