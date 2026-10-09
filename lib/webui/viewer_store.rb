@@ -189,6 +189,7 @@ module Lich
           when [:text_input, :change], [:textarea, :change], [:number_input, :change], [:slider, :change], [:select, :change]
             attachment.values[[component.cid, :value]] = payload[:value]
           when [:tabs, :select] then attachment.values[[component.cid, :selected]] = payload[:index]
+          when [:group, :dismiss] then attachment.values[[component.cid, :open]] = false
           when [:expander, :toggle] then attachment.values[[component.cid, :open]] = payload[:open]
           when [:split, :move] then attachment.values[[component.cid, :position]] = payload[:position]
           when [:table, :selection_change] then attachment.values[[component.cid, :selected]] = payload[:rows]

@@ -972,26 +972,56 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(Timeout.timeout(2) { seen.pop }).to eq([2.75, 2.75, '2.8'])
     expect([first.active?, second.active?, spin.value]).to eq([true, false, 0.5])
   end
-  it 'submits shim radio, toggle, search, and decimal controls through a browser', browser: true do
+  it 'submits shim controls and exercises text, images, menus and expandable content through a browser', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
-    window = compatibility.const_get(:Window).new('Control conventions')
-    column = compatibility.const_get(:VBox).new(false, 4)
-    first = compatibility.const_get(:RadioButton).new('First')
-    second = compatibility.const_get(:RadioButton).new(member: first, label: 'Second')
-    toggle = compatibility.const_get(:ToggleButton).new(label: 'Enabled')
-    spin = compatibility.const_get(:SpinButton).new(compatibility.const_get(:Adjustment).new(0.5, 0.5, 10, 0.1, 1, 0), 0.1, 1)
-    search = compatibility.const_get(:SearchEntry).new
-    search.set_placeholder_text('Search fixture')
-    save = compatibility.const_get(:Button).new('Save')
-    save.signal_connect('clicked') { window.destroy }
-    [first, second, toggle, spin, search, save].each { |widget| column.pack_start(widget) }
-    window.add(column)
-    window.show_all
-    page = nil
-    Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
-    WebUIBrowser.check(service: service, page: page, scenario: 'shim-controls')
-    expect(window).to be_destroyed
-    expect([first.active?, second.active?, toggle.active?, spin.value, search.text]).to eq([false, true, true, 2.85, 'query'])
+    Dir.mktmpdir('shim-content-browser-') do |directory|
+      owner.define_singleton_method(:file_name) { File.join(directory, 'fixture.lic') }
+      allow(Lich::WebUI).to receive(:service).and_return(service)
+      image_path = File.join(directory, 'pixel.png')
+      File.binwrite(image_path, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='.unpack1('m0'))
+      window = compatibility::Window.new('Control conventions')
+      column = compatibility::VBox.new(false, 4)
+      first = compatibility::RadioButton.new('First')
+      second = compatibility::RadioButton.new(member: first, label: 'Second')
+      toggle = compatibility::ToggleButton.new(label: 'Enabled')
+      spin = compatibility::SpinButton.new(compatibility::Adjustment.new(0.5, 0.5, 10, 0.1, 1, 0), 0.1, 1)
+      search = compatibility::SearchEntry.new
+      search.set_placeholder_text('Search fixture')
+      details = compatibility::Expander.new('Details')
+      view = compatibility::TextView.new
+      view.buffer.text = 'Initial text'
+      details.add(view)
+      image = compatibility::Image.new(file: image_path)
+      image.set_tooltip_text('Fixture image')
+      actions = compatibility::Label.new('Actions')
+      menu = compatibility::Menu.new
+      check = compatibility::CheckMenuItem.new('Menu enabled')
+      nested = compatibility::Menu.new
+      radio_first = compatibility::RadioMenuItem.new('Menu first')
+      radio_second = compatibility::RadioMenuItem.new(radio_first, 'Menu second')
+      nested.append(radio_first)
+      nested.append(radio_second)
+      choices = compatibility::MenuItem.new('Choices')
+      choices.submenu = nested
+      clear = compatibility::MenuItem.new('Clear image')
+      clear.signal_connect('activate') { image.clear }
+      [check, choices, compatibility::SeparatorMenuItem.new, clear].each { |item| menu.append(item) }
+      actions.signal_connect('button-press-event') { |_widget, event| menu.popup_at_pointer(event) if event.button == 3 }
+      save = compatibility::Button.new('Save')
+      save.signal_connect('clicked') { window.destroy }
+      [first, second, toggle, spin, search, details, image, actions, save].each { |widget| column.pack_start(widget) }
+      window.add(column)
+      window.show_all
+      page = nil
+      Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
+      WebUIBrowser.check(service: service, page: page, scenario: 'shim-controls')
+      expect(window).to be_destroyed
+      expect([first.active?, second.active?, toggle.active?, spin.value, search.text]).to eq([false, true, true, 2.85, 'query'])
+      expect(view.buffer.text).to eq("line one\nline two")
+      expect(details.expanded?).to be(false)
+      expect(image.pixbuf).to be_nil
+      expect([check.active?, radio_first.active?, radio_second.active?]).to eq([true, false, true])
+    end
   end
 end

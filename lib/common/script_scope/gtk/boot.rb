@@ -10,6 +10,9 @@ require_relative 'inputs'
 require_relative 'dialogs'
 require_relative 'style'
 require_relative 'displays'
+require_relative 'text'
+require_relative 'images'
+require_relative 'menus'
 require_relative 'require_boundary'
 
 module Lich

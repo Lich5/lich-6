@@ -133,7 +133,7 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
       end
     end
 
-    it 'commits radio, toggle, search and decimal values through a real Script owner' do
+    it 'commits scalar and collapsed multiline values through a real Script owner' do
       Dir.mktmpdir('script-control-conventions') do |root|
         FileUtils.mkdir_p(File.join(root, 'custom'))
         stub_const('SCRIPT_DIR', root)
@@ -154,12 +154,19 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
             toggle = Gtk::ToggleButton.new(label: 'Enabled')
             spin = Gtk::SpinButton.new(Gtk::Adjustment.new(0.5, 0.5, 10, 0.1, 1, 0), 0.1, 1)
             search = Gtk::SearchEntry.new
+            # Independent-buffer construction used by loresang's verse editor.
+            buffer = Gtk::TextBuffer.new
+            buffer.text = 'Initial verse'
+            view = Gtk::TextView.new(buffer)
+            view.wrap_mode = :word
+            details = Gtk::Expander.new('Verse')
+            details.add(view)
             save = Gtk::Button.new('Save')
-            [first, second, toggle, spin, search, save].each { |widget| column.add(widget) }
+            [first, second, toggle, spin, search, details, save].each { |widget| column.add(widget) }
             window.add(column)
             save.signal_connect('clicked') do
               window.destroy
-              LEGACY_CONTROL_RESULTS << [first.active?, second.active?, toggle.active?, spin.value, spin.text, search.text, Script.current]
+              LEGACY_CONTROL_RESULTS << [first.active?, second.active?, toggle.active?, spin.value, spin.text, search.text, buffer.text, details.expanded?, Script.current]
               finished << true
             end
             window.show_all
@@ -174,9 +181,9 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
         host.runtime.handle(connection, type: 'attach', page: address)
         save = page.last_render.tree.each.find { |node| node.type == :button }
         result = host.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
-                                                 cid: save.cid, event: 'activate', payload: {}, submission: [false, true, true, 2.75, 'query'])
+                                                 cid: save.cid, event: 'activate', payload: {}, submission: [false, true, true, 2.75, 'query', 'Saved verse'])
         expect(result).to eq(:queued)
-        expect(LEGACY_CONTROL_RESULTS.pop(timeout: 2)).to eq([false, true, true, 2.75, '2.8', 'query', child])
+        expect(LEGACY_CONTROL_RESULTS.pop(timeout: 2)).to eq([false, true, true, 2.75, '2.8', 'query', 'Saved verse', false, child])
         expect(child.join(3)).to equal(child)
         expect(child).to be_completed_successfully
         expect(host.registry.pages_for(child)).to be_empty

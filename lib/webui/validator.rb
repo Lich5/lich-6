@@ -456,6 +456,12 @@ module Lich
 
       def validate_event_invariants!(type, event_name, payload, props, context)
         normalized_props = props.transform_keys { |key| normalize_name(key) }
+        if event_name == :pointer_press && !normalized_props[:pointer_events]
+          violation!('pointer events are not enabled', context, event_name)
+        end
+        if event_name == :dismiss && normalized_props[:menu] != 'context'
+          violation!('only context menus can be dismissed', context, event_name)
+        end
         case [type, event_name]
         when [:scroll, :scrolled]
           if payload[:upper] && payload[:page_size] && payload[:upper] < payload[:page_size]
@@ -499,6 +505,7 @@ module Lich
           max = props[:max_length] || Contract::BOUNDS[:input_text]
           violation!("event value exceeds #{max} characters", context, event_name) if value.length > max
         when :textarea
+          violation!('text is read-only', context, event_name) if props[:read_only]
           max = props[:max_length] || Contract::BOUNDS[:multiline_text]
           violation!("event value exceeds #{max} characters", context, event_name) if value.length > max
         when :number_input, :slider

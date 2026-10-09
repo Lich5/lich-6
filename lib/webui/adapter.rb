@@ -94,7 +94,7 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
-            if (page = root_for(node).page) && node.cid
+            if (page = root_for(node).page) && node.cid && node.published
               target = [page, node.cid, name]
               next
             end
@@ -138,7 +138,7 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
-            if (page = root_for(node).page) && node.cid
+            if (page = root_for(node).page) && node.cid && node.published
               target = [page, node.cid, name]
               next
             end
@@ -342,6 +342,20 @@ module Lich
         # hold the adapter monitor while waiting for a page's render mutex.
         pages.each do |root|
           @service.refresh(root.page)
+          delivered = root.page.last_render.tree.each.to_h { |component| [component.cid, true] }
+          initial = @mutex.synchronize do
+            changes = []
+            @viewer_values.delete_if do |(viewer, handle, name), value|
+              child = @nodes[handle]
+              next false unless child && root_for(child).equal?(root) && delivered.key?(child.cid)
+
+              changes << [viewer, child.cid, name, value]
+              true
+            end
+            @nodes.each_value { |child| child.published = true if !child.equal?(root) && root_for(child).equal?(root) && delivered.key?(child.cid) }
+            changes
+          end
+          @service.runtime.seed_viewer_properties(root.page, initial) unless initial.empty?
           publish = @mutex.synchronize do
             next false if root.published || !handle_for(root)
 
@@ -464,10 +478,11 @@ module Lich
       end
 
       # Requires explicit viewer attribution for viewer-scoped adapter access.
-      # @return [Object] configured viewer ID or viewer resolver
+      # @return [String] viewer identity captured before leaving the callback
       # @raise [AmbiguousViewerError] when no viewer was supplied
       def viewer!
-        return @viewer if @viewer
+        selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+        return selected if selected
 
         message = 'viewer-scoped adapter state requires an explicit viewer'
         raise AmbiguousViewerError.new(message, owner: owner_label, page_id: adapter_page_id)

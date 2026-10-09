@@ -210,6 +210,25 @@ module Lich
         render.generation
       end
 
+      # Applies writes made while new controls were awaiting their first delivery.
+      # Identity is captured at write time; departed viewers are never recreated.
+      # @api private
+      # @param changes [Array<Array>] viewer ID, CID, property, validated value
+      def seed_viewer_properties(page, changes)
+        attachments = @viewers.attachments_for(page).to_h { |attachment| [attachment.viewer_id, attachment] }
+        changes.each do |viewer, cid, name, value|
+          attachment = attachments[viewer]
+          next unless attachment
+
+          component = find_component!(attachment, cid)
+          raise Error, 'initial property must be viewer-scoped' unless property_scope(component, name) == :viewer
+          validated = @validator.validate_property!(component.type, name, value, props: component.props,
+                                                    owner: owner_label(page.owner), page_id: page.id, cid: cid)
+          @viewers.set_property(attachment, component, name, validated)
+        end
+        schedule_refresh(page)
+      end
+
       # Closes admission before waiting for previously accepted work and releasing pages.
       # @param owner [Object] terminating owner identity
       # @return [Array<Page>] removed pages
@@ -377,7 +396,7 @@ module Lich
         end
 
         snapshot = build_submission(attachment, component, message)
-        return dispatch_radio_change(attachment, component) if component.type == :radio_option
+        return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
 
         attachment.page.observe_window_geometry(payload) if component.type == :page && message[:event].to_sym == :configure
         @viewers.update(attachment, component, message[:event].to_sym, payload)
@@ -449,6 +468,9 @@ module Lich
             component.type, raw_values[index], props: component.props,
             owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: component.cid
           )
+          if component.type == :textarea && component.props[:read_only] && value != @viewers.property(attachment, component, :value)
+            raise Protocol::Refusal.new(:payload, 'read-only text cannot be changed by submission')
+          end
           [component, value]
         end
         selected_groups = validated.filter_map do |component, value|
@@ -583,7 +605,7 @@ module Lich
         record_presentation_degradations(page, render)
         render.tree.each do |component|
           sources = case component.type
-                    when :image then [component.props[:src]]
+                    when :image then component.props[:src] == '' ? [] : [component.props[:src]]
                     when :composite
                       component.props[:layers].filter_map do |layer|
                         [layer[:src], layer[:mask]] if layer[:kind] == 'image'

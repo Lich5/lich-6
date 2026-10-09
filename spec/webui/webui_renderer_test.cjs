@@ -622,3 +622,111 @@ test('held spin buttons accelerate, stop on release, and dispose timers on repla
   receive(render(2));
   assert.equal([...timers.values()].some(timer => [50, 500].includes(timer.delay)), false);
 });
+
+test('plain editors honor read-only, wrapping and cursor policy without emitting edits', t => {
+  const { dom, page, sent } = fixture();
+  t.after(() => dom.window.close());
+  const component = { type: 'textarea', cid: 'readonly', props: {
+    value: '<literal>\nsecond', read_only: true, wrap: 'none', cursor_visible: false
+  } };
+  page.bindings = { readonly: ['change'] };
+  const wrapper = dom.window.LichWebUI.render(page, component);
+  const editor = wrapper.querySelector('textarea');
+  assert.equal(editor.value, '<literal>\nsecond');
+  assert.equal(editor.readOnly, true);
+  assert.equal(editor.wrap, 'off');
+  assert.equal(editor.style.caretColor, 'transparent');
+  editor.dispatchEvent(new dom.window.Event('input'));
+  assert.equal(sent.length, 0);
+});
+
+test('an empty image issues no source request and a replacement restores its dimensions', t => {
+  const { dom, page } = fixture();
+  t.after(() => dom.window.close());
+  const empty = dom.window.LichWebUI.render(page, { type: 'image', cid: 'image', props: { src: '' } });
+  assert.equal(empty.hasAttribute('src'), false);
+  const full = dom.window.LichWebUI.render(page, { type: 'image', cid: 'image', props: {
+    src: '/files/owner/pixel.png', width: 20, height: 10
+  } });
+  assert.equal(full.getAttribute('src'), '/files/owner/pixel.png');
+  assert.equal(full.style.width, '20px');
+  assert.equal(full.style.height, '10px');
+});
+
+test('server-requested popup location and dismissal remain bounded and do not reopen on a closed render', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  const { document, KeyboardEvent } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'popup' }] });
+  const render = open => receive({ type: 'render', page: 'popup', generation: open ? 1 : 2,
+    bindings: { menu: ['dismiss'] }, submissions: {}, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'group', cid: 'menu', props: { menu: 'context', key: 'popup-menu', open, popup_position: [42, 65] }, children: [
+        { type: 'button', cid: 'action', props: { label: 'Action' } }
+      ] }
+    ] } });
+  render(true);
+  let menu = document.querySelector('.webui-context-menu');
+  assert.equal(menu.style.display, 'block');
+  assert.equal(menu.style.left, '42px');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.deepEqual(sent.filter(message => message.event === 'dismiss').map(message => message.cid), ['menu']);
+  render(false);
+  menu = document.querySelector('.webui-context-menu');
+  assert.equal(menu.style.display, 'none');
+});
+
+test('menu choices change exclusively and submit hidden text on activation', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'choices' }] });
+  receive({ type: 'render', page: 'choices', generation: 1,
+    bindings: { second: ['change', 'activate'], check: ['change', 'activate'] },
+    submissions: { second: ['text', 'first', 'second', 'check'], check: ['text', 'first', 'second', 'check'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'expander', cid: 'fold', props: { label: 'Details', open: false }, children: [
+        { type: 'textarea', cid: 'text', props: { value: 'Saved\ntext' } }
+      ] },
+      { type: 'radio_option', cid: 'first', props: { appearance: 'menu', group: 'g', label: 'First', checked: true } },
+      { type: 'radio_option', cid: 'second', props: { appearance: 'menu', group: 'g', label: 'Second', checked: false } },
+      { type: 'toggle', cid: 'check', props: { appearance: 'menu', label: 'Check', checked: false } }
+    ] } });
+  const second = dom.window.document.querySelector('[data-cid="second"]');
+  second.click();
+  assert.equal(dom.window.document.querySelector('[data-cid="first"]').getAttribute('aria-checked'), 'false');
+  assert.deepEqual(sent.filter(message => message.type === 'event').map(message => message.event), ['change', 'activate']);
+  assert.deepEqual(sent.find(message => message.event === 'activate').submission, ['Saved\ntext', false, true, false]);
+  dom.window.document.querySelector('[data-cid="check"]').click();
+  assert.deepEqual(sent.filter(message => message.event === 'activate').at(-1).submission, ['Saved\ntext', false, true, true]);
+});
+
+test('nested pointer surfaces send one viewport event for the nearest enabled surface', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'pointer' }] });
+  receive({ type: 'render', page: 'pointer', generation: 1,
+    bindings: { root: ['pointer_press'], label: ['pointer_press'] }, submissions: {},
+    tree: { type: 'page', cid: 'root', props: { pointer_events: true }, children: [
+      { type: 'text', cid: 'label', props: { pointer_events: true, content: 'Choose' } }
+    ] } });
+  dom.window.document.querySelector('[data-cid="label"]').dispatchEvent(new dom.window.MouseEvent('pointerdown', {
+    bubbles: true, clientX: 32, clientY: 48, button: 2, ctrlKey: true
+  }));
+  const events = sent.filter(message => message.event === 'pointer_press');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].cid, 'label');
+  assert.equal(events[0].payload.x, 32);
+  assert.equal(events[0].payload.y, 48);
+  assert.equal(events[0].payload.button, 3);
+  assert.equal(events[0].payload.state, 4);
+});
+
+
+test('disabled menu containers make their action descendants inert', t => {
+  const { dom, page } = fixture();
+  t.after(() => dom.window.close());
+  const menu = dom.window.LichWebUI.render(page, { type: 'group', cid: 'disabled-menu',
+    props: { menu: 'context', key: 'disabled', disabled: true }, children: [
+      { type: 'button', cid: 'action', props: { label: 'Unavailable' } }
+    ] });
+  assert.equal(menu.inert, true);
+});
