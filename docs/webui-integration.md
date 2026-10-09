@@ -307,8 +307,15 @@ shim uses that encoding so literal entry text cannot collide with a row ID or
 the blank-selection sentinel. Existing native consumers retain their previous
 defaults. This is the internal host/browser contract version, not a Lich release.
 
+Contract **2.13.0** adds optional table `search_column`, naming a displayed column.
+Search is viewer-local, case-insensitive prefix matching over visible rows. Typing
+on a focused row selects/focuses a match without editing the model. Backspace edits
+the prefix, Escape clears it, and a 1.5-second pause starts a new prefix. Cell
+editors and modified shortcuts keep their normal keys. Existing tables opt out
+unless they declare this property; invalid column references are rejected.
+
 Multiple renderers within one column, rich cell styling/markup, pixbuf
-cells, arbitrary cell-data callbacks, coordinate hit testing, and drag-and-drop
+cells, arbitrary cell-data callbacks, coordinate hit testing, and arbitrary drag-and-drop
 remain unsupported. Unsupported meaningful operations raise attributed errors;
 they are not discarded or represented by empty placeholder widgets. This bounded
 surface does not establish whole-script compatibility for consumers needing any
@@ -320,7 +327,7 @@ of those additional operations.
 script-owned shim objects used by direct Ruby calls. It supports subclassing,
 `add_from_string`, local `add_from_file`, `get_object`/`[]`, `objects`,
 `builder_name`, and `connect_signals`. No Ruby is evaluated from XML. This is a
-shim addition; it does not change the shared WebUI contract version.
+shim addition; subsequent interaction mappings reuse the shared controls described below.
 
 Loads are isolated transactions. The parser checks syntax and all unmapped
 property declarations before allocating objects, resolves construction
@@ -343,9 +350,9 @@ single cell renderers, and combo boxes. Grid/table coordinates and box packing
 use existing placement APIs. Tree selection and editable combo entry internal
 children expose their owner's real objects. Stores accept typed scalar columns
 and row data; nested rows require `TreeStore`. A renderer accepts one model
-binding. Combo items are plain text without item IDs. Label `style` attributes
+binding. Combo items have plain text labels and optional unique item IDs. Label `style` attributes
 accept `normal` or `italic` through the existing typed text property; arbitrary
-Pango attributes, markup, caption styling and CSS are unsupported. Translation
+Pango attributes, markup outside the bounded forms below, caption styling and CSS are unsupported. Translation
 annotations retain literal source text; Builder does not perform localization.
 Frame, expander and notebook captions copy their label text at load time, following
 the existing shim container APIs; later edits to those label objects do not update
@@ -375,16 +382,65 @@ claim arbitrary GTK packing equivalence: unequal expand/fill packing remains a
 reported approximation, and legacy homogeneous Table rows retain browser heights.
 No form-specific dimensions or converted-script layout branches are installed.
 
+A sole table in a scroll container fills its allocated viewport through
+single-child vertical stack wrappers. Its existing border and drop surface cover
+the full list area, including blank space and empty models. The outer viewport
+owns scrolling when rows exceed that allocation. Mixed content and explicitly
+height-sized children retain their existing layout rules; no second decorative
+border or separate drop callback is added.
+Completed drops and cancelled drags release deferred renders on `drop`/`dragend`,
+including native WebKit gestures without a matching pointer release. The update
+is applied after event handlers finish; a subsequent click is not required and
+the transfer callback is not repeated.
+
+Builder also maps `TreeView.search-column` to a displayed String model column;
+`-1` disables search and hidden/unmapped search columns remain unsupported.
+`fixed-height-mode=true` explicitly omits GTK's row-measurement optimization:
+browser layout measures row heights. Column `sizing=fixed` uses browser allocation
+and any explicit `fixed-width`; this is a reported approximation, not a promise
+of GTK's measurement algorithm. Other sizing modes are refused.
+
+Named ComboBoxText items retain script IDs separately from stable wire row IDs.
+`set_active_id` selects a matching item, returns false without changing selection
+for a missing ID, and nil clears selection. Duplicate IDs are rejected; duplicate
+labels remain distinct. Editable combos delegate focus to their entry facade;
+their container accepts `can-focus=false` while the entry accepts true.
+SpinButton accepts a pre-render `text` declaration only when it represents the
+adjustment's existing numeric value. Differing or live text drafts remain refused.
+`update` republishes the already parsed viewer value without another change signal.
+
+The bounded drag protocol is primary-button `STRING`, `SAME_APP`, info zero,
+`MOVE`, single-selection TreeViews within one window. It reuses validated core
+`transfer_group`/`row_drop` events. The source row must still exist and both
+widgets must belong to the same page/session. The shim matches the source's
+published column identities, selects that row in the originating viewer,
+then invokes original `drag-data-get` and `drag-data-received` callbacks together
+on the accepted drop. Cancelled drags do not run data-get; this timing difference
+is reported once. SelectionData contains only text supplied by the source callback.
+Scripts own all model changes, including same-list duplicates; completion does
+not perform an extra deletion. Other targets/actions, desktop/file drops,
+cross-window transfers, and automatic native model deletion are refused.
+
+Label `use-markup` is interpreted before materialization using bounded formatting.
+Plain text with HTTP(S) anchors maps to the existing Markdown control, with no
+raw HTML. Nested link markup, extra anchor attributes, credentials and other URL
+schemes are rejected. Linked labels cannot change component kind after publication
+or turn markup off after link conversion. The native host opens permitted
+main-frame link activations in the system browser; external sites never navigate
+the WebUI window or inherit its native bridge. Redirects, subframe requests and
+same-host cross-port/scheme navigation remain blocked.
+
 Builder accepts the following bounded presentation and control conventions. These
 are explicit mappings or declared behaviors, not permission to discard unknown
 GTK properties:
 
 | Declaration | Accepted behavior |
 | --- | --- |
-| `can-focus` | Only the existing concrete control's focus behavior: `true` for buttons, toggles, checks, radios, editable entries/search entries, spin controls, text views, notebooks, scrolled windows and expanders; `false` for windows, boxes, grids/tables, frames, viewports, plain labels and separators. Scrolled windows retain browser-native child-first focus. Composite combo focus, focusable labels and changed focus policies are refused. |
+| `can-focus` | Only the existing concrete control's focus behavior: `true` for buttons, toggles, checks, radios, entries/search entries, spin controls, text views, notebooks, scrolled windows, expanders, TreeViews and closed combos; `false` for windows, boxes, grids/tables, frames, viewports, plain labels and separators. An editable combo accepts `false` on its container and `true` on its entry facade. Scrolled windows retain browser-native child-first focus. Focusable labels and changed focus policies are refused. |
 | `receives-default` | `true` on Button and `false` on CheckButton acknowledge existing keyboard behavior. A focused button activates with Enter; a checkbox toggles with Space. This does not establish a window-wide default button or checkbox Enter activation. Other values are refused. |
 | `draw-indicator` | CheckButton accepts `true`, retaining its native indicator; `false` is refused. |
 | `label-xalign` | Frame accepts zero, retaining its left-aligned caption. Other values are refused. |
+| Frame `width-request` | A minimum requisition, so a wider natural child grid expands the frame. Explicit native core fixed-width constraints retain their meaning. Natural grids keep checkbox/radio labels together rather than overlapping neighboring cells. |
 | `width-chars` | Entry and Label accept integers 1–1024 through the shared `min_width_chars` property and character metrics. Pixel estimates and the GTK `-1` reset are not supported. |
 | `shadow-type` | Frame accepts `none` as a real zero-width border. ScrolledWindow accepts `none` or `in`; **the inset decoration is deliberately omitted**, the browser theme remains, and the shim logs this declared omission once per session. Other shadow values are refused. |
 | `tab-fill` | Notebook accepts either boolean for nonexpanding tabs, whose natural allocation is unchanged. Expanded-tab packing remains unsupported. |
@@ -416,7 +472,17 @@ preflight; later construction/value errors report their failing location.
 XML property values. A preflight list is not an exhaustive compatibility verdict:
 later constraints still require testing once those blockers are resolved.
 
-The [regression fixture](../spec/fixtures/webui/README.txt) retains the complete,
+The [regression fixtures](../spec/fixtures/webui/README.txt) retain original setup code.
+The unchanged `ewaggle` setup additionally exercises named choices, numeric
+callbacks, viewer-local search, cross-list transfers, original same-list duplication,
+double-click transfers, and Close/save. Chrome also checks option containment and
+overlap at the original 730-pixel width. Unchanged row selection/cursor events are
+not re-emitted: redundant structural redraws must not invalidate activation.
+Game lookups and persistence are isolated. Its converted native
+candidate informed reuse of table transfers and Markdown links; its form-specific
+layout and settings logic were not copied into production shim code.
+
+The `ecleanse` fixture retains the complete,
 unchanged `ecleanse` setup XML and original initialization/change/Close/destroy
 handlers. Chrome verifies entry and checkbox interaction, keyboard behavior,
 mutual exclusion, disabled controls, the italic footer and Close saving. Ruby

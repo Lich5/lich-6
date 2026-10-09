@@ -62,6 +62,20 @@ footer. Separate Ruby lifecycle tests verify that detach and browser exit
 destroy the setup without saving. Fixture provenance and limits are recorded in
 [`fixtures/webui/README.txt`](fixtures/webui/README.txt).
 
+The unchanged `ewaggle` Builder fixture adds table prefix search, cross-list
+transfers, original same-list duplication, named choices, numeric edits and save
+callbacks. It uses the same browser command below and runs in the existing CI job.
+Native external-link policy can be checked on macOS without opening a browser:
+
+```bash
+xcrun swiftc lib/webui/native/macos/ExternalLinks.swift spec/webui/native_link_policy.swift -o /tmp/lich-link-policy
+/tmp/lich-link-policy
+zsh lib/webui/native/macos/build.sh
+```
+
+The policy check verifies trusted main-frame link activation, HTTP(S) destinations,
+and refusal of redirects, subframes, credential URLs and local cross-port links.
+
 After `npm ci --prefix spec/webui`, install Chrome if it is not already available:
 
 ```bash

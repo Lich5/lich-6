@@ -67,6 +67,13 @@ module Lich
 
           def has_entry? = !child.nil?
 
+          # Editable combos delegate focus to their existing single input facade;
+          # closed selects own focus themselves. No second focus target is created.
+          def can_focus=(value)
+            session.refuse(self, :can_focus=) unless value == !has_entry?
+          end
+          alias set_can_focus can_focus=
+
           # Rebinds the options and clears a selection whose row belongs to the old model.
           # @param model [ListStore] same-owner flat store
           # @return [ListStore]
@@ -125,6 +132,41 @@ module Lich
           def active_iter = model.find_key(read(:value))
           def active = model.rows.index(active_iter) || -1
           def active_text = has_entry? ? entry_text : active_iter&.[](@label_column)
+
+          # Named text items retain their script ID separately from stable wire row IDs.
+          # @param id [String] unique nonempty script identifier
+          # @param text [String] literal display label
+          # @return [ComboBox] self
+          def append(id, text)
+            text_model!
+            session.refuse(self, :append) unless id.is_a?(String) && !id.empty? && id.length <= 8192
+            text = String(text)
+            session.refuse(self, :append) if text.length > Lich::WebUI::Contract::BOUNDS[:short_text]
+            session.synchronize do
+              @item_ids ||= {}
+              session.refuse(self, :append) if @item_ids.any? { |key, value| value == id && model.find_key(key) }
+              iter = model.append
+              iter[0] = text
+              @item_ids[iter.key] = id.dup.freeze
+            end
+            self
+          end
+
+          # @return [String, nil] named active item, or nil for free text/unnamed rows
+          def active_id = @item_ids&.[](active_iter&.key)
+
+          # Selects an existing named item; missing IDs leave the selection intact.
+          # @param id [String, nil] script ID, or nil to clear
+          # @return [Boolean] whether the requested selection was found
+          def set_active_id(id)
+            return !!(self.active = -1) if id.nil?
+            session.refuse(self, :set_active_id) unless id.is_a?(String)
+            key = @item_ids&.find { |key, value| value == id && model.find_key(key) }&.first
+            return false unless key
+            set_choice(key)
+            true
+          end
+          alias active_id= set_active_id
 
           # Selects by current model position or explicitly clears with -1.
           # @param index [Integer] model-order index, or -1 to clear
@@ -209,6 +251,7 @@ module Lich
           # @api private
           def model_changed!
             return if destroyed?
+            @item_ids&.delete_if { |key, _id| !model.find_key(key) }
             # Custom models can be installed before pack_start/add_attribute chooses
             # their String column. Materialization still refuses an incomplete mapping.
             return unless model.column_types[@label_column] == String

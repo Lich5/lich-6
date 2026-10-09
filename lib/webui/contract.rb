@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.12.0'
+      VERSION = '2.13.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -472,6 +472,7 @@ module Lich
                        ), scope: :viewer),
         max_height: property(GEOMETRY),
         transfer_group: property(IDENT),
+        search_column: property(IDENT),
       }.freeze
 
       TABLE_EVENTS = {

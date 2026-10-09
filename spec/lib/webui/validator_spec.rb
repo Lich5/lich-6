@@ -8,6 +8,12 @@ RSpec.describe Lich::WebUI::Validator do
 
   let(:context) { { owner: 'spec-owner', page_id: 'spec-page', cid: 'test:component' } }
 
+  it 'requires the search column to belong to the table' do
+    props = { columns: [{ key: 'text', label: 'Text' }], rows: [], search_column: 'missing' }
+    expect { validator.validate_component!(:table, props, **context) }.to raise_error(Lich::WebUI::SchemaViolationError, /search column/)
+    expect(validator.validate_component!(:table, props.merge(search_column: 'text'), **context)).to include(search_column: 'text')
+  end
+
   it 'validates table identity references and refuses forged cursor, selection and disabled edits' do
     props = validator.validate_component!(:table, {
       columns: [{ key: 'flag', label: 'Flag', editor: { type: 'checkbox', disabled: true } }],
