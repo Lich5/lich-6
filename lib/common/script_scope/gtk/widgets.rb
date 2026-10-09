@@ -43,6 +43,7 @@ module Lich
             session.port.detach(@handle, child.materialize) if @handle
             @children.delete(child)
             child.parent = nil
+            refresh_layout!
             self
           end
 
@@ -68,6 +69,7 @@ module Lich
                 session.port.detach(@handle, child.materialize)
                 session.port.attach(@handle, child.materialize, index)
               end
+              refresh_layout!
             end
             self
           end
@@ -91,6 +93,7 @@ module Lich
             session.port.attach(@handle, child.materialize, index) if @handle
             child.parent = self
             @children.insert(index, child)
+            refresh_layout!
             self
           end
           private :insert_child
@@ -171,14 +174,55 @@ module Lich
             self
           end
 
-          # Validates an expansion request and reports browser-owned space distribution.
+          # Retains explicit expansion; otherwise containers inherit descendant demand.
+          # Horizontal grids use existing expanding tracks and vertical stacks use fill.
           # @return [Widget] self
           def set_hexpand(value)
             session.refuse(self, :set_hexpand) unless [true, false].include?(value)
-            session.degrade(:expansion, 'available space is distributed by browser layout')
+            session.synchronize do
+              @hexpand = value
+              refresh_layout!
+            end
             self
           end
-          alias set_vexpand set_hexpand
+
+          # Requests available height through the same bounded layout propagation.
+          # @return [Widget] self
+          def set_vexpand(value)
+            session.refuse(self, :set_vexpand) unless [true, false].include?(value)
+            session.synchronize do
+              @vexpand = value
+              refresh_layout!
+            end
+            self
+          end
+
+          # @api private
+          # @return [Boolean] explicit or descendant expansion along the given axis
+          def expands?(axis)
+            explicit = axis == :horizontal ? @hexpand : @vexpand
+            explicit.nil? ? @children.any? { |child| child.expands?(axis) } : explicit
+          end
+
+          # Recompute only layout properties after a structural/expansion change.
+          # Existing adapter handles and viewer-local input remain intact.
+          # @api private
+          def refresh_layout!
+            root = toplevel
+            return unless root.instance_variable_get(:@handle)
+            pending = [root]
+            until pending.empty?
+              widget = pending.pop
+              handle = widget.instance_variable_get(:@handle)
+              if handle && !widget.destroyed?
+                props = widget.send(:layout_props)
+                previous = widget.instance_variable_get(:@published_layout) || {}
+                props.each { |key, value| session.port.set(handle, key, value) unless previous[key] == value }
+                widget.instance_variable_set(:@published_layout, props)
+              end
+              pending.concat(widget.children)
+            end
+          end
 
           # Updates the left entry of the widget's explicit per-side margin.
           # @return [Widget] self
@@ -199,6 +243,23 @@ module Lich
             write(:align, value)
           end
           alias set_halign halign=
+
+          # Accepts only the focus behavior already provided by this concrete control.
+          # Composite entries and non-default requests need their own implementation;
+          # disabling focus must never be confused with disabling the whole widget.
+          # @param value [Boolean] requested ability to own input focus
+          # @return [void]
+          # @raise [UnsupportedOperation] when no equivalent control behavior exists
+          def can_focus=(value)
+            kind = self.class.name&.split('::')&.last
+            focusable = %w[Button ToggleButton CheckButton RadioButton Entry SearchEntry SpinButton TextView Notebook ScrolledWindow Expander]
+            passive = %w[Window Box HBox VBox Grid Table Frame Viewport Label Separator HSeparator]
+            expected = if focusable.include?(kind) then true
+                       elsif passive.include?(kind) then false
+                       end
+            session.refuse(self, :can_focus=) if expected.nil? || value != expected || (is_a?(Entry) && !@editable)
+          end
+          alias set_can_focus can_focus=
 
           alias set_margin_start set_margin_left
           alias set_margin_end set_margin_right
@@ -244,6 +305,7 @@ module Lich
             # long script constructor must not publish a half-built window.
             child_handles = @children.map(&:materialize)
             @handle = session.port.create(component_type, component_props.merge(placement: @placement || {}))
+            @published_layout = layout_props
             child_handles.each { |child| session.port.attach(@handle, child) }
             (builtin_events + signal_map.values + @signals.keys).uniq.each { |event| bind_event(event) }
             @handle
@@ -338,9 +400,11 @@ module Lich
 
           def forget_child(child)
             @children.delete(child)
+            refresh_layout!
           end
 
-          def component_props = @props.dup
+          def component_props = @props.merge(layout_props)
+          def layout_props = {}
           def signal_map = {}
           def input_property = nil
           def builtin_events = []
@@ -444,6 +508,25 @@ module Lich
             write(:size, [Integer(width), Integer(height)])
           end
           alias set_default_size resize
+
+          # GTK window requisitions are minimum client sizes, not fixed HTML widths.
+          # Both positive minima supply an initial size when no explicit resize exists;
+          # a single minimum leaves the other axis under host/user control.
+          # @return [Window] self
+          def set_width_request(value)
+            write(:min_width, Integer(value))
+            refresh_layout!
+            self
+          end
+          alias width_request= set_width_request
+
+          # @return [Window] self
+          def set_height_request(value)
+            write(:min_height, Integer(value))
+            refresh_layout!
+            self
+          end
+          alias height_request= set_height_request
 
           # sloot restores its saved dimensions with independent setters.
           def default_width=(value)
@@ -563,6 +646,15 @@ module Lich
           protected
 
           def component_type = :page
+
+          def layout_props
+            props = { viewport: expands?(:vertical) }
+            if !@props.key?(:size) && @props.fetch(:min_width, 0).positive? && @props.fetch(:min_height, 0).positive?
+              props[:size] = [@props[:min_width], @props[:min_height]]
+            end
+            props
+          end
+
           def signal_map = { 'delete_event' => :close }
           def builtin_events = %i[close configure]
 
@@ -578,6 +670,9 @@ module Lich
         end
 
         class Box < Widget
+          # @api private
+          def vertical? = @orientation == :vertical
+
           # Creates a horizontal grid or vertical stack with the requested spacing.
           # Numeric orientation 0/1 is accepted for the measured GTK enum usage.
           def initialize(orientation = :horizontal, spacing = 0)
@@ -587,7 +682,15 @@ module Lich
             session.refuse(self, :new) unless %i[horizontal vertical].include?(orientation)
             @orientation = orientation
             @end_children = []
+            @packing = {}.compare_by_identity
             @props[:gap] = Integer(spacing)
+          end
+
+          # Forget packing metadata when a live child is detached for reuse.
+          def remove(child)
+            super
+            @packing.delete(child)
+            self
           end
 
           # Inserts before end-packed children while retaining accepted positional packing arguments.
@@ -603,6 +706,11 @@ module Lich
           end
 
           protected
+
+          def forget_child(child)
+            @packing.delete(child)
+            super
+          end
 
           def pack(child, packing, expand:, fill:, padding:, ending:)
             session.refuse(self, :pack_start) if packing.length > 3
@@ -625,14 +733,28 @@ module Lich
                 raise
               end
               @end_children << child if ending && !@end_children.include?(child)
+              @packing[child] = { expand: expand, fill: fill }
+              refresh_layout!
             end
             self
           end
 
           def component_type = @orientation == :vertical ? :stack : :grid
 
-          def component_props
-            @orientation == :vertical ? super : super.merge(cols: [@children.length, 1].max)
+          # Natural tracks keep long captions from spilling into equal-width peers.
+          # Expanded children share surplus width; their own alignment still applies.
+          def layout_props
+            return {} unless %i[stack grid].include?(component_type)
+            if vertical?
+              allocated = parent.is_a?(Window) || (parent.is_a?(Box) && parent.vertical?)
+              { fill: !!(allocated && expands?(:vertical)) }
+            else
+              expanding = @children.each_index.select do |index|
+                child = @children[index]
+                child.expands?(:horizontal) || @packing.dig(child, :expand) == true
+              end.map { |index| index + 1 }
+              { cols: [@children.length, 1].max, homogeneous: false, expand_columns: expanding }
+            end
           end
         end
 
@@ -693,6 +815,22 @@ module Lich
           def set_label_widget(label)
             write(:label, label.text)
           end
+
+          # The shared frame already places its caption at the left edge.
+          # @param value [Numeric] only zero is supported
+          # @return [void]
+          def label_xalign=(value)
+            session.refuse(self, :label_xalign=) unless value.is_a?(Numeric) && value.zero?
+          end
+
+          # Removes the frame decoration using the existing typed border property.
+          # @param value [Symbol] only :none is supported
+          # @return [Frame] self
+          def shadow_type=(value)
+            session.refuse(self, :shadow_type=) unless value == :none
+            write(:border_width, 0)
+          end
+          alias set_shadow_type shadow_type=
 
           protected
 
@@ -803,13 +941,14 @@ module Lich
             write(:margin, [Integer(x), Integer(y)].max)
           end
 
-          # Converts the bounded character-width hint using a nominal eight-pixel glyph width.
-          # Reports that actual typography follows the browser font.
+          # Requests a minimum character width using the existing browser-font metric.
+          # Packing may still allocate a larger width. Resetting a published property
+          # requires a separate contract operation and is not accepted here.
+          # @param count [Integer] 1..1024
           # @return [Label] self
           def set_width_chars(count)
-            session.refuse(self, :set_width_chars) unless count.is_a?(Integer) && count.between?(1, 512)
-            session.degrade(:character_width, 'character width is an initial hint using the browser font')
-            write(:width, count * 8)
+            session.refuse(self, :set_width_chars) unless count.is_a?(Integer) && count.between?(1, 1024)
+            write(:min_width_chars, count)
           end
 
           protected
@@ -842,6 +981,14 @@ module Lich
             write(:placeholder, String(value))
           end
           alias set_placeholder_text placeholder_text=
+
+          # Uses the same typed character minimum as native WebUI forms, not a pixel guess.
+          # @param count [Integer] 1..1024; reset requests remain unsupported
+          # @return [Entry] self
+          def set_width_chars(count)
+            session.refuse(self, :set_width_chars) unless count.is_a?(Integer) && count.between?(1, 1024)
+            write(:min_width_chars, count)
+          end
 
           # Maps a unit-interval fraction to start/center/end text alignment.
           # @raise [UnsupportedOperation] for out-of-range values
@@ -924,6 +1071,23 @@ module Lich
 
         # Checkbox presentation shares the toggle value and programmatic signal semantics.
         class CheckButton < ToggleButton
+          # Ordinary checkboxes already show a separate indicator. Button-style mode
+          # must be implemented deliberately rather than silently losing this request.
+          # @param value [Boolean] only true is supported
+          # @return [void]
+          def draw_indicator=(value)
+            session.refuse(self, :draw_indicator=) unless value == true
+          end
+          alias set_mode draw_indicator=
+
+          # Space toggles a checkbox; it does not receive the focused default action.
+          # @param value [Boolean] only false is supported
+          # @return [void]
+          def receives_default=(value)
+            session.refuse(self, :receives_default=) unless value == false
+          end
+          alias set_receives_default receives_default=
+
           protected
 
           def component_type = :checkbox
@@ -931,6 +1095,14 @@ module Lich
         end
 
         class Button < Widget
+          # The native button receives Enter when focused, without becoming a page-wide
+          # default action. Other default-routing requests remain unsupported.
+          # @param value [Boolean] only true is supported
+          # @return [void]
+          def receives_default=(value)
+            session.refuse(self, :receives_default=) unless value == true
+          end
+          alias set_receives_default receives_default=
           # Creates a literal action label, removing mnemonic underscores when requested.
           # Stock-button IDs are unsupported; no native GTK stock catalog is loaded.
           def initialize(text = nil, label: text, use_underline: true, stock_id: nil)

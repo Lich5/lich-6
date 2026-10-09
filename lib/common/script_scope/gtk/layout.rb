@@ -19,7 +19,7 @@ module Lich
         class Table < Widget
           attr_reader :n_rows
 
-          # Creates a widget grid; homogeneous sizing is reported as a browser-layout degradation.
+          # Creates a widget grid using the shared natural/equal track policy.
           # @param rows [Integer] initial row count, clamped to at least one
           # @param columns [Integer] initial column count, bounded by the grid contract
           # @param homogeneous [Boolean] legacy equal-sizing request
@@ -27,9 +27,9 @@ module Lich
             super()
             @n_rows = [Integer(rows), 1].max
             @columns = [Integer(columns), 1].max
-            @props.merge!(cols: @columns, gap: 0)
+            @props.merge!(cols: @columns, gap: 0, homogeneous: homogeneous)
             session.refuse(self, :new) unless @n_rows.positive? && @columns.between?(1, 24)
-            session.degrade(:homogeneous, 'grid tracks follow browser layout') if homogeneous
+            session.degrade(:homogeneous_rows, 'equal columns are retained; row heights follow browser layout') if homogeneous
           end
 
           def n_rows=(value)
@@ -79,6 +79,17 @@ module Lich
           protected
 
           def component_type = :grid
+
+          # A spanning expanding child can request surplus width in each covered track.
+          # This reuses the native grid policy without imposing equal-sized columns.
+          def layout_props
+            columns = @children.select { |child| child.expands?(:horizontal) }.flat_map do |child|
+              placement = child.instance_variable_get(:@placement) || {}
+              first = placement.fetch(:column, 1)
+              (first...(first + placement.fetch(:span, 1))).to_a
+            end
+            { expand_columns: columns.uniq.sort }
+          end
         end
 
         # sellunder uses Grid coordinates expressed as origin plus extent,
@@ -94,11 +105,11 @@ module Lich
           alias set_row_spacing row_spacings=
           alias set_column_spacing column_spacings=
 
-          # Validates the legacy flag while leaving track allocation to browser layout.
+          # Maps the GTK equal-column request to the existing shared grid policy.
           # @raise [UnsupportedOperation] for nonboolean values
           def column_homogeneous=(value)
             session.refuse(self, :column_homogeneous=) unless [true, false].include?(value)
-            session.degrade(:homogeneous, 'grid tracks follow browser layout') unless value
+            write(:homogeneous, value)
           end
 
           # Translates zero-based origin plus width/height to Table's opposing cell edges.
@@ -183,6 +194,17 @@ module Lich
 
         class ScrolledWindow < Widget
           attr_reader :vadjustment
+
+          # Explicit compatibility policy: accept :in but omit its inset decoration.
+          # :none is already represented by the browser scroll container. Other shadow
+          # types are refused; this is not an arbitrary style-dropping mechanism.
+          # @param value [Symbol] :none or :in
+          # @return [void]
+          def shadow_type=(value)
+            session.refuse(self, :shadow_type=) unless %i[none in].include?(value)
+            session.degrade(:scroll_shadow, 'shadow-type=in accepted; inset decoration omitted; browser theme applies') if value == :in
+          end
+          alias set_shadow_type shadow_type=
 
           # Creates a shared scroll control with a vertical measurement facade.
           def initialize

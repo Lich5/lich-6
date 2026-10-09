@@ -53,6 +53,14 @@ selection and duplicate option labels against real Ruby callbacks. Each starts
 with the production private `file:///` bootstrap and a fresh browser
 cookie jar, asserting the `/auth` intermediate document, authenticated final page,
 rendered controls and Ruby callback results. No game account or native GTK is used.
+The Builder case loads the complete unchanged `ecleanse` setup XML and invokes
+its original callbacks with isolated game lookups and a temporary settings path.
+It checks keyboard behavior, disabled controls, mutually exclusive options,
+Close saving and layout at requested/larger viewport sizes. Geometry assertions
+detect overlapping checkbox labels, horizontal overflow and an inaccessible
+footer. Separate Ruby lifecycle tests verify that detach and browser exit
+destroy the setup without saving. Fixture provenance and limits are recorded in
+[`fixtures/webui/README.txt`](fixtures/webui/README.txt).
 
 After `npm ci --prefix spec/webui`, install Chrome if it is not already available:
 
@@ -67,7 +75,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has
@@ -77,7 +85,7 @@ traces under ignored `spec/webui/test-results/`; CI retains failure artifacts fo
 seven days. Only disposable fixture state is used. Missing browser/dependencies
 fail the explicit run rather than silently skipping it.
 
-Ordinary `rspec` keeps the five browser cases pending, so local Ruby testing does
+Ordinary `rspec` keeps the six browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

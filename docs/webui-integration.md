@@ -307,12 +307,129 @@ shim uses that encoding so literal entry text cannot collide with a row ID or
 the blank-selection sentinel. Existing native consumers retain their previous
 defaults. This is the internal host/browser contract version, not a Lich release.
 
-Builder, multiple renderers within one column, rich cell styling/markup, pixbuf
+Multiple renderers within one column, rich cell styling/markup, pixbuf
 cells, arbitrary cell-data callbacks, coordinate hit testing, and drag-and-drop
 remain unsupported. Unsupported meaningful operations raise attributed errors;
 they are not discarded or represented by empty placeholder widgets. This bounded
 surface does not establish whole-script compatibility for consumers needing any
 of those additional operations.
+
+### Bounded Gtk::Builder XML
+
+`Gtk::Builder` translates a supported subset of GTK 3 XML into the same
+script-owned shim objects used by direct Ruby calls. It supports subclassing,
+`add_from_string`, local `add_from_file`, `get_object`/`[]`, `objects`,
+`builder_name`, and `connect_signals`. No Ruby is evaluated from XML. This is a
+shim addition; it does not change the shared WebUI contract version.
+
+Loads are isolated transactions. The parser checks syntax and all unmapped
+property declarations before allocating objects, resolves construction
+dependencies, populates and binds models, assembles children, then validates
+component properties before publishing requested visible windows. Failed loads
+detach new observers and destroy candidate widgets; previously loaded objects
+and identifiers remain intact. IDs must be unique across successful additions.
+References must resolve within the current document, including forward
+references; binding an earlier document's object is deliberately unsupported so
+a failed addition cannot mutate an existing graph. `objects` returns a snapshot
+in XML order. `builder_name` retains declared IDs and supplies generated names
+for anonymous objects; lookup uses declared IDs only.
+
+The explicit class/property mappings live in
+[`gtk/builder.rb`](../lib/common/script_scope/gtk/builder.rb). They cover existing
+boxes, grids/tables, frames, scrolling containers, paired notebook page/tab
+labels, expanders, plain labels and entries, buttons/toggles/radios, adjustment
+and spin controls, text buffers/views, separators, scalar stores, tree views and
+single cell renderers, and combo boxes. Grid/table coordinates and box packing
+use existing placement APIs. Tree selection and editable combo entry internal
+children expose their owner's real objects. Stores accept typed scalar columns
+and row data; nested rows require `TreeStore`. A renderer accepts one model
+binding. Combo items are plain text without item IDs. Label `style` attributes
+accept `normal` or `italic` through the existing typed text property; arbitrary
+Pango attributes, markup, caption styling and CSS are unsupported. Translation
+annotations retain literal source text; Builder does not perform localization.
+Frame, expander and notebook captions copy their label text at load time, following
+the existing shim container APIs; later edits to those label objects do not update
+the copied captions.
+
+Layout translation uses the same typed properties as native conversions. Grid
+columns default to content-based sizing; `column-homogeneous` changes the actual
+equal-column policy. Horizontal boxes also use natural columns, with surplus
+width assigned to children requesting expansion. Expanding grid children pass
+that request to their covered columns. Explicit expansion flags override inherited
+descendant demand, and changing flags or moving/removing children updates live
+layout without replacing their control identities or input values.
+
+Window width/height requests become minimum client dimensions. Both positive
+minima also supply an initial window size when no explicit resize exists. A
+single minimum leaves the other dimension unspecified, preserving host defaults
+or applicable saved geometry instead of fabricating a zero dimension. The shared
+renderer enforces minima at first display, after render updates and on resize,
+even without a script geometry subscription. It grows only deficient dimensions;
+larger user dimensions remain unchanged. Explicit size requests are clamped to
+the minima without a competing resize based on stale host measurements. These
+requests do not fix the page's HTML width/height.
+Vertical expansion enables the existing page viewport policy and
+fills enclosing vertical boxes; notebook content then scrolls within its allocated
+space while a sibling footer remains outside the scroll. These mappings do not
+claim arbitrary GTK packing equivalence: unequal expand/fill packing remains a
+reported approximation, and legacy homogeneous Table rows retain browser heights.
+No form-specific dimensions or converted-script layout branches are installed.
+
+Builder accepts the following bounded presentation and control conventions. These
+are explicit mappings or declared behaviors, not permission to discard unknown
+GTK properties:
+
+| Declaration | Accepted behavior |
+| --- | --- |
+| `can-focus` | Only the existing concrete control's focus behavior: `true` for buttons, toggles, checks, radios, editable entries/search entries, spin controls, text views, notebooks, scrolled windows and expanders; `false` for windows, boxes, grids/tables, frames, viewports, plain labels and separators. Scrolled windows retain browser-native child-first focus. Composite combo focus, focusable labels and changed focus policies are refused. |
+| `receives-default` | `true` on Button and `false` on CheckButton acknowledge existing keyboard behavior. A focused button activates with Enter; a checkbox toggles with Space. This does not establish a window-wide default button or checkbox Enter activation. Other values are refused. |
+| `draw-indicator` | CheckButton accepts `true`, retaining its native indicator; `false` is refused. |
+| `label-xalign` | Frame accepts zero, retaining its left-aligned caption. Other values are refused. |
+| `width-chars` | Entry and Label accept integers 1–1024 through the shared `min_width_chars` property and character metrics. Pixel estimates and the GTK `-1` reset are not supported. |
+| `shadow-type` | Frame accepts `none` as a real zero-width border. ScrolledWindow accepts `none` or `in`; **the inset decoration is deliberately omitted**, the browser theme remains, and the shim logs this declared omission once per session. Other shadow values are refused. |
+| `tab-fill` | Notebook accepts either boolean for nonexpanding tabs, whose natural allocation is unchanged. Expanded-tab packing remains unsupported. |
+
+Text values remain literal, including numeric-looking strings and whitespace.
+Only declared numeric and boolean properties coerce values. Unsupported classes,
+properties, child roles, packing, references, signals and syntax raise
+`Gtk::BuilderError` rather than disappearing silently. Bounds are 1 MiB per XML
+document, 2,048 total objects per Builder and 64 levels of XML nesting, in addition
+to existing component/model limits. DTD and entity declarations are refused.
+
+`connect_signals` resolves every pending handler before attaching any, using a
+resolver block returning a `Method`/`Proc`, or methods on a Builder subclass.
+Repeated calls attach only newly added declarations. Fixed-arity handlers receive
+the supported prefix of signal arguments; return values, including close vetoes,
+are preserved. `after=true`, `swapped=true`, and signals outside each object's
+existing shim surface are refused. Ordinary GTK visibility defaults remain
+hidden; callers may use the existing window `show_all` lifecycle after loading.
+Nested `Gtk.queue` work retains the signal's originating viewer and window, so
+deferred handlers read that viewer's current inputs and send replies to the same
+viewer even if another viewer has since submitted a signal. Work submitted by an
+unrelated thread does not inherit an active callback's viewer. The existing owner
+dispatcher, cancellation and attachment-liveness checks still apply.
+
+Errors identify the script, XML object/class, property or operation, and reason.
+`BuilderError#issues` retains all unmapped property declarations found in the
+preflight; later construction/value errors report their failing location.
+`Gtk.queue` logs bounded structural context and the blocker count without logging
+XML property values. A preflight list is not an exhaustive compatibility verdict:
+later constraints still require testing once those blockers are resolved.
+
+The [regression fixture](../spec/fixtures/webui/README.txt) retains the complete,
+unchanged `ecleanse` setup XML and original initialization/change/Close/destroy
+handlers. Chrome verifies entry and checkbox interaction, keyboard behavior,
+mutual exclusion, disabled controls, the italic footer and Close saving. Ruby
+and Chrome also cover live allocation updates and window minima; the browser
+checks checkbox-label overlap, horizontal overflow and footer visibility at
+650×675 and 1000×850 viewport sizes. These checks supplement visual inspection;
+they do not assert pixel-for-pixel GTK parity. Ruby tests also exercise detach
+and browser-exit destruction without saving. Game lookups
+and the settings destination are isolated by the harness; this establishes setup
+behavior, not whole-script gameplay compatibility. Bigshot's composite focus,
+vertical alignment, linked markup and other unmapped demands remain explicit
+boundaries. Further presentation and interaction expansion requires review;
+Builder does not silently broaden the CSS or shared-core scope.
 
 ## Authentication and trust boundaries
 

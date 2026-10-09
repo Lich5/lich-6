@@ -760,6 +760,44 @@ test('natural grid allocates extra width only to declared expanding columns', ()
 });
 
 
+for (const axis of ['width', 'height']) {
+  test(`${axis}-only minima apply at first display and updates without shrinking the other axis`, () => {
+    for (const configure of [true, false]) {
+      const f = fixture('form');
+      f.receive({ type: 'hello', pages: [{ address: 'form', title: 'Minima' }] });
+      const message = { type: 'render', page: 'form', generation: 1,
+        bindings: configure ? { root: ['configure'] } : {},
+        tree: { type: 'page', cid: 'root', props: { bare: true, [`min_${axis}`]: 1000 }, children: [] } };
+      f.receive(message); f.frame();
+      const initial = axis === 'width' ? [1000, 630] : [800, 1030];
+      assert.deepEqual(f.resized, [initial], 'a partial minimum is enforced without a launch size');
+      // Model the host applying the request, then retaining a larger user/saved size.
+      Object.assign(f.window, { innerWidth: 1200, outerWidth: 1200, innerHeight: 1100, outerHeight: 1130 });
+      message.generation++;
+      f.receive(message); f.frame();
+      assert.equal(f.resized.length, 1, 'a larger window is preserved');
+      message.tree.props[`min_${axis}`] = 1400;
+      message.generation++;
+      f.receive(message); f.frame();
+      assert.deepEqual(f.resized.at(-1), axis === 'width' ? [1400, 1130] : [1200, 1430]);
+      const attempts = f.resized.length;
+      message.generation++;
+      f.receive(message); f.frame();
+      assert.equal(f.resized.length, attempts, 'a refusing host does not cause repeated identical requests');
+      message.tree.props[`min_${axis}`] = 1000;
+      message.generation++;
+      f.receive(message); f.frame();
+      assert.equal(f.resized.length, attempts, 'lowering a minimum does not shrink the window');
+      message.tree.props.resize_request = { id: 'explicit', size: [500, 300] };
+      message.generation++;
+      f.receive(message); f.frame();
+      assert.deepEqual(f.resized.at(-1), axis === 'width' ? [1000, 330] : [500, 1030]);
+      assert.equal(f.resized.length, attempts + 1, 'minimum enforcement must not compete with an explicit resize');
+      if (!configure) assert.equal(f.sent.filter(event => event.event === 'configure').length, 0);
+    }
+  });
+}
+
 test('explicit original window minima constrain resizing without restoring the launch size', () => {
   const f = fixture('spells');
   f.receive({ type: 'hello', pages: [{ address: 'spells', title: 'Spells' }] });
