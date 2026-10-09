@@ -212,19 +212,25 @@ module Lich
 
       # Applies writes made while new controls were awaiting their first delivery.
       # Identity is captured at write time; departed viewers are never recreated.
+      # Stale targets are discarded; invalid writes are reported individually so
+      # a single rejected value cannot discard later valid writes in the batch.
       # @api private
+      # @param page [Page] exact owner-scoped page receiving the writes
       # @param changes [Array<Array>] viewer ID, CID, property, validated value
+      # @return [Object] refresh scheduling result
       def seed_viewer_properties(page, changes)
         attachments = @viewers.attachments_for(page).to_h { |attachment| [attachment.viewer_id, attachment] }
         changes.each do |viewer, cid, name, value|
           attachment = attachments[viewer]
           next unless attachment
 
-          component = find_component!(attachment, cid)
-          raise Error, 'initial property must be viewer-scoped' unless property_scope(component, name) == :viewer
-          validated = @validator.validate_property!(component.type, name, value, props: component.props,
-                                                    owner: owner_label(page.owner), page_id: page.id, cid: cid)
-          @viewers.set_property(attachment, component, name, validated)
+          @viewers.seed_property(attachment, cid, name) do |component|
+            raise Error, 'initial property must be viewer-scoped' unless property_scope(component, name) == :viewer
+            @validator.validate_property!(component.type, name, value, props: component.props,
+                                          owner: owner_label(page.owner), page_id: page.id, cid: cid)
+          end
+        rescue Error, KeyError => error
+          log(:warning, "WebUI initial property refused owner=#{owner_label(page.owner)} page=#{page.id} cid=#{cid} field=#{name} error=#{error.class}")
         end
         schedule_refresh(page)
       end
@@ -468,8 +474,10 @@ module Lich
             component.type, raw_values[index], props: component.props,
             owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: component.cid
           )
-          if component.type == :textarea && component.props[:read_only] && value != @viewers.property(attachment, component, :value)
-            raise Protocol::Refusal.new(:payload, 'read-only text cannot be changed by submission')
+          if component.type == :textarea && component.props[:read_only]
+            # The browser may still display an older server value. Validate
+            # against its delivery, but retain the latest server-owned value.
+            value = @viewers.read_only_submission(attachment, component, value)
           end
           [component, value]
         end
@@ -483,7 +491,7 @@ module Lich
           if sensitive?(component)
             [component.cid, SensitiveValue.viewer(value)]
           else
-            @viewers.set_input(attachment, component, value)
+            @viewers.set_input(attachment, component, value) unless component.type == :textarea && component.props[:read_only]
             [component.cid, value]
           end
         end
@@ -523,7 +531,7 @@ module Lich
       # @return [Object] transport send result
       # @api private
       def send_render(connection, attachment)
-        snapshot = @viewers.snapshot(attachment)
+        snapshot = @viewers.snapshot(attachment, for_delivery: true)
         render = snapshot.render
         bindings = render.bindings.keys.group_by(&:first).transform_values do |pairs|
           pairs.map(&:last).map(&:to_s)

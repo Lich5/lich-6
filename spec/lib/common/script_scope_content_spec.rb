@@ -220,6 +220,15 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect { scope::GdkPixbuf.const_get(:Loader) }.to raise_error(compatibility::UnsupportedOperation)
   end
 
+  it 'attributes filesystem resolution failures without hiding file-policy refusals' do
+    path = File.join(asset_directory, 'missing.png')
+    expect { scope::Gdk::Pixbuf.new(path) }
+      .to raise_error(compatibility::UnsupportedOperation, /script=pilot\.lic .*operation=file/)
+    allow(File).to receive(:realpath).with(path).and_raise(Errno::EACCES)
+    expect { scope::Gdk::Pixbuf.new(path) }
+      .to raise_error(compatibility::UnsupportedOperation, /operation=file/)
+  end
+
   it 'opens a dynamically created menu only for the originating pointer viewer and dismisses it once' do
     window = compatibility::Window.new
     label = compatibility::Label.new('Choose')

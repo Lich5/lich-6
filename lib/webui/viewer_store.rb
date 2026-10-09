@@ -2,6 +2,7 @@
 
 require 'securerandom'
 require_relative 'component'
+require_relative 'protocol'
 
 module Lich
   module WebUI
@@ -12,7 +13,7 @@ module Lich
 
       class Attachment
         attr_accessor :connection_id, :render, :delivered_generation, :expires_at
-        attr_reader :viewer_id, :resume_token, :address, :page, :values
+        attr_reader :viewer_id, :resume_token, :address, :page, :values, :delivered_read_only
 
         # Creates independent viewer identity, resume capability, and local state for a page.
         # The resume token is server-generated; no render is delivered yet.
@@ -23,6 +24,7 @@ module Lich
           @address = address.freeze
           @page = page
           @values = {}
+          @delivered_read_only = {}
           @render = nil
           @delivered_generation = nil
           @expires_at = nil
@@ -148,6 +150,37 @@ module Lich
         end
       end
 
+      # Validates and seeds a new control only while its viewer and CID are live.
+      # Checking identity, resolving the delivered component and writing under
+      # one lock prevents concurrent detach/delivery from reviving stale state.
+      # @yield [Component] current component; return the validated property value
+      # @return [Object, nil] stored value, or nil for a departed/undelivered target
+      def seed_property(attachment, cid, name)
+        @mutex.synchronize do
+          next unless @by_resume[attachment.resume_token].equal?(attachment) && !attachment.expires_at
+          component = attachment.render&.tree&.each&.find { |candidate| candidate.cid == cid }
+          next unless component
+
+          value = yield component
+          select_radio_option!(attachment, component) if component.type == :radio_option && name == :checked && value
+          attachment.values[[cid, name]] = value
+        end
+      end
+
+      # Accepts only the read-only text actually sent to this viewer. A later
+      # server write remains authoritative and is never overwritten by submission.
+      # This delivery record is protocol evidence, not another editable draft.
+      # @return [String] current server value for the terminal callback snapshot
+      # @raise [Protocol::Refusal] if the client changed the delivered text
+      def read_only_submission(attachment, component, value)
+        @mutex.synchronize do
+          unless attachment.delivered_read_only.key?(component.cid) && attachment.delivered_read_only[component.cid] == value
+            raise Protocol::Refusal.new(:payload, 'read-only text cannot be changed by submission')
+          end
+          attachment.values.fetch([component.cid, :value], component.props[:value])
+        end
+      end
+
       # Records the newest render accepted for one viewer and seeds its values.
       # Refresh and attach can finish out of order. An older render must not
       # replace the tree, lower the event generation, or invalidate selections.
@@ -229,11 +262,21 @@ module Lich
       # Copies one coherent render and its nonsensitive viewer values for queued work.
       # The snapshot is not attached or resumable and cannot receive browser events.
       # @param attachment [Attachment] viewer whose delivered state is captured
+      # @param for_delivery [Boolean] record read-only values from this wire snapshot;
+      #   lifecycle snapshots must not change what the browser is allowed to submit
       # @return [Snapshot] independent values with an immutable render definition
-      def snapshot(attachment)
+      def snapshot(attachment, for_delivery: false)
         @mutex.synchronize do
           raise Error, 'viewer has no delivered render' unless attachment.render
 
+          if for_delivery
+            attachment.delivered_read_only.clear
+            attachment.render.tree.each do |component|
+              next unless component.type == :textarea && component.props[:read_only] && !component.props[:sensitive]
+
+              attachment.delivered_read_only[component.cid] = attachment.values.fetch([component.cid, :value], component.props[:value])
+            end
+          end
           Snapshot.new(attachment.page, attachment.viewer_id, attachment.render, attachment.values.dup)
         end
       end
@@ -353,6 +396,7 @@ module Lich
         remove_connection_mapping!(attachment)
         @by_resume.delete(attachment.resume_token)
         attachment.values.clear
+        attachment.delivered_read_only.clear
         attachment.render = nil
         attachment.delivered_generation = nil
       end

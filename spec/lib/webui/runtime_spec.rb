@@ -45,6 +45,83 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  it 'accepts delivered read-only text while preserving a newer server value and refusing forgeries' do
+    received = Queue.new
+    allow(runtime).to receive(:schedule_render)
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'readonly', title: 'Read only') do
+      input = textarea(key: 'text', value: 'Default', read_only: true)
+      button(key: 'save', label: 'Save', submit: [input], on: {
+        activate: ->(event) { received << event.submission[event.submission.cids.first] },
+      })
+    end)
+    address, = attach(first_connection, page)
+    attach(second_connection, page)
+    first = viewers.fetch(connection_id: first_connection.viewer_id, address: address)
+    second = viewers.fetch(connection_id: second_connection.viewer_id, address: address)
+    input, button = page.last_render.tree.children
+    page.set(input.cid, :value, 'Delivered override', viewer: first.viewer_id)
+    runtime.refresh(page)
+    render = first_connection.sent.last
+
+    # Hold refresh scheduling so Save deterministically arrives after the server
+    # write but before delivery. The authored default is not the wire value.
+    page.set(input.cid, :value, 'Newest server value', viewer: first.viewer_id)
+    viewers.snapshot(first) # Lifecycle capture must not rewrite delivery evidence.
+    submit = lambda do |value|
+      runtime.handle(first_connection, type: 'event', page: address, generation: render['generation'],
+                     cid: button.cid, event: 'activate', payload: {}, submission: [value])
+    end
+    expect(submit.call('Default')).to eq(:refused)
+    expect(submit.call('Forged')).to eq(:refused)
+    expect(submit.call('Newest server value')).to eq(:refused)
+    expect(submit.call('Delivered override')).to eq(:queued)
+    expect(received.pop(timeout: 2)).to eq('Newest server value')
+    expect(viewers.property(first, input, :value)).to eq('Newest server value')
+    expect(viewers.property(second, input, :value)).to eq('Default')
+
+    runtime.refresh(page)
+    render = first_connection.sent.last
+    expect(submit.call('Delivered override')).to eq(:refused)
+    expect(submit.call('Newest server value')).to eq(:queued)
+    expect(received.pop(timeout: 2)).to eq('Newest server value')
+    runtime.handle(first_connection, type: 'detach', page: address)
+    expect(first.delivered_read_only).to be_empty
+  end
+
+  it 'continues seeding after stale targets and attributed invalid properties without reviving departed viewers' do
+    warnings = []
+    host = described_class.new(registry: registry, dispatcher: dispatcher, viewers: viewers,
+                               logger: ->(level, message) { warnings << [level, message] })
+    allow(host).to receive(:schedule_render)
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'seeds', title: 'Seeds') do
+      textarea(key: 'text', value: 'Default')
+    end)
+    address = registry.address_for(page)
+    host.handle(first_connection, type: 'attach', page: address)
+    live = viewers.fetch(connection_id: first_connection.viewer_id, address: address)
+    input = page.last_render.tree.children.first
+    undelivered = viewers.attach(connection_id: 'waiting', address: address, page: page)
+    departed = viewers.attach(connection_id: 'gone', address: address, page: page)
+    viewers.deliver(departed, page.last_render)
+    viewers.close(connection_id: 'gone', address: address)
+    changes = [
+      [undelivered.viewer_id, input.cid, :value, 'Not delivered'],
+      [departed.viewer_id, input.cid, :value, 'Departed'],
+      [live.viewer_id, 'removed-cid', :value, 'Stale'],
+      [live.viewer_id, input.cid, :read_only, true],
+      [live.viewer_id, input.cid, :missing, true],
+      [live.viewer_id, input.cid, :value, Object.new],
+      [live.viewer_id, input.cid, :value, 'Accepted'],
+    ]
+    expect { host.seed_viewer_properties(page, changes) }.not_to raise_error
+    expect(viewers.property(live, input, :value)).to eq('Accepted')
+    expect(undelivered.values).to be_empty
+    expect(departed.values).to be_empty
+    expect(warnings.length).to eq(3)
+    expect(warnings).to all(satisfy { |level, message| level == :warning && message.include?('page=seeds') && message.include?("cid=#{input.cid}") })
+    expect(host).to have_received(:schedule_render).with(page, owner: owner, delay: 0)
+  end
+
   it 'queues every detach before notifying each distinct owner once' do
     owner_class = Struct.new(:name)
     first_owner = owner_class.new('same-name')
@@ -181,8 +258,8 @@ RSpec.describe Lich::WebUI::Runtime do
     entered = Queue.new
     release = Queue.new
     snapshots = []
-    allow(viewers).to receive(:snapshot).and_wrap_original do |original, *args|
-      original.call(*args).tap { |snapshot| snapshots << snapshot }
+    allow(viewers).to receive(:snapshot).and_wrap_original do |original, *args, **options|
+      original.call(*args, **options).tap { |snapshot| snapshots << snapshot }
     end
     callback = double('close callback')
     expect(callback).not_to receive(:call)
