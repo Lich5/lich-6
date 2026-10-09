@@ -54,6 +54,8 @@ module Lich
           # Defers script UI work without holding the shadow-state lock on admission.
           # The core worker supplies FIFO ordering and bounded cancellation; this
           # wrapper supplies Script ownership and the legacy queue error boundary.
+          # Work queued by a signal retains its viewer and window for input reads
+          # and writes. Unrelated threads must not inherit the active signal's viewer.
           # Exit handlers run inline on the owner's cleanup thread because its
           # ordinary workers have already been stopped. This also permits their
           # existing queue-then-wait cleanup pattern without reviving dispatch.
@@ -70,13 +72,17 @@ module Lich
             end
             return if stopping?
 
+            context = @callback_context
+            context = nil unless context&.first.equal?(Thread.current)
             @dispatch.call do
               run_queue_block do
                 next if stopping?
 
                 @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
                 Script.current # Honor pause after adopting the initially unowned worker.
-                synchronize { block.call unless stopping? }
+                synchronize do
+                  with_callback_context(context&.[](1), context&.[](2)) { block.call unless stopping? }
+                end
               end
             end
           end
@@ -91,7 +97,8 @@ module Lich
           # after Save. The core still owns attachment liveness and refuses a
           # closed viewer; this object contains no transport or draft state.
           def viewer_id
-            @access_root ? @window_viewers[@access_root] : @callback_viewer
+            viewer, root = @callback_context&.drop(1)
+            @access_root && !@access_root.equal?(root) ? @window_viewers[@access_root] : viewer
           end
 
           # One script may own multiple windows with different attachments.
@@ -115,7 +122,7 @@ module Lich
 
           # Reports whether the session is currently executing a viewer-attributed callback.
           # @return [Boolean]
-          def in_callback? = !@callback_viewer.nil?
+          def in_callback? = !@callback_context.nil?
 
           # Keeps a pointer's window and coordinates only for its synchronous callback.
           # A later callback cannot accidentally open a popup in another viewer.
@@ -141,14 +148,12 @@ module Lich
           def callback(event, terminal: false, widget: nil)
             @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
             synchronize do
-              @callback_viewer = event.viewer_id
-              @window_viewers[root_for(widget)] = event.viewer_id if widget
-              if terminal && widget
-                root_for(widget).commit_inputs
+              root = root_for(widget) if widget
+              @window_viewers[root] = event.viewer_id if root
+              with_callback_context(event.viewer_id, root) do
+                root.commit_inputs if terminal && root
+                yield
               end
-              yield
-            ensure
-              @callback_viewer = nil
             end
           end
 
@@ -194,6 +199,17 @@ module Lich
 
           private
 
+          # Restore nested attribution even when a handler raises. The immutable
+          # snapshot lets queue admission inspect thread ownership without waiting
+          # for the monitor held by another callback.
+          def with_callback_context(viewer, root)
+            previous = @callback_context
+            @callback_context = viewer ? [Thread.current, viewer, root].freeze : nil
+            yield
+          ensure
+            @callback_context = previous
+          end
+
           # Recognizes only Script's active cleanup executor for this stopped owner.
           # @return [Boolean] whether queue work may run inline during exit cleanup
           def cleanup_thread?
@@ -212,6 +228,9 @@ module Lich
           rescue StandardError, SyntaxError, SystemExit, SecurityError, SystemStackError, LoadError, NoMemoryError => error
             source = Array(error.backtrace).find { |frame| frame.start_with?("#{@owner.name}:") || frame.include?('.lic:') }
             detail = error.message[/\b(?:class=[\w:]+ )?operation=[\w?!=]+/] if error.is_a?(UnsupportedOperation)
+            # Builder failures carry structural diagnostics, not raw XML/property text.
+            # Preserve these through the queue boundary so a refused form is actionable.
+            detail = "#{detail} #{error.diagnostic}" if defined?(BuilderError) && error.is_a?(BuilderError)
             source_warning(self, :queue, "callback failed error=#{error.class} at=#{source || error.backtrace&.first}#{" rejected=#{detail}" if detail}")
             respond "error in Gtk.queue (#{@owner.name}): #{error.class}; see debug log"
             nil

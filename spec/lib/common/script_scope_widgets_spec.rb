@@ -225,8 +225,8 @@ RSpec.describe 'bounded script compatibility pilot' do
   end
 
   it 'refuses unmapped classes, methods and signals with owner and source attribution' do
-    expect { eval('Gtk::Builder', scope.script_binding, 'pilot.lic', 12) }
-      .to raise_error(StandardError, /script=pilot.lic.*operation=Builder.*pilot.lic:12/)
+    expect { eval('Gtk::UnsupportedWidget', scope.script_binding, 'pilot.lic', 12) }
+      .to raise_error(StandardError, /script=pilot.lic.*operation=UnsupportedWidget.*pilot.lic:12/)
     expect { eval('Gtk::Entry.new.invented', scope.script_binding, 'pilot.lic', 18) }
       .to raise_error(StandardError, /class=.*Entry.*operation=invented.*pilot.lic:18/)
     expect { eval("Gtk::Entry.new.signal_connect('invented') {}", scope.script_binding, 'pilot.lic', 24) }
@@ -610,7 +610,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     window.add(row)
     window.show_all
     expect(row.send(:component_type)).to eq(:split)
-    expect(duration.send(:component_props)).to include(width: 72)
+    expect(duration.send(:component_props)).to include(min_width_chars: 9)
     expect(window.send(:component_props)).to include(bare: true, density: :compact)
     expect(window.send(:component_props)).not_to have_key(:theme)
     expect(compatibility.const_get(:Settings).default.gtk_application_prefer_dark_theme?).to be false
@@ -677,6 +677,34 @@ RSpec.describe 'bounded script compatibility pilot' do
     first.last.text = 'first window only'
     second.last.text = 'second window only'
     expect(targets).to eq(%w[viewer-a viewer-b])
+  end
+
+  it 'retains a queued signal viewer across later signals without attributing unrelated threads' do
+    window = compatibility.const_get(:Window).new
+    entry = compatibility.const_get(:Entry).new
+    window.add(entry)
+    window.show_all
+    session = entry.session
+    reads, writes, unrelated = Queue.new, Queue.new, Queue.new
+    allow(session.port).to receive(:get) { session.viewer_id }
+    allow(session.port).to receive(:set) { writes << session.viewer_id }
+    # Hold execution until another viewer has become this window's latest caller.
+    session.synchronize do
+      session.callback(Struct.new(:viewer_id).new('viewer-a'), widget: entry) do
+        compatibility.queue do
+          reads << entry.text
+          entry.text = 'reply'
+          compatibility.queue { reads << entry.text }
+        end
+        producer = Thread.new { compatibility.queue { unrelated << session.in_callback? } }
+        expect(producer.join(2)).to equal(producer)
+      end
+      session.callback(Struct.new(:viewer_id).new('viewer-b'), widget: entry) {}
+    end
+    expect(2.times.map { reads.pop(timeout: 2) }).to eq(%w[viewer-a viewer-a])
+    expect(writes.pop(timeout: 2)).to eq('viewer-a')
+    expect(unrelated.pop(timeout: 2)).to be(false)
+    expect(session.in_callback?).to be(false)
   end
 
   it 'shows informational dialogs without blocking callbacks and cancels them with the parent' do
@@ -746,6 +774,58 @@ RSpec.describe 'bounded script compatibility pilot' do
     window = compatibility.const_get(:Window).new
     window.add(grid)
     expect { window.show_all }.not_to raise_error
+  end
+
+  it 'updates natural grid and box allocation when expanding children change or are removed' do
+    window = compatibility::Window.new
+    box = compatibility::Box.new(:horizontal)
+    grid = compatibility::Grid.new
+    entry = compatibility::Entry.new
+    grid.attach(entry, 0, 0, 2, 1)
+    button = compatibility::Button.new('Close')
+    box.pack_start(grid, expand: false)
+    box.pack_end(button, expand: false)
+    window.add(box)
+    window.show_all
+    port = window.session.port
+    expect(port.get(grid.materialize, :homogeneous)).to be(false)
+    entry.set_hexpand(true)
+    expect(port.get(grid.materialize, :expand_columns)).to eq([1, 2])
+    expect(port.get(box.materialize, :expand_columns)).to eq([1])
+    box.reorder_child(grid, 1)
+    expect(port.get(box.materialize, :expand_columns)).to eq([2])
+    entry.set_hexpand(false)
+    expect(port.get(grid.materialize, :expand_columns)).to eq([])
+    expect(port.get(box.materialize, :expand_columns)).to eq([])
+    grid.column_homogeneous = true
+    expect(port.get(grid.materialize, :homogeneous)).to be(true)
+    box.remove(button)
+    expect(port.get(box.materialize, :cols)).to eq(1)
+    expect { box.pack_end(button, expand: false) }.not_to raise_error
+    expect(port.get(box.materialize, :cols)).to eq(2)
+  end
+
+  it 'separates window minimum requests from resizing and follows notebook expansion live' do
+    window = compatibility::Window.new
+    window.set_size_request(650, 675)
+    box = compatibility::Box.new(:vertical)
+    tabs = compatibility::Notebook.new
+    tabs.append_page(compatibility::Label.new('Body'), compatibility::Label.new('General'))
+    tabs.set_vexpand(true)
+    box.add(tabs)
+    window.add(box)
+    window.show_all
+    port = window.session.port
+    expect(port.get(window.materialize, :size)).to eq([650, 675])
+    expect(port.get(window.materialize, :min_width)).to eq(650)
+    expect(window.send(:component_props)).not_to have_key(:width)
+    expect(port.get(window.materialize, :viewport)).to be(true)
+    expect(port.get(box.materialize, :fill)).to be(true)
+    window.resize(900, 800)
+    tabs.set_vexpand(false)
+    expect(port.get(window.materialize, :size)).to eq([900, 800])
+    expect(port.get(window.materialize, :viewport)).to be(false)
+    expect(port.get(box.materialize, :fill)).to be(false)
   end
 
   it 'finds the top-level window and emits destroy once during repeated cleanup' do

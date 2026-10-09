@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -33,6 +33,54 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
+  } else if (scenario === 'shim-builder') {
+    await expect(page.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
+    for (const viewport of [{ width: 650, height: 675 }, { width: 1000, height: 850 }]) {
+      await page.setViewportSize(viewport);
+      await expect.poll(() => page.evaluate(() => {
+        const root = document.querySelector('.webui-page');
+        const ranges = [...root.querySelectorAll('.field.inline')].map(field => {
+          const text = field.querySelector('.field-label');
+          const input = field.querySelector('input');
+          if (!text || !input) return null;
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          const a = input.getBoundingClientRect(), b = range.getBoundingClientRect();
+          return { label: text.textContent, left: Math.min(a.left, b.left), right: Math.max(a.right, b.right),
+            top: Math.min(a.top, b.top), bottom: Math.max(a.bottom, b.bottom) };
+        }).filter(Boolean);
+        const overlaps = ranges.flatMap((a, i) => ranges.slice(i + 1).filter(b =>
+          Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+          Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1).map(b => `${a.label} / ${b.label}`));
+        const close = [...root.querySelectorAll('button')].find(button => button.textContent === 'Close');
+        const footer = close.getBoundingClientRect();
+        return { overlaps, horizontalOverflow: root.scrollWidth > innerWidth + 1,
+          footerVisible: footer.top >= 0 && footer.bottom <= innerHeight + 1,
+          footerOutsideScroll: !close.closest('.webui-scroll') };
+      })).toEqual({ overlaps: [], horizontalOverflow: false, footerVisible: true, footerOutsideScroll: true });
+    }
+    const scripts = page.getByPlaceholder('list of scripts to pause eg - bigshot, eloot, go2');
+    await expect(scripts).toHaveValue('bigshot');
+    expect(await scripts.evaluate(control => control.getBoundingClientRect().width)).toBeGreaterThan(400);
+    await scripts.fill('hunting, travel');
+    await scripts.press('Enter');
+    // receives-default on Close must not promote it to a page-wide Enter action.
+    const close = page.getByRole('button', { name: 'Close', exact: true });
+    await expect(close).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: 'Cure Disease', exact: true })).toBeDisabled();
+    const poison = page.getByRole('checkbox', { name: 'Cure Poison', exact: true });
+    await poison.focus();
+    await poison.press('Space');
+    await expect(poison).toBeChecked();
+    await poison.press('Enter');
+    await expect(poison).toBeChecked();
+    const stance = page.getByRole('checkbox', { name: 'Stunman Stance1', exact: true });
+    await stance.check();
+    await page.getByRole('checkbox', { name: 'Stunman Flee', exact: true }).check();
+    await expect(stance).not.toBeChecked();
+    await expect(page.getByText('To save properly, exit with the close button and not the X window -->', { exact: true })).toHaveCSS('font-style', 'italic');
+    await close.focus();
+    await close.press('Enter');
   } else if (scenario === 'shim-models') {
     await expect(page.locator('tbody tr')).toHaveCount(1);
     await page.getByRole('button', { name: 'Expand Parent' }).click();
