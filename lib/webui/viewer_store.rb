@@ -170,11 +170,14 @@ module Lich
       # Accepts only the read-only text actually sent to this viewer. A later
       # server write remains authoritative and is never overwritten by submission.
       # This delivery record is protocol evidence, not another editable draft.
+      # Browsers expose CRLF and lone CR as LF in textarea.value. Normalize only
+      # the comparison; delivery records, stored text and callback values stay exact.
       # @return [String] current server value for the terminal callback snapshot
       # @raise [Protocol::Refusal] if the client changed the delivered text
       def read_only_submission(attachment, component, value)
         @mutex.synchronize do
-          unless attachment.delivered_read_only.key?(component.cid) && attachment.delivered_read_only[component.cid] == value
+          unless attachment.delivered_read_only.key?(component.cid) &&
+                 normalize_text_line_breaks(attachment.delivered_read_only[component.cid]) == normalize_text_line_breaks(value)
             raise Protocol::Refusal.new(:payload, 'read-only text cannot be changed by submission')
           end
           attachment.values.fetch([component.cid, :value], component.props[:value])
@@ -309,6 +312,13 @@ module Lich
       end
 
       private
+
+      # Matches textarea's browser representation without mutating server-owned text.
+      # Nontext values retain their identity; schema validation owns their rejection.
+      # @return [Object] text with LF line breaks, or the unchanged nontext value
+      def normalize_text_line_breaks(value)
+        value.is_a?(String) ? value.gsub(/\r\n?/, "\n") : value
+      end
 
       # Clears only peers in the same delivered page and viewer before selecting a member.
       # Must be called under the store mutex; no synthetic callbacks are dispatched here.

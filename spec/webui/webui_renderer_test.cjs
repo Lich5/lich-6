@@ -780,6 +780,101 @@ test('menu keys rove within one branch, skip unavailable entries and restore foc
 });
 
 for (const opening of ['client', 'server']) {
+  test(`${opening}-opened menus retain submenu paths and keyboard position across renders`, t => {
+    const { dom, receive, sent } = fixture();
+    t.after(() => dom.window.close());
+    const { document, KeyboardEvent, MouseEvent, HTMLElement } = dom.window;
+    const popovers = new Set();
+    HTMLElement.prototype.showPopover = function () { popovers.add(this); };
+    HTMLElement.prototype.hidePopover = function () { popovers.delete(this); };
+    receive({ type: 'hello', pages: [{ address: 'menu-refresh' }] });
+    let generation = 0;
+    const render = () => receive({ type: 'render', page: 'menu-refresh', generation: ++generation,
+      bindings: { menu: ['dismiss'], last: ['activate'] }, submissions: {},
+      tree: { type: 'page', cid: 'root', props: {}, children: [
+        { type: 'group', cid: 'surface', props: { context_menu: 'actions' } },
+        { type: 'group', cid: 'menu', props: { menu: 'context', key: 'actions', ...(opening === 'server' ? { open: true } : {}) }, children: [
+          { type: 'button', cid: 'action', props: { label: 'Action' } },
+          { type: 'group', cid: 'outer', props: { menu: 'submenu', label: 'Outer' }, children: [
+            { type: 'group', cid: 'inner', props: { menu: 'submenu', label: 'Inner' }, children: [
+              { type: 'radio_option', cid: 'first', props: { appearance: 'menu', group: 'g', label: 'First', checked: true } },
+              { type: 'radio_option', cid: 'last', props: { appearance: 'menu', group: 'g', label: 'Last', checked: false } }
+            ] }
+          ] }
+        ] }
+      ] } });
+    const trigger = cid => document.querySelector(`[data-cid="${cid}"] > .submenu-trigger`);
+    const key = value => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+    render();
+    if (opening === 'client') document.querySelector('[data-cid="surface"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    key('ArrowDown');
+    assert.equal(document.activeElement, trigger('outer'));
+    // CI delivered a render between focusing the trigger and processing ArrowRight.
+    // Trigger buttons are not form controls, so input-only focus preservation misses them.
+    render();
+    assert.equal(document.activeElement, trigger('outer'));
+    key('ArrowRight');
+    assert.equal(document.activeElement, trigger('inner'));
+    key('ArrowRight');
+    key('End');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="last"]'));
+    // A second delivery must reopen the ancestor path before restoring nested focus.
+    render();
+    assert.equal(trigger('outer').getAttribute('aria-expanded'), 'true');
+    assert.equal(trigger('inner').getAttribute('aria-expanded'), 'true');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="last"]'));
+    const panel = document.activeElement.closest('.submenu-items');
+    assert.equal(popovers.has(panel), true);
+    assert.equal(panel.style.display, 'block');
+    assert.equal(document.activeElement.tabIndex, 0);
+    key('ArrowUp');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="first"]'));
+    assert.equal(sent.filter(message => message.type === 'event').length, 0, 'restoration is not activation');
+    key('Escape');
+    assert.equal(document.activeElement, trigger('inner'));
+    assert.equal(trigger('inner').getAttribute('aria-expanded'), 'false');
+    assert.equal(trigger('outer').getAttribute('aria-expanded'), 'true');
+  });
+}
+
+for (const change of ['close', 'remove', 'replace', 'disable-branch', 'remove-item']) {
+  test(`menu restoration respects a server ${change} update`, t => {
+    const { dom, receive, sent } = fixture();
+    t.after(() => dom.window.close());
+    const { document, KeyboardEvent } = dom.window;
+    receive({ type: 'hello', pages: [{ address: 'menu-update' }] });
+    const render = updated => receive({ type: 'render', page: 'menu-update', generation: updated ? 2 : 1,
+      bindings: { menu: ['dismiss'], last: ['activate'] }, submissions: {},
+      tree: { type: 'page', cid: 'root', props: {}, children: updated && change === 'remove' ? [] : [
+        { type: 'group', cid: updated && change === 'replace' ? 'replacement' : 'menu',
+          props: { menu: 'context', key: 'actions', open: !(updated && change === 'close') }, children: [
+            { type: 'button', cid: 'action', props: { label: 'Action' } },
+            { type: 'group', cid: 'branch', props: { menu: 'submenu', label: 'Branch', disabled: updated && change === 'disable-branch' }, children: [
+              { type: 'button', cid: 'first', props: { label: 'First' } },
+              ...(updated && change === 'remove-item' ? [] : [{ type: 'button', cid: 'last', props: { label: 'Last' } }])
+            ] }
+          ] }
+      ] } });
+    const key = value => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+    render(false);
+    key('ArrowDown');
+    key('ArrowRight');
+    key('End');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="last"]'));
+    render(true);
+    const menu = document.querySelector('.webui-context-menu');
+    if (change === 'remove') assert.equal(menu, null);
+    else if (change === 'close') assert.equal(menu.style.display, 'none');
+    else {
+      const trigger = document.querySelector('.submenu-trigger');
+      assert.equal(trigger.getAttribute('aria-expanded'), change === 'remove-item' ? 'true' : 'false');
+      assert.equal(document.activeElement, document.querySelector(`[data-cid="${change === 'remove-item' ? 'first' : 'action'}"]`));
+    }
+    assert.equal(sent.filter(message => message.type === 'event').length, 0);
+  });
+}
+
+for (const opening of ['client', 'server']) {
   for (const originType of ['button', 'text_input']) {
     test(`${opening}-opened menus restore the current ${originType} after page replacement`, t => {
       const { dom, receive } = fixture();

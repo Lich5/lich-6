@@ -88,6 +88,47 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(first.delivered_read_only).to be_empty
   end
 
+  { 'CRLF' => "\r\n", 'lone CR' => "\r" }.each do |label, line_break|
+    it "accepts browser-normalized #{label} text without changing server text or accepting edits" do
+      received = Queue.new
+      original = "First#{line_break}Second#{line_break}"
+      allow(runtime).to receive(:schedule_render)
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'line-breaks', title: 'Read only') do
+        input = textarea(key: 'text', value: original, read_only: true)
+        button(key: 'save', label: 'Save', submit: [input], on: {
+          activate: ->(event) { received << event.submission[event.submission.cids.first] },
+        })
+      end)
+      address, render = attach(first_connection, page)
+      attachment = viewers.fetch(connection_id: first_connection.viewer_id, address: address)
+      input, button = page.last_render.tree.children
+      submit = lambda do |text|
+        runtime.handle(first_connection, type: 'event', page: address, generation: render['generation'],
+                       cid: button.cid, event: 'activate', payload: {}, submission: [text])
+      end
+      # textarea.value sends LF even when its assigned server text contains CR.
+      # Comparison may normalize that representation; storage and callbacks must not.
+      expect(submit.call("First\nChanged\n")).to eq(:refused)
+      expect(received).to be_empty
+      expect(submit.call("First\nSecond\n")).to eq(:queued)
+      expect(received.pop(timeout: 2)).to eq(original)
+      expect(viewers.property(attachment, input, :value)).to eq(original)
+      expect(attachment.delivered_read_only[input.cid]).to eq(original)
+
+      latest = "New#{line_break}server text"
+      page.set(input.cid, :value, latest, viewer: attachment.viewer_id)
+      expect(submit.call("First\nSecond\n")).to eq(:queued)
+      expect(received.pop(timeout: 2)).to eq(latest)
+      expect(viewers.property(attachment, input, :value)).to eq(latest)
+      expect(attachment.delivered_read_only[input.cid]).to eq(original)
+      runtime.refresh(page)
+      render = first_connection.sent.last
+      expect(submit.call("First\nSecond\n")).to eq(:refused)
+      expect(submit.call("New\nserver text")).to eq(:queued)
+      expect(received.pop(timeout: 2)).to eq(latest)
+    end
+  end
+
   it 'continues seeding after stale targets and attributed invalid properties without reviving departed viewers' do
     warnings = []
     host = described_class.new(registry: registry, dispatcher: dispatcher, viewers: viewers,
