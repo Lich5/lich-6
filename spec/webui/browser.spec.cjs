@@ -49,6 +49,38 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.getByRole('button', { name: 'Increase' }).click();
     await expect(spin).toHaveValue('2.9');
     await page.getByRole('searchbox').fill('query');
+    await page.locator('summary', { hasText: 'Details' }).click();
+    const text = page.locator('textarea');
+    await expect(text).toBeVisible();
+    await text.fill('line one\nline two');
+    await page.locator('summary', { hasText: 'Details' }).click();
+    await expect(text).not.toBeVisible();
+    const image = page.locator('img[title="Fixture image"]');
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate(element => element.naturalWidth)).toBe(1);
+    const actions = page.getByText('Actions', { exact: true });
+    await actions.click({ button: 'right' });
+    const menuCheck = page.getByRole('menuitemcheckbox', { name: 'Menu enabled' });
+    await expect(menuCheck).toBeFocused();
+    // Real browser key activation complements DOM tests, which cannot synthesize
+    // the browser's default Enter/Space click behavior.
+    await page.keyboard.press('Space');
+    await actions.click({ button: 'right' });
+    await expect(menuCheck).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('menuitem', { name: 'Choices', exact: true })).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('menuitemradio', { name: 'Menu first' })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('menuitemradio', { name: 'Menu second' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await actions.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Choices', exact: true }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Menu first' })).toHaveAttribute('aria-checked', 'false');
+    await expect(page.getByRole('menuitemradio', { name: 'Menu second' })).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Escape');
+    await page.getByRole('menuitem', { name: 'Clear image', exact: true }).click();
+    await expect(image).not.toBeVisible();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(spin).toHaveCount(0);
   } else {

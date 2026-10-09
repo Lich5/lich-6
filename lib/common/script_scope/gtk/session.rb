@@ -36,6 +36,21 @@ module Lich
             @mutex.synchronize(&block)
           end
 
+          # Reuses one owner-scoped authenticated route per accepted image directory.
+          # @param path [String] canonical file path, never a URL or native pixel object
+          # @return [String] encoded relative file URL
+          def image_source(path)
+            synchronize do
+              @image_roots ||= {}
+              directory = File.dirname(path)
+              script_root = File.dirname(@owner.file_name) if @owner.respond_to?(:file_name) && @owner.file_name
+              prefix = @image_roots[directory] ||= Lich::WebUI.service.register_files(
+                "shim-#{SecureRandom.hex(12)}", directory, owner: @owner, script_root: script_root
+              )
+              prefix + CGI.escape(File.basename(path)).gsub('+', '%20')
+            end
+          end
+
           # Defers script UI work without holding the shadow-state lock on admission.
           # The core worker supplies FIFO ordering and bounded cancellation; this
           # wrapper supplies Script ownership and the legacy queue error boundary.
@@ -101,6 +116,20 @@ module Lich
           # Reports whether the session is currently executing a viewer-attributed callback.
           # @return [Boolean]
           def in_callback? = !@callback_viewer.nil?
+
+          # Keeps a pointer's window and coordinates only for its synchronous callback.
+          # A later callback cannot accidentally open a popup in another viewer.
+          # @api private
+          def with_pointer(widget, event)
+            previous = @pointer_context
+            @pointer_context = [widget, event]
+            yield
+          ensure
+            @pointer_context = previous
+          end
+
+          # @return [Array(Widget, PointerEvent), nil] active pointer callback
+          def pointer_context = @pointer_context
 
           # Adopts script ownership and viewer context while executing a mapped GTK signal.
           # Terminal actions commit input shadow state before the handler; context clears on exit.

@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.10.0'
+      VERSION = '2.11.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -144,7 +144,7 @@ module Lich
 
       ATTRIBUTE_APPLICABILITY = {
         page: %i[key width height min_height],
-        group: %i[key tooltip hidden align margin width height min_height tone],
+        group: %i[key tooltip disabled hidden align margin width height min_height tone],
         stack: %i[key hidden align margin width height],
         columns: %i[key hidden align margin width height],
         grid: %i[key hidden align margin width height],
@@ -217,7 +217,9 @@ module Lich
         group: {
           # Omission means no label widget; an empty string retains the blank label requisition.
           properties: { label: property(SHORT), collapsible: property(BOOL, default: false),
-                        menu: property(enum(:context, :submenu)), constrain_width: property(BOOL, default: false) },
+                        menu: property(enum(:context, :submenu)),
+                        open: property(BOOL, scope: :viewer),
+                        popup_position: property(array(GEOMETRY, min: 2, max: 2), scope: :viewer), constrain_width: property(BOOL, default: false) },
           children: :many, events: {}, value: nil,
         },
         stack: {
@@ -302,7 +304,7 @@ module Lich
           properties: {
             lines: property(array(union(string(:log_line), array(string(:log_line), max: BOUNDS[:collection])), max: BOUNDS[:log_lines]), required: true),
             max_lines: property(integer(min: 1, max: BOUNDS[:log_lines]), required: true),
-            follow: property(BOOL, default: true),
+            follow: property(BOOL, default: true), wrap: property(enum(:word, :none), default: :word),
           }, children: :none, events: {}, value: nil,
         },
         progress: {
@@ -326,8 +328,8 @@ module Lich
         },
         toggle: {
           properties: { label: property(SHORT), checked: property(BOOL, required: true, scope: :viewer),
-                        appearance: property(enum(:checkbox, :button), default: :checkbox) },
-          children: :none, events: { change: event(record(value: property(BOOL, required: true))) }, value: BOOL,
+                        appearance: property(enum(:checkbox, :button, :menu), default: :checkbox) },
+          children: :none, events: { change: event(record(value: property(BOOL, required: true))), activate: event(nil, terminal: true) }, value: BOOL,
         },
         checkbox: {
           properties: { label: property(SHORT, required: true), checked: property(BOOL, required: true, scope: :viewer) },
@@ -335,9 +337,9 @@ module Lich
         },
         # Independently placed members share exclusive selection within one page/viewer.
         radio_option: {
-          properties: { label: property(SHORT, required: true), group: property(IDENT, required: true),
+          properties: { appearance: property(enum(:radio, :menu), default: :radio), label: property(SHORT, required: true), group: property(IDENT, required: true),
                         checked: property(BOOL, required: true, scope: :viewer) },
-          children: :none, events: { change: event(record(value: property(BOOL, required: true))) }, value: BOOL,
+          children: :none, events: { change: event(record(value: property(BOOL, required: true))), activate: event(nil, terminal: true) }, value: BOOL,
         },
         radio: {
           properties: {
@@ -375,6 +377,8 @@ module Lich
         },
         textarea: {
           properties: {
+            read_only: property(BOOL, default: false), cursor_visible: property(BOOL, default: true),
+            wrap: property(enum(:word, :none), default: :word), follow: property(BOOL, default: false),
             label: property(SHORT), value: property(string(:multiline_text), required: true, scope: :viewer),
             rows: property(integer(min: 1, max: 64), default: 5),
             max_length: property(integer(min: 1, max: 65_536)),
@@ -593,7 +597,15 @@ module Lich
         },
       }.freeze
 
+      POINTER_EVENT = event(record(
+                              x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
+                              button: property(integer(min: 1, max: 3), required: true),
+                              time: property(integer(min: 0), required: true),
+                              state: property(integer(min: 0, max: 13), required: true)
+                            ), lifecycle: true).freeze
+
       PAGE_LIFECYCLE_EVENTS = {
+        pointer_press: POINTER_EVENT,
         # Measured host geometry is notification data, not a form submission.
         configure: event(record(
                            width: property(integer(min: 0, max: 65_536), required: true),
@@ -620,6 +632,13 @@ module Lich
               next if base[:properties].key?(attribute)
 
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
+            end
+            if %i[page text image group].include?(type)
+              base[:properties][:pointer_events] = property(BOOL, default: false)
+              base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
+            end
+            if type == :group
+              base[:events][:dismiss] = event(nil, lifecycle: true)
             end
             # A layout request is a minimum, not a fixed allocation. Native
             # conversions opt in without changing existing width semantics.

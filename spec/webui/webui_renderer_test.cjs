@@ -622,3 +622,324 @@ test('held spin buttons accelerate, stop on release, and dispose timers on repla
   receive(render(2));
   assert.equal([...timers.values()].some(timer => [50, 500].includes(timer.delay)), false);
 });
+
+test('plain editors honor read-only, wrapping and cursor policy without emitting edits', t => {
+  const { dom, page, sent } = fixture();
+  t.after(() => dom.window.close());
+  const component = { type: 'textarea', cid: 'readonly', props: {
+    value: '<literal>\nsecond', read_only: true, wrap: 'none', cursor_visible: false
+  } };
+  page.bindings = { readonly: ['change'] };
+  const wrapper = dom.window.LichWebUI.render(page, component);
+  const editor = wrapper.querySelector('textarea');
+  assert.equal(editor.value, '<literal>\nsecond');
+  assert.equal(editor.readOnly, true);
+  assert.equal(editor.wrap, 'off');
+  assert.equal(editor.style.caretColor, 'transparent');
+  editor.dispatchEvent(new dom.window.Event('input'));
+  assert.equal(sent.length, 0);
+});
+
+test('an empty image issues no source request and a replacement restores its dimensions', t => {
+  const { dom, page } = fixture();
+  t.after(() => dom.window.close());
+  const empty = dom.window.LichWebUI.render(page, { type: 'image', cid: 'image', props: { src: '' } });
+  assert.equal(empty.hasAttribute('src'), false);
+  const full = dom.window.LichWebUI.render(page, { type: 'image', cid: 'image', props: {
+    src: '/files/owner/pixel.png', width: 20, height: 10
+  } });
+  assert.equal(full.getAttribute('src'), '/files/owner/pixel.png');
+  assert.equal(full.style.width, '20px');
+  assert.equal(full.style.height, '10px');
+});
+
+test('server-requested popup location and dismissal remain bounded and do not reopen on a closed render', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  const { document, KeyboardEvent } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'popup' }] });
+  const render = open => receive({ type: 'render', page: 'popup', generation: open ? 1 : 2,
+    bindings: { menu: ['dismiss'] }, submissions: {}, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'group', cid: 'menu', props: { menu: 'context', key: 'popup-menu', open, popup_position: [42, 65] }, children: [
+        { type: 'button', cid: 'action', props: { label: 'Action' } }
+      ] }
+    ] } });
+  render(true);
+  let menu = document.querySelector('.webui-context-menu');
+  assert.equal(menu.style.display, 'block');
+  assert.equal(menu.style.left, '42px');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.deepEqual(sent.filter(message => message.event === 'dismiss').map(message => message.cid), ['menu']);
+  render(false);
+  menu = document.querySelector('.webui-context-menu');
+  assert.equal(menu.style.display, 'none');
+});
+
+test('menu choices change exclusively and submit hidden text on activation', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'choices' }] });
+  receive({ type: 'render', page: 'choices', generation: 1,
+    bindings: { second: ['change', 'activate'], check: ['change', 'activate'] },
+    submissions: { second: ['text', 'first', 'second', 'check'], check: ['text', 'first', 'second', 'check'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'expander', cid: 'fold', props: { label: 'Details', open: false }, children: [
+        { type: 'textarea', cid: 'text', props: { value: 'Saved\ntext' } }
+      ] },
+      { type: 'radio_option', cid: 'first', props: { appearance: 'menu', group: 'g', label: 'First', checked: true } },
+      { type: 'radio_option', cid: 'second', props: { appearance: 'menu', group: 'g', label: 'Second', checked: false } },
+      { type: 'toggle', cid: 'check', props: { appearance: 'menu', label: 'Check', checked: false } }
+    ] } });
+  const second = dom.window.document.querySelector('[data-cid="second"]');
+  second.click();
+  assert.equal(dom.window.document.querySelector('[data-cid="first"]').getAttribute('aria-checked'), 'false');
+  assert.deepEqual(sent.filter(message => message.type === 'event').map(message => message.event), ['change', 'activate']);
+  assert.deepEqual(sent.find(message => message.event === 'activate').submission, ['Saved\ntext', false, true, false]);
+  dom.window.document.querySelector('[data-cid="check"]').click();
+  assert.deepEqual(sent.filter(message => message.event === 'activate').at(-1).submission, ['Saved\ntext', false, true, true]);
+});
+
+test('native and menu radio choices clear only peers in their common page group', t => {
+  const { dom, receive } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'mixed' }] });
+  receive({ type: 'render', page: 'mixed', generation: 1, bindings: {}, submissions: {},
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'radio_option', cid: 'native', props: { group: 'g', label: 'Native', checked: true } },
+      { type: 'radio_option', cid: 'menu', props: { appearance: 'menu', group: 'g', label: 'Menu', checked: false } },
+      { type: 'radio_option', cid: 'other', props: { appearance: 'menu', group: 'other', label: 'Other', checked: true } }
+    ] } });
+  const native = dom.window.document.querySelector('input[type="radio"]');
+  const menu = dom.window.document.querySelector('[data-cid="menu"]');
+  const other = dom.window.document.querySelector('[data-cid="other"]');
+  menu.click();
+  assert.equal(native.checked, false);
+  assert.equal(menu.getAttribute('aria-checked'), 'true');
+  native.click();
+  assert.equal(native.checked, true);
+  assert.equal(menu.getAttribute('aria-checked'), 'false');
+  assert.equal(other.getAttribute('aria-checked'), 'true');
+});
+
+test('menu keys rove within one branch, skip unavailable entries and restore focus on dismissal', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  const { document, KeyboardEvent, MouseEvent } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'keyboard' }] });
+  receive({ type: 'render', page: 'keyboard', generation: 1, bindings: { check: ['activate'], menu: ['dismiss'] }, submissions: {},
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'button', cid: 'origin', props: { label: 'Origin' } },
+      { type: 'group', cid: 'surface', props: { context_menu: 'actions' } },
+      { type: 'group', cid: 'menu', props: { menu: 'context', key: 'actions' }, children: [
+        { type: 'toggle', cid: 'check', props: { appearance: 'menu', label: 'Check', checked: false } },
+        { type: 'button', cid: 'disabled', props: { label: 'Disabled', disabled: true } },
+        { type: 'button', cid: 'hidden', props: { label: 'Hidden', hidden: true } },
+        { type: 'divider', cid: 'separator', props: {} },
+        { type: 'group', cid: 'nested', props: { menu: 'submenu', label: 'Nested' }, children: [
+          { type: 'radio_option', cid: 'first', props: { appearance: 'menu', group: 'g', label: 'First', checked: true } },
+          { type: 'radio_option', cid: 'last', props: { appearance: 'menu', group: 'g', label: 'Last', checked: false } }
+        ] }
+      ] }
+    ] } });
+  const origin = document.querySelector('[data-cid="origin"]');
+  origin.focus();
+  document.querySelector('[data-cid="surface"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+  const check = document.querySelector('[data-cid="check"]');
+  const trigger = document.querySelector('.submenu-trigger');
+  const first = document.querySelector('[data-cid="first"]');
+  const last = document.querySelector('[data-cid="last"]');
+  const key = value => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement, check);
+  assert.equal(check.tabIndex, 0);
+  key('ArrowDown');
+  assert.equal(document.activeElement, trigger);
+  assert.equal(check.tabIndex, -1);
+  key('ArrowDown');
+  assert.equal(document.activeElement, check);
+  key('ArrowUp');
+  assert.equal(document.activeElement, trigger);
+  key('Home');
+  assert.equal(document.activeElement, check);
+  key('End');
+  assert.equal(document.activeElement, trigger);
+  key('ArrowRight');
+  assert.equal(document.activeElement, first);
+  key('End');
+  assert.equal(document.activeElement, last);
+  key('ArrowDown');
+  assert.equal(document.activeElement, first);
+  key('ArrowLeft');
+  assert.equal(document.activeElement, trigger);
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  key('ArrowRight');
+  key('Escape');
+  assert.equal(document.activeElement, trigger);
+  key('Escape');
+  assert.equal(document.activeElement, origin);
+  assert.deepEqual(sent.filter(message => message.type === 'event').map(message => message.event), ['dismiss']);
+});
+
+for (const opening of ['client', 'server']) {
+  test(`${opening}-opened menus retain submenu paths and keyboard position across renders`, t => {
+    const { dom, receive, sent } = fixture();
+    t.after(() => dom.window.close());
+    const { document, KeyboardEvent, MouseEvent, HTMLElement } = dom.window;
+    const popovers = new Set();
+    HTMLElement.prototype.showPopover = function () { popovers.add(this); };
+    HTMLElement.prototype.hidePopover = function () { popovers.delete(this); };
+    receive({ type: 'hello', pages: [{ address: 'menu-refresh' }] });
+    let generation = 0;
+    const render = () => receive({ type: 'render', page: 'menu-refresh', generation: ++generation,
+      bindings: { menu: ['dismiss'], last: ['activate'] }, submissions: {},
+      tree: { type: 'page', cid: 'root', props: {}, children: [
+        { type: 'group', cid: 'surface', props: { context_menu: 'actions' } },
+        { type: 'group', cid: 'menu', props: { menu: 'context', key: 'actions', ...(opening === 'server' ? { open: true } : {}) }, children: [
+          { type: 'button', cid: 'action', props: { label: 'Action' } },
+          { type: 'group', cid: 'outer', props: { menu: 'submenu', label: 'Outer' }, children: [
+            { type: 'group', cid: 'inner', props: { menu: 'submenu', label: 'Inner' }, children: [
+              { type: 'radio_option', cid: 'first', props: { appearance: 'menu', group: 'g', label: 'First', checked: true } },
+              { type: 'radio_option', cid: 'last', props: { appearance: 'menu', group: 'g', label: 'Last', checked: false } }
+            ] }
+          ] }
+        ] }
+      ] } });
+    const trigger = cid => document.querySelector(`[data-cid="${cid}"] > .submenu-trigger`);
+    const key = value => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+    render();
+    if (opening === 'client') document.querySelector('[data-cid="surface"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    key('ArrowDown');
+    assert.equal(document.activeElement, trigger('outer'));
+    // CI delivered a render between focusing the trigger and processing ArrowRight.
+    // Trigger buttons are not form controls, so input-only focus preservation misses them.
+    render();
+    assert.equal(document.activeElement, trigger('outer'));
+    key('ArrowRight');
+    assert.equal(document.activeElement, trigger('inner'));
+    key('ArrowRight');
+    key('End');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="last"]'));
+    // A second delivery must reopen the ancestor path before restoring nested focus.
+    render();
+    assert.equal(trigger('outer').getAttribute('aria-expanded'), 'true');
+    assert.equal(trigger('inner').getAttribute('aria-expanded'), 'true');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="last"]'));
+    const panel = document.activeElement.closest('.submenu-items');
+    assert.equal(popovers.has(panel), true);
+    assert.equal(panel.style.display, 'block');
+    assert.equal(document.activeElement.tabIndex, 0);
+    key('ArrowUp');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="first"]'));
+    assert.equal(sent.filter(message => message.type === 'event').length, 0, 'restoration is not activation');
+    key('Escape');
+    assert.equal(document.activeElement, trigger('inner'));
+    assert.equal(trigger('inner').getAttribute('aria-expanded'), 'false');
+    assert.equal(trigger('outer').getAttribute('aria-expanded'), 'true');
+  });
+}
+
+for (const change of ['close', 'remove', 'replace', 'disable-branch', 'remove-item']) {
+  test(`menu restoration respects a server ${change} update`, t => {
+    const { dom, receive, sent } = fixture();
+    t.after(() => dom.window.close());
+    const { document, KeyboardEvent } = dom.window;
+    receive({ type: 'hello', pages: [{ address: 'menu-update' }] });
+    const render = updated => receive({ type: 'render', page: 'menu-update', generation: updated ? 2 : 1,
+      bindings: { menu: ['dismiss'], last: ['activate'] }, submissions: {},
+      tree: { type: 'page', cid: 'root', props: {}, children: updated && change === 'remove' ? [] : [
+        { type: 'group', cid: updated && change === 'replace' ? 'replacement' : 'menu',
+          props: { menu: 'context', key: 'actions', open: !(updated && change === 'close') }, children: [
+            { type: 'button', cid: 'action', props: { label: 'Action' } },
+            { type: 'group', cid: 'branch', props: { menu: 'submenu', label: 'Branch', disabled: updated && change === 'disable-branch' }, children: [
+              { type: 'button', cid: 'first', props: { label: 'First' } },
+              ...(updated && change === 'remove-item' ? [] : [{ type: 'button', cid: 'last', props: { label: 'Last' } }])
+            ] }
+          ] }
+      ] } });
+    const key = value => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+    render(false);
+    key('ArrowDown');
+    key('ArrowRight');
+    key('End');
+    assert.equal(document.activeElement, document.querySelector('[data-cid="last"]'));
+    render(true);
+    const menu = document.querySelector('.webui-context-menu');
+    if (change === 'remove') assert.equal(menu, null);
+    else if (change === 'close') assert.equal(menu.style.display, 'none');
+    else {
+      const trigger = document.querySelector('.submenu-trigger');
+      assert.equal(trigger.getAttribute('aria-expanded'), change === 'remove-item' ? 'true' : 'false');
+      assert.equal(document.activeElement, document.querySelector(`[data-cid="${change === 'remove-item' ? 'first' : 'action'}"]`));
+    }
+    assert.equal(sent.filter(message => message.type === 'event').length, 0);
+  });
+}
+
+for (const opening of ['client', 'server']) {
+  for (const originType of ['button', 'text_input']) {
+    test(`${opening}-opened menus restore the current ${originType} after page replacement`, t => {
+      const { dom, receive } = fixture();
+      t.after(() => dom.window.close());
+      const { document, KeyboardEvent, MouseEvent } = dom.window;
+      receive({ type: 'hello', pages: [{ address: 'focus-refresh' }] });
+      const render = (generation, open) => receive({ type: 'render', page: 'focus-refresh', generation,
+        bindings: { menu: ['dismiss'] }, submissions: {},
+        tree: { type: 'page', cid: 'root', props: {}, children: [
+          { type: originType, cid: 'origin', props: { label: 'Origin', ...(originType === 'text_input' ? { value: '' } : {}) } },
+          { type: 'group', cid: 'surface', props: { context_menu: 'actions' } },
+          { type: 'group', cid: 'menu', props: { menu: 'context', key: 'actions', ...(open === undefined ? {} : { open }) }, children: [
+            { type: 'toggle', cid: 'choice', props: { appearance: 'menu', label: 'Choice', checked: false } }
+          ] }
+        ] } });
+      const origin = () => originType === 'button' ? document.querySelector('[data-cid="origin"]') : document.querySelector('input');
+      render(1, opening === 'server' ? false : undefined);
+      const original = origin();
+      original.focus();
+      if (opening === 'client') {
+        document.querySelector('[data-cid="surface"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+      } else {
+        // The server requests opening in the same render that detaches the origin.
+        render(2, true);
+      }
+      assert.equal(document.activeElement, document.querySelector('[data-cid="choice"]'));
+      // Another render while the menu is focused must retain the original target,
+      // rather than replacing it with the menu item or document.body.
+      render(3, opening === 'server' ? true : undefined);
+      assert.equal(original.isConnected, false);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      assert.equal(document.activeElement, origin());
+      assert.notEqual(document.activeElement, original);
+    });
+  }
+}
+
+test('nested pointer surfaces send one viewport event for the nearest enabled surface', t => {
+  const { dom, receive, sent } = fixture();
+  t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'pointer' }] });
+  receive({ type: 'render', page: 'pointer', generation: 1,
+    bindings: { root: ['pointer_press'], label: ['pointer_press'] }, submissions: {},
+    tree: { type: 'page', cid: 'root', props: { pointer_events: true }, children: [
+      { type: 'text', cid: 'label', props: { pointer_events: true, content: 'Choose' } }
+    ] } });
+  dom.window.document.querySelector('[data-cid="label"]').dispatchEvent(new dom.window.MouseEvent('pointerdown', {
+    bubbles: true, clientX: 32, clientY: 48, button: 2, ctrlKey: true
+  }));
+  const events = sent.filter(message => message.event === 'pointer_press');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].cid, 'label');
+  assert.equal(events[0].payload.x, 32);
+  assert.equal(events[0].payload.y, 48);
+  assert.equal(events[0].payload.button, 3);
+  assert.equal(events[0].payload.state, 4);
+});
+
+
+test('disabled menu containers make their action descendants inert', t => {
+  const { dom, page } = fixture();
+  t.after(() => dom.window.close());
+  const menu = dom.window.LichWebUI.render(page, { type: 'group', cid: 'disabled-menu',
+    props: { menu: 'context', key: 'disabled', disabled: true }, children: [
+      { type: 'button', cid: 'action', props: { label: 'Unavailable' } }
+    ] });
+  assert.equal(menu.inert, true);
+});

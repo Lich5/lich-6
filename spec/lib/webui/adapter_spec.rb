@@ -239,4 +239,42 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(connections.first.last.last.dig('tree', 'children', 0, 'props', 'value')).to eq('PRIVATE')
     expect(connections.last.last.last.dig('tree', 'children', 0, 'props', 'value')).to eq('initial')
   end
+
+  %i[string_like resolver].each do |identity_kind|
+    it "normalizes #{identity_kind} identities and seeds before a concurrent live write" do
+      allow(service.runtime).to receive(:schedule_render)
+      identity = double('string-like identity')
+      selected = identity_kind == :resolver ? double('viewer resolver', viewer_id: identity) : identity
+      scoped = described_class.new(owner: owner, service: service, viewer: selected)
+      root = scoped.create(:page, title: 'Ordered seeds')
+      scoped.send(:flush!)
+      page = service.registry.pages_for(owner).first
+      connection = double('connection', viewer_id: 'seed-reader', alive?: true, send_text: true)
+      service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+      attachment = service.runtime.instance_variable_get(:@viewers).attachments_for(page).first
+      allow(identity).to receive(:to_s).and_return(attachment.viewer_id)
+      input = scoped.create(:textarea, value: 'Default')
+      scoped.attach(root, input)
+      scoped.set(input, :value, 'Queued')
+      entered = Queue.new
+      writer = nil
+      allow(service.runtime).to receive(:seed_viewer_properties).and_wrap_original do |original, *args|
+        # Force a live writer into the publication/seeding gap. It must wait
+        # until the older seed is installed, then win with its newer value.
+        writer = Thread.new do
+          entered << true
+          scoped.set(input, :value, 'Newer')
+        end
+        entered.pop
+        writer.join(0.05)
+        original.call(*args)
+      end
+      scoped.send(:flush!)
+      expect(writer.join(2)).to equal(writer)
+      expect(service.runtime).to have_received(:seed_viewer_properties).with(page, [[attachment.viewer_id, anything, :value, 'Queued']])
+      expect(scoped.get(input, :value)).to eq('Newer')
+    ensure
+      writer&.kill if writer&.alive?
+    end
+  end
 end

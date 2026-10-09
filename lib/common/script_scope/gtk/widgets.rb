@@ -106,10 +106,24 @@ module Lich
               (@destroy_handlers ||= []) << block
               return @destroy_handlers.length
             end
-            event = signal_map.transform_keys { |key| key.tr('-', '_') }[name] || session.refuse(self, "signal:#{name}")
+            event = if name == 'button_press_event'
+                      session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(:pointer_press)
+                      write(:pointer_events, true)
+                      :pointer_press
+                    else
+                      signal_map.transform_keys { |key| key.tr('-', '_') }[name] || session.refuse(self, "signal:#{name}")
+                    end
             (@signals[event] ||= []) << [name, block]
             bind_event(event) if @handle
             @signals.values.sum(&:length)
+          end
+
+          # Enables only the pointer-press mask on contracted pointer surfaces.
+          # Other native event families are not implied by menu support.
+          # @return [Widget] self
+          def add_events(mask)
+            session.refuse(self, :add_events) unless mask == Gdk::EventMask::BUTTON_PRESS_MASK && session.port.schema(component_type)[:events].key?(:pointer_press)
+            write(:pointer_events, true)
           end
 
           # Maps content border spacing to the shared control's margin.
@@ -383,7 +397,16 @@ module Lich
             widget = self
             session.port.bind(@handle, event, proc do |context|
               session.callback(context, terminal: !context.viewer_id.nil? && %i[activate submit close].include?(event), widget: widget) do
-                result = widget.send(:emit_handlers, event)
+                result = if event == :pointer_press
+                           pointer = PointerEvent.new(**context.payload)
+                           session.with_pointer(widget, pointer) do
+                             @signals.fetch(event, []).dup.each do |_name, handler|
+                               break if handler.call(widget, pointer) == true
+                             end
+                           end
+                         else
+                           widget.send(:emit_handlers, event)
+                         end
                 widget.destroy if event == :close && result != true
               end
             end)
