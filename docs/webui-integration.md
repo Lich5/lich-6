@@ -409,12 +409,33 @@ including native WebKit gestures without a matching pointer release. The update
 is applied after event handlers finish; a subsequent click is not required and
 the transfer callback is not repeated.
 
-Builder also maps `TreeView.search-column` to a displayed String model column;
+Builder also maps `TreeView.search-column` to a displayed String or numeric model column;
 `-1` disables search and hidden/unmapped search columns remain unsupported.
 `fixed-height-mode=true` explicitly omits GTK's row-measurement optimization:
 browser layout measures row heights. Column `sizing=fixed` uses browser allocation
 and any explicit `fixed-width`; this is a reported approximation, not a promise
 of GTK's measurement algorithm. Other sizing modes are refused.
+
+`enable-search=false` disables incremental table search without disabling a
+separate SearchEntry. `enable-grid-lines` maps `none`, `horizontal`, `vertical`
+or `both` to the existing table borders. `activate-on-single-click` selects the
+shared `activation` policy (`single` or the default `double`); Enter still
+activates a row. A double-click sequence in single mode invokes activation once.
+Embedded editors and expansion controls retain their own gestures. Column
+`clickable` controls built-in sorting; `true` without a sort column is refused.
+CellRendererText `xalign` maps 0/1 to start/end and intermediate fractions to
+center. No arbitrary fractional cell positioning or custom header-click handler
+is implied.
+
+SearchEntry accepts only the standard `edit-find-symbolic` primary icon with
+`primary-icon-activatable=false` and `primary-icon-sensitive=false`. Its decoration
+follows the browser theme, a reported approximation; custom icons and icon actions
+remain refused.
+
+A compatibility handle can exist before its first render. An input assignment
+without a viewer during that interval updates the validated initial default.
+Once the control is published, input writes still require an explicit viewer;
+this initialization rule never broadcasts into existing viewer drafts.
 
 Named ComboBoxText items retain script IDs separately from stable wire row IDs.
 `set_active_id` selects a matching item, returns false without changing selection
@@ -471,6 +492,10 @@ GTK properties:
 | TextView `accepts-tab` | Only `false` is supported: Tab navigates to the next control rather than inserting a tab character. |
 | `shadow-type` | Frame accepts `none` as a real zero-width border. ScrolledWindow accepts `none` or `in`; **the inset decoration is deliberately omitted**, the browser theme remains, and the shim logs this declared omission once per session. Other shadow values are refused. |
 | `tab-fill` | Notebook accepts either boolean for nonexpanding tabs, whose natural allocation is unchanged. Expanded-tab packing remains unsupported. |
+| Notebook `show-tabs` | Maps to shared `tabs.show_tabs` (default true). False hides selectors while retaining the selected page; its content has a named group role. Other pages remain hidden. |
+| Notebook child `reorderable` | False is accepted. True is accepted and reported as ineffective only for a single page with hidden tabs, where there is no ordering gesture. Visible or multiple-page reordering remains refused. |
+| Label `justify` | Left/center/right map to the existing start/center/end text alignment. Full justification is refused. |
+| Widget `visible=`, `set_margin_top`, `set_margin_bottom` | Reuse show/hide and bounded per-edge margins, including after publication; no control replacement is required. |
 
 Text values remain literal, including numeric-looking strings and whitespace.
 Only declared numeric and boolean properties coerce values. Unsupported classes,

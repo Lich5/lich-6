@@ -83,17 +83,21 @@ module Lich
             'margin-top' => [:margin_top, :integer], 'margin-bottom' => [:margin_bottom, :integer],
           }.freeze
           PROPERTIES = {
+            Notebook           => { 'show-tabs' => [:show_tabs=, :boolean] },
             Window             => { 'title' => [:title=, :text], 'default-width' => [:default_width=, :integer],
                         'default-height' => [:default_height=, :integer], 'resizable' => [:resizable=, :boolean], 'modal' => [:modal=, :boolean] },
             Grid               => { 'row-spacing' => [:row_spacing=, :integer], 'column-spacing' => [:column_spacing=, :integer],
                       'column-homogeneous' => [:column_homogeneous=, :boolean], 'row-homogeneous' => [:row_homogeneous=, :boolean] },
             Label              => { 'label' => [:text=, :text], 'wrap' => [:wrap=, :boolean], 'xalign' => [:xalign=, :number], 'yalign' => [:yalign=, :number],
-                       'xpad' => [:xpad=, :integer], 'ypad' => [:ypad=, :integer], 'angle' => [:angle=, :number],
+                       'xpad' => [:xpad=, :integer], 'ypad' => [:ypad=, :integer], 'angle' => [:angle=, :number], 'justify' => [:justify=, :symbol],
                        'selectable' => [:set_selectable, :boolean], 'width-chars' => [:set_width_chars, :integer], 'use-markup' => [:use_markup=, :boolean] },
             Entry              => { 'text' => [:text=, :text], 'placeholder-text' => [:placeholder_text=, :text],
                        'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number], 'width-chars' => [:set_width_chars, :integer],
                        'max-width-chars' => [:set_max_width_chars, :integer] },
             Button             => { 'label' => [:label=, :text], 'receives-default' => [:receives_default=, :boolean] },
+            SearchEntry        => { 'primary-icon-name'        => [:primary_icon_name=, :text],
+                                    'primary-icon-activatable' => [:primary_icon_activatable=, :boolean],
+                                    'primary-icon-sensitive'   => [:primary_icon_sensitive=, :boolean] },
             CheckButton        => { 'draw-indicator' => [:draw_indicator=, :boolean], 'receives-default' => [:receives_default=, :boolean] },
             Frame              => { 'label-xalign' => [:label_xalign=, :number], 'shadow-type' => [:shadow_type=, :symbol] },
             ScrolledWindow     => { 'shadow-type' => [:shadow_type=, :symbol] },
@@ -106,12 +110,15 @@ module Lich
             TextBuffer         => { 'text' => [:set_text, :text] },
             Expander           => { 'label' => [:set_label, :text], 'expanded' => [:set_expanded, :boolean] },
             TreeView           => { 'headers-visible' => [:headers_visible=, :boolean], 'search-column' => [:search_column=, :integer],
+                                   'enable-search' => [:enable_search=, :boolean], 'enable-grid-lines' => [:enable_grid_lines=, :symbol],
+                                   'activate-on-single-click' => [:activate_on_single_click=, :boolean],
                                    'fixed-height-mode' => [:fixed_height_mode=, :boolean] },
             TreeViewColumn     => { 'title' => [:title=, :text], 'resizable' => [:resizable=, :boolean],
+                                'clickable' => [:clickable=, :boolean],
                                 'visible' => [:visible=, :boolean], 'fixed-width' => [:fixed_width=, :integer],
                                 'sort-column-id' => [:sort_column_id=, :integer], 'sizing' => [:sizing=, :symbol] },
             TreeSelection      => { 'mode' => [:mode=, :symbol] },
-            CellRendererText   => { 'editable' => [:editable=, :boolean] },
+            CellRendererText   => { 'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number] },
             CellRendererToggle => { 'activatable' => [:activatable=, :boolean] },
             CellRendererCombo  => { 'text-column' => [:text_column=, :integer], 'has-entry' => [:has_entry=, :boolean] },
           }.freeze
@@ -447,7 +454,16 @@ module Lich
               end
               packing = child.elements['packing'] ? properties(child.elements['packing']) : {}
               if object.is_a?(Notebook)
-                fail_at(element, 'packing', 'unsupported notebook packing') unless (packing.keys - %w[tab-fill position]).empty?
+                fail_at(element, 'packing', 'unsupported notebook packing') unless (packing.keys - %w[tab-fill position reorderable]).empty?
+                if packing.key?('reorderable') && convert(packing['reorderable'], :boolean, element, 'reorderable')
+                  # A sole page with no tab selector has no observable ordering gesture.
+                  # Never use this exception to claim multi-page drag reordering.
+                  count = element.get_elements('child').count { |item| !item.attributes['type'] && item.elements['object'] }
+                  unless object.instance_variable_get(:@props)[:show_tabs] == false && count == 1
+                    fail_at(element, 'reorderable', 'tab reordering requires a hidden single-page notebook')
+                  end
+                  session.degrade(:notebook_reorder, 'single hidden notebook page has no ordering gesture')
+                end
                 if packing.key?('position')
                   expected = object.children.length
                   fail_at(element, 'position', 'notebook position must match document order') unless convert(packing['position'], :integer, element, 'position') == expected

@@ -96,6 +96,31 @@ RSpec.describe Lich::WebUI::Adapter do
     expect { adapter.set(password, :value, 'secret') }.to raise_error(Lich::WebUI::SchemaViolationError)
   end
 
+  it 'accepts unattributed defaults only before publication, preserving later viewer isolation' do
+    allow(service.runtime).to receive(:schedule_render)
+    identity = Struct.new(:viewer_id).new(nil)
+    port = described_class.new(owner: owner, service: service, viewer: identity)
+    root = port.create(:page, title: 'Queued initialization')
+    input = port.create(:text_input, value: 'before')
+    port.attach(root, input)
+    port.set(input, :value, 'initialized')
+    expect { port.get(input, :value) }.to raise_error(Lich::WebUI::AmbiguousViewerError)
+    port.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    expect(page.last_render.tree.children.first.props[:value]).to eq('initialized')
+    expect { port.set(input, :value, 'unattributed') }.to raise_error(Lich::WebUI::AmbiguousViewerError)
+    viewers = %w[first second].map do |id|
+      connection = double(id, viewer_id: id, alive?: true, send_text: true)
+      service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+      service.runtime.instance_variable_get(:@viewers).fetch(connection_id: id, address: service.registry.address_for(page)).viewer_id
+    end
+    identity.viewer_id = viewers.first
+    port.set(input, :value, 'first only')
+    expect(port.get(input, :value)).to eq('first only')
+    identity.viewer_id = viewers.last
+    expect(port.get(input, :value)).to eq('initialized')
+  end
+
   it 'replaces select options without retaining a removed default or accepting an invalid option list' do
     options = [{ value: 'none', label: '' }, { value: 'old', label: 'Old' }]
     select = adapter.create(:select, options: options, value: 'old')

@@ -99,7 +99,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has
@@ -117,7 +117,7 @@ directly through Close without preceding change events. It checks the original
 settings-file callback, independently of browser timing. Related cases verify
 that already accepted changes are not repeated and reconciliation is viewer-local.
 
-Ordinary `rspec` keeps the ten browser cases pending, so local Ruby testing does
+Ordinary `rspec` keeps the thirteen browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

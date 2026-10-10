@@ -19,7 +19,7 @@ module Lich
         # Literal scalar cell presentation. Editing proposes a value; only script callbacks
         # may commit it to the model. Rich attributes and arbitrary data functions are refused.
         class CellRendererText < ModelObject
-          attr_reader :editable
+          attr_reader :editable, :align
 
           def initialize
             super
@@ -36,6 +36,14 @@ module Lich
           end
           alias set_editable editable=
           def editable? = editable
+
+          # Maps cell alignment fractions to the existing column alignment tokens.
+          # @param value [Numeric] 0..1; intermediate fractions use center
+          def xalign=(value)
+            session.refuse(self, :xalign=) unless value.is_a?(Numeric) && value.between?(0, 1)
+            @align = value.zero? ? :start : (value == 1 ? :end : :center)
+            @columns.each(&:changed!)
+          end
 
           # Registers only the signal supported by this compatibility object.
           # @param name [String, Symbol] only edited (or toggled for toggle renderers)
@@ -280,6 +288,16 @@ module Lich
           end
           alias set_sort_column_id sort_column_id=
 
+          # Header clicks are supported through model sorting, not custom signals.
+          # @param value [Boolean] whether the sort header accepts clicks
+          def clickable=(value)
+            session.refuse(self, :clickable=) unless [true, false].include?(value)
+            @clickable = value
+            changed!
+          end
+
+          def sortable? = !sort_column_id.nil? && @clickable != false
+
           # Assigns one owning view; columns cannot be shared between views.
           # @param owner [TreeView] single owning view
           # @return [void]
@@ -297,7 +315,9 @@ module Lich
           # @api private
           def definition
             session.refuse(self, :renderer) unless renderer
-            result = { key: key, label: title, resizable: @resizable, sortable: !sort_column_id.nil? }
+            session.refuse(self, :clickable=) if @clickable && sort_column_id.nil?
+            result = { key: key, label: title, resizable: @resizable, sortable: sortable? }
+            result[:align] = renderer.align if renderer.align
             result[:width] = @width if @width
             result[:editor] = renderer.editor if renderer.editor
             result
@@ -452,6 +472,21 @@ module Lich
             session.refuse(self, :search_column=) unless column.is_a?(Integer) && column >= -1
             check_column_structure!
             @search_column = column
+          end
+
+          # Disables incremental keyboard search; explicit search entries remain independent.
+          # @param value [Boolean] only false; enabling needs an explicit search column
+          def enable_search=(value)
+            session.refuse(self, :enable_search=) unless value == false
+            check_column_structure!
+            @search_disabled = true
+          end
+
+          # Uses the shared table activation policy while retaining keyboard Enter.
+          # @param value [Boolean] activate on a single click instead of a double click
+          def activate_on_single_click=(value)
+            session.refuse(self, :activate_on_single_click=) unless [true, false].include?(value)
+            write(:activation, value ? :single : :double)
           end
 
           # GTK's fixed-row measurement optimization is omitted; browser layout measures rows.
@@ -654,7 +689,7 @@ module Lich
 
           # Search is deliberately bounded to a visible plain-text column.
           def search_props
-            return {} if @search_column.nil? || @search_column == -1
+            return {} if @search_disabled || @search_column.nil? || @search_column == -1
             # Numeric text renderers already project their display text; prefix
             # search uses that same representation, without changing model types.
             column = visible_columns.find { |item| item.value_column == @search_column }
@@ -685,7 +720,7 @@ module Lich
                   end
                 when :sort_change
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
-                  model.set_sort_column_id(column.sort_column_id, payload[:direction] == 'asc' ? :ascending : :descending) if model && column
+                  model.set_sort_column_id(column.sort_column_id, payload[:direction] == 'asc' ? :ascending : :descending) if model && column&.sortable?
                 when :row_activate
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
                   emit_row(event, 'row_activated', iter.path, column) if iter
