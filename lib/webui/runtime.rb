@@ -492,7 +492,17 @@ module Lich
         # terminal event; the imperative adapter uses this metadata to reconcile
         # legacy change handlers when Save overtakes a stale change-event retry.
         input_changes = validated.filter_map do |component, value|
-          component if !sensitive?(component) && @viewers.input_value(attachment, component) != value
+          next if sensitive?(component)
+
+          previous = @viewers.input_value(attachment, component)
+          # textarea.value normalizes CRLF and lone CR to LF. Compare that
+          # representation only; preserve the validated snapshot value below.
+          changed = if component.type == :textarea
+                      previous.gsub(/\r\n?/, "\n") != value.gsub(/\r\n?/, "\n")
+                    else
+                      previous != value
+                    end
+          component if changed
         end
         values = validated.to_h do |component, value|
           if sensitive?(component)

@@ -37,6 +37,7 @@ module Lich
           def editable=(value)
             @combo.set_entry_editable(value)
           end
+          alias set_editable editable=
 
           # Forwards changed notifications from the combo's single shared input.
           # @param name [String, Symbol] changed
@@ -106,9 +107,10 @@ module Lich
 
           # Editable combos delegate focus to their existing single input facade;
           # closed selects own focus themselves. No second focus target is created.
+          # The facade survives closing, so its existence cannot determine focus.
           def can_focus=(value)
-            session.refuse(self, :can_focus=) unless value == !has_entry? || (!has_entry? && value == false)
-            if !has_entry? && value == false
+            session.refuse(self, :can_focus=) unless value == false || (value == true && !@props[:editable])
+            if !@props[:editable] && value == false
               session.degrade(:combo_focus, 'closed combo focus hints are ignored; its single browser select remains keyboard accessible')
             end
           end

@@ -415,6 +415,37 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     end
   end
 
+  %i[editable= set_editable].each do |setter|
+    it "routes #{setter} through the combo's presentation and publication rules" do
+      combo = gtk::ComboBoxText.new(entry: true)
+      combo.append_text('Choice')
+      combo.child.text = 'Choice'
+      combo.child.public_send(setter, false)
+      expect(combo.active).to eq(0)
+      _window, page = show(combo)
+      viewer = connect(page, 'setter-form')
+      expect(nodes(viewer).find { |node| node['type'] == 'select' }['props']['editable']).to be(false)
+      expect { combo.child.public_send(setter, true) }.to raise_error(gtk::UnsupportedOperation, /entry_editable=/)
+    end
+  end
+
+  it 'uses the current combo presentation for focus even when its entry facade survives' do
+    combo = gtk::ComboBoxText.new(entry: true)
+    expect { combo.can_focus = true }.to raise_error(gtk::UnsupportedOperation)
+    expect { combo.can_focus = false }.not_to raise_error
+    combo.child.editable = false
+    expect(combo.has_entry?).to be(true)
+    expect { combo.can_focus = true }.not_to raise_error
+    expect { combo.can_focus = false }.not_to raise_error
+    expect { combo.can_focus = nil }.to raise_error(gtk::UnsupportedOperation)
+    combo.child.editable = true
+    expect { combo.can_focus = true }.to raise_error(gtk::UnsupportedOperation)
+    expect { combo.can_focus = false }.not_to raise_error
+    closed = gtk::ComboBoxText.new
+    expect { closed.can_focus = true }.not_to raise_error
+    expect { closed.can_focus = false }.not_to raise_error
+  end
+
   it 'refuses unmatched text before changing combo editability or its value' do
     combo = gtk::ComboBoxText.new(entry: true)
     combo.append_text('Choice')
