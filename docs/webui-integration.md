@@ -513,10 +513,22 @@ enumeration includes the existing composite widgets so original recursive
 sensitivity callbacks can visit their children. TreeView prefix search also
 accepts displayed numeric columns.
 
+Terminal submissions record which nonsensitive inputs differ from the submitting
+viewer's previously accepted values. Before a legacy Save/Close handler runs, the
+imperative adapter delivers change callbacks for those inputs in submission order.
+This covers a final submission overtaking stale change-event retries, including
+scripts that save a settings hash maintained by their change handlers. Inputs
+whose changes already reached the server do not receive duplicate notifications.
+Native WebUI callbacks still receive only their declared terminal event; the
+adapter's public operation set and the wire protocol are unchanged.
+
 Sent checkbox/toggle changes become the renderer's comparison baseline. A
 callback can therefore reset a control to its original value before any
 intermediate render arrives; that reset is not restored as an unsent browser
-draft. Unsubmitted changes retain their existing preservation behavior. This
+draft. Checkbox/toggle and terminal-submission stale-event replays retain the
+replacement render's baseline so its older displayed value cannot masquerade
+as a new user edit when the retry is
+accepted. Unsubmitted changes retain their existing preservation behavior. This
 applies equally to native WebUI forms and shim-owned controls.
 
 The unchanged `ebounty`, `eherbs` and `BlackArts` setups have independent Chrome

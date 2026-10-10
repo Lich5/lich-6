@@ -345,6 +345,34 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect { spin.text = 'not a number' }.to raise_error(gtk::UnsupportedOperation)
   end
 
+  it 'saves original ewaggle settings when Close overtakes its input change events' do
+    form = original_ewaggle
+    form['main'].show_all
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    connection = double('connection', viewer_id: 'ewaggle-close', alive?: true, send_text: true)
+    address = service.registry.address_for(page)
+    service.runtime.handle(connection, type: 'attach', page: address)
+    render = page.last_render
+    components = render.tree.each.to_h { |component| [component.cid, component] }
+    close = components.values.find { |component| component.type == :button && component.props[:label] == 'Close' }
+    combo_cid = form['sonic_armor'].session.port.send(:node!, form['sonic_armor'].instance_variable_get(:@handle)).cid
+    spin_cid = form['start_at'].session.port.send(:node!, form['start_at'].instance_variable_get(:@handle)).cid
+    values = render.submissions.fetch(close.cid).map do |cid|
+      component = components.fetch(cid)
+      case cid
+      when combo_cid then component.props[:options].find { |option| option[:label] == 'Full Plate (20)' }.fetch(:value)
+      when spin_cid then 90
+      else component.props.fetch(%i[checkbox toggle radio_option].include?(component.type) ? :checked : :value)
+      end
+    end
+    service.runtime.handle(connection, type: 'event', page: address, generation: render.generation,
+                                       cid: close.cid, event: 'activate', payload: {}, submission: values)
+    drain_gtk
+    expect(form['main']).to be_destroyed
+    expect(YAML.unsafe_load_file(File.join(@settings_directory, 'ewaggle.yaml'))).to include(sonic_armor: 'Full Plate', start_at: 90)
+  end
+
   it 'preserves ewaggle search, transfers, choice edits and original save callbacks in Chrome', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
     form = original_ewaggle

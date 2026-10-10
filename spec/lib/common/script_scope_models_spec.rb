@@ -448,6 +448,36 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     )
   end
 
+  it 'reconciles only undelivered input changes before Save in the submitting viewer' do
+    combo = gtk::ComboBoxText.new
+    combo.append_text('First')
+    combo.append_text('Second')
+    combo.active = 0
+    first, second = combo.model.rows.map(&:key)
+    spin = gtk::SpinButton.new(0, 100, 1)
+    save = gtk::Button.new('Save')
+    events = Queue.new
+    combo.signal_connect('changed') { events << [:combo, combo.active_text] }
+    spin.signal_connect('value_changed') { events << [:spin, spin.value] }
+    save.signal_connect('clicked') { events << [:save, combo.active_text, spin.value] }
+    _window, page = show(combo, spin, save)
+    a, b = connect(page, 'a'), connect(page, 'b')
+
+    send_event(page, a, :select, 'change', { value: second })
+    expect(events.pop(timeout: 2)).to eq([:combo, 'Second'])
+    send_event(page, a, :button, 'activate', {}, submission: [second, 90])
+    expect(events.pop(timeout: 2)).to eq([:spin, 90])
+    expect(events.pop(timeout: 2)).to eq([:save, 'Second', 90])
+    expect(events).to be_empty
+
+    # B still has its initial option and spin value. Reconciliation must compare
+    # with B's accepted inputs, not A's terminal shadow state.
+    send_event(page, b, :button, 'activate', {}, submission: [first, 75])
+    expect(events.pop(timeout: 2)).to eq([:spin, 75])
+    expect(events.pop(timeout: 2)).to eq([:save, 'First', 75])
+    expect(events).to be_empty
+  end
+
   it 'targets programmatic expansion and cursor updates to the callback viewer and retains them on Save' do
     model = gtk::TreeStore.new(String)
     root = model.append

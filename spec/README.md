@@ -104,12 +104,20 @@ NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/com
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has
 bounded waits and closes its browser; RSpec stops the service and removes the
-private bootstrap directory. Failures propagate to RSpec and save screenshots and
-traces under ignored `spec/webui/test-results/`; CI retains failure artifacts for
-seven days. Only disposable fixture state is used. Missing browser/dependencies
+private bootstrap directory. Setup scenarios wait for server-confirmed page closure
+before terminating Chrome. Failures propagate to RSpec and save screenshots under
+ignored `spec/webui/test-results/`. Traces are retained for every browser run so
+failures in subsequent Ruby saved-state assertions also have browser diagnostics;
+CI uploads them on job failure and retains them for seven days. Only disposable
+fixture state is used. Missing browser/dependencies
 fail the explicit run rather than silently skipping it.
 
-Ordinary `rspec` keeps the six browser cases pending, so local Ruby testing does
+The original ewaggle Ruby regression also submits final combo/numeric values
+directly through Close without preceding change events. It checks the original
+settings-file callback, independently of browser timing. Related cases verify
+that already accepted changes are not repeated and reconciliation is viewer-local.
+
+Ordinary `rspec` keeps the ten browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

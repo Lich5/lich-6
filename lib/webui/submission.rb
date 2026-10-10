@@ -6,14 +6,17 @@ module Lich
   module WebUI
     # Immutable viewer snapshot supplied to a submission callback.
     class Submission
-      attr_reader :viewer_id
+      attr_reader :viewer_id, :input_changes
 
       # Captures a viewer submission whose sensitive carriers remain explicitly disposable.
       # @param viewer_id [String] originating viewer
       # @param values [Hash] component IDs mapped to validated values or sensitive carriers
-      def initialize(viewer_id:, values:)
+      # @param input_changes [Array<Component>] nonsensitive inputs changed by
+      #   this submission, compared with the previously accepted viewer state
+      def initialize(viewer_id:, values:, input_changes: [])
         @viewer_id = viewer_id.freeze
         @values = values.freeze
+        @input_changes = input_changes.dup.freeze
         @committed = false
       end
 

@@ -20,6 +20,8 @@ module.exports = defineConfig({
     actionTimeout: 10_000,
     navigationTimeout: 10_000,
     screenshot: 'only-on-failure',
-    trace: 'retain-on-failure',
+    // Ruby checks saved state after Playwright exits. Keep these fixture-only
+    // traces even when browser assertions pass; CI uploads them if Ruby fails.
+    trace: 'on',
   },
 });

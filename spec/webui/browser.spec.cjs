@@ -124,6 +124,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     }
     await page.screenshot({ path: require('path').join(__dirname, 'test-results', `${scenario}.png`), fullPage: true });
     await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'shim-ewaggle') {
     await page.setViewportSize({ width: 730, height: 800 });
     await expect.poll(() => page.evaluate(() => {
@@ -178,6 +179,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(page.getByRole('link')).toHaveCount(3);
     await expect(page.getByRole('link').first()).toHaveAttribute('rel', 'noopener noreferrer');
     await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'shim-builder') {
     await expect(page.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
     for (const viewport of [{ width: 650, height: 675 }, { width: 1000, height: 850 }]) {
@@ -226,6 +228,9 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(page.getByText('To save properly, exit with the close button and not the X window -->', { exact: true })).toHaveCSS('font-style', 'italic');
     await close.focus();
     await close.press('Enter');
+    // Keep the transport alive through save/close callbacks and any stale-event
+    // retry. A dispatched DOM click is not server confirmation of completion.
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'shim-models') {
     await expect(page.locator('tbody tr')).toHaveCount(1);
     await page.getByRole('button', { name: 'Expand Parent' }).click();

@@ -663,6 +663,62 @@ test('native map horizontal panning survives tree replacement without a new shim
   dom.window.close();
 });
 
+for (const type of ['checkbox', 'toggle']) {
+  for (const accepted of [true, false]) {
+    test(`${type} stale replay displays the server's ${accepted ? 'accepted change' : 'callback reset'}`, t => {
+      const { dom, sent, receive } = fixture(); t.after(() => dom.window.close());
+      receive({ type: 'hello', pages: [{ address: 'replay' }] });
+      const render = (generation, checked) => receive({ type: 'render', page: 'replay', generation,
+        bindings: { choice: ['change'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+          { type, cid: 'choice', props: { label: 'Choice', checked, ...(type === 'toggle' ? { appearance: 'button' } : {}) } }
+        ] } });
+      const control = () => dom.window.document.querySelector(type === 'checkbox' ? 'input' : '.webui-toggle');
+      const checked = () => type === 'checkbox' ? control().checked : control().getAttribute('aria-pressed') === 'true';
+      render(1, false);
+      control().click();
+      const original = sent.find(message => message.event === 'change');
+      // Another event publishes first. The rejection then supplies the same
+      // replacement tree, on which the original intent is retried once.
+      render(2, false);
+      receive({ type: 'refusal', reason: 'stale_generation', page: 'replay', cid: 'choice',
+        event: 'change', request: original.request });
+      render(2, false);
+      render(3, accepted);
+      assert.deepEqual(sent.filter(message => message.event === 'change').map(message => message.payload.value), [true, true]);
+      assert.equal(checked(), accepted, 'an old server value must not become an unsent user edit during replay');
+      control().click();
+      assert.equal(sent.at(-1).payload.value, !accepted, 'the next click starts from the displayed server state');
+    });
+  }
+}
+
+test('a stale submission retry retains its snapshot without reviving an old displayed combo value', t => {
+  const { dom, sent, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'replay' }] });
+  const render = (generation, value) => receive({ type: 'render', page: 'replay', generation,
+    bindings: { choice: ['change'], save: ['activate'] }, submissions: { save: ['choice'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'select', cid: 'choice', props: { editable: true, value, options: [
+        { value: 'robes', label: 'Robes' }, { value: 'plate', label: 'Full Plate' }
+      ] } },
+      { type: 'button', cid: 'save', props: { label: 'Save' } }
+    ] } });
+  render(1, 'robes');
+  const chooser = dom.window.document.querySelector('select');
+  chooser.value = 'plate';
+  chooser.dispatchEvent(new dom.window.Event('change'));
+  dom.window.document.querySelector('button').click();
+  const original = sent.at(-1);
+  assert.deepEqual(original.submission, ['plate']);
+  render(2, 'robes');
+  receive({ type: 'refusal', reason: 'stale_generation', page: 'replay', cid: 'save', event: 'activate', request: original.request });
+  render(2, 'robes');
+  assert.deepEqual(sent.at(-1).submission, ['plate'], 'retry retains the original submission');
+  render(3, 'plate');
+  assert.equal(dom.window.document.querySelector('input').value, 'Full Plate');
+  assert.equal(dom.window.document.querySelector('select').value, 'plate');
+});
+
 test('a stale refusal replays only its identified click once, across unrelated renders', () => {
   const { dom, sent, receive } = fixture();
   receive({ type: 'hello', pages: [{ address: 'actions' }] });
