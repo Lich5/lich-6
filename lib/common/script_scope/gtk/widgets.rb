@@ -43,6 +43,13 @@ module Lich
           # while iterating that snapshot without skipping alternating entries.
           def children = @children.dup
 
+          # Uses the existing show/hide lifecycle for the property spelling.
+          # @param value [Boolean] requested visibility
+          def visible=(value)
+            session.refuse(self, :visible=) unless [true, false].include?(value)
+            value ? show : hide
+          end
+
           # Detaches a child from this widget while retaining its shadow state and handle.
           # @return [Widget] self
           # @raise [UnsupportedOperation] unless this widget is its parent
@@ -244,6 +251,17 @@ module Lich
           # @return [Widget] self
           def set_margin_right(value)
             write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(right: value))
+          end
+
+          # Updates one vertical edge without changing the other explicit margins.
+          # @param value [Integer] margin in pixels, validated by the shared contract
+          def set_margin_top(value)
+            write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(top: value))
+          end
+
+          # @param value [Integer] bottom margin in pixels
+          def set_margin_bottom(value)
+            write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(bottom: value))
           end
 
           # Aligns the widget in its allocated grid cell or enclosing frame.
@@ -924,6 +942,14 @@ module Lich
           end
           alias show_border= set_show_border
 
+          # Hides only page selectors; the selected page and notebook sizing remain.
+          # @param value [Boolean] whether the browser exposes tab buttons
+          def show_tabs=(value)
+            session.refuse(self, :show_tabs=) unless [true, false].include?(value)
+            write(:show_tabs, value)
+          end
+          alias set_show_tabs show_tabs=
+
           # Appends a child and its label in source order.
           # @return [Integer] zero-based index of the appended page
           def append_page(child, label)
@@ -1070,6 +1096,16 @@ module Lich
           alias wrap= set_wrap
           alias set_line_wrap set_wrap
           alias line_wrap= set_wrap
+
+          # Maps line justification onto the shared text alignment vocabulary.
+          # Full justification has no accepted mapping in this bridge.
+          # @param value [Symbol] :left, :center or :right
+          def justify=(value)
+            alignment = { left: :start, center: :center, right: :end }[value]
+            session.refuse(self, :justify=) unless alignment
+            write(:align, alignment)
+          end
+          alias set_justify justify=
 
           # Text padding belongs inside the label and never overwrites margins.
           # @param x [Integer] left/right inset, 0..64

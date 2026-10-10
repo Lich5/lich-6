@@ -160,6 +160,41 @@ test('hierarchical sorting keeps siblings together and model sorting waits for a
   assert.ok(sent.some(message => message.event === 'sort_change'));
 });
 
+test('single-click tables activate once for a double-click sequence and retain Enter activation', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  modelTable(receive, 1, { activation: 'single', rows: [{ key: 'a', cells: { name: 'A' } }] });
+  const cell = dom.window.document.querySelector('tbody td');
+  for (const [type, detail] of [['click', 1], ['click', 2], ['dblclick', 2]]) {
+    cell.dispatchEvent(new dom.window.MouseEvent(type, { bubbles: true, detail }));
+  }
+  assert.equal(sent.filter(message => message.event === 'row_activate').length, 1);
+  assert.deepEqual(sent.filter(message => message.event === 'row_activate')[0].payload, { row: 'a', column: 'name' });
+  dom.window.document.querySelector('tbody tr').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.equal(sent.filter(message => message.event === 'row_activate').length, 2);
+});
+
+test('hidden tab selectors keep the selected content accessible and other pages hidden', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'hidden-tabs' }] });
+  const render = (show_tabs, selected) => receive({ type: 'render', page: 'hidden-tabs', generation: selected + 1,
+    bindings: { tabs: ['select'] }, tree: { type: 'page', cid: 'root', props: {}, children: [{
+      type: 'tabs', cid: 'tabs', props: { names: ['First', 'Second'], show_tabs, selected, size_to_all: true },
+      children: [{ type: 'text', cid: 'first', props: { content: 'First content' } }, { type: 'text', cid: 'second', props: { content: 'Second content' } }]
+    }] } });
+  render(false, 0);
+  const document = dom.window.document;
+  assert.equal(document.querySelector('.tab-list').style.display, 'none');
+  assert.equal(document.querySelector('[data-cid="first"]').getAttribute('role'), 'group');
+  assert.equal(document.querySelector('[data-cid="first"]').getAttribute('aria-label'), 'First');
+  assert.equal(document.querySelector('[data-cid="second"]').hidden, true);
+  assert.equal(document.querySelector('[data-cid="second"]').inert, true);
+  render(true, 1);
+  assert.equal(document.querySelector('.tab-list').hidden, false);
+  assert.equal(document.querySelector('[data-cid="first"]').hidden, true);
+  assert.equal(document.querySelector('[data-cid="second"]').getAttribute('role'), 'tabpanel');
+});
+
 test('row activation reports the actual column and a removed cursor never focuses a replacement row', t => {
   const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
   receive({ type: 'hello', pages: [{ address: 'models' }] });

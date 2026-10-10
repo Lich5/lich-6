@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.14.0'
+      VERSION = '2.15.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -256,6 +256,7 @@ module Lich
             names: property(array(SHORT, min: 1, max: BOUNDS[:collection]), required: true),
             vertical: property(BOOL, default: false), selected: property(integer(min: 0), scope: :viewer),
             size_to_all: property(BOOL, default: false),
+            show_tabs: property(BOOL, default: true),
           }, children: { kind: :named_from_property, property: :names },
           events: { select: event(record(index: property(integer(min: 0), required: true)), structural: true) }, value: nil,
         },
@@ -473,6 +474,7 @@ module Lich
         max_height: property(GEOMETRY),
         transfer_group: property(IDENT),
         search_column: property(IDENT),
+        activation: property(enum(:single, :double), default: 'double'),
       }.freeze
 
       TABLE_EVENTS = {

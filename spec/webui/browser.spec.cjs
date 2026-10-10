@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-repository', 'shim-go2', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -30,7 +30,28 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'native-bootstrap') {
+  if (['shim-repository', 'shim-go2'].includes(scenario)) {
+    const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const widget = name => page.locator(`[data-cid="${ids[name]}"]`);
+    if (scenario === 'shim-repository') {
+      await expect(page.getByRole('tab')).toHaveCount(0);
+      const table = widget('repository');
+      await expect(table.locator('tbody tr')).toHaveCount(2);
+      await table.getByRole('button', { name: 'Size', exact: true }).click();
+      await expect(table.locator('tbody tr').first()).toContainText('zeta.lic');
+      await widget('search_entry').fill('travel');
+      await expect(table.locator('tbody tr')).toHaveCount(1);
+      await table.getByText('alpha.lic', { exact: true }).click();
+      await expect(widget('comments')).toHaveText('Alpha comments');
+      await expect(widget('download_link')).toHaveText('alpha.lic');
+      await widget('download_link').click();
+    } else {
+      await widget('delay').fill('7');
+      await widget('echo_input').uncheck();
+    }
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
   } else if (['shim-ebounty', 'shim-eherbs', 'shim-blackarts'].includes(scenario)) {

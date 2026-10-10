@@ -48,6 +48,24 @@ module Lich
         # Search fields retain ordinary Entry changed/activate signals and shared input state.
         # Delayed search-changed notifications remain unsupported.
         class SearchEntry < Entry
+          # The shared search input owns its theme-provided decoration. This
+          # accepts only the noninteractive standard search icon, not custom art.
+          # @param value [String] standard symbolic search icon
+          def primary_icon_name=(value)
+            session.refuse(self, :primary_icon_name=) unless value == 'edit-find-symbolic'
+            session.degrade(:search_icon, 'standard search decoration follows the browser theme')
+          end
+
+          # @param value [Boolean] only false; icon actions have no mapped event
+          def primary_icon_activatable=(value)
+            session.refuse(self, :primary_icon_activatable=) unless value == false
+          end
+
+          # @param value [Boolean] only false for the decorative search icon
+          def primary_icon_sensitive=(value)
+            session.refuse(self, :primary_icon_sensitive=) unless value == false
+          end
+
           protected
 
           # Uses the existing typed search presentation without installing another event loop.
