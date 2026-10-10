@@ -72,13 +72,14 @@ module Lich
             'turquoise' => '40e0d0', 'lightsalmon' => 'ffa07a', 'blue' => '0000ff',
           }.freeze
 
-          # Maps an allowed name or six-digit RGB literal to numeric contract channels.
+          # Maps an allowed name or six-/twelve-digit RGB literal to numeric contract channels.
           # @return [Hash, nil] frozen RGBA record, or nil for an unsupported color
           def self.parse(value)
-            hex = value.match?(/\A#[0-9a-fA-F]{6}\z/) ? value.delete_prefix('#') : NAMES[value]
+            hex = value.match?(/\A#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{12})\z/) ? value.delete_prefix('#') : NAMES[value]
             return unless hex
 
-            r, g, b = hex.scan(/../).map { |channel| channel.to_i(16) }
+            width = hex.length / 3
+            r, g, b = hex.scan(/.{#{width}}/).map { |channel| (channel.to_i(16) * 255.0 / (16**width - 1)).round }
             { r: r, g: g, b: b, a: 1.0 }.freeze
           end
         end

@@ -20,6 +20,21 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     end
   end
 
+  # Original list callbacks rely on Lich's real nil extension (uniq!.sort!).
+  # Exercise that production environment without contaminating the parent suite
+  # or replacing source callbacks. Each browser case still runs independently.
+  def production_nil_example(example)
+    return false if ENV['WEBUI_PRODUCTION_NIL'] == '1'
+
+    extension = File.expand_path('../../../lib/common/class_exts/nilclass.rb', __dir__)
+    output, status = Open3.capture2e(
+      { 'WEBUI_PRODUCTION_NIL' => '1' }, RbConfig.ruby, '-S', 'rspec', '--require', extension, example.id
+    )
+    expect(status.success?).to be(true), output
+    expect(output).to match(/1 example, 0 failures(?:\n|\r)/), output
+    true
+  end
+
   before do
     scope.activate!
     stub_const('Lich::Common::Script', Class.new { def self.current; end })
@@ -80,6 +95,143 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
   end
 
   def saved_settings_path = File.join(@settings_directory, 'GS', 'Fixture', 'ecleanse.yaml')
+
+  # The original setup class runs unchanged. Game catalogs and persistence are
+  # isolated here; no callback or widget logic is replaced to make a test pass.
+  def original_e_setup(name, settings = {}, source_failure: false)
+    sandbox = Module.new
+    sandbox.const_set(:Gtk, gtk)
+    sandbox.const_set(:XMLData, double(game: 'GS'))
+    sandbox.const_set(:Char, double(name: 'Fixture', prof: 'Ranger'))
+    sandbox.const_set(:Stats, double(prof: 'Ranger'))
+    sandbox.const_set(:Skills, double(slblessings: 20))
+    sandbox.const_set(:Society, double(status: 'Council of Light', rank: 20))
+    spells = Object.new
+    spells.define_singleton_method(:[]) { |_id| Struct.new(:known?).new(false) }
+    sandbox.const_set(:Spell, spells)
+    town = "the town of Wehnimer's Landing"
+    sandbox.const_set(:Map, double(list: [double(tags: ['publiclockers', 'ranger alchemy administrator'], location: town, find_nearest_by_tag: 1)]))
+    sandbox.const_set(:Room, double(:rooms, :[] => double(location: town)))
+    sandbox.const_set(:UserVars, double(mapdb_fwi_trinket: false))
+    path = File.expand_path("../../fixtures/webui/#{name}_setup.lic", __dir__)
+    sandbox.module_eval(File.read(path), path)
+    mod = sandbox.const_get({ 'eloot' => :ELoot, 'ebounty' => :EBounty, 'eherbs' => :EHerbs, 'blackarts' => :BlackArts }.fetch(name))
+    mod.define_singleton_method(:get_script_version) { 'fixture' }
+    mod.define_singleton_method(:data) { Struct.new(:settings).new(settings) }
+    destination = File.join(@settings_directory, "#{name}.yaml")
+    mod.define_singleton_method(:save_profile) { |values = settings| File.write(destination, YAML.dump(values)) }
+    # eherbs commits into script data; the outer game command owns disk saving.
+    @eherbs_loaded = []
+    loaded = @eherbs_loaded
+    mod.define_singleton_method(:load) { |values| loaded << values.dup }
+    klass = mod.const_get(:Setup)
+    klass.define_method(:respond) { |*_args| nil }
+    klass.define_method(:wait_while) { |&block| sleep 0.005 while block.call }
+    # Profile discovery is a game-data lookup; avoid touching real character data.
+    allow(Dir).to receive(:children).and_call_original
+    allow(Dir).to receive(:children).with(/bigshot_profiles\z/).and_return(%w[fixture.yaml travel.yaml])
+    allow(Dir).to receive(:foreach).and_call_original
+    allow(Dir).to receive(:foreach).with(/bigshot_profiles\z/).and_yield('fixture.yaml').and_yield('travel.yaml')
+    @setup_diagnostics = []
+    allow(Lich).to receive(:log) { |message| @setup_diagnostics << message }
+    form = klass.new(settings)
+    2.times { drain_gtk }
+    failures = @setup_diagnostics.grep(/callback failed/)
+    if source_failure
+      expect(failures.length).to eq(1), @setup_diagnostics.join("\n")
+      expect(failures.first).to include('BuilderError', 'object=exclusions_label', 'property=get_object', 'undeclared object identifier')
+    else
+      expect(failures).to eq([]), @setup_diagnostics.join("\n")
+    end
+    expect(form.objects.length).to eq({ 'eloot' => 469, 'ebounty' => 435, 'eherbs' => 31, 'blackarts' => 216 }.fetch(name))
+    form
+  end
+
+  %w[ebounty eherbs blackarts].each do |name|
+    it "loads and publishes the unchanged #{name} setup with original callbacks" do |example|
+      next if name != 'eherbs' && production_nil_example(example)
+
+      settings = {}
+      form = original_e_setup(name, settings)
+      if name == 'eherbs'
+        form['herb_container'].text = 'herb sack'
+        form.on_update(form['herb_container'])
+        drain_gtk
+        expect(settings[:herb_container]).to eq('herb sack')
+      elsif name == 'blackarts'
+        form['guild_pause'].text = '25'
+        form.on_update(form['guild_pause'])
+        drain_gtk
+        expect(settings[:guild_pause]).to eq('25')
+      else
+        key = 'culling_max'
+        form[key].value = 25
+        drain_gtk
+        expect(settings[key.to_sym].to_f).to eq(25)
+      end
+      form['main'].show_all
+      page = nil
+      Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+      expect(page.last_render.tree.each.count).to be > 10
+      form.on_close_clicked
+      drain_gtk
+      expect(form['main']).to be_destroyed
+      expect(@setup_diagnostics.grep(/callback failed/)).to eq([]), @setup_diagnostics.join("\n")
+      if name == 'eherbs'
+        expect(@eherbs_loaded.last).to include(herb_container: 'herb sack')
+      else
+        expect(YAML.unsafe_load_file(File.join(@settings_directory, "#{name}.yaml"))).to eq(settings)
+      end
+    end
+  end
+
+  it 'refuses the original eloot missing tooltip target with a conversion diagnostic' do |example|
+    next if production_nil_example(example)
+
+    form = original_e_setup('eloot', {}, source_failure: true)
+    expect { form['exclusions_label'] }.to raise_error(gtk::BuilderError, /object=exclusions_label.*native WebUI/)
+    expect { form.set_tooltips }.to raise_error(gtk::BuilderError, /object=exclusions_label/)
+    # The original initialization never reaches connect_signals after this error.
+    expect(form['main'].instance_variable_get(:@destroy_handlers)).to be_nil
+    expect(form['sell_locksmith_pool'].sensitive?).to be(true)
+    expect(form['locksmith_priority'].sensitive?).to be(false)
+  end
+
+  %w[ebounty eherbs blackarts].each do |name|
+    it "validates #{name} original interactions and layout in Chrome", browser: true do |example|
+      skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+      next if name != 'eherbs' && production_nil_example(example)
+
+      settings = {}
+      form = original_e_setup(name, settings)
+      form['main'].show_all
+      page = nil
+      Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+      # Private handles are inspected only by this test harness, avoiding any
+      # production script-name IDs or changes to original setup declarations.
+      controls = form.objects.filter_map do |widget|
+        handle = widget.instance_variable_get(:@handle)
+        next unless handle && widget.respond_to?(:builder_name)
+        [widget.builder_name, widget.session.port.send(:node!, handle).cid]
+      end.to_h
+      WebUIBrowser.check(service: service, page: page, scenario: "shim-#{name}", controls: controls)
+      drain_gtk
+      expect(form['main']).to be_destroyed
+      expect(@setup_diagnostics.grep(/callback failed/)).to eq([]), @setup_diagnostics.join("\n")
+      if name == 'ebounty'
+        expect(settings).to include(culling_max: 25, selling_script: 'fixture-sell', once_and_done: false, new_bounty_on_exit: false)
+        expect(settings[:creature_exclude]).to eq([])
+        expect(YAML.unsafe_load_file(File.join(@settings_directory, "#{name}.yaml"))).to eq(settings)
+      elsif name == 'eherbs'
+        expect(@eherbs_loaded.last).to include(herb_container: 'herb sack', buy_missing: true)
+      else
+        expect(settings).to include(guild_pause: '25', profile_a: 'travel', home_guild: "Wehnimer's Landing")
+        expect(settings[:item_include]).to eq(form.instance_variable_get(:@default_buy))
+        expect(settings[:consignment_include]).to eq(form.instance_variable_get(:@default_sell))
+        expect(YAML.unsafe_load_file(File.join(@settings_directory, "#{name}.yaml"))).to eq(settings)
+      end
+    end
+  end
 
   # Preserve the original setup and its handlers; only game services and the save
   # destination are substituted. This is not an execution of the casting loop.
@@ -188,7 +340,9 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect(combo.active).to eq(1)
     spin = gtk::SpinButton.new(0, 100, 1)
     spin.text = '0'
-    expect { spin.text = '10' }.to raise_error(gtk::UnsupportedOperation)
+    spin.text = '10'
+    expect(spin.value).to eq(10)
+    expect { spin.text = 'not a number' }.to raise_error(gtk::UnsupportedOperation)
   end
 
   it 'preserves ewaggle search, transfers, choice edits and original save callbacks in Chrome', browser: true do
@@ -273,17 +427,102 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect(builder['frame'].send(:component_props)).to include(border_width: 0)
     [
       '<object class="GtkComboBoxText"><property name="has-entry">True</property><property name="can-focus">True</property></object>',
-      '<object class="GtkComboBoxText"><property name="has-entry">True</property><child internal-child="entry"><object class="GtkEntry"><property name="can-focus">False</property></object></child></object>',
       '<object class="GtkLabel"><property name="can-focus">True</property></object>',
-      '<object class="GtkCheckButton"><property name="valign">center</property></object>',
+      '<object class="GtkCheckButton"><property name="valign">baseline</property></object>',
       '<object class="GtkCheckButton"><property name="draw-indicator">False</property></object>',
-      '<object class="GtkCheckButton"><property name="receives-default">True</property></object>',
+      '<object class="GtkCheckButton"><property name="receives-default">invalid</property></object>',
       '<object class="GtkButton"><property name="receives-default">False</property></object>',
       '<object class="GtkScrolledWindow"><property name="shadow-type">out</property></object>',
       '<object class="GtkEntry"><property name="can-focus">True</property><property name="editable">False</property></object>',
       '<object class="GtkEntry"><property name="editable">False</property><property name="can-focus">True</property></object>',
     ].each { |xml| expect { load_xml(xml) }.to raise_error(gtk::BuilderError) }
     expect(builder.objects.length).to eq(2)
+  end
+
+  it 'keeps label content alignment, padding and margins independent of declaration order' do
+    load_xml(<<~XML)
+      <object class="GtkGrid" id="grid"><property name="row-homogeneous">True</property>
+        <child><object class="GtkLabel" id="caption">
+          <property name="yalign">0</property><property name="xalign">1</property>
+          <property name="xpad">5</property><property name="ypad">3</property>
+          <property name="margin-start">9</property><property name="angle">90</property>
+          <property name="valign">center</property>
+          <attributes><attribute name="foreground" value="#ffff00000000"/></attributes>
+        </object></child>
+      </object>
+    XML
+    expect(builder['grid'].send(:component_props)).to include(equal_rows: true)
+    expect(builder['caption'].send(:component_props)).to include(
+      align: :end, content_vertical_align: :start, vertical_align: :center,
+      padding_x: 5, padding_y: 3, rotation: '90', margin: { left: 9 }, foreground: { r: 255, g: 0, b: 0, a: 1.0 }
+    )
+    expect { builder['caption'].angle = 45 }.to raise_error(gtk::UnsupportedOperation)
+    expect { builder['caption'].set_padding(-1, 3) }.to raise_error(gtk::UnsupportedOperation)
+    expect { gtk::TextView.new.accepts_tab = true }.to raise_error(gtk::UnsupportedOperation)
+    validator = Lich::WebUI::Validator.new
+    expect { validator.validate_component!(:grid, { cols: 2, equal_rows: true, row_sizing: :spread }, owner: owner.name, page_id: nil, cid: nil) }.to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'reuses one closed select for a noneditable combo entry and one numeric change stream' do
+    load_xml(<<~XML)
+      <object class="GtkComboBoxText" id="choice"><property name="has-entry">True</property>
+        <property name="can-focus">False</property>
+        <child internal-child="entry"><object class="GtkEntry" id="entry">
+          <property name="editable">False</property><property name="can-focus">True</property>
+          <property name="width-chars">12</property>
+        </object></child><items><item>First</item></items>
+      </object>
+    XML
+    expect(builder['choice'].send(:component_props)).to include(editable: false, min_width_chars: 12)
+    builder['entry'].text = 'First'
+    expect(builder['choice'].active_text).to eq('First')
+    expect { builder['entry'].text = 'Unknown' }.to raise_error(gtk::UnsupportedOperation)
+    spin = gtk::SpinButton.new(0, 100, 1)
+    events = []
+    spin.signal_connect('changed') { events << [:text, spin.buffer.text] }
+    spin.signal_connect('value_changed') { events << [:value, spin.value] }
+    spin.value = 15
+    expect(events).to eq([[:text, '15'], [:value, 15]])
+    expect { spin.buffer.text = '18' }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'keeps combo entry focus on one shared input and maps button requests to minima' do
+    load_xml(<<~XML)
+      <object class="GtkComboBoxText" id="choice"><property name="has-entry">True</property>
+        <child internal-child="entry"><object class="GtkEntry" id="entry">
+          <property name="can-focus">False</property>
+        </object></child><items><item>First</item></items>
+      </object>
+      <object class="GtkButton" id="action"><property name="label">Action</property>
+        <property name="height-request">40</property><property name="width-request">80</property>
+      </object>
+    XML
+    builder['entry'].text = 'Custom'
+    expect(builder['choice'].active_text).to eq('Custom')
+    expect(builder['choice'].send(:component_props)).to include(editable: true)
+    expect(builder['action'].send(:component_props)).to include(min_height: 40, min_width: 80)
+    expect(builder['action'].send(:component_props)).not_to have_key(:height)
+    expect(builder['action'].send(:component_props)).not_to have_key(:width)
+    expect(Lich).to have_received(:log).with(/internal combo entry focus hint is ignored/).once
+    expect { builder['entry'].can_focus = :invalid }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'reports ignored modality without limiting same-owner or other-owner windows' do
+    first = gtk::Window.new
+    first.modal = true
+    second = gtk::Window.new
+    [first, second].each(&:show_all)
+    other = Struct.new(:name).new('other-setup.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(other)
+    third = gtk::Window.new
+    third.modal = true
+    third.show_all
+    Timeout.timeout(3) { sleep 0.005 until service.registry.descriptors.length == 3 }
+    expect(service.registry.pages_for(owner).length).to eq(2)
+    expect(service.registry.pages_for(other).length).to eq(1)
+    expect(service.registry.descriptors).to all(satisfy { |descriptor| !descriptor.key?(:modal_for) })
+  ensure
+    Lich::Common::ScriptDeath.run(other) if other
   end
 
   it 'preserves object identity, literal text and subclass handler resolution' do
@@ -309,11 +548,24 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect(derived.objects.map(&:builder_name)).to all(be_a(String))
     derived.objects.clear
     expect(derived.objects.size).to eq(4)
-    expect(derived['missing']).to be_nil
     derived.connect_signals { |handler| derived.method(handler) }
     derived['save'].send(:emit_handlers, :activate)
     expect(derived.clicked).to eq('001 True & False')
     expect(service.registry.pages_for(owner)).to be_empty
+  end
+
+  it 'refuses undeclared IDs through both lookup APIs without damaging loaded objects' do
+    load_xml('<object class="GtkEntry" id="retained"><property name="text">Keep</property></object>')
+    original = builder['retained']
+    %i[get_object []].each do |lookup|
+      expect { builder.public_send(lookup, :missing) }.to raise_error(gtk::BuilderError) do |error|
+        expect(error.message).to match(/script=builder.lic.*object=missing.*property=get_object.*native WebUI/)
+        expect(error.issues.first).to include(object: 'missing', property: 'get_object')
+        expect(error.diagnostic).to include('object=missing', 'property=get_object', 'blockers=1')
+      end
+    end
+    expect(builder.get_object(:retained)).to equal(original)
+    expect(original.text).to eq('Keep')
   end
 
   it 'resolves forward model, adjustment and buffer references with typed values' do
@@ -369,11 +621,11 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     load_xml('<object class="GtkEntry" id="retained"><property name="text">Keep</property></object>')
     original = builder.objects
     expect do
-      load_xml('<object class="GtkWindow" id="candidate"><child><object class="GtkLabel" id="bad"><property name="angle">90</property></object></child></object>')
-    end.to raise_error(gtk::BuilderError, /script=builder.lic.*object=bad.*property=angle.*unsupported property/)
+      load_xml('<object class="GtkWindow" id="candidate"><child><object class="GtkLabel" id="bad"><property name="angle">45</property></object></child></object>')
+    end.to raise_error(gtk::BuilderError, /script=builder.lic.*object=bad.*property=angle/)
     expect(builder.objects).to eq(original)
     expect(builder['retained'].text).to eq('Keep')
-    expect(builder['candidate']).to be_nil
+    expect { builder['candidate'] }.to raise_error(gtk::BuilderError, /object=candidate/)
     expect(gtk.session.instance_variable_get(:@windows)).to be_empty
     expect(service.registry.pages_for(owner)).to be_empty
     expect { load_xml('<object class="GtkEntry" id="retained"/>') }.to raise_error(gtk::BuilderError, /duplicate identifier/)
@@ -386,8 +638,8 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
   end
 
   it 'retains all unmapped properties and keeps structural diagnostics in queued failures' do
-    xml = '<interface><object class="GtkWindow" id="main"><property name="decorated">False</property><property name="modal">True</property></object></interface>'
-    expect { builder.add_from_string(xml) }.to raise_error(gtk::BuilderError) { |error| expect(error.issues.map { |issue| issue[:property] }).to eq(%w[decorated modal]) }
+    xml = '<interface><object class="GtkWindow" id="main"><property name="decorated">False</property><property name="transient-for">peer</property></object></interface>'
+    expect { builder.add_from_string(xml) }.to raise_error(gtk::BuilderError) { |error| expect(error.issues.map { |issue| issue[:property] }).to eq(%w[decorated transient-for]) }
     messages = Queue.new
     allow(Lich).to receive(:log) { |message| messages << message if message.include?('blockers=') }
     gtk.queue { builder.add_from_string(xml) }

@@ -499,6 +499,35 @@ test('terminal submission permits the server to clear a field back to its origin
   dom.window.close();
 });
 
+for (const type of ['checkbox', 'toggle']) {
+  test(`server reset of a submitted ${type} wins while unsent drafts survive`, t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    const { document, Event } = dom.window;
+    receive({ type: 'hello', pages: [{ address: 'choices' }] });
+    const render = (generation, disabled = false, bound = true) => ({
+      type: 'render', page: 'choices', generation, bindings: bound ? { choice: ['change'] } : {},
+      tree: { type: 'page', cid: 'root', props: {}, children: [
+        { type, cid: 'choice', props: { label: 'Choice', checked: false, disabled, appearance: 'button' }, children: [] }
+      ] }
+    });
+    const control = () => document.querySelector('[data-cid="choice"] input, button[data-cid="choice"]');
+    const checked = () => type === 'checkbox' ? control().checked : control().getAttribute('aria-pressed') === 'true';
+    const change = () => {
+      if (type === 'checkbox') { control().checked = true; control().dispatchEvent(new Event('change')); }
+      else control().click();
+    };
+    receive(render(1));
+    change();
+    assert.equal(sent.at(-1).payload.value, true);
+    receive(render(2, true));
+    assert.equal(checked(), false, 'the callback reset must not be restored as an unsent edit');
+    receive(render(3, false, false));
+    change();
+    receive(render(4, false, false));
+    assert.equal(checked(), true, 'an unsubmitted draft still survives an unrelated render');
+  });
+}
+
 test('cleared sensitive text cannot return on the next render', () => {
   const { dom, receive } = fixture();
   receive({ type: 'hello', pages: [{ address: 'sensitive-text' }] });
@@ -716,7 +745,7 @@ test('independent radio options submit one exclusive choice and button toggles s
   const { dom, receive, sent } = fixture();
   t.after(() => dom.window.close());
   receive({ type: 'hello', pages: [{ address: 'choices' }] });
-  const render = generation => ({ type: 'render', page: 'choices', generation,
+  const render = (generation, toggleChecked = false) => ({ type: 'render', page: 'choices', generation,
     bindings: { first: ['change'], second: ['change'], toggle: ['change'], save: ['activate'] },
     submissions: { save: ['first', 'second', 'toggle'] },
     tree: { type: 'page', cid: 'root', props: {}, children: [
@@ -724,7 +753,7 @@ test('independent radio options submit one exclusive choice and button toggles s
       { type: 'stack', cid: 'row', props: {}, children: [
         { type: 'radio_option', cid: 'second', props: { group: 'mode', label: 'Second', checked: false } }
       ] },
-      { type: 'toggle', cid: 'toggle', props: { label: 'Enabled', appearance: 'button', checked: false } },
+      { type: 'toggle', cid: 'toggle', props: { label: 'Enabled', appearance: 'button', checked: toggleChecked } },
       { type: 'button', cid: 'save', props: { label: 'Save' } }
     ] } });
   receive(render(1));
@@ -734,7 +763,7 @@ test('independent radio options submit one exclusive choice and button toggles s
   assert.deepEqual(sent.at(-1).payload, { value: true });
   dom.window.document.querySelector('.webui-toggle').click();
   assert.deepEqual(sent.at(-1).payload, { value: true });
-  receive(render(2));
+  receive(render(2, true));
   inputs = [...dom.window.document.querySelectorAll('input[type=radio]')];
   assert.deepEqual(inputs.map(input => input.checked), [false, true], 'refresh retains the unsent radio draft');
   assert.equal(dom.window.document.querySelector('.webui-toggle').getAttribute('aria-pressed'), 'true');

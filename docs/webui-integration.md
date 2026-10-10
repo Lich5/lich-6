@@ -341,6 +341,20 @@ a failed addition cannot mutate an existing graph. `objects` returns a snapshot
 in XML order. `builder_name` retains declared IDs and supplies generated names
 for anonymous objects; lookup uses declared IDs only.
 
+`get_object` and `[]` raise `Gtk::BuilderError` for undeclared IDs, identifying
+the script, requested ID and lookup operation and recommending native WebUI
+conversion. This intentionally differs from GTK's `nil` return: Lich's
+`NilClass#method_missing` extension can otherwise silently swallow the subsequent
+widget operation. Scripts needing optional lookups must inspect the `objects`
+snapshot explicitly. A failed lookup does not discard previously loaded objects.
+
+The original `eloot` setup requests `exclusions_label`, which its XML does not
+declare. The shim therefore refuses that lookup during tooltip initialization;
+use the converted native WebUI version. Production GTK can continue past this
+defect because of Lich's nil suppression, but the tooltip is never assigned.
+The retained WebUI conversion builds the exclusions group directly and removes
+the bad lookup; it also omits this help text, despite retaining the `(?)` caption.
+
 The explicit class/property mappings live in
 [`gtk/builder.rb`](../lib/common/script_scope/gtk/builder.rb). They cover existing
 boxes, grids/tables, frames, scrolling containers, paired notebook page/tab
@@ -350,9 +364,11 @@ single cell renderers, and combo boxes. Grid/table coordinates and box packing
 use existing placement APIs. Tree selection and editable combo entry internal
 children expose their owner's real objects. Stores accept typed scalar columns
 and row data; nested rows require `TreeStore`. A renderer accepts one model
-binding. Combo items have plain text labels and optional unique item IDs. Label `style` attributes
-accept `normal` or `italic` through the existing typed text property; arbitrary
-Pango attributes, markup outside the bounded forms below, caption styling and CSS are unsupported. Translation
+binding. Combo items have plain text labels and optional unique item IDs. Label
+`style` attributes accept `normal` or `italic` through the existing typed text
+property; `foreground` attributes accept six- and twelve-digit Pango RGB colors
+through the existing shared color channels. Other Pango attributes, markup outside
+the bounded forms below, caption styling and CSS are unsupported. Translation
 annotations retain literal source text; Builder does not perform localization.
 Frame, expander and notebook captions copy their label text at load time, following
 the existing shim container APIs; later edits to those label objects do not update
@@ -404,9 +420,12 @@ Named ComboBoxText items retain script IDs separately from stable wire row IDs.
 `set_active_id` selects a matching item, returns false without changing selection
 for a missing ID, and nil clears selection. Duplicate IDs are rejected; duplicate
 labels remain distinct. Editable combos delegate focus to their entry facade;
-their container accepts `can-focus=false` while the entry accepts true.
-SpinButton accepts a pre-render `text` declaration only when it represents the
-adjustment's existing numeric value. Differing or live text drafts remain refused.
+their container accepts `can-focus=false` while the entry accepts either boolean.
+An entry request to suppress focus is ignored and reported; the single browser
+input remains keyboard accessible.
+SpinButton accepts finite numeric `text` before publication to initialize its
+adjustment through the existing value setter, including its clamping behavior.
+Invalid, nonfinite and live text assignments remain refused.
 `update` republishes the already parsed viewer value without another change signal.
 
 The bounded drag protocol is primary-button `STRING`, `SAME_APP`, info zero,
@@ -436,12 +455,20 @@ GTK properties:
 
 | Declaration | Accepted behavior |
 | --- | --- |
-| `can-focus` | Only the existing concrete control's focus behavior: `true` for buttons, toggles, checks, radios, entries/search entries, spin controls, text views, notebooks, scrolled windows, expanders, TreeViews and closed combos; `false` for windows, boxes, grids/tables, frames, viewports, plain labels and separators. An editable combo accepts `false` on its container and `true` on its entry facade. Scrolled windows retain browser-native child-first focus. Focusable labels and changed focus policies are refused. |
-| `receives-default` | `true` on Button and `false` on CheckButton acknowledge existing keyboard behavior. A focused button activates with Enter; a checkbox toggles with Space. This does not establish a window-wide default button or checkbox Enter activation. Other values are refused. |
+| `can-focus` | The concrete control retains its existing browser focus behavior. Passive widgets accept `false`; interactive widgets generally require `true`. An editable combo accepts `false` on its container and either boolean on its internal entry facade. Closed combos also accept either boolean. A request to suppress combo focus is reported as an omission: its single browser input remains keyboard accessible. No separate focus target is created for the entry facade. Focusable labels and other changed focus policies remain refused. |
+| `receives-default` | Button accepts `true`. CheckButton accepts either boolean and reports `true` as an ignored default-activation hint. A focused button activates with Enter; a checkbox toggles with Space or click. This does not establish a window-wide default button or checkbox Enter activation. |
 | `draw-indicator` | CheckButton accepts `true`, retaining its native indicator; `false` is refused. |
 | `label-xalign` | Frame accepts zero, retaining its left-aligned caption. Other values are refused. |
 | Frame `width-request` | A minimum requisition, so a wider natural child grid expands the frame. Explicit native core fixed-width constraints retain their meaning. Natural grids keep checkbox/radio labels together rather than overlapping neighboring cells. |
+| Button `width-request`, `height-request` | Map to existing `min_width` and `min_height` geometry. Labels and padding can grow beyond the requested minimum instead of overflowing a fixed button box. |
 | `width-chars` | Entry and Label accept integers 1–1024 through the shared `min_width_chars` property and character metrics. Pixel estimates and the GTK `-1` reset are not supported. |
+| Entry `max-width-chars` | Bounds preferred character width through `max_width_chars`; an internal combo entry forwards character sizing and placeholder text to its single shared input. |
+| Window `modal` | Either boolean is accepted. `true` is reported as ignored: setup windows remain independently interactive, including windows belonging to separate scripts. No application-wide modal system or single-window restriction is introduced. |
+| Grid `row-homogeneous` | Uses equal natural row tracks (`equal_rows`), independently of column homogeneity. Combining equal rows with surplus-height spreading is refused. |
+| `valign` | Bounded `fill`, `start`, `center`, `end` allocation in supported grid, frame and horizontal-box placements. This is separate from text-content alignment; unsupported placements and baseline alignment are refused. |
+| Label `xalign`, `yalign`, `xpad`, `ypad`, `angle` | Independent bounded content alignment and 0–64 pixel content padding; margins are preserved. Rotation accepts only 0/90/180/270 degrees and contributes to layout size. Arbitrary angles and these presentation properties on linked Markdown labels are refused. |
+| Label foreground attributes | Six- and twelve-digit Pango RGB colors map to the existing shared color channels. |
+| TextView `accepts-tab` | Only `false` is supported: Tab navigates to the next control rather than inserting a tab character. |
 | `shadow-type` | Frame accepts `none` as a real zero-width border. ScrolledWindow accepts `none` or `in`; **the inset decoration is deliberately omitted**, the browser theme remains, and the shim logs this declared omission once per session. Other shadow values are refused. |
 | `tab-fill` | Notebook accepts either boolean for nonexpanding tabs, whose natural allocation is unchanged. Expanded-tab packing remains unsupported. |
 
@@ -471,6 +498,45 @@ preflight; later construction/value errors report their failing location.
 `Gtk.queue` logs bounded structural context and the blocker count without logging
 XML property values. A preflight list is not an exhaustive compatibility verdict:
 later constraints still require testing once those blockers are resolved.
+
+Original setup control conventions reuse existing shared inputs: a noneditable
+combo entry selects the closed-select presentation before publication. Existing
+row selections remain intact. Previously assigned free text resolves to the first
+matching label in model order (including a blank label); unmatched empty text
+clears selection. Unmatched nonempty text is refused before editability or the
+value changes, rather than silently discarding it. Numeric
+SpinButton text can initialize its adjustment before publication, while invalid,
+nonfinite and live text assignments are refused. SpinButton `changed` and
+`value_changed` use the same numeric change stream, and `buffer.text` reads its
+formatted current value without introducing a second editable buffer. Container
+enumeration includes the existing composite widgets so original recursive
+sensitivity callbacks can visit their children. TreeView prefix search also
+accepts displayed numeric columns.
+
+Sent checkbox/toggle changes become the renderer's comparison baseline. A
+callback can therefore reset a control to its original value before any
+intermediate render arrives; that reset is not restored as an unsent browser
+draft. Unsubmitted changes retain their existing preservation behavior. This
+applies equally to native WebUI forms and shim-owned controls.
+
+The unchanged `ebounty`, `eherbs` and `BlackArts` setups have independent Chrome
+examples. They exercise settings edits, availability, dependent controls,
+list operations where present, and the original Close/save/destroy callbacks.
+`BlackArts` additionally exercises editable profile/guild choices and both list
+reset actions. Game catalogs and persistence destinations remain isolated.
+The original `ebounty` and `BlackArts` list callbacks still contain
+`uniq!.sort!`, which depends on Lich's production nil suppression when `uniq!`
+returns nil. Their tests load the actual extension in separate Ruby processes;
+the shim neither adds that suppression nor changes the source callbacks.
+The `eloot` missing-ID refusal is also tested with that extension loaded.
+
+Retained native WebUI conversions were reviewed as references: their ordinary
+editable selects and natural action sizing informed combo/button behavior;
+converted `ebounty` also explicitly clears and disables its dependent checkbox.
+Converted `eherbs` uses ordinary availability checks and a Close commit. The
+converted `ebounty`/`BlackArts` list callbacks retain the same nil dependency.
+No script-specific IDs, business rules or converted setup implementations were
+copied into production shim/core code.
 
 The [regression fixtures](../spec/fixtures/webui/README.txt) retain original setup code.
 The unchanged `ewaggle` setup additionally exercises named choices, numeric

@@ -389,6 +389,65 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(nodes(b).find { |node| node['type'] == 'select' }['props']['value']).to eq('none')
   end
 
+  [
+    ['matching text', ['Choice', 'Choice'], 'Choice', 0],
+    ['empty text', ['Choice'], '', -1],
+    ['an empty option label', ['', 'Choice'], '', 0],
+    ['an existing duplicate-label selection', ['Choice', 'Choice'], 1, 1],
+    ['an existing empty selection', ['Choice'], -1, -1]
+  ].each do |description, labels, initial, expected_index|
+    it "preserves #{description} when closing an editable combo before publication" do
+      combo = gtk::ComboBoxText.new(entry: true)
+      labels.each { |label| combo.append_text(label) }
+      initial.is_a?(String) ? combo.child.text = initial : combo.active = initial
+
+      combo.child.editable = false
+
+      expect(combo.active).to eq(expected_index)
+      expect(combo.child.text).to eq(expected_index == -1 ? '' : labels[expected_index])
+      _window, page = show(combo)
+      viewer = connect(page, 'closed-combo')
+      props = nodes(viewer).find { |node| node['type'] == 'select' }.fetch('props')
+      expect(props['editable']).to be(false)
+      expect(props).not_to have_key('free_text_prefix')
+      expect(props['value']).to eq(expected_index == -1 ? 'none' : combo.model.rows[expected_index].key)
+      expect { combo.child.editable = true }.to raise_error(gtk::UnsupportedOperation)
+    end
+  end
+
+  it 'refuses unmatched text before changing combo editability or its value' do
+    combo = gtk::ComboBoxText.new(entry: true)
+    combo.append_text('Choice')
+    combo.child.text = 'Unknown'
+    before = combo.send(:component_props).dup
+
+    expect { combo.child.editable = false }.to raise_error(gtk::UnsupportedOperation, /entry_editable=/)
+
+    expect(combo.send(:component_props)).to eq(before)
+    expect(combo.child.text).to eq('Unknown')
+    expect(combo.active).to eq(-1)
+    _window, page = show(combo)
+    viewer = connect(page, 'still-editable')
+    expect(nodes(viewer).find { |node| node['type'] == 'select' }['props']).to include(
+      'editable' => true, 'free_text_prefix' => 'text:', 'value' => 'text:Unknown'
+    )
+  end
+
+  it 'can reopen a closed combo before publication and assign free text' do
+    combo = gtk::ComboBoxText.new(entry: true)
+    combo.append_text('Choice')
+    combo.child.text = 'Choice'
+    combo.child.editable = false
+    combo.child.editable = true
+    expect(combo.active).to eq(0)
+    combo.child.text = 'Custom'
+    _window, page = show(combo)
+    viewer = connect(page, 'reopened-combo')
+    expect(nodes(viewer).find { |node| node['type'] == 'select' }['props']).to include(
+      'editable' => true, 'free_text_prefix' => 'text:', 'value' => 'text:Custom'
+    )
+  end
+
   it 'targets programmatic expansion and cursor updates to the callback viewer and retains them on Save' do
     model = gtk::TreeStore.new(String)
     root = model.append

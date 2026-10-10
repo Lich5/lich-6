@@ -326,6 +326,9 @@ module Lich
       end
 
       def validate_grid!(props, context)
+        if props[:equal_rows] && props[:row_sizing] == 'spread'
+          violation!('equal rows cannot also spread unequal natural row heights', context, :row_sizing)
+        end
         columns = props[:expand_columns] || []
         return if columns.uniq == columns && columns.all? { |column| column <= props[:cols] }
 

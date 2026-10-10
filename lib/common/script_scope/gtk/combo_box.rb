@@ -23,6 +23,21 @@ module Lich
           end
           alias set_text text=
 
+          # The facade has no separate browser focus target. GTK's request to
+          # suppress its focus is omitted; the combo remains keyboard accessible.
+          def can_focus=(value)
+            session.refuse(self, :can_focus=) unless [true, false].include?(value)
+            session.degrade(:combo_entry_focus, 'internal combo entry focus hint is ignored; its single browser input remains keyboard accessible') unless value
+          end
+          alias set_can_focus can_focus=
+
+          # A noneditable combo entry becomes the existing closed selector,
+          # retaining this facade for text reads and option-change notifications.
+          # It remains keyboard focusable; it is not a passive Label.
+          def editable=(value)
+            @combo.set_entry_editable(value)
+          end
+
           # Forwards changed notifications from the combo's single shared input.
           # @param name [String, Symbol] changed
           # @yieldparam entry [ComboEntry] this entry
@@ -39,8 +54,11 @@ module Lich
 
           protected
 
-          def write(property, _value)
-            session.refuse(self, property)
+          # Character sizing belongs to the combo's single browser input.
+          # Other entry writes still require an explicit shared-control mapping.
+          def write(property, value)
+            session.refuse(self, property) unless %i[min_width_chars max_width_chars placeholder].include?(property)
+            @combo.send(:write, property, value)
           end
         end
 
@@ -67,10 +85,32 @@ module Lich
 
           def has_entry? = !child.nil?
 
+          # Select the shared input presentation before publication. Runtime
+          # changes would replace an input and need a separate lifecycle design.
+          # @api private
+          def set_entry_editable(value)
+            session.synchronize do
+              session.refuse(self, :entry_editable=) unless has_entry? && !@handle && [true, false].include?(value)
+              choice = @props[:value]
+              if !value && choice.start_with?('text:')
+                # A closed select must retain a real option or the blank sentinel.
+                # Resolve text before mutation so refusal never discards script state.
+                choice = closed_entry_choice(choice.delete_prefix('text:'))
+                session.refuse(self, :entry_editable=) unless choice
+              end
+              @props[:value] = choice
+              @props[:editable] = value
+              value ? @props[:free_text_prefix] = 'text:' : @props.delete(:free_text_prefix)
+            end
+          end
+
           # Editable combos delegate focus to their existing single input facade;
           # closed selects own focus themselves. No second focus target is created.
           def can_focus=(value)
-            session.refuse(self, :can_focus=) unless value == !has_entry?
+            session.refuse(self, :can_focus=) unless value == !has_entry? || (!has_entry? && value == false)
+            if !has_entry? && value == false
+              session.degrade(:combo_focus, 'closed combo focus hints are ignored; its single browser select remains keyboard accessible')
+            end
           end
           alias set_can_focus can_focus=
 
@@ -243,7 +283,13 @@ module Lich
           # @api private
           def set_entry_text(text)
             session.refuse(self, :text=) unless has_entry? && text.is_a?(String) && text.length <= Lich::WebUI::Contract::BOUNDS[:input_text] - 5
-            set_choice("text:#{text}")
+            if @props[:editable]
+              set_choice("text:#{text}")
+            else
+              choice = closed_entry_choice(text)
+              session.refuse(self, :text=) unless choice
+              set_choice(choice)
+            end
           end
 
           # Updates labels and identity choices while preserving surviving viewer selections.
@@ -305,6 +351,13 @@ module Lich
           end
 
           private
+
+          # Matches the first label in model order, including a real blank label;
+          # only unmatched empty text resolves to the no-selection sentinel.
+          # @return [String, nil] row ID, empty sentinel or no representable choice
+          def closed_entry_choice(text)
+            model.rows.find { |iter| iter[@label_column] == text }&.key || ('none' if text.empty?)
+          end
 
           # Validates the live write before notifying combo and entry observers.
           # @param value [String] row ID, clearing sentinel or encoded literal text

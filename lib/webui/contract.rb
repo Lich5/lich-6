@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.13.0'
+      VERSION = '2.14.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -159,7 +159,7 @@ module Lich
         log: %i[key hidden align margin width height],
         progress: %i[key tooltip hidden align margin width height tone],
         image: %i[key tooltip hidden align margin width height],
-        button: %i[key tooltip disabled hidden align margin width emphasis tone],
+        button: %i[key tooltip disabled hidden align margin width min_height emphasis tone],
         toggle: %i[key tooltip disabled hidden align margin width tone],
         checkbox: %i[key tooltip disabled hidden align margin width tone],
         radio: %i[key tooltip disabled hidden align margin width tone],
@@ -238,7 +238,7 @@ module Lich
         grid: {
           properties: {
             cols: property(integer(min: 1, max: 24), required: true),
-            homogeneous: property(BOOL, default: true),
+            homogeneous: property(BOOL, default: true), equal_rows: property(BOOL, default: false),
             expand_columns: property(array(integer(min: 1, max: 24), max: 24)),
             row_sizing: property(enum(:auto, :spread), default: :auto),
             cells: property(integer(min: 0, max: BOUNDS[:children])),
@@ -411,7 +411,7 @@ module Lich
         select: {
           properties: {
             label: property(SHORT), options: property(OPTIONS, required: true),
-            editable: property(BOOL, default: false),
+            editable: property(BOOL, default: false), placeholder: property(SHORT),
             # Optional disjoint encoding for free text when labels and option IDs differ.
             free_text_prefix: property(SHORT),
             empty_value: property(string(:input_text)),
@@ -656,7 +656,15 @@ module Lich
             # conversions opt in without changing existing width semantics.
             base[:properties][:min_width] = property(integer(min: 0, max: 65_536)) if ATTRIBUTE_APPLICABILITY.fetch(type).include?(:width)
             base[:properties].merge!(COMPOSITE_PROPERTIES) if type == :composite
-            base[:properties].merge!(TEXT_STYLE_PROPERTIES) if type == :text
+            # Grid-child allocation is distinct from text alignment. Single-child
+            # frames use their existing content_align property instead.
+            base[:properties][:vertical_align] = property(enum(:start, :center, :end, :stretch)) unless type == :page
+            if type == :text
+              base[:properties].merge!(TEXT_STYLE_PROPERTIES)
+              base[:properties].merge!(padding_x: property(integer(min: 0, max: 64)), padding_y: property(integer(min: 0, max: 64)),
+                                       content_vertical_align: property(enum(:start, :center, :end)),
+                                       rotation: property(enum(0, 90, 180, 270)))
+            end
             base[:properties][:fill] = property(BOOL, default: false) if %i[stack columns table split group].include?(type)
             if type == :group
               base[:properties].merge!(padding: property(integer(min: 0, max: 64)),
@@ -666,10 +674,10 @@ module Lich
                                        surface_events: property(BOOL, default: false), context_menu: property(IDENT))
               base[:events][:surface_activate] = COMPOSITE_EVENTS.fetch(:surface_activate)
             end
-            if %i[text text_input].include?(type)
+            if %i[text text_input select].include?(type)
               base[:properties][:min_width_chars] = property(integer(min: 1, max: 1024))
             end
-            if type == :text_input
+            if %i[text_input select].include?(type)
               base[:properties][:max_width_chars] = property(integer(min: 1, max: 1024))
             end
             if %i[text_input select].include?(type)

@@ -77,20 +77,22 @@ module Lich
             'visible' => [:visible, :boolean], 'sensitive' => [:sensitive=, :boolean],
             'width-request' => [:set_width_request, :integer], 'height-request' => [:set_height_request, :integer],
             'border-width' => [:set_border_width, :integer], 'tooltip-text' => [:set_tooltip_text, :text],
-            'halign' => [:halign=, :symbol], 'hexpand' => [:set_hexpand, :boolean], 'vexpand' => [:set_vexpand, :boolean],
+            'halign' => [:halign=, :symbol], 'valign' => [:valign=, :symbol], 'hexpand' => [:set_hexpand, :boolean], 'vexpand' => [:set_vexpand, :boolean],
             'margin-start' => [:set_margin_start, :integer], 'margin-end' => [:set_margin_end, :integer],
             'margin-left' => [:set_margin_left, :integer], 'margin-right' => [:set_margin_right, :integer],
             'margin-top' => [:margin_top, :integer], 'margin-bottom' => [:margin_bottom, :integer],
           }.freeze
           PROPERTIES = {
             Window             => { 'title' => [:title=, :text], 'default-width' => [:default_width=, :integer],
-                        'default-height' => [:default_height=, :integer], 'resizable' => [:resizable=, :boolean] },
+                        'default-height' => [:default_height=, :integer], 'resizable' => [:resizable=, :boolean], 'modal' => [:modal=, :boolean] },
             Grid               => { 'row-spacing' => [:row_spacing=, :integer], 'column-spacing' => [:column_spacing=, :integer],
-                      'column-homogeneous' => [:column_homogeneous=, :boolean] },
-            Label              => { 'label' => [:text=, :text], 'wrap' => [:wrap=, :boolean], 'xalign' => [:label_align, :number],
+                      'column-homogeneous' => [:column_homogeneous=, :boolean], 'row-homogeneous' => [:row_homogeneous=, :boolean] },
+            Label              => { 'label' => [:text=, :text], 'wrap' => [:wrap=, :boolean], 'xalign' => [:xalign=, :number], 'yalign' => [:yalign=, :number],
+                       'xpad' => [:xpad=, :integer], 'ypad' => [:ypad=, :integer], 'angle' => [:angle=, :number],
                        'selectable' => [:set_selectable, :boolean], 'width-chars' => [:set_width_chars, :integer], 'use-markup' => [:use_markup=, :boolean] },
             Entry              => { 'text' => [:text=, :text], 'placeholder-text' => [:placeholder_text=, :text],
-                       'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number], 'width-chars' => [:set_width_chars, :integer] },
+                       'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number], 'width-chars' => [:set_width_chars, :integer],
+                       'max-width-chars' => [:set_max_width_chars, :integer] },
             Button             => { 'label' => [:label=, :text], 'receives-default' => [:receives_default=, :boolean] },
             CheckButton        => { 'draw-indicator' => [:draw_indicator=, :boolean], 'receives-default' => [:receives_default=, :boolean] },
             Frame              => { 'label-xalign' => [:label_xalign=, :number], 'shadow-type' => [:shadow_type=, :symbol] },
@@ -100,7 +102,7 @@ module Lich
             SpinButton         => { 'value' => [:set_value, :number], 'digits' => [:digits=, :integer], 'numeric' => [:numeric=, :boolean] },
             ComboBox           => { 'active' => [:active=, :integer], 'entry-text-column' => [:entry_text_column=, :integer] },
             TextView           => { 'editable' => [:editable=, :boolean], 'cursor-visible' => [:cursor_visible=, :boolean],
-                          'wrap-mode' => [:wrap_mode=, :symbol] },
+                          'wrap-mode' => [:wrap_mode=, :symbol], 'accepts-tab' => [:accepts_tab=, :boolean] },
             TextBuffer         => { 'text' => [:set_text, :text] },
             Expander           => { 'label' => [:set_label, :text], 'expanded' => [:set_expanded, :boolean] },
             TreeView           => { 'headers-visible' => [:headers_visible=, :boolean], 'search-column' => [:search_column=, :integer],
@@ -124,8 +126,17 @@ module Lich
           def objects = @objects.dup
 
           # @param id [String, Symbol] XML identifier
-          # @return [Object, nil] the original object, or nil for an unknown identifier
-          def get_object(id) = @by_id[id.to_s]
+          # @return [Object] the original object for a declared identifier
+          # @raise [BuilderError] undeclared identifier; unlike GTK, lookup never returns nil
+          def get_object(id)
+            # Refuse at lookup so Lich's NilClass extension cannot silently swallow
+            # a subsequent widget operation. Optional lookups must inspect objects.
+            session.synchronize do
+              @by_id.fetch(id.to_s) do
+                fail_at(nil, 'get_object', 'undeclared object identifier; update the script to native WebUI', object_id: id.to_s)
+              end
+            end
+          end
           alias [] get_object
 
           # Parses bounded local XML without evaluating Ruby or resolving external entities.
@@ -406,7 +417,6 @@ module Lich
               current = object.instance_variable_get(:@props)[:margin]
               margins = current.is_a?(Hash) ? current : %i[top right bottom left].to_h { |key| [key, current || 0] }
               object.send(:write, :margin, margins.merge(side => converted))
-            when :label_align then object.set_alignment(converted, 0.5)
             else object.public_send(method, converted)
             end
           end
@@ -524,9 +534,20 @@ module Lich
             end
             element.elements.each('attributes/attribute') do |attribute|
               @location = [element, 'attributes']
-              valid = object.is_a?(Label) && attribute.attributes['name'] == 'style' && %w[normal italic].include?(attribute.attributes['value'])
-              fail_at(element, 'attributes', 'unsupported text attribute') unless valid
-              object.send(:write, :font_style, attribute.attributes['value'])
+              fail_at(element, 'attributes', 'text attributes require a Label') unless object.is_a?(Label)
+              name, value = [attribute.attributes['name'], attribute.attributes['value']]
+              case name
+              when 'style'
+                fail_at(element, 'attributes', 'unsupported text attribute') unless %w[normal italic].include?(value)
+                object.send(:write, :font_style, value)
+              when 'foreground'
+                # Pango's 16-bit RGB literals become bounded numeric channels;
+                # source attributes are never passed through as arbitrary CSS.
+                color = Color.parse(value)
+                fail_at(element, 'attributes', 'unsupported foreground color') unless color
+                object.send(:write, :foreground, color)
+              else fail_at(element, 'attributes', 'unsupported text attribute')
+              end
             end
             element.elements.each('signal') { |signal| prepare_signal(object, element, signal) }
           end
@@ -599,8 +620,9 @@ module Lich
               xml_class: node.is_a?(REXML::Element) ? node.attributes['class'] : nil, property: operation, reason: reason }
           end
 
-          def fail_at(element, operation, reason, issues: nil)
+          def fail_at(element, operation, reason, issues: nil, object_id: nil)
             detail = issue(element, operation, reason)
+            detail[:object] = object_id if object_id
             begin
               session.refuse(self, :Builder)
             rescue UnsupportedOperation => error

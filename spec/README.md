@@ -65,6 +65,16 @@ destroy the setup without saving. Fixture provenance and limits are recorded in
 The unchanged `ewaggle` Builder fixture adds table prefix search, cross-list
 transfers, original same-list duplication, named choices, numeric edits and save
 callbacks. It uses the same browser command below and runs in the existing CI job.
+The original `ebounty`, `eherbs`, and `BlackArts` setups each have an independent
+browser example in that job. A failure in one does not skip the others. Their
+tests cover dependent checkbox resets, availability, editable combo choices,
+list add/delete/reset, button sizing, and Close/save as applicable. The original
+`ebounty` and `BlackArts` list callbacks require Lich's nil extension; their
+examples invoke the same selected example in a separate Ruby process with that
+actual extension loaded. Child failures or an empty/pending child run fail the
+parent example. The parent suite's NilClass remains unchanged. The expected
+`eloot` missing-ID refusal is checked in the same production environment.
+
 Native external-link policy can be checked on macOS without opening a browser:
 
 ```bash
