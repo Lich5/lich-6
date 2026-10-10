@@ -241,6 +241,12 @@ module Lich
         end
       end
 
+      # Reads the accepted input before a terminal submission replaces it.
+      # @return [Object] current viewer-local input value
+      def input_value(attachment, component)
+        property(attachment, component, input_property(component.type))
+      end
+
       # Maps a validated submission value to the control's supported input property.
       # @return [void]
       def set_input(attachment, component, value)

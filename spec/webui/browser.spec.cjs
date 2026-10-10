@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -33,6 +33,98 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
+  } else if (['shim-ebounty', 'shim-eherbs', 'shim-blackarts'].includes(scenario)) {
+    const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const widget = name => page.locator(`[data-cid="${ids[name]}"]`);
+    const reveal = async name => {
+      const parents = await widget(name).evaluate(element => {
+        const result = [];
+        for (let panel = element.closest('[role="tabpanel"]'); panel; panel = panel.parentElement.closest('[role="tabpanel"]')) {
+          result.unshift({ cid: panel.parentElement.dataset.cid,
+            index: [...panel.parentElement.children].filter(child => child.matches('[role="tabpanel"]')).indexOf(panel) });
+        }
+        return result;
+      });
+      for (const parent of parents) {
+        await page.locator(`[data-cid="${parent.cid}"] > .tab-list > button`).nth(parent.index).click();
+      }
+      await expect(widget(name)).toBeVisible();
+      return widget(name);
+    };
+    await page.setViewportSize(scenario === 'shim-eherbs' ? { width: 800, height: 700 } : { width: 1000, height: 850 });
+    if (scenario === 'shim-ebounty') {
+      await (await reveal('culling_max')).locator('input').fill('25');
+      await widget('culling_max').locator('input').press('Tab');
+      await (await reveal('selling_script')).locator('input').fill('fixture-sell');
+      await widget('selling_script').locator('input').press('Tab');
+      await (await reveal('once_and_done')).locator('input').check();
+      await expect(widget('new_bounty_on_exit').locator('input')).toBeEnabled();
+      await widget('new_bounty_on_exit').locator('input').check();
+      await widget('once_and_done').locator('input').uncheck();
+      await expect(widget('new_bounty_on_exit').locator('input')).toBeDisabled();
+      await expect(widget('new_bounty_on_exit').locator('input')).not.toBeChecked();
+      await (await reveal('keep_hunting')).locator('input').check();
+      await widget('exp_pause').locator('input').check();
+      await expect(widget('keep_hunting').locator('input')).not.toBeChecked();
+      await (await reveal('creature_exclude_entry')).locator('input').fill('fixture creature');
+      await widget('creature_exclude_add').click();
+      await expect(widget('creature_exclude').locator('tbody tr')).toHaveCount(1);
+      await widget('creature_exclude').locator('tbody tr').click();
+      await widget('creature_exclude_delete').click();
+      await expect(widget('creature_exclude').locator('tbody tr')).toHaveCount(0);
+      // A quarter-turn must contribute a vertical footprint instead of merely
+      // painting rotated text over neighboring grid cells.
+      const rotation = page.locator('.webui-rotated-text');
+      const rotationPanel = await rotation.evaluate(el => [...el.closest('.tab-panel').parentElement.children]
+        .filter(child => child.matches('.tab-panel')).indexOf(el.closest('.tab-panel')));
+      await page.getByRole('tab').nth(rotationPanel).click();
+      await expect(rotation).toBeVisible();
+      const box = await rotation.boundingBox();
+      expect(box.height).toBeGreaterThan(box.width);
+    } else if (scenario === 'shim-eherbs') {
+      await (await reveal('herb_container')).locator('input').fill('herb sack');
+      await widget('herb_container').locator('input').press('Tab');
+      await widget('buy_missing').locator('input').check();
+      await expect(widget('use650').locator('input')).toBeDisabled();
+    } else {
+      await (await reveal('guild_pause')).locator('input').fill('25');
+      await widget('guild_pause').locator('input').press('Tab');
+      await expect((await reveal('shadow_drop_item')).locator('input')).toBeDisabled();
+      await expect((await reveal('use_wracking')).locator('input')).toBeDisabled();
+      // The internal GTK entry has no separate focus target. The shared combo
+      // remains operable by both keyboard text input and named option selection.
+      const profile = (await reveal('profile_a')).locator('input');
+      await profile.focus();
+      await expect(profile).toBeFocused();
+      await profile.fill('travel');
+      await profile.press('Tab');
+      const guild = (await reveal('home_guild')).locator('input');
+      await guild.fill("Wehnimer's Landing");
+      await guild.press('Tab');
+      for (const [key, reset] of [['item_include', 'btn_reset'], ['consignment_include', 'btn_consignment_reset']]) {
+        const table = await reveal(key);
+        const count = await table.locator('tbody tr').count();
+        await widget(`${key}_entry`).locator('input').fill('fixture reagent');
+        await widget(`${key}_add`).click();
+        await expect(table.locator('tbody tr')).toHaveCount(count + 1);
+        await table.getByText('fixture reagent', { exact: true }).click();
+        await widget(`${key}_delete`).click();
+        await expect(table.locator('tbody tr')).toHaveCount(count);
+        await widget(`${key}_entry`).locator('input').fill('fixture reset');
+        await widget(`${key}_add`).click();
+        await expect(table.locator('tbody tr')).toHaveCount(count + 1);
+        await widget(reset).click();
+        await expect(table.locator('tbody tr')).toHaveCount(count);
+      }
+      const reset = widget('btn_consignment_reset');
+      await expect(reset).toBeVisible();
+      await expect(reset).toHaveCSS('min-height', '20px');
+      expect((await reset.boundingBox()).height).toBeGreaterThan(20);
+      expect(await reset.evaluate(button => button.scrollWidth <= button.clientWidth)).toBe(true);
+    }
+    await page.screenshot({ path: require('path').join(__dirname, 'test-results', `${scenario}.png`), fullPage: true });
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'shim-ewaggle') {
     await page.setViewportSize({ width: 730, height: 800 });
     await expect.poll(() => page.evaluate(() => {
@@ -87,6 +179,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(page.getByRole('link')).toHaveCount(3);
     await expect(page.getByRole('link').first()).toHaveAttribute('rel', 'noopener noreferrer');
     await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'shim-builder') {
     await expect(page.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
     for (const viewport of [{ width: 650, height: 675 }, { width: 1000, height: 850 }]) {
@@ -135,6 +228,9 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(page.getByText('To save properly, exit with the close button and not the X window -->', { exact: true })).toHaveCSS('font-style', 'italic');
     await close.focus();
     await close.press('Enter');
+    // Keep the transport alive through save/close callbacks and any stale-event
+    // retry. A dispatched DOM click is not server confirmation of completion.
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'shim-models') {
     await expect(page.locator('tbody tr')).toHaveCount(1);
     await page.getByRole('button', { name: 'Expand Parent' }).click();

@@ -272,7 +272,10 @@ module Lich
           end
           binding_id = "binding-#{SecureRandom.hex(16)}".freeze
           @bindings.delete(node.bindings[name])
-          @bindings[binding_id] = [handle, name, callable]
+          @bindings[binding_id] = [handle, name, proc do |context|
+            reconcile_submission(context) if context.submission
+            callable.call(context)
+          end]
           node.bindings[name] = binding_id
           dirty!(root_for(node))
           binding_id
@@ -447,6 +450,27 @@ module Lich
             adapter.send(:render_snapshot, self, children, scope)
           end
           @mutex.synchronize { child.cid = draft.cid }
+        end
+      end
+
+      # Legacy forms commonly save a hash maintained by change handlers instead
+      # of reading widgets on Close. Reconcile only inputs changed by the final
+      # snapshot; already accepted change events must not fire a second time.
+      # Call outside the adapter monitor, in the same viewer/dispatcher turn.
+      def reconcile_submission(context)
+        handles = @mutex.synchronize { @nodes.values.to_h { |node| [node.cid, node.handle] } }
+        context.submission.input_changes.each do |component|
+          callback = @mutex.synchronize do
+            node = @nodes[handles[component.cid]]
+            next unless node && root_for(node).page.equal?(context.page)
+
+            binding = node&.bindings&.[](:change)
+            @bindings[binding]&.last if binding
+          end
+          next unless callback
+
+          callback.call(context.with(component: component, event: :change,
+                                     payload: { value: context.submission[component.cid] }.freeze, submission: nil))
         end
       end
 

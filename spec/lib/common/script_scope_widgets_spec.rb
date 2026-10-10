@@ -881,10 +881,29 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(spin.text).to eq('10.00')
     error = compatibility.const_get(:UnsupportedOperation)
     expect { spin.set_digits(21) }.to raise_error(error)
-    expect { spin.set_text('3.0') }.to raise_error(error)
+    # Builder numeric text initializes the adjustment before publication and
+    # follows the same formatting and ordered signals as a numeric assignment.
+    observed.clear
+    expect(spin.set_text('3.0')).to equal(spin)
+    spin.set_text('3.0')
+    expect([spin.value, adjustment.value, spin.text]).to eq([3.0, 3.0, '3.00'])
+    expect(observed).to eq([[:first, 3.0], [:second, '3.00'], [:adjustment, 3.0]])
+    ['invalid', 'NaN', 'Infinity', '1e9999', nil].each do |text|
+      expect { spin.set_text(text) }.to raise_error(error)
+    end
+    expect(spin.value).to eq(3.0)
     expect { adjustment.set_value(Float::NAN) }.to raise_error(error)
     expect { compatibility.const_get(:SpinButton).new(adjustment) }.to raise_error(error)
     expect { compatibility.const_get(:SpinButton).new(compatibility.const_get(:Adjustment).new(1, 0, 10, 1, 2, 1)) }.to raise_error(error)
+
+    window = compatibility.const_get(:Window).new('Numeric initialization')
+    window.add(spin)
+    window.show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    expect { spin.set_text('4.0') }.to raise_error(error)
+    expect(spin.value).to eq(3.0)
+    expect(page.last_render.tree.each.find { |node| node.type == :number_input }.props[:value]).to eq(3.0)
   end
 
   describe 'adjustment notification context' do

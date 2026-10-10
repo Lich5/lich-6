@@ -8,6 +8,12 @@ module Lich
   module Common
     module ScriptScope
       module Gtk
+        # Marker for supported legacy containers. Iteration exposes a snapshot
+        # of actual children, so recursive sensitivity changes stay script-owned.
+        module Container
+          def each(&block) = children.each(&block)
+        end
+
         # Shadow objects preserve synchronous reads and GTK mutator chaining.
         # Only materialized widgets own opaque port handles. Destruction removes
         # the browser surface while leaving Ruby metadata readable, as MyFletch
@@ -61,11 +67,13 @@ module Lich
             insert_child(child, @children.length)
           end
 
-          # spellson keeps its display ordered as spells appear and expire.
+          # GTK moves a negative or past-end position to the final child. This
+          # also preserves Glade packing positions with omitted placeholder slots.
           def reorder_child(child, index)
-            session.refuse(self, :reorder_child) unless child.parent.equal?(self) && index.is_a?(Integer) && index.between?(0, @children.length - 1)
+            session.refuse(self, :reorder_child) unless child.parent.equal?(self) && index.is_a?(Integer)
             session.synchronize do
               @children.delete(child)
+              index = @children.length if index.negative? || index > @children.length
               @children.insert(index, child)
               if @handle
                 session.port.detach(@handle, child.materialize)
@@ -238,8 +246,18 @@ module Lich
             write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(right: value))
           end
 
-          # Maps the supported start/center/end alignment tokens to the shared control.
-          # @raise [UnsupportedOperation] for other tokens
+          # Aligns the widget in its allocated grid cell or enclosing frame.
+          # Content alignment (Label#yalign=) is a separate request.
+          # @param value [Symbol] :fill, :start, :center or :end
+          def valign=(value)
+            session.refuse(self, :valign=) unless %i[fill start center end].include?(value)
+            write(:vertical_align, value == :fill ? :stretch : value)
+            refresh_layout!
+          end
+          alias set_valign valign=
+
+          # Applies horizontal start/center/end alignment.
+          # @return [Widget] self
           def halign=(value)
             session.refuse(self, :halign=) unless %i[start center end].include?(value)
             write(:align, value)
@@ -405,7 +423,17 @@ module Lich
             refresh_layout!
           end
 
-          def component_props = @props.merge(layout_props)
+          # Vertical allocation is supported in grids and single-child frames.
+          # Refuse other parents instead of accidentally treating a flex cross axis
+          # as vertical. Builder attaches parents before this validation runs.
+          def component_props
+            if @props.key?(:vertical_align) && parent && !parent.is_a?(Table) && !parent.is_a?(Frame) &&
+               !(parent.is_a?(Box) && !parent.vertical?)
+              session.refuse(self, :valign_parent)
+            end
+            @props.merge(layout_props)
+          end
+
           def layout_props = {}
           def signal_map = {}
           def input_property = nil
@@ -480,6 +508,8 @@ module Lich
         end
 
         class Window < Widget
+          include Container
+
           TOPLEVEL = :toplevel
           Allocation = Data.define(:width, :height)
 
@@ -609,6 +639,20 @@ module Lich
           end
           alias icon= set_icon
 
+          # Browser setup windows remain independently interactive. Retain the GTK
+          # hint, but report that blocking peer windows is not implemented here;
+          # this does not alter owner isolation or impose a window-count limit.
+          # @param value [Boolean] requested GTK modality
+          def modal=(value)
+            session.refuse(self, :modal=) unless [true, false].include?(value)
+            @modal = value
+            session.degrade(:window_modal, 'GTK window modality is ignored; setup windows remain independently interactive') if value
+          end
+          alias set_modal modal=
+
+          # @return [Boolean] retained request, not a claim of host enforcement
+          def modal? = @modal == true
+
           # Requests native topmost behavior through the shared presentation contract.
           # Unsupported hosts retain the request and report their normal degradation.
           # @param value [Boolean] whether to keep this window above ordinary windows
@@ -672,6 +716,8 @@ module Lich
         end
 
         class Box < Widget
+          include Container
+
           # @api private
           def vertical? = @orientation == :vertical
 
@@ -785,6 +831,8 @@ module Lich
         end
 
         class Alignment < Widget
+          include Container
+
           # Maps a bounded horizontal fraction to start/center/end in a stack wrapper.
           # All four legacy arguments are validated; arbitrary GTK allocation is not reproduced.
           def initialize(xalign, yalign, xscale, yscale)
@@ -805,6 +853,8 @@ module Lich
         end
 
         class Frame < Widget
+          include Container
+
           # A frame's requested width is a minimum; it must still contain its
           # child's natural requisition instead of clipping the grid decoration.
           def set_width_request(value)
@@ -844,9 +894,20 @@ module Lich
           protected
 
           def component_type = :group
+
+          # A frame aligns its child's natural height within its own allocation.
+          # Explicit :start resets an earlier center/end request after live edits.
+          def layout_props
+            alignment = @children.first&.instance_variable_get(:@props)&.fetch(:vertical_align, nil)
+            return {} unless alignment || @published_layout&.key?(:content_align)
+
+            { content_align: alignment && alignment != :stretch ? alignment : :start }
+          end
         end
 
         class Notebook < Widget
+          include Container
+
           # Creates an empty tab set with the first tab selected by default.
           def initialize
             super
@@ -902,12 +963,36 @@ module Lich
           end
           alias set_text text=
 
-          # Maps horizontal 0/intermediate/1 to start/center/end after validating both axes.
+          # Maps unit-interval fractions to start/center/end content alignment.
+          # Independent setters preserve the other axis regardless of XML order.
           # @return [Label] self
           def set_alignment(horizontal, vertical)
             session.refuse(self, :set_alignment) unless [horizontal, vertical].all? { |value| value.is_a?(Numeric) && value.between?(0, 1) }
-            write(:align, horizontal.zero? ? :start : (horizontal == 1 ? :end : :center))
+            self.xalign = horizontal
+            self.yalign = vertical
+            self
           end
+
+          # @param value [Numeric] horizontal content alignment, 0..1
+          def xalign=(value)
+            session.refuse(self, :xalign=) unless value.is_a?(Numeric) && value.between?(0, 1)
+            write(:align, value.zero? ? :start : (value == 1 ? :end : :center))
+          end
+
+          # @param value [Numeric] vertical content alignment, 0..1
+          def yalign=(value)
+            session.refuse(self, :yalign=) unless !@link_markup && value.is_a?(Numeric) && value.between?(0, 1)
+            write(:content_vertical_align, value.zero? ? :start : (value == 1 ? :end : :center))
+          end
+
+          # Quarter-turns retain literal text and participate in natural sizing.
+          # Arbitrary angles and linked Markdown labels remain unsupported.
+          # @param value [Numeric] counterclockwise degrees: 0, 90, 180 or 270
+          def angle=(value)
+            session.refuse(self, :angle=) unless !@link_markup && [0, 90, 180, 270].include?(value)
+            write(:rotation, value.to_i.to_s)
+          end
+          alias set_angle angle=
 
           # Validates selectability and reports that browser text remains selectable.
           # @return [Label] self
@@ -953,6 +1038,7 @@ module Lich
           # Only literal text and HTTP(S) anchors become existing typed Markdown.
           # Unsupported markup is refused, never passed to innerHTML or stripped.
           def set_link_markup(value)
+            session.refuse(self, :set_markup) if @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align])
             session.refuse(self, :set_markup) if @handle && !@link_markup
             document = REXML::Document.new("<label>#{value}</label>")
             content = document.root.children.map do |part|
@@ -985,10 +1071,27 @@ module Lich
           alias set_line_wrap set_wrap
           alias line_wrap= set_wrap
 
-          # Uses the larger requested axis as uniform text margin.
+          # Text padding belongs inside the label and never overwrites margins.
+          # @param x [Integer] left/right inset, 0..64
+          # @param y [Integer] top/bottom inset, 0..64
           # @return [Label] self
           def set_padding(x, y)
-            write(:margin, [Integer(x), Integer(y)].max)
+            session.refuse(self, :set_padding) unless [x, y].all? { |value| value.is_a?(Integer) && value.between?(0, 64) }
+            self.xpad = x
+            self.ypad = y
+            self
+          end
+
+          # @param value [Integer] horizontal padding, 0..64
+          def xpad=(value)
+            session.refuse(self, :xpad=) unless !@link_markup && value.is_a?(Integer) && value.between?(0, 64)
+            write(:padding_x, value)
+          end
+
+          # @param value [Integer] vertical padding, 0..64
+          def ypad=(value)
+            session.refuse(self, :ypad=) unless !@link_markup && value.is_a?(Integer) && value.between?(0, 64)
+            write(:padding_y, value)
           end
 
           # Requests a minimum character width using the existing browser-font metric.
@@ -1044,6 +1147,15 @@ module Lich
             session.refuse(self, :set_width_chars) unless count.is_a?(Integer) && count.between?(1, 1024)
             write(:min_width_chars, count)
           end
+
+          # Caps the entry's natural character width through the existing core
+          # metric. This is presentation sizing, not a limit on entered text.
+          # @param count [Integer] 1..1024; reset requests remain unsupported
+          def set_max_width_chars(count)
+            session.refuse(self, :set_max_width_chars) unless count.is_a?(Integer) && count.between?(1, 1024)
+            write(:max_width_chars, count)
+          end
+          alias max_width_chars= set_max_width_chars
 
           # Maps a unit-interval fraction to start/center/end text alignment.
           # @raise [UnsupportedOperation] for out-of-range values
@@ -1136,10 +1248,14 @@ module Lich
           alias set_mode draw_indicator=
 
           # Space toggles a checkbox; it does not receive the focused default action.
-          # @param value [Boolean] only false is supported
+          # GTK default-activation routing has no checkbox equivalent in the
+          # browser. Accept the hint explicitly, retaining normal Space/click
+          # activation and reporting the ignored true request once per session.
+          # @param value [Boolean] either value is accepted; true is ignored and reported
           # @return [void]
           def receives_default=(value)
-            session.refuse(self, :receives_default=) unless value == false
+            session.refuse(self, :receives_default=) unless [true, false].include?(value)
+            session.degrade(:checkbox_default, 'checkbox receives-default is ignored; activation uses Space or click') if value
           end
           alias set_receives_default receives_default=
 
@@ -1150,6 +1266,18 @@ module Lich
         end
 
         class Button < Widget
+          # GTK requests are minima. Keep action text free to grow with the
+          # browser font and padding instead of clipping it to a fixed box.
+          def set_width_request(value)
+            write(:min_width, Integer(value))
+          end
+          alias width_request= set_width_request
+
+          def set_height_request(value)
+            write(:min_height, Integer(value))
+          end
+          alias height_request= set_height_request
+
           # The native button receives Enter when focused, without becoming a page-wide
           # default action. Other default-routing requests remain unsupported.
           # @param value [Boolean] only true is supported

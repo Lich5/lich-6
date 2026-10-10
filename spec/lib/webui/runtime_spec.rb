@@ -625,6 +625,48 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(result).to eq(:queued)
   end
 
+  [["\r\n", "\n"], ["\r", "\n"], ["\n", "\r\n"]].each do |stored_break, submitted_break|
+    it "compares textarea #{stored_break.inspect} and #{submitted_break.inspect} without rewriting the snapshot" do
+      received = Queue.new
+      original = "First#{stored_break}Second"
+      submitted = "First#{submitted_break}Second"
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'editable-lines', title: 'Form') do
+        input = textarea(key: 'text', value: original)
+        button(key: 'save', label: 'Save', submit: [input], on: {
+          activate: ->(event) { received << event.submission },
+        })
+      end)
+      address, render = attach(first_connection, page)
+      input, save = render.fetch('tree').fetch('children')
+      result = runtime.handle(first_connection, type: 'event', page: address, cid: save['cid'],
+                                               generation: render['generation'], event: 'activate', payload: {}, submission: [submitted])
+      expect(result).to eq(:queued)
+      snapshot = received.pop(timeout: 2)
+      expect(snapshot.input_changes).to be_empty
+      expect(snapshot[input['cid']]).to eq(submitted)
+    end
+  end
+
+  it 'records submission-only changes without invoking native input callbacks' do
+    observed = Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'snapshot-changes', title: 'Form') do
+      input = text_input(key: 'name', value: 'before', on: { change: ->(_event) { observed << :change } })
+      button(key: 'save', label: 'Save', submit: [input], on: {
+        activate: ->(event) { observed << event.submission },
+      })
+    end)
+    address, render = attach(first_connection, page)
+    input, save = render.fetch('tree').fetch('children')
+    runtime.handle(first_connection, type: 'event', page: address, cid: save['cid'],
+                                     generation: render['generation'], event: 'activate', payload: {}, submission: ['after'])
+    snapshot = observed.pop(timeout: 2)
+    expect(snapshot).to be_a(Lich::WebUI::Submission)
+    expect(snapshot.input_changes.map(&:cid)).to eq([input['cid']])
+    expect(snapshot.input_changes).to be_frozen
+    expect(snapshot[input['cid']]).to eq('after')
+    expect(observed).to be_empty
+  end
+
   [false, true].each do |stale|
     it "preserves table selection, cursor and activation ordering#{stale ? ' after a stale-generation retry' : ''}" do
       # Make automatic refreshes immediate so a selection redraw cannot hide

@@ -487,6 +487,23 @@ module Lich
         unless selected_groups.uniq.length == selected_groups.length
           raise Protocol::Refusal.new(:submission_scope, 'radio group has multiple selected options')
         end
+        # Capture all differences before applying any values: selecting a radio
+        # option also updates its peers. Native callbacks still receive only the
+        # terminal event; the imperative adapter uses this metadata to reconcile
+        # legacy change handlers when Save overtakes a stale change-event retry.
+        input_changes = validated.filter_map do |component, value|
+          next if sensitive?(component)
+
+          previous = @viewers.input_value(attachment, component)
+          # textarea.value normalizes CRLF and lone CR to LF. Compare that
+          # representation only; preserve the validated snapshot value below.
+          changed = if component.type == :textarea
+                      previous.gsub(/\r\n?/, "\n") != value.gsub(/\r\n?/, "\n")
+                    else
+                      previous != value
+                    end
+          component if changed
+        end
         values = validated.to_h do |component, value|
           if sensitive?(component)
             [component.cid, SensitiveValue.viewer(value)]
@@ -495,7 +512,7 @@ module Lich
             [component.cid, value]
           end
         end
-        Submission.new(viewer_id: attachment.viewer_id, values: values)
+        Submission.new(viewer_id: attachment.viewer_id, values: values, input_changes: input_changes)
       ensure
         scrub_sensitive_raw!(components, raw_values) if defined?(components) && components
       end

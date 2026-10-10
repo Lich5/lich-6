@@ -72,6 +72,27 @@ module Lich
         class SpinButton < Entry
           attr_reader :adjustment
 
+          # Read-only view of the validated numeric value. It deliberately owns
+          # no draft buffer: edits still go through the shared numeric control.
+          class Buffer
+            def initialize(spin)
+              @spin = spin
+            end
+
+            # @return [String] viewer-local formatted number during callbacks
+            def text = @spin.text
+
+            # Buffer mutation and native entry-buffer operations are unsupported.
+            def method_missing(name, *, **, &)
+              @spin.session.refuse(self, name)
+            end
+
+            def respond_to_missing?(*args) = super
+          end
+
+          # @return [Buffer] stable read-only numeric text facade
+          def buffer = @buffer ||= Buffer.new(self)
+
           # Accepts (min, max, step) or (Adjustment, climb_rate = 0, digits = 0).
           # Scalar adjustments require a positive step, nonempty range, and zero page size.
           # @raise [UnsupportedOperation] for unsupported parameter values or shared adjustments
@@ -145,13 +166,14 @@ module Lich
           end
           alias set_digits digits=
 
-          # Glade can repeat the adjustment's initial numeric value as entry text.
-          # Accept only that equivalent pre-render declaration; independent entry
-          # drafts still require an explicit text-buffer implementation.
-          # @raise [UnsupportedOperation] for differing or live text assignments
+          # A pre-render numeric text declaration initializes the existing
+          # adjustment. There is no independent draft string; invalid/nonfinite
+          # text and published text assignments remain unsupported.
+          # @raise [UnsupportedOperation] for invalid or live text assignments
           def text=(text)
             number = Float(text) if text.is_a?(String)
-            session.refuse(self, :text=) unless !@handle && number&.finite? && number == value
+            session.refuse(self, :text=) unless !@handle && number&.finite?
+            set_value(number)
           rescue ArgumentError, TypeError
             session.refuse(self, :text=)
           end
@@ -173,7 +195,10 @@ module Lich
           def component_type = :number_input
           def component_props = @props.dup
           def input_property = :value
-          def signal_map = { 'value_changed' => :change }
+          # The supported numeric editor has one validated change stream, with
+          # no independent GTK text draft. Both legacy signal names observe that
+          # stream; registering either name does not create a second wire event.
+          def signal_map = { 'value_changed' => :change, 'changed' => :change }
 
           def apply_adjustment_value(number)
             write(:value, number)

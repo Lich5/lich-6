@@ -249,6 +249,42 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(future.await(timeout: 1)&.button).to eq('yes')
   end
 
+  ["\r\n", "\r"].each do |line_break|
+    it "reconciles real textarea edits before Save without replaying #{line_break.inspect} normalization" do
+      allow(service.runtime).to receive(:schedule_render)
+      root = adapter.create(:page, title: 'Text form')
+      input = adapter.create(:textarea, value: "First#{line_break}Second")
+      save = adapter.create(:button, label: 'Save')
+      adapter.attach(root, input)
+      adapter.attach(root, save)
+      events = Queue.new
+      adapter.bind(input, :change, ->(event) { events << [:change, event.payload[:value]] })
+      adapter.bind(save, :activate, ->(event) { events << [:save, event.submission[event.submission.cids.first]] })
+      adapter.send(:flush!)
+      page = service.registry.pages_for(owner).first
+      address = service.registry.address_for(page)
+      connection = double('connection', viewer_id: 'textarea-reader', alive?: true)
+      messages = []
+      allow(connection).to receive(:send_text) { |json| messages << JSON.parse(json) }
+      service.runtime.handle(connection, type: 'attach', page: address)
+      render = messages.last
+      submit = lambda do |text|
+        service.runtime.handle(connection, type: 'event', page: address, generation: render['generation'],
+                                           cid: render.dig('tree', 'children', 1, 'cid'), event: 'activate', payload: {}, submission: [text])
+      end
+
+      # Browser newline conversion is not an edit; a missed real edit still
+      # reaches the legacy change handler before the terminal Save callback.
+      expect(submit.call("First\nSecond")).to eq(:queued)
+      expect(events.pop(timeout: 2)).to eq([:save, "First\nSecond"])
+      expect(events).to be_empty
+      expect(submit.call("First\nChanged")).to eq(:queued)
+      expect(events.pop(timeout: 2)).to eq([:change, "First\nChanged"])
+      expect(events.pop(timeout: 2)).to eq([:save, "First\nChanged"])
+      expect(events).to be_empty
+    end
+  end
+
   it 'reads and writes the event viewer without exposing their value to another viewer' do
     unscoped = described_class.new(owner: owner, service: service)
     scheduled = []

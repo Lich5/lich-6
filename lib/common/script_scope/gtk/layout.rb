@@ -17,6 +17,8 @@ module Lich
         # The plain table in vars/alias contains widgets, not a TreeView model.
         # Cell positions become validated grid placements without extra handles.
         class Table < Widget
+          include Container
+
           attr_reader :n_rows
 
           # Creates a widget grid using the shared natural/equal track policy.
@@ -112,6 +114,15 @@ module Lich
             write(:homogeneous, value)
           end
 
+          # Equal row tracks are independent of equal columns and surplus-space
+          # spreading. Content spanning rows contributes to their shared minimum.
+          # @param value [Boolean] whether all occupied rows have equal height
+          def row_homogeneous=(value)
+            session.refuse(self, :row_homogeneous=) unless [true, false].include?(value)
+            write(:equal_rows, value)
+          end
+          alias set_row_homogeneous row_homogeneous=
+
           # Translates zero-based origin plus width/height to Table's opposing cell edges.
           # @return [Grid] self
           def attach(child, left, top, width, height)
@@ -121,6 +132,8 @@ module Lich
 
         # A viewport adds no second scroll surface; its parent owns scrolling.
         class Viewport < Widget
+          include Container
+
           # Creates a zero-gap wrapper without a second scroll surface or native adjustments.
           # @raise [UnsupportedOperation] when either adjustment argument is supplied
           def initialize(horizontal = nil, vertical = nil)
@@ -193,6 +206,8 @@ module Lich
         end
 
         class ScrolledWindow < Widget
+          include Container
+
           attr_reader :vadjustment
 
           # Explicit compatibility policy: accept :in but omit its inset decoration.

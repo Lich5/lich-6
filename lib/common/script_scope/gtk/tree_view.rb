@@ -655,8 +655,10 @@ module Lich
           # Search is deliberately bounded to a visible plain-text column.
           def search_props
             return {} if @search_column.nil? || @search_column == -1
+            # Numeric text renderers already project their display text; prefix
+            # search uses that same representation, without changing model types.
             column = visible_columns.find { |item| item.value_column == @search_column }
-            session.refuse(self, :search_column) unless column && model&.get_column_type(@search_column) == String
+            session.refuse(self, :search_column) unless column && [String, Integer, Float].include?(model&.get_column_type(@search_column))
             { search_column: column.key }
           end
 

@@ -15,12 +15,12 @@ module WebUIBrowser
   # @param scenario [String] browser scenario and diagnostic directory name
   # @return [void]
   # @raise [RuntimeError] when the browser assertions or dependency loading fail
-  def self.check(service:, page:, scenario:)
+  def self.check(service:, page:, scenario:, controls: {})
     root = File.expand_path('../webui', __dir__)
     service.start
     Dir.mktmpdir('webui-browser-spec-') do |directory|
       target = Lich::WebUI::BrowserLauncher.launch_file(service.launch_url(page: page), directory, native: nil)
-      environment = { 'WEBUI_TEST_URL' => target, 'WEBUI_TEST_SCENARIO' => scenario }
+      environment = { 'WEBUI_TEST_URL' => target, 'WEBUI_TEST_SCENARIO' => scenario, 'WEBUI_TEST_CONTROLS' => JSON.generate(controls) }
       output, status = Open3.capture2e(
         environment, 'node', File.join(root, 'node_modules/@playwright/test/cli.js'), 'test',
         '--config', File.join(root, 'playwright.config.cjs'),

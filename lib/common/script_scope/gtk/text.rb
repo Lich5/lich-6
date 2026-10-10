@@ -305,6 +305,14 @@ module Lich
           end
           alias wrap_mode= set_wrap_mode
 
+          # False uses the browser's normal Tab/Shift-Tab focus navigation.
+          # Inserting literal tabs would require a distinct editor interaction.
+          # @param value [Boolean] only false is supported
+          def accepts_tab=(value)
+            session.refuse(self, :accepts_tab=) unless value == false
+          end
+          alias set_accepts_tab accepts_tab=
+
           # Preserves the existing explicit chat-font degradation.
           def override_font(font)
             session.refuse(self, :override_font) unless font.is_a?(Pango::FontDescription)
@@ -373,6 +381,8 @@ module Lich
 
         # Plain expandable content delegates open state to the existing viewer store.
         class Expander < Widget
+          include Container
+
           # Creates a collapsed single-child disclosure with a literal label.
           # @param label [#to_s] visible heading; markup is not interpreted
           def initialize(label = '')
