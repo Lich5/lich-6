@@ -320,6 +320,16 @@ RSpec.describe 'remaining Builder setup families' do
     choice = form['profile_name'].send(:component_props)[:options].find { |option| option[:label] == 'fixture' }
     event(form['profile_name'], 'change', { value: choice.fetch(:value) })
     event(form['profile_button'], 'activate', {}, submission: :current)
+    # Profile loading queues further changed handlers after drain's markers.
+    # Wait for their effects together; a fixed number of markers cannot prove completion.
+    Timeout.timeout(3, Timeout::Error, 'Bigshot profile callbacks did not reach the expected state') do
+      loop do
+        expect(@diagnostics.grep(/callback failed/)).to be_empty, @diagnostics.join("\n")
+        break if form['resting_room_id'].text == '1234' && form['profile_current'].text == 'fixture' && form['custom_fog'].sensitive?
+
+        sleep 0.005
+      end
+    end
     expect(form['resting_room_id'].text).to eq('1234')
     expect(form['profile_current'].text).to eq('fixture')
     expect(form['custom_fog'].sensitive?).to be(true)
