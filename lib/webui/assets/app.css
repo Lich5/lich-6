@@ -129,6 +129,9 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-page[data-density="compact"] input[data-natural-entry="true"] {
   min-width: calc(20ch + 2 * var(--entry-padding, 8px) + 2px);
 }
+/* Let the field contribute that entry requisition to a natural grid. A zero
+   field minimum otherwise permits its track to collapse around the input. */
+.webui-page[data-density="compact"] .field:has(> input[data-natural-entry="true"]) { min-width: min-content; }
 .webui-page[data-density="compact"] .field:has(> input[type="checkbox"]) { min-height: 20px; }
 .webui-page[data-density="compact"] input:disabled:not([type="checkbox"]):not([type="radio"]),
 .webui-page[data-density="compact"] textarea:disabled,

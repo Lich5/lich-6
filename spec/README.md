@@ -82,6 +82,19 @@ actual extension loaded. Child failures or an empty/pending child run fail the
 parent example. The parent suite's NilClass remains unchanged. The expected
 `eloot` missing-ID refusal is checked in the same production environment.
 
+Huntplan adds an independent Chrome case for its original hidden-tab setup,
+character limit, invalid profile-slot message and Save & Exit callback. The
+unchanged Bigshot fixture records its missing `boon_flee_from` tooltip lookup as
+an expected source failure; zero unmapped XML declarations do not imply that
+its setup callbacks were successfully connected. Unhandled queued Builder errors
+must also close the owner's UI and request script termination. Separate corrected
+eloot and Bigshot candidates apply exact, test-only source repairs after digest
+checks; their original fixtures remain untouched. Each adds an independent Chrome
+case covering controls, dependencies and Close/save. Ruby checks additionally
+cover all eloot list handlers, tipping dispatch, Bigshot profile/boon migration,
+scalar fields and text areas, and destruction without saving. The shared control
+browser case verifies TextView focus-out independently of text changes.
+
 Native external-link policy can be checked on macOS without opening a browser:
 
 ```bash
@@ -124,7 +137,7 @@ directly through Close without preceding change events. It checks the original
 settings-file callback, independently of browser timing. Related cases verify
 that already accepted changes are not repeated and reconciliation is viewer-local.
 
-Ordinary `rspec` keeps the thirteen browser cases pending, so local Ruby testing does
+Ordinary `rspec` keeps the sixteen browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

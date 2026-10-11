@@ -55,8 +55,8 @@ ebounty/BlackArts retain source uniq!.sort! chains; subprocess tests load Lich's
 actual NilClass extension without changing the parent RSpec process. Removing
 that production extension will require source migration; it is not shim support.
 eloot is a negative fixture: its XML never declares exclusions_label, so tooltip
-initialization must report BuilderError even with nil suppression present. The
-recommended disposition is native WebUI conversion, not a fabricated widget.
+initialization must report BuilderError even with nil suppression present. Unhandled queued Builder failures close the owner's UI and request the existing
+asynchronous script stop. No widget is fabricated.
 
 The preserved native WebUI versions of all three positive fixtures were reviewed
 for reusable behavior. Their settings and script-specific form code remain out
@@ -83,3 +83,41 @@ Both game layouts run original setup, updates and Close/destroy callbacks in Rub
 and independent Chrome cases. No travel, repository network operation or gameplay
 loop executes. Converted WebUI counterparts informed acceptance behavior only;
 no converted business logic or script-name rendering cases enter the shim.
+
+Unchanged bigshot and huntplan setup fixtures
+
+These retain exact Setup class excerpts with enclosing module wrappers. Original
+XML, construction and callbacks are digest-checked before execution. The two
+fixtures preserve upstream formatting; RuboCop Layout exclusions and Huntplan's
+unused local exclusion apply only to these excerpts, not product or harness code.
+
+- bigshot: frozen EO original, lines 1300-2704;
+  class da564437b0eb893e8abd3757afdbbe35bd57b4b134d24e562e4f17d1af76ad34;
+  whole script f96ac381aa1f09f248f79de486bf236fa4ae558d3231ad90941333dd4e3f2873.
+- huntplan: retained original, lines 1992-2112;
+  class 14d3be8481c1d1abc76cf7394c9dc7d7fb4aca8966b33fb4d3940f9bcabf92a5;
+  whole script 37a6af449da8f8bbf26cc63d8b714d52099c87fe994dabeddeac6f07a5fbd726.
+
+Huntplan's original setup, input limits, invalid-slot refusal, Save & Exit and
+cleanup run in Ruby and Chrome with inert game data and in-memory persistence.
+Bigshot's original source currently fails on the undeclared boon_flee_from
+tooltip target before connecting its XML signals. This is an expected source
+failure, not successful Bigshot acceptance. Its converted version was inspected
+as a behavior reference; converted business logic is not copied into the shim.
+
+Explicitly corrected eloot/Bigshot acceptance candidates
+
+webui_builder_source_repairs.rb applies exact-match substitutions only while
+loading separately labeled positive tests. Fixture files remain untouched.
+eloot names its existing Exclusions label exclusions_label; Bigshot removes
+the obsolete tooltip assignment and replaces its legacy boon-flag migration.
+Source digests are checked before these substitutions. The unchanged negative
+tests remain mandatory, so candidate success does not hide production defects.
+
+Corrected eloot exercises all twelve list add/delete handlers, scalar entry/spin
+settings, tipping-preview dispatch with isolated calculation/formatting, dependent
+controls, Close/save and destroy without save. Corrected Bigshot exercises scalar
+and text-area callbacks, boon selection/migration, profile load/new/overwrite/
+cancel/update, Close/save and destroy without save. Both also run in Chrome.
+This establishes setup/UI acceptance for those explicit repairs, not live-game
+behavior or proof that an upstream author has adopted the same repairs.

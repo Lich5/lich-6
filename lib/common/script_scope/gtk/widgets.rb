@@ -43,6 +43,20 @@ module Lich
           # while iterating that snapshot without skipping alternating entries.
           def children = @children.dup
 
+          # Retains GTK's widget name as script metadata, distinct from Builder
+          # identity. Names never become DOM IDs, classes or CSS selectors.
+          # @return [String] explicit name or the GTK class name
+          def name = @widget_name || "Gtk#{self.class.name.to_s.split('::').last}"
+
+          # @param value [String] bounded literal name, at most 512 characters
+          # @return [Widget] self
+          def set_name(value)
+            session.refuse(self, :name=) unless value.is_a?(String) && value.length <= 512
+            @widget_name = value.dup.freeze
+            self
+          end
+          alias name= set_name
+
           # Uses the existing show/hide lifecycle for the property spelling.
           # @param value [Boolean] requested visibility
           def visible=(value)
@@ -309,7 +323,7 @@ module Lich
             expected = if focusable.include?(kind) then true
                        elsif passive.include?(kind) then false
                        end
-            session.refuse(self, :can_focus=) if expected.nil? || value != expected || (is_a?(Entry) && !@editable)
+            session.refuse(self, :can_focus=) if expected.nil? || value != expected
           end
           alias set_can_focus can_focus=
 
@@ -897,6 +911,13 @@ module Lich
           end
           alias width_request= set_width_request
 
+          # Height requests likewise set a floor, allowing the child's natural
+          # height to grow the frame instead of centering overflow above it.
+          def set_height_request(value)
+            write(:min_height, Integer(value))
+          end
+          alias height_request= set_height_request
+
           # GTK creates no label widget when the constructor label is absent.
           # @param label [String, nil] frame label; an empty string creates a blank label
           def initialize(label = nil)
@@ -985,6 +1006,13 @@ module Lich
         end
 
         class Label < Widget
+          # A linked label's existing anchor supplies its keyboard focus target.
+          # Plain focusable labels still require an unsupported interaction model.
+          def can_focus=(value)
+            super unless @link_markup && value == true
+          end
+          alias set_can_focus can_focus=
+
           # Creates centered, nonwrapping literal text with GTK-compatible empty defaults.
           def initialize(text = '')
             super()
@@ -994,6 +1022,20 @@ module Lich
           # Reads the retained literal label content.
           # @return [String]
           def text = read(:content)
+
+          # A literal, unwrapped single line uses browser font metrics. Native
+          # Pango paragraph markers and multiline single-line-mode are outside
+          # this bridge; refuse them instead of dropping or replacing text.
+          # @param value [Boolean] single-line metric request
+          # @return [Label] self
+          def set_single_line_mode(value)
+            session.refuse(self, :single_line_mode=) unless [true, false].include?(value)
+            session.refuse(self, :single_line_mode=) if value && (@link_markup || @props[:wrap] || read(:content).match?(/[\r\n]|\p{Zl}|\p{Zp}/))
+            @single_line_mode = value
+            session.degrade(:single_line_metrics, 'single-line labels use browser font metrics') if value
+            self
+          end
+          alias single_line_mode= set_single_line_mode
 
           # Writes literal label content through the shared text control.
           # @return [Label] self
@@ -1078,10 +1120,10 @@ module Lich
             set_markup(read(:content)) if value
           end
 
-          # Only literal text and HTTP(S) anchors become existing typed Markdown.
+          # Only literal text and HTTP(S) anchors with optional literal titles become typed Markdown.
           # Unsupported markup is refused, never passed to innerHTML or stripped.
           def set_link_markup(value)
-            session.refuse(self, :set_markup) if @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align line_justify])
+            session.refuse(self, :set_markup) if @single_line_mode || @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align line_justify])
             session.refuse(self, :set_markup) if @handle && !@link_markup
             document = REXML::Document.new("<label>#{value}</label>")
             content = document.root.children.map do |part|
@@ -1090,13 +1132,15 @@ module Lich
                 session.refuse(self, :set_markup) if text.match?(/[\[\]]/)
                 text
               elsif part.is_a?(REXML::Element)
-                valid = part.name == 'a' && part.attributes.keys == ['href'] && part.children.all? { |child| child.is_a?(REXML::Text) }
+                valid = part.name == 'a' && part.attributes.key?('href') && (part.attributes.keys - %w[href title]).empty? && part.children.all? { |child| child.is_a?(REXML::Text) }
                 session.refuse(self, :set_markup) unless valid
                 href, label = part.attributes['href'], part.texts.map(&:value).join
                 uri = URI.parse(href)
                 valid = %w[http https].include?(uri.scheme) && uri.host && !uri.userinfo && !href.match?(/[\s<>]/) && !label.match?(/[\[\]]/)
                 session.refuse(self, :set_markup) unless valid
-                "[#{label}](#{href.gsub('(', '%28').gsub(')', '%29')})"
+                title = part.attributes['title']
+                suffix = title ? ' "' + title.gsub(/["\\]/) { |character| "\\#{character}" } + '"' : ''
+                "[#{label}](#{href.gsub('(', '%28').gsub(')', '%29')}#{suffix})"
               else
                 session.refuse(self, :set_markup)
               end
@@ -1161,6 +1205,14 @@ module Lich
 
           def component_type = @link_markup ? :markdown : :text
 
+          # Preserve the declared single-line boundary on later text/markup writes.
+          def write(property, value)
+            if @single_line_mode && ((property == :content && value.match?(/[\r\n]|\p{Zl}|\p{Zp}/)) || (property == :wrap && value))
+              session.refuse(self, :single_line_mode)
+            end
+            super
+          end
+
           def component_props
             props = super
             @link_markup ? props.slice(:content, :key, :hidden, :align, :margin, :width) : props
@@ -1179,12 +1231,35 @@ module Lich
           # @return [String]
           def text = read(:value)
 
-          # Updates the input value or read-only text projection through the same shadow path.
+          # GTK emits changed for an actual programmatic text change as well as
+          # typing, including read-only entries. Notify through the same handler
+          # path after the validated write; equal writes must not recurse.
           # @return [Entry] self
-          def text=(value)
-            write(:value, String(value))
+          def set_text(value)
+            text = String(value)
+            text = text[0, @props[:max_length]] if @props[:max_length]
+            session.synchronize do
+              previous = read(:value)
+              write(:value, text)
+              emit_handlers(:change) unless previous == text
+            end
+            self
           end
-          alias set_text text=
+          alias text= set_text
+
+          # GTK truncates existing and programmatically assigned text to its
+          # declared character limit. Configure before publication; live limit
+          # changes would need an atomic limit/value update for every viewer.
+          # Zero retains the core's existing 8192-character safety boundary.
+          # @param value [Integer] 0..8192; zero means no smaller script limit
+          # @return [Entry] self
+          def set_max_length(value)
+            session.refuse(self, :max_length=) unless !@handle && value.is_a?(Integer) && value.between?(0, 8192)
+            @props[:max_length] = value.zero? ? 8192 : value
+            self.text = read(:value)
+            self
+          end
+          alias max_length= set_max_length
 
           # Sets literal placeholder text for the shared input control.
           # @return [Entry] self
@@ -1217,7 +1292,7 @@ module Lich
             write(:align, value.zero? ? :start : (value == 1 ? :end : :center))
           end
 
-          # Chooses input versus literal text before any handle is allocated.
+          # Sets server-owned read-only input behavior before a handle is allocated.
           # @raise [UnsupportedOperation] after materialization
           def editable=(value)
             session.refuse(self, :editable=) if @handle
@@ -1233,13 +1308,12 @@ module Lich
 
           protected
 
-          def component_type = @editable ? :text_input : :text
-          def input_property = @editable ? :value : nil
-          def signal_map = @editable ? { 'changed' => :change, 'activate' => :submit, 'focus-in-event' => :focus } : {}
-          def port_property(property) = !@editable && property == :value ? :content : property
+          def component_type = :text_input
+          def input_property = :value
+          def signal_map = { 'changed' => :change, 'activate' => :submit, 'focus-in-event' => :focus }
 
           def component_props
-            @editable ? super.merge(change_mode: :input) : super.except(:value).merge(content: @props[:value])
+            super.merge(change_mode: :input, read_only: !@editable)
           end
         end
 
@@ -1291,6 +1365,17 @@ module Lich
 
         # Checkbox presentation shares the toggle value and programmatic signal semantics.
         class CheckButton < ToggleButton
+          # With no supplied image GTK has nothing to reveal. Retain this hint
+          # explicitly; image-bearing check buttons remain unsupported.
+          # @param value [Boolean] whether an available image should be shown
+          # @return [CheckButton] self
+          def set_always_show_image(value)
+            session.refuse(self, :always_show_image=) unless [true, false].include?(value) && children.empty?
+            session.degrade(:checkbox_image_hint, 'always-show-image has no effect on an image-free checkbox') if value
+            self
+          end
+          alias always_show_image= set_always_show_image
+
           # Ordinary checkboxes already show a separate indicator. Button-style mode
           # must be implemented deliberately rather than silently losing this request.
           # @param value [Boolean] only true is supported

@@ -171,14 +171,14 @@ module Lich
       # Accepts only the read-only text actually sent to this viewer. A later
       # server write remains authoritative and is never overwritten by submission.
       # This delivery record is protocol evidence, not another editable draft.
-      # Browsers expose CRLF and lone CR as LF in textarea.value. Normalize only
-      # the comparison; delivery records, stored text and callback values stay exact.
+      # Browsers normalize textarea line breaks and strip them in single-line
+      # inputs. Compare that representation; server text and callbacks stay exact.
       # @return [String] current server value for the terminal callback snapshot
       # @raise [Protocol::Refusal] if the client changed the delivered text
       def read_only_submission(attachment, component, value)
         @mutex.synchronize do
           unless attachment.delivered_read_only.key?(component.cid) &&
-                 normalize_text_line_breaks(attachment.delivered_read_only[component.cid]) == normalize_text_line_breaks(value)
+                 read_only_browser_value(component.type, attachment.delivered_read_only[component.cid]) == read_only_browser_value(component.type, value)
             raise Protocol::Refusal.new(:payload, 'read-only text cannot be changed by submission')
           end
           attachment.values.fetch([component.cid, :value], component.props[:value])
@@ -231,7 +231,7 @@ module Lich
             attachment.values[[component.cid, :checked]] = payload[:value]
           when [:toggle, :change], [:checkbox, :change] then attachment.values[[component.cid, :checked]] = payload[:value]
           when [:radio, :change] then attachment.values[[component.cid, :selected]] = payload[:value]
-          when [:text_input, :change], [:textarea, :change], [:number_input, :change], [:slider, :change], [:select, :change]
+          when [:text_input, :change], [:textarea, :change], [:textarea, :blur], [:number_input, :change], [:slider, :change], [:select, :change]
             attachment.values[[component.cid, :value]] = payload[:value]
           when [:tabs, :select] then attachment.values[[component.cid, :selected]] = payload[:index]
           when [:group, :dismiss] then attachment.values[[component.cid, :open]] = false
@@ -293,7 +293,7 @@ module Lich
           if for_delivery
             attachment.delivered_read_only.clear
             attachment.render.tree.each do |component|
-              next unless component.type == :textarea && component.props[:read_only] && !component.props[:sensitive]
+              next unless %i[text_input textarea].include?(component.type) && component.props[:read_only] && !component.props[:sensitive]
 
               attachment.delivered_read_only[component.cid] = attachment.values.fetch([component.cid, :value], component.props[:value])
             end
@@ -331,8 +331,14 @@ module Lich
 
       private
 
-      # Matches textarea's browser representation without mutating server-owned text.
-      # Nontext values retain their identity; schema validation owns their rejection.
+      # Single-line HTML inputs strip line breaks; textareas normalize them.
+      # Compare browser representations without modifying authoritative text.
+      # @return [String] the validated value's browser representation
+      def read_only_browser_value(type, value)
+        type == :text_input ? value.delete("\r\n") : normalize_text_line_breaks(value)
+      end
+
+      # Nontext values retain their identity; schema validation owns rejection.
       # @return [Object] text with LF line breaks, or the unchanged nontext value
       def normalize_text_line_breaks(value)
         value.is_a?(String) ? value.gsub(/\r\n?/, "\n") : value

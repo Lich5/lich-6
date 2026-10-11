@@ -474,7 +474,7 @@ module Lich
             component.type, raw_values[index], props: component.props,
             owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: component.cid
           )
-          if component.type == :textarea && component.props[:read_only]
+          if %i[text_input textarea].include?(component.type) && component.props[:read_only]
             # The browser may still display an older server value. Validate
             # against its delivery, but retain the latest server-owned value.
             value = @viewers.read_only_submission(attachment, component, value)
@@ -508,7 +508,7 @@ module Lich
           if sensitive?(component)
             [component.cid, SensitiveValue.viewer(value)]
           else
-            @viewers.set_input(attachment, component, value) unless component.type == :textarea && component.props[:read_only]
+            @viewers.set_input(attachment, component, value) unless %i[text_input textarea].include?(component.type) && component.props[:read_only]
             [component.cid, value]
           end
         end

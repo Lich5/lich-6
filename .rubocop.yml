@@ -80,3 +80,14 @@ Style/AsciiComments:
 
 Custom/AsciiOnlySource:
   Enabled: true
+
+# Exact upstream Setup excerpts: retain source formatting and the unused local
+# for digest-checked compatibility tests. Safety/ASCII and other lint cops run.
+Layout:
+  Exclude:
+    - 'spec/fixtures/webui/bigshot_setup.lic'
+    - 'spec/fixtures/webui/huntplan_setup.lic'
+
+Lint/UselessAssignment:
+  Exclude:
+    - 'spec/fixtures/webui/huntplan_setup.lic'

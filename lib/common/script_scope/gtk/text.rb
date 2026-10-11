@@ -342,7 +342,7 @@ module Lich
           # @return [Symbol, nil] viewer-local text field; logs have no input state
           def input_property = @log ? nil : :value
           # @return [Hash] editable views alone accept browser change notifications
-          def signal_map = @log ? {} : { 'changed' => :change }
+          def signal_map = @log ? {} : { 'changed' => :change, 'focus-out-event' => :blur }
           # Reads shared log lines or the core's callback-scoped editor draft.
           # @return [String]
           def buffer_text = @log ? @props.fetch(:lines, []).join("\n") : read(:value)

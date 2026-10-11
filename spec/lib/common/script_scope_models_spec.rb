@@ -238,7 +238,8 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
   it 'preserves nullable model strings while projecting blank table and combo labels' do
     model = gtk::ListStore.new(String, TrueClass)
     absent, blank, text = model.append, model.append, model.append
-    absent[0], blank[0], text[0] = nil, '', 'Alpha'
+    expect(absent[0]).to be_nil
+    blank[0], text[0] = '', 'Alpha'
     view = table(model)
     view.append_column(gtk::TreeViewColumn.new('Flag', gtk::CellRendererToggle.new, active: 1))
     combo = gtk::ComboBox.new(model)
@@ -512,6 +513,50 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect { row[0] = 'x' * 513 }.not_to raise_error
   end
 
+  it 'reads unset editable combo labels as blank without exposing row IDs to callbacks' do
+    model = gtk::ListStore.new(String)
+    row = model.append
+    combo = gtk::ComboBox.new(model, entry: true)
+    combo.active = 0
+    expect([combo.child.text, combo.active_text, row[0]]).to eq(['', '', nil])
+
+    row[0] = 'Assigned'
+    expect([combo.child.text, combo.active_text]).to eq(['Assigned', 'Assigned'])
+    combo.child.text = "text:#{row.key}"
+    expect([combo.child.text, combo.active_text]).to eq(["text:#{row.key}", "text:#{row.key}"])
+    expect(combo.active_iter).to be_nil
+
+    row[0] = nil
+    _window, page = show(combo)
+    viewer = connect(page, 'unset-label')
+    changed = Queue.new
+    combo.child.signal_connect('changed') { |entry| changed << [entry.text, combo.active_text] }
+    expect(send_event(page, viewer, :select, 'change', { value: row.key })).to eq(:queued)
+    expect(changed.pop(timeout: 2)).to eq(['', ''])
+    expect(row[0]).to be_nil
+  end
+
+  %i[max_length= set_max_length].each do |setter|
+    it "refuses internal combo entry #{setter} without changing text or emitting changed" do
+      combo = gtk::ComboBoxText.new(entry: true)
+      combo.child.text = 'Existing text'
+      changed = []
+      combo.child.signal_connect('changed') { |entry| changed << entry.text }
+      before = combo.send(:component_props).dup
+
+      [0, 3].each do |limit|
+        expect { combo.child.public_send(setter, limit) }.to raise_error(gtk::UnsupportedOperation, /max_length=/)
+        expect(combo.child.text).to eq('Existing text')
+        expect(combo.send(:component_props)).to eq(before)
+        expect(changed).to be_empty
+      end
+
+      combo.child.text = 'Subsequent text'
+      expect(combo.child.text).to eq('Subsequent text')
+      expect(changed).to eq(['Subsequent text'])
+    end
+  end
+
   it 'keeps editable free text distinct from IDs and preserves it while choices change' do
     combo = gtk::ComboBoxText.new(entry: true)
     combo.append_text('Choice')
@@ -724,7 +769,10 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     viewer = connect(page, 'choices')
     send_event(page, viewer, :table, 'cell_edit', { row: values.iter_first.key, column: column.key, value: 'New' })
     expect(observed.pop(timeout: 2)).to eq(['Old', 'New'])
-    options.append[0] = 'Later'
+    later = options.append
+    wait_for { nodes(viewer).find { |node| node['type'] == 'table' }['props']['columns'].first['editor']['options'].last == { 'value' => '', 'label' => '' } }
+    expect(later[0]).to be_nil
+    later[0] = 'Later'
     wait_for { nodes(viewer).find { |node| node['type'] == 'table' }['props']['columns'].first['editor']['options'].last['label'] == 'Later' }
     window.destroy
     expect(options.instance_variable_get(:@observers)).to be_empty

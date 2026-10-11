@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-repository', 'shim-go2', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -102,6 +102,21 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     }
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-huntplan') {
+    const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const widget = name => page.locator(`[data-cid="${ids[name]}"]`);
+    await expect(page.getByRole('tab')).toHaveCount(0);
+    await widget('default_profile').fill('fixture-default');
+    await widget('bounty_profile').fill('fixture-bounty');
+    const slot = widget('ebounty_slot').locator('input');
+    await slot.fill('');
+    await slot.pressSequentially('zz');
+    await expect(slot).toHaveValue('z');
+    await page.getByRole('button', { name: 'Save & Exit', exact: true }).click();
+    await expect(widget('status_label')).toHaveText('invalid ebounty profile slot: z');
+    await slot.fill('j');
+    await page.getByRole('button', { name: 'Save & Exit', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
   } else if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
@@ -139,7 +154,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     });
     expect(wrapped.count).toBeGreaterThan(1);
     expect(wrapped.edges.every(right => Math.abs(right - wrapped.right) < 1)).toBe(true);
-  } else if (['shim-ebounty', 'shim-eherbs', 'shim-blackarts'].includes(scenario)) {
+  } else if (['shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected'].includes(scenario)) {
     const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
     const widget = name => page.locator(`[data-cid="${ids[name]}"]`);
     const reveal = async name => {
@@ -154,11 +169,78 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       for (const parent of parents) {
         await page.locator(`[data-cid="${parent.cid}"] > .tab-list > button`).nth(parent.index).click();
       }
+      const expanders = await widget(name).evaluate(element => {
+        const result = [];
+        for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+          if (parent.tagName === 'DETAILS') result.unshift(parent.dataset.cid);
+        }
+        return result;
+      });
+      for (const cid of expanders) {
+        const details = page.locator(`details[data-cid="${cid}"]`);
+        if (!(await details.evaluate(element => element.open))) await details.locator(':scope > summary').click();
+      }
       await expect(widget(name)).toBeVisible();
       return widget(name);
     };
     await page.setViewportSize(scenario === 'shim-eherbs' ? { width: 800, height: 700 } : { width: 1000, height: 850 });
-    if (scenario === 'shim-ebounty') {
+    if (scenario === 'shim-bigshot-corrected') {
+      await page.setViewportSize({ width: 1200, height: 900 });
+      await (await reveal('resting_room_id')).locator('input').fill('1234');
+      await (await reveal('wander_wait')).locator('input').fill('0.7');
+      await (await reveal('attack_drop')).locator('input').fill('Guarded');
+      await widget('attack_drop').locator('input').press('Tab');
+      await (await reveal('fog_return')).locator('select').selectOption({ label: 'Custom' });
+      await expect(widget('custom_fog').locator('input')).toBeEnabled();
+      await widget('fog_return').locator('select').selectOption({ label: 'None' });
+      await expect(widget('custom_fog').locator('input')).toBeDisabled();
+      await (await reveal('boons_all:flee')).locator('input').check();
+      await expect(widget('immunity:flee').locator('input')).toBeChecked();
+      await (await reveal('immunity:crit_death_immune_ignore')).locator('input').check();
+      await expect(widget('immunity:crit_death_immune_flee').locator('input')).not.toBeChecked();
+      await expect(widget('boons_all:flee').locator('input')).not.toBeChecked();
+      await (await reveal('notes')).locator('textarea').fill('Acceptance notes\nsecond line');
+      await widget('notes').locator('textarea').press('Tab');
+      await (await reveal('save_profile_name')).locator('input').fill('browser-profile');
+      await widget('profile_save').click();
+      await expect(widget('profile_current').locator('input')).toHaveValue('browser-profile');
+      await expect(widget('profile_current').locator('input')).toHaveAttribute('readonly', '');
+    } else if (scenario === 'shim-eloot-corrected') {
+      await (await reveal('sell_locksmith')).locator('input').check();
+      await expect(widget('locksmith_priority').locator('select')).toBeEnabled();
+      await widget('locksmith_priority').locator('select').selectOption({ label: 'Locksmith First' });
+      await widget('use_incremental_tipping').locator('input').check();
+      await expect(widget('use_standard_tipping').locator('input')).not.toBeChecked();
+      await widget('alpha_rate').locator('input').fill('3.5');
+      await (await reveal('sell_exclude_entry')).locator('input').fill('fixture exclusion');
+      const listGeometry = await widget('sell_exclude_entry').evaluate(element => {
+        const input = element.getBoundingClientRect(), frame = element.closest('fieldset').getBoundingClientRect();
+        const grid = element.parentElement.getBoundingClientRect();
+        return { width: input.width, top: grid.top - frame.top, bottom: frame.bottom - grid.bottom };
+      });
+      expect(listGeometry.width).toBeGreaterThan(100);
+      expect(listGeometry.top).toBeGreaterThanOrEqual(0);
+      expect(listGeometry.bottom).toBeGreaterThanOrEqual(0);
+      await widget('sell_exclude_add').click();
+      await expect(widget('sell_exclude').locator('tbody tr')).toHaveCount(1);
+      await widget('sell_exclude').getByText('fixture exclusion', { exact: true }).click();
+      await widget('sell_exclude_delete').click();
+      await expect(widget('sell_exclude').locator('tbody tr')).toHaveCount(0);
+      await (await reveal('loot_types:alchemy')).locator('input').check();
+      await (await reveal('skin_enable')).locator('input').check();
+      await (await reveal('gem_horde')).locator('input').check();
+      await widget('gem_only_list').locator('input').check();
+      await expect(widget('gem_everything_list').locator('input')).not.toBeChecked();
+      await widget('gem_list_entry').locator('input').fill('ruby');
+      await widget('gem_list_add').click();
+      await expect(widget('gem_list').locator('tbody tr')).toHaveCount(1);
+      await widget('gem_horde_locker').locator('input').check();
+      await expect(widget('gem_locker').locator('select')).toBeEnabled();
+      await widget('gem_horde_locker_che').locator('input').check();
+      await expect(widget('gem_locker').locator('select')).toBeDisabled();
+      await expect(widget('gem_horde_che_rooms').locator('input')).toBeEnabled();
+      await widget('gem_horde_che_rooms').locator('input').fill('1234');
+    } else if (scenario === 'shim-ebounty') {
       await (await reveal('culling_max')).locator('input').fill('25');
       await widget('culling_max').locator('input').press('Tab');
       await (await reveal('selling_script')).locator('input').fill('fixture-sell');

@@ -3,6 +3,7 @@
 require_relative '../../spec_helper'
 require_relative '../../../lib/common/script_scope'
 require_relative '../../support/webui_browser'
+require_relative '../../support/webui_builder_source_repairs'
 require 'timeout'
 require 'digest'
 
@@ -89,7 +90,7 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
   def drain_gtk
     2.times do
       completed = Queue.new
-      gtk.queue { completed << true }
+      service.runtime.dispatch(owner: owner) { completed << true }
       completed.pop(timeout: 2)
     end
   end
@@ -98,7 +99,7 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
 
   # The original setup class runs unchanged. Game catalogs and persistence are
   # isolated here; no callback or widget logic is replaced to make a test pass.
-  def original_e_setup(name, settings = {}, source_failure: false)
+  def original_e_setup(name, settings = {}, source_failure: false, corrected: false)
     sandbox = Module.new
     sandbox.const_set(:Gtk, gtk)
     sandbox.const_set(:XMLData, double(game: 'GS'))
@@ -107,15 +108,38 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     sandbox.const_set(:Skills, double(slblessings: 20))
     sandbox.const_set(:Society, double(status: 'Council of Light', rank: 20))
     spells = Object.new
-    spells.define_singleton_method(:[]) { |_id| Struct.new(:known?).new(false) }
+    spells.define_singleton_method(:[]) { |id| Struct.new(:known?, :num, :name).new(false, id.to_i, "Fixture spell #{id}") }
     sandbox.const_set(:Spell, spells)
     town = "the town of Wehnimer's Landing"
     sandbox.const_set(:Map, double(list: [double(tags: ['publiclockers', 'ranger alchemy administrator'], location: town, find_nearest_by_tag: 1)]))
     sandbox.const_set(:Room, double(:rooms, :[] => double(location: town)))
     sandbox.const_set(:UserVars, double(mapdb_fwi_trinket: false))
     path = File.expand_path("../../fixtures/webui/#{name}_setup.lic", __dir__)
-    sandbox.module_eval(File.read(path), path)
+    source = File.read(path)
+    if name == 'eloot'
+      expect(Digest::SHA256.hexdigest(source)).to eq('629e8f9f1b845f5348068a5ba75c42bd74006d5c59e45bf218c6cc2d5d4a00e0')
+    end
+    source = WebUIBuilderSourceRepairs.apply(name, source) if corrected
+    sandbox.module_eval(source, path)
     mod = sandbox.const_get({ 'eloot' => :ELoot, 'ebounty' => :EBounty, 'eherbs' => :EHerbs, 'blackarts' => :BlackArts }.fetch(name))
+    if name == 'eloot'
+      @tip_requests, @setup_messages = [], []
+      requests = @tip_requests
+      mod.const_set(:Sell, Module.new).define_singleton_method(:locksmith_tip) do |*args|
+        requests << args
+        200
+      end
+      table = Class.new do
+        attr_reader :title, :rows
+
+        def initialize(title:, rows:)
+          @title, @rows = title, rows
+        end
+
+        def align_column(*); end
+      end
+      sandbox.const_set(:Terminal, Module.new).const_set(:Table, table)
+    end
     mod.define_singleton_method(:get_script_version) { 'fixture' }
     mod.define_singleton_method(:data) { Struct.new(:settings).new(settings) }
     destination = File.join(@settings_directory, "#{name}.yaml")
@@ -125,7 +149,8 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     loaded = @eherbs_loaded
     mod.define_singleton_method(:load) { |values| loaded << values.dup }
     klass = mod.const_get(:Setup)
-    klass.define_method(:respond) { |*_args| nil }
+    messages = @setup_messages
+    klass.define_method(:respond) { |*args| messages&.concat(args) }
     klass.define_method(:wait_while) { |&block| sleep 0.005 while block.call }
     # Profile discovery is a game-data lookup; avoid touching real character data.
     allow(Dir).to receive(:children).and_call_original
@@ -185,16 +210,126 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     end
   end
 
+  it 'loads the explicitly corrected eloot candidate and preserves its Close/save callback' do |example|
+    next if production_nil_example(example)
+
+    settings = {}
+    form = original_e_setup('eloot', settings, corrected: true)
+    expect(form['exclusions_label'].send(:component_props)[:tooltip]).to include('aquamarine')
+    form['main'].show_all
+    drain_gtk
+    form.on_close_clicked
+    drain_gtk
+    expect(form['main']).to be_destroyed
+    expect(@setup_diagnostics.grep(/callback failed/)).to be_empty, @setup_diagnostics.join("\n")
+    expect(YAML.unsafe_load_file(File.join(@settings_directory, 'eloot.yaml'))).to eq(settings)
+  end
+
+  it 'exercises every corrected eloot list add/delete handler and retains the empty lists on save' do |example|
+    next if production_nil_example(example)
+
+    settings = {}
+    form = original_e_setup('eloot', settings, corrected: true)
+    lists = form.objects.select { |widget| widget.instance_of?(gtk::TreeView) }
+    expect(lists.length).to eq(12)
+    lists.each do |list|
+      key = list.builder_name
+      value = key == 'sell_keep_scrolls' ? '215' : "fixture #{key}"
+      previous = settings.fetch(key.to_sym).dup
+      form["#{key}_entry"].text = value
+      form["#{key}_add"].send(:emit_handlers, :activate)
+      drain_gtk
+      expect(settings.fetch(key.to_sym)).to include(value), key
+      iter = list.model.rows.find { |row| row[0].to_s == value }
+      expect(iter).not_to be_nil, key
+      list.selection.select_iter(iter)
+      form["#{key}_delete"].send(:emit_handlers, :activate)
+      drain_gtk
+      expect(settings.fetch(key.to_sym)).to match_array(previous), key
+    end
+    expect(@setup_diagnostics.grep(/callback failed/)).to be_empty, @setup_diagnostics.join("\n")
+    form.on_close_clicked
+    drain_gtk
+    expect(YAML.unsafe_load_file(File.join(@settings_directory, 'eloot.yaml'))).to eq(settings)
+  end
+
+  it 'updates every corrected eloot scalar entry and spin setting through its connected handler' do |example|
+    next if production_nil_example(example)
+
+    settings = {}
+    form = original_e_setup('eloot', settings, corrected: true)
+    entries = form.objects.select { |widget| widget.instance_of?(gtk::Entry) && form.class.get_setting(widget.builder_name.to_sym) }
+    expect(entries.length).to be > 10
+    entries.each do |entry|
+      entry.text = "fixture #{entry.builder_name}"
+      drain_gtk
+      expect(settings.fetch(entry.builder_name.to_sym)).to eq(entry.text)
+    end
+    spins = form.objects.select { |widget| widget.instance_of?(gtk::SpinButton) && form.class.get_setting(widget.builder_name.to_sym) }
+    expect(spins).not_to be_empty
+    spins.each do |spin|
+      spin.value = (spin.adjustment.lower + spin.adjustment.upper) / 2.0
+      drain_gtk
+      expect(settings.fetch(spin.builder_name.to_sym).to_f).to eq(spin.text.to_f)
+    end
+    expect(@setup_diagnostics.grep(/callback failed/)).to be_empty, @setup_diagnostics.join("\n")
+    form['main'].destroy
+    drain_gtk
+    expect(File).not_to exist(File.join(@settings_directory, 'eloot.yaml'))
+  end
+
+  it 'dispatches the corrected eloot tipping preview with the current settings' do |example|
+    next if production_nil_example(example)
+
+    settings = {}
+    form = original_e_setup('eloot', settings, corrected: true)
+    form['alpha_rate'].value = 3.5
+    drain_gtk
+    form['tipping_test'].send(:emit_handlers, :activate)
+    expect(@tip_requests.length).to eq(22)
+    expect(@tip_requests.map { |args| args.drop(1) }.uniq).to eq([[settings[:base_tip], settings[:max_tip], '3.5']])
+    expect(@setup_messages.last.title).to eq('Incremental Tipping (alpha: 3.5)')
+    expect(@setup_messages.last.rows.length).to eq(15)
+    form['main'].destroy
+    drain_gtk
+    expect(File).not_to exist(File.join(@settings_directory, 'eloot.yaml'))
+  end
+
+  it 'runs the corrected eloot candidate through Chrome settings, lists, dependencies and saving', browser: true do |example|
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    next if production_nil_example(example)
+
+    settings = {}
+    form = original_e_setup('eloot', settings, corrected: true)
+    form['main'].show_all
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    controls = form.objects.filter_map do |widget|
+      handle = widget.instance_variable_get(:@handle)
+      next unless handle && widget.respond_to?(:builder_name)
+      [widget.builder_name, widget.session.port.send(:node!, handle).cid]
+    end.to_h
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-eloot-corrected', controls: controls)
+    drain_gtk
+    expect(@setup_diagnostics.grep(/callback failed/)).to be_empty, @setup_diagnostics.join("\n")
+    expect(settings).to include(sell_locksmith: true, locksmith_priority: 'locksmith', use_incremental_tipping: true, use_standard_tipping: false,
+                                alpha_rate: 3.5, skin_enable: true, gem_horde: true, gem_horde_che_rooms: '1234')
+    expect(settings[:loot_types]).to include('alchemy')
+    expect(settings[:gem_list]).to include('ruby')
+    expect(YAML.unsafe_load_file(File.join(@settings_directory, 'eloot.yaml'))).to eq(settings)
+    expect(form['main']).to be_destroyed
+  end
+
   it 'refuses the original eloot missing tooltip target with a conversion diagnostic' do |example|
     next if production_nil_example(example)
 
+    allow(owner).to receive(:kill)
     form = original_e_setup('eloot', {}, source_failure: true)
     expect { form['exclusions_label'] }.to raise_error(gtk::BuilderError, /object=exclusions_label.*native WebUI/)
-    expect { form.set_tooltips }.to raise_error(gtk::BuilderError, /object=exclusions_label/)
-    # The original initialization never reaches connect_signals after this error.
-    expect(form['main'].instance_variable_get(:@destroy_handlers)).to be_nil
-    expect(form['sell_locksmith_pool'].sensitive?).to be(true)
-    expect(form['locksmith_priority'].sensitive?).to be(false)
+    expect(form['main']).to be_destroyed
+    expect(service.registry.pages_for(owner)).to be_empty
+    expect(owner).to have_received(:kill).with(async: true)
+    expect(gtk.queue { raise 'late work must not run' }).to be_nil
   end
 
   %w[ebounty eherbs blackarts].each do |name|
@@ -448,6 +583,99 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     end
   end
 
+  it 'keeps widget names separate from Builder IDs and enforces the Entry character limit' do
+    load_xml('<object class="GtkEntry" id="entry"><property name="name">label</property><property name="text">abc</property><property name="max-length">1</property></object><object class="GtkLabel" id="label"/>')
+    expect(builder['entry'].name).to eq('label')
+    expect(builder['entry'].builder_name).to eq('entry')
+    expect(builder['entry'].text).to eq('a')
+    builder['entry'].text = 'xy'
+    expect(builder['entry'].text).to eq('x')
+    expect(builder['label']).not_to equal(builder['entry'])
+    expect { builder['entry'].max_length = -1 }.to raise_error(gtk::UnsupportedOperation)
+    expect { builder['entry'].max_length = 8193 }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'refuses internal combo entry character limits without retaining a partial Builder load' do
+    expect do
+      load_xml(<<~XML)
+        <object class="GtkComboBoxText" id="combo">
+          <property name="has-entry">True</property>
+          <child internal-child="entry"><object class="GtkEntry" id="entry">
+            <property name="text">Existing text</property>
+            <property name="max-length">3</property>
+          </object></child>
+        </object>
+      XML
+    end.to raise_error(gtk::BuilderError, /max_length=/)
+    expect(builder.objects).to be_empty
+  end
+
+  it 'retains keyboard focus and server-owned values in read-only entries in either property order' do
+    [['can-focus', 'editable'], ['editable', 'can-focus']].each do |order|
+      candidate = gtk::Builder.new
+      props = order.map { |key| "<property name=\"#{key}\">#{key == 'editable' ? 'False' : 'True'}</property>" }.join
+      candidate.add_from_string("<interface><object class=\"GtkEntry\" id=\"entry\">#{props}</object></interface>")
+      entry = candidate['entry']
+      entry.text = 'server value'
+      expect(entry.send(:component_type)).to eq(:text_input)
+      expect(entry.send(:component_props)).to include(read_only: true, value: 'server value')
+    end
+  end
+
+  it 'emits programmatic Entry changes once after a valid write, including read-only entries' do
+    entry = gtk::Entry.new
+    entry.editable = false
+    seen = []
+    entry.signal_connect('changed') do |widget|
+      seen << widget.text
+      widget.set_text(widget.text) # Equal writes inside the handler must not recurse.
+    end
+    expect(entry.set_text('profile')).to equal(entry)
+    entry.text = 'profile'
+    expect(seen).to eq(['profile'])
+    window = gtk::Window.new
+    window.add(entry)
+    window.show_all
+    drain_gtk
+    expect { entry.text = 'x' * 8193 }.to raise_error(Lich::WebUI::Error)
+    expect(entry.text).to eq('profile')
+    expect(seen).to eq(['profile'])
+    window.destroy
+  end
+
+  it 'bounds single-line labels and image-free checkbox hints without inventing content' do
+    load_xml('<object class="GtkLabel" id="label"><property name="label">One line</property><property name="single-line-mode">True</property></object><object class="GtkCheckButton" id="check"><property name="always-show-image">True</property></object>')
+    expect(builder['label'].text).to eq('One line')
+    expect { builder['label'].text = "Two\nlines" }.to raise_error(gtk::UnsupportedOperation)
+    expect { builder['label'].wrap = true }.to raise_error(gtk::UnsupportedOperation)
+    expect { builder['check'].always_show_image = 'yes' }.to raise_error(gtk::UnsupportedOperation)
+    expect(Lich).to have_received(:log).with(/single.line.*browser font metrics/)
+    expect(Lich).to have_received(:log).with(/always-show-image.*image-free checkbox/)
+  end
+
+  it 'maps safe anchor titles to literal tooltips and forwards internal combo tooltips and height' do
+    label = gtk::Label.new
+    label.set_markup('<a href="https://example.org/help" title="A &quot;quote&quot;">Help</a>')
+    label.set_can_focus(true)
+    expect(label.send(:component_props)[:content]).to eq('[Help](https://example.org/help "A \"quote\"")')
+    expect { label.set_markup('<a href="https://example.org/" onclick="alert(1)">Unsafe</a>') }.to raise_error(gtk::UnsupportedOperation)
+    combo = gtk::ComboBoxText.new(entry: true)
+    combo.child.tooltip_text = 'Literal help'
+    combo.set_height_request(42)
+    expect(combo.send(:component_props)).to include(tooltip: 'Literal help', min_height: 42)
+  end
+
+  it 'coerces finite numeric and blank adjustment strings while refusing malformed values' do
+    adjustment = gtk::Adjustment.new(1, 0, 100, 0.1, 1, 0)
+    adjustment.value = '0.3'
+    expect(adjustment.value).to eq(0.3)
+    adjustment.value = ' '
+    expect(adjustment.value).to eq(0)
+    %w[bad NaN Infinity].each do |value|
+      expect { adjustment.value = value }.to raise_error(gtk::UnsupportedOperation)
+    end
+  end
+
   it 'uses shared character metrics and borderless frames while refusing unsupported focus and alignment values' do
     load_xml('<object class="GtkLabel" id="label"><property name="width-chars">17</property></object><object class="GtkFrame" id="frame"><property name="shadow-type">none</property></object>')
     expect(builder['label'].send(:component_props)).to include(min_width_chars: 17)
@@ -461,8 +689,6 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
       '<object class="GtkCheckButton"><property name="receives-default">invalid</property></object>',
       '<object class="GtkButton"><property name="receives-default">False</property></object>',
       '<object class="GtkScrolledWindow"><property name="shadow-type">out</property></object>',
-      '<object class="GtkEntry"><property name="can-focus">True</property><property name="editable">False</property></object>',
-      '<object class="GtkEntry"><property name="editable">False</property><property name="can-focus">True</property></object>',
     ].each { |xml| expect { load_xml(xml) }.to raise_error(gtk::BuilderError) }
     expect(builder.objects.length).to eq(2)
   end

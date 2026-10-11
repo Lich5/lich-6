@@ -283,6 +283,15 @@ module Lich
             detail = "#{detail} #{error.diagnostic}" if defined?(ModelValueError) && error.is_a?(ModelValueError)
             source_warning(self, :queue, "callback failed error=#{error.class} at=#{source || error.backtrace&.first}#{" rejected=#{detail}" if detail}")
             respond "error in Gtk.queue (#{@owner.name}): #{error.class}; see debug log"
+            # An unhandled Builder failure can leave an allocated form without
+            # its Close/destroy handlers. Retire this owner's UI and use Script's
+            # existing asynchronous stop path; never leave a partial form running.
+            # Direct Builder calls rescued by the script retain their normal
+            # transactional behavior and do not reach this queue boundary.
+            if defined?(BuilderError) && error.is_a?(BuilderError)
+              close
+              @owner.kill(async: true) if @owner.respond_to?(:kill)
+            end
             nil
           end
 
