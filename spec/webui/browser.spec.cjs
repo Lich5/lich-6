@@ -459,6 +459,12 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.locator('summary', { hasText: 'Details' }).click();
     const text = page.locator('textarea');
     await expect(text).toBeVisible();
+    await text.focus();
+    // Force a server redraw without moving focus or depending on delivery timing.
+    // Ruby must receive only the later, genuine blur when Details is collapsed.
+    await page.getByRole('button', { name: 'Redraw fixture' }).evaluate(button => button.click());
+    await expect(page.getByText('Redraw received', { exact: true })).toBeVisible();
+    await expect(text).toBeFocused();
     await text.fill('line one\nline two');
     await page.locator('summary', { hasText: 'Details' }).click();
     await expect(text).not.toBeVisible();
