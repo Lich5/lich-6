@@ -5,12 +5,17 @@ module Lich
     module ScriptScope
       module Gtk
         # The entry child uses its combo's single shared input, never a second browser control.
-        class ComboEntry < Entry
-          # Creates a bounded model-backed combo or its single-input entry facade.
+        module ComboEntry
+          # GTK exposes this child as an actual Entry, including exact .class
+          # checks used by Builder scripts. Attach delegation to that Entry;
+          # do not spoof reflection or allocate a second browser input.
           # @param combo [ComboBox] owning editable combo
-          def initialize(combo)
-            super()
-            @combo, @parent = combo, combo
+          # @return [Entry] the combo's stable entry child
+          def self.new(combo)
+            Entry.new.extend(self).tap do |entry|
+              entry.instance_variable_set(:@combo, combo)
+              entry.instance_variable_set(:@parent, combo)
+            end
           end
 
           def text = @combo.entry_text
@@ -41,7 +46,7 @@ module Lich
 
           # Forwards changed notifications from the combo's single shared input.
           # @param name [String, Symbol] changed
-          # @yieldparam entry [ComboEntry] this entry
+          # @yieldparam entry [Entry] this entry
           # @return [Integer] handler count
           def signal_connect(name, &handler)
             session.refuse(self, :signal_connect) unless name.to_s == 'changed'
@@ -55,10 +60,10 @@ module Lich
 
           protected
 
-          # Character sizing belongs to the combo's single browser input.
+          # Character sizing, placeholder and tooltip belong to the combo's input.
           # Other entry writes still require an explicit shared-control mapping.
           def write(property, value)
-            session.refuse(self, property) unless %i[min_width_chars max_width_chars placeholder].include?(property)
+            session.refuse(self, property) unless %i[min_width_chars max_width_chars placeholder tooltip].include?(property)
             @combo.send(:write, property, value)
           end
         end
@@ -66,6 +71,13 @@ module Lich
         # A flat model-backed select. Wire IDs name rows, so duplicate labels remain distinct.
         # The permanent blank sentinel represents active=-1 for both new and attached viewers.
         class ComboBox < Widget
+          # GTK height requests are minima. Reuse the existing select minimum
+          # without imposing a fixed height that could clip its entry or label.
+          def set_height_request(value)
+            write(:min_height, Integer(value))
+          end
+          alias height_request= set_height_request
+
           attr_reader :model, :child, :entry_text_column
 
           # Creates a bounded model-backed combo or its single-input entry facade.
@@ -276,7 +288,10 @@ module Lich
           def entry_text
             value = read(:value)
             return '' if value == 'none'
-            model.find_key(value)&.[](@label_column) || value.delete_prefix('text:')
+            # A selected row with an unset label is blank entry text, not a
+            # free-text value; falling through would expose its internal row ID.
+            row = model.find_key(value)
+            row ? row[@label_column].to_s : value.delete_prefix('text:')
           end
 
           # Encodes literal text separately from option IDs and the clearing sentinel.

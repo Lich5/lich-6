@@ -65,47 +65,49 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(first_connection.sent.last['input_requests']).to eq(input['cid'] => 7)
   end
 
-  it 'accepts delivered read-only text while preserving a newer server value and refusing forgeries' do
-    received = Queue.new
-    allow(runtime).to receive(:schedule_render)
-    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'readonly', title: 'Read only') do
-      input = textarea(key: 'text', value: 'Default', read_only: true)
-      button(key: 'save', label: 'Save', submit: [input], on: {
-        activate: ->(event) { received << event.submission[event.submission.cids.first] },
-      })
-    end)
-    address, = attach(first_connection, page)
-    attach(second_connection, page)
-    first = viewers.fetch(connection_id: first_connection.viewer_id, address: address)
-    second = viewers.fetch(connection_id: second_connection.viewer_id, address: address)
-    input, button = page.last_render.tree.children
-    page.set(input.cid, :value, 'Delivered override', viewer: first.viewer_id)
-    runtime.refresh(page)
-    render = first_connection.sent.last
+  %i[text_input textarea].each do |kind|
+    it "accepts delivered read-only #{kind} while preserving a newer server value and refusing forgeries" do
+      received = Queue.new
+      allow(runtime).to receive(:schedule_render)
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'readonly', title: 'Read only') do
+        input = public_send(kind, key: 'text', value: 'Default', read_only: true)
+        button(key: 'save', label: 'Save', submit: [input], on: {
+          activate: ->(event) { received << event.submission[event.submission.cids.first] },
+        })
+      end)
+      address, = attach(first_connection, page)
+      attach(second_connection, page)
+      first = viewers.fetch(connection_id: first_connection.viewer_id, address: address)
+      second = viewers.fetch(connection_id: second_connection.viewer_id, address: address)
+      input, button = page.last_render.tree.children
+      page.set(input.cid, :value, 'Delivered override', viewer: first.viewer_id)
+      runtime.refresh(page)
+      render = first_connection.sent.last
 
-    # Hold refresh scheduling so Save deterministically arrives after the server
-    # write but before delivery. The authored default is not the wire value.
-    page.set(input.cid, :value, 'Newest server value', viewer: first.viewer_id)
-    viewers.snapshot(first) # Lifecycle capture must not rewrite delivery evidence.
-    submit = lambda do |value|
-      runtime.handle(first_connection, type: 'event', page: address, generation: render['generation'],
-                     cid: button.cid, event: 'activate', payload: {}, submission: [value])
+      # Hold refresh scheduling so Save deterministically arrives after the server
+      # write but before delivery. The authored default is not the wire value.
+      page.set(input.cid, :value, 'Newest server value', viewer: first.viewer_id)
+      viewers.snapshot(first) # Lifecycle capture must not rewrite delivery evidence.
+      submit = lambda do |value|
+        runtime.handle(first_connection, type: 'event', page: address, generation: render['generation'],
+                       cid: button.cid, event: 'activate', payload: {}, submission: [value])
+      end
+      expect(submit.call('Default')).to eq(:refused)
+      expect(submit.call('Forged')).to eq(:refused)
+      expect(submit.call('Newest server value')).to eq(:refused)
+      expect(submit.call('Delivered override')).to eq(:queued)
+      expect(received.pop(timeout: 2)).to eq('Newest server value')
+      expect(viewers.property(first, input, :value)).to eq('Newest server value')
+      expect(viewers.property(second, input, :value)).to eq('Default')
+
+      runtime.refresh(page)
+      render = first_connection.sent.last
+      expect(submit.call('Delivered override')).to eq(:refused)
+      expect(submit.call('Newest server value')).to eq(:queued)
+      expect(received.pop(timeout: 2)).to eq('Newest server value')
+      runtime.handle(first_connection, type: 'detach', page: address)
+      expect(first.delivered_read_only).to be_empty
     end
-    expect(submit.call('Default')).to eq(:refused)
-    expect(submit.call('Forged')).to eq(:refused)
-    expect(submit.call('Newest server value')).to eq(:refused)
-    expect(submit.call('Delivered override')).to eq(:queued)
-    expect(received.pop(timeout: 2)).to eq('Newest server value')
-    expect(viewers.property(first, input, :value)).to eq('Newest server value')
-    expect(viewers.property(second, input, :value)).to eq('Default')
-
-    runtime.refresh(page)
-    render = first_connection.sent.last
-    expect(submit.call('Delivered override')).to eq(:refused)
-    expect(submit.call('Newest server value')).to eq(:queued)
-    expect(received.pop(timeout: 2)).to eq('Newest server value')
-    runtime.handle(first_connection, type: 'detach', page: address)
-    expect(first.delivered_read_only).to be_empty
   end
 
   { 'CRLF' => "\r\n", 'lone CR' => "\r" }.each do |label, line_break|

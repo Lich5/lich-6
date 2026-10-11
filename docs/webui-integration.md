@@ -371,14 +371,43 @@ the script, requested ID and lookup operation and recommending native WebUI
 conversion. This intentionally differs from GTK's `nil` return: Lich's
 `NilClass#method_missing` extension can otherwise silently swallow the subsequent
 widget operation. Scripts needing optional lookups must inspect the `objects`
-snapshot explicitly. A failed lookup does not discard previously loaded objects.
+snapshot explicitly. A failed lookup rescued by the script does not discard
+previously loaded objects. If a Builder error escapes a `Gtk.queue` block, the
+session closes that owner's windows, refuses subsequent queued work and requests
+Lich's existing asynchronous script stop. Other script sessions are unaffected;
+a partially initialized setup must not remain running without its close handlers.
 
 The original `eloot` setup requests `exclusions_label`, which its XML does not
-declare. The shim therefore refuses that lookup during tooltip initialization;
-use the converted native WebUI version. Production GTK can continue past this
+declare. The shim therefore refuses that lookup during tooltip initialization.
+The source repair is to name the existing Exclusions label `exclusions_label`;
+the converted native WebUI version is also an available migration path. Production GTK can continue past this
 defect because of Lich's nil suppression, but the tooltip is never assigned.
 The retained WebUI conversion builds the exclusions group directly and removes
 the bad lookup; it also omits this help text, despite retaining the `(?)` caption.
+
+The retained original `bigshot` setup has the same category of source defect:
+its tooltip initializer looks up `boon_flee_from`, absent from its XML. The
+converted version stores that unused tooltip in metadata instead. No widget is
+fabricated and no nil-suppression behavior is added to the shim. XML preflight
+success does not establish successful setup initialization or callback wiring.
+Its source repair removes the obsolete tooltip assignment and replaces the
+legacy `boon_flee_from` migration (which also looks up nonexistent `all:flee`)
+with a one-time migration into the existing all/category/per-trait boon settings.
+These script repairs are not implemented by the shim.
+
+Acceptance tests retain both unchanged failure fixtures and separately labeled
+corrected candidates. Exact, test-only substitutions in
+`spec/support/webui_builder_source_repairs.rb` are applied after source digest
+checks; an unexpected source shape fails rather than silently changing a repair.
+Corrected eloot covers all twelve list add/delete handlers, scalar settings,
+tipping-preview dispatch, dependencies, Close/save and destroy without save.
+Corrected Bigshot covers scalar fields, text-area focus-out, boon choices and
+legacy migration, profile load/new/overwrite/cancel/update, Close persistence and
+destroy without save. Each has an independent Chrome interaction case.
+Game catalogs, tip calculation/terminal formatting and persistence destinations
+are isolated harness dependencies. These are setup/UI checks, not gameplay or
+native desktop-window certification; upstream originals remain blocked until
+repaired by their authors.
 
 The explicit class/property mappings live in
 [`gtk/builder.rb`](../lib/common/script_scope/gtk/builder.rb). They cover existing
@@ -387,8 +416,13 @@ labels, expanders, plain labels and entries, buttons/toggles/radios, adjustment
 and spin controls, text buffers/views, separators, scalar stores, tree views and
 single cell renderers, and combo boxes. Grid/table coordinates and box packing
 use existing placement APIs. Tree selection and editable combo entry internal
-children expose their owner's real objects. Stores accept typed scalar columns
-and row data; nested rows require `TreeStore`. A renderer accepts one model
+children expose their owner's real objects. The combo's child is an actual Entry
+with delegation attached, preserving exact-class checks while sharing one browser
+input. Programmatic Entry writes emit `changed` after a valid value change,
+including read-only fields; equal writes do not recursively emit. Stores accept typed scalar columns
+and row data; nested rows require `TreeStore`. Unset string cells remain `nil`
+for script reads, distinct from an explicit empty string; table cells and combo
+choices display both as blank text. A renderer accepts one model
 binding. Combo items have plain text labels and optional unique item IDs. Label
 `style` attributes accept `normal` or `italic` through the existing typed text
 property; `foreground` attributes accept six- and twelve-digit Pango RGB colors
@@ -505,7 +539,7 @@ GTK properties:
 | `receives-default` | Button accepts `true`. CheckButton accepts either boolean and reports `true` as an ignored default-activation hint. A focused button activates with Enter; a checkbox toggles with Space or click. This does not establish a window-wide default button or checkbox Enter activation. |
 | `draw-indicator` | CheckButton accepts `true`, retaining its native indicator; `false` is refused. |
 | `label-xalign` | Frame accepts zero, retaining its left-aligned caption. Other values are refused. |
-| Frame `width-request` | A minimum requisition, so a wider natural child grid expands the frame. Explicit native core fixed-width constraints retain their meaning. Natural grids keep checkbox/radio labels together rather than overlapping neighboring cells. |
+| Frame `width-request`, `height-request` | Minimum requisitions, so natural child content expands the frame instead of overflowing a fixed box. Explicit native core fixed-size constraints retain their meaning. Natural grids preserve entry, checkbox and radio requisitions instead of collapsing their tracks or overlapping neighboring cells. |
 | Button `width-request`, `height-request` | Map to existing `min_width` and `min_height` geometry. Labels and padding can grow beyond the requested minimum instead of overflowing a fixed button box. |
 | `width-chars` | Entry and Label accept integers 1–1024 through the shared `min_width_chars` property and character metrics. Pixel estimates and the GTK `-1` reset are not supported. |
 | Entry `max-width-chars` | Bounds preferred character width through `max_width_chars`; an internal combo entry forwards character sizing and placeholder text to its single shared input. |
@@ -520,6 +554,15 @@ GTK properties:
 | Notebook `show-tabs` | Maps to shared `tabs.show_tabs` (default true). False hides selectors while retaining the selected page; its content has a named group role. Other pages remain hidden. |
 | Notebook child `reorderable` | False is accepted. True is accepted and reported as ineffective only for a single page with hidden tabs, where there is no ordering gesture. Visible or multiple-page reordering remains refused. |
 | Label `justify` | Left/center/right align lines within the text block through the optional shared text `line_justify` property. They do not overwrite label placement or `xalign`; single-line labels retain their position. Wrapped and explicit multiline text use the same bounded mapping. Full justification and justification on linked Markdown labels are refused. |
+| Widget `name` | Retains a literal, at-most-512-character script name. It does not alter `builder_name`, lookup IDs, DOM identity or CSS support. |
+| Entry `max-length` | Integers 1–8192 set the existing input character limit before materialization; zero uses the shared 8192-character bound. Existing and programmatically assigned text is truncated to the limit. Live limit changes and larger limits are refused. |
+| Entry `editable=false` | Uses a focusable, selectable shared `text_input` with `read_only=true`, configured before materialization. Server writes remain authoritative; client change events and forged terminal values are refused. |
+| Label `single-line-mode` | Either boolean is accepted for literal, unwrapped, single-line text; true reports use of browser font metrics. Multiline text, wrapping and linked markup with this mode are refused. |
+| CheckButton `always-show-image` | Either boolean is accepted only for image-free checkboxes; true reports the hint has no effect. This does not add checkbox image support. |
+| Linked Label titles and focus | HTTP(S) anchors may include literal `title` text, mapped to a safe Markdown link title. Linked labels accept their existing anchor focus behavior. Arbitrary anchor attributes/markup and focusable plain labels remain refused. |
+| Combo entry tooltip and combo height | The internal entry forwards literal tooltips to its owner; combo height requests use the shared minimum height. Neither creates another input or fixed-height clipping. |
+| Adjustment `value=` | Finite numeric strings and blank strings (zero) are clamped through the existing adjustment. Other malformed/nonfinite values are refused. The strict `(min, max, step)` SpinButton constructor retains its numeric-only boundary. |
+| TextView `focus-out-event` | Editable plain text uses the shared `textarea.blur` event with its latest bounded value. Blur is distinct from buffer changes; renderer focus restoration does not synthesize it. Read-only text and log views do not gain editing events. |
 | Widget `visible=`, `set_margin_top`, `set_margin_bottom` | Reuse show/hide and bounded per-edge margins, including after publication; no control replacement is required. All four margin setters (and start/end aliases) preserve untouched edges, including a scalar margin established by `set_border_width`. Builder properties use the same setters. |
 
 Text values remain literal, including numeric-looking strings and whitespace.
@@ -651,10 +694,11 @@ checks checkbox-label overlap, horizontal overflow and footer visibility at
 they do not assert pixel-for-pixel GTK parity. Ruby tests also exercise detach
 and browser-exit destruction without saving. Game lookups
 and the settings destination are isolated by the harness; this establishes setup
-behavior, not whole-script gameplay compatibility. Bigshot's composite focus,
-vertical alignment, linked markup and other unmapped demands remain explicit
-boundaries. Further presentation and interaction expansion requires review;
-Builder does not silently broaden the CSS or shared-core scope.
+behavior, not whole-script gameplay compatibility. The retained Bigshot and
+Huntplan XML declarations are now mapped; source defects and corrected-candidate
+acceptance are tracked separately above. Further presentation and interaction
+expansion requires review; Builder does not silently broaden the CSS or
+shared-core scope.
 
 ## Authentication and trust boundaries
 

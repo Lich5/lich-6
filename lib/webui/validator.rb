@@ -513,7 +513,7 @@ module Lich
       end
 
       def validate_input_event!(type, event_name, payload, props, context)
-        return unless event_name == :change
+        return unless event_name == :change || (type == :textarea && event_name == :blur)
         violation!('sensitive components cannot emit change', context, event_name) if props[:sensitive] == true
 
         value = payload[:value]
@@ -525,6 +525,7 @@ module Lich
           options = props[:options].map { |option| (option[:value] || option['value']).to_s }
           violation!('event value is not present in options', context, event_name) unless options.include?(value)
         when :text_input
+          violation!('text is read-only', context, event_name) if props[:read_only]
           max = props[:max_length] || Contract::BOUNDS[:input_text]
           violation!("event value exceeds #{max} characters", context, event_name) if value.length > max
         when :textarea

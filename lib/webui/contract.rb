@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.16.0'
+      VERSION = '2.17.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -358,6 +358,7 @@ module Lich
             label: property(SHORT), value: property(string(:input_text), required: true, scope: :viewer),
             placeholder: property(SHORT), max_length: property(integer(min: 1, max: 8192)),
             search: property(BOOL, default: false),
+            read_only: property(BOOL, default: false),
             # GTK changed handlers and activate/focus-out handlers have different
             # timing. Keep existing committed changes unless explicitly opted in.
             change_mode: property(enum(:commit, :input), default: :commit),
@@ -385,7 +386,8 @@ module Lich
             rows: property(integer(min: 1, max: 64), default: 5),
             max_length: property(integer(min: 1, max: 65_536)),
           }, children: :none,
-          events: { change: event(record(value: property(string(:multiline_text), required: true))) },
+          events: { change: event(record(value: property(string(:multiline_text), required: true))),
+                    blur: event(record(value: property(string(:multiline_text), required: true)), lifecycle: true) },
           value: string(:multiline_text), value_scope: :viewer,
         },
         number_input: {

@@ -30,8 +30,11 @@ module Lich
           def value = @widget ? @widget.value : @value
 
           # Clamps a programmatic value and signals only an actual change.
+          # Numeric strings and blank-as-zero match legacy GTK assignments. Other
+          # malformed and nonfinite strings remain explicit refusals.
           # @return [Adjustment] self
           def set_value(number)
+            number = number.strip.empty? ? 0 : Float(number, exception: false) if number.is_a?(String)
             session.refuse(self, :value=) unless finite_number?(number)
             target = number.clamp(lower, [lower, upper - page_size].max)
             session.synchronize do

@@ -1111,6 +1111,8 @@ RSpec.describe 'bounded script compatibility pilot' do
       details = compatibility::Expander.new('Details')
       view = compatibility::TextView.new
       view.buffer.text = 'Initial text'
+      blur_values = Queue.new
+      view.signal_connect('focus-out-event') { blur_values << view.buffer.text }
       details.add(view)
       image = compatibility::Image.new(file: image_path)
       image.set_tooltip_text('Fixture image')
@@ -1139,6 +1141,7 @@ RSpec.describe 'bounded script compatibility pilot' do
       expect(window).to be_destroyed
       expect([first.active?, second.active?, toggle.active?, spin.value, search.text]).to eq([false, true, true, 2.85, 'query'])
       expect(view.buffer.text).to eq("line one\nline two")
+      expect(blur_values.pop(timeout: 2)).to eq("line one\nline two")
       expect(details.expanded?).to be(false)
       expect(image.pixbuf).to be_nil
       expect([check.active?, radio_first.active?, radio_second.active?]).to eq([true, false, true])

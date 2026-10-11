@@ -179,7 +179,9 @@ module Lich
           def editor
             return nil unless editable
             session.refuse(self, :model) unless model && model.get_column_type(text_column) == String
-            values = model.rows.map { |iter| iter[text_column] }.uniq
+            # Unset string cells display as blank choices, while the model keeps
+            # nil for script callbacks just as it does for ordinary table cells.
+            values = model.rows.map { |iter| iter[text_column].to_s }.uniq
             session.refuse(self, :options) if values.length > Lich::WebUI::Contract::BOUNDS[:collection]
             { type: 'select', options: values.map { |text| { value: text, label: text } } }
           end

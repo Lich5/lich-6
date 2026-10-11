@@ -290,7 +290,7 @@ module Lich
           # Reads a scalar without exposing a mutable model-owned String.
           # @param iter [TreeIter] live row
           # @param column [Integer] schema column
-          # @return [String, Integer, Float, Boolean] copied scalar value
+          # @return [String, nil, Integer, Float, Boolean] copied scalar value
           def get_value(iter, column)
             session.synchronize do
               check_column(column)
@@ -411,7 +411,9 @@ module Lich
               valid &&= !parent || get_path(parent).depth < Lich::WebUI::Contract::BOUNDS[:tree_depth]
               session.refuse(self, :insert) unless valid
               @serial += 1
-              defaults = column_types.map { |type| type == String ? ''.freeze : type == TrueClass ? false : type == Float ? 0.0 : 0 }
+              # GTK leaves string cells unset (nil); a blank rendered label must
+              # not erase the script-visible distinction from an explicit ''.
+              defaults = column_types.map { |type| type == String ? nil : type == TrueClass ? false : type == Float ? 0.0 : 0 }
               row = Row.new("r#{@prefix}-#{@serial}".freeze, parent_key, defaults)
               before = peers[position] unless position == -1
               before ? @rows.insert(@insertion_rank.fetch(before.key), row) : @rows << row

@@ -1311,3 +1311,45 @@ test('automatic columns fit their allocation independently of long cells while a
   available = 300; resize();
   assert.equal(table.querySelector('table').style.width, '510px', 'explicit viewer sizing is not silently compressed');
 });
+
+
+test('single-line read-only inputs retain focus and do not emit client edits', t => {
+  const { dom, page, sent } = fixture(); t.after(() => dom.window.close());
+  page.bindings.readonly = ['change', 'focus'];
+  const wrapper = dom.window.LichWebUI.render(page, { type: 'text_input', cid: 'readonly', props: {
+    value: 'Profile', read_only: true, change_mode: 'input'
+  } });
+  dom.window.document.body.append(wrapper);
+  const input = wrapper.querySelector('input');
+  assert.equal(input.readOnly, true);
+  input.focus();
+  assert.equal(dom.window.document.activeElement, input);
+  input.dispatchEvent(new dom.window.Event('input'));
+  assert.equal(sent.filter(message => message.event === 'change').length, 0);
+  assert.equal(sent.filter(message => message.event === 'focus').length, 1);
+});
+
+test('textarea blur delivers the latest value separately from changes and ignores focus restoration', t => {
+  const { dom, page, sent } = fixture(); t.after(() => dom.window.close());
+  page.bindings.text = ['change', 'blur'];
+  const wrapper = dom.window.LichWebUI.render(page, { type: 'textarea', cid: 'text', props: { value: '' } });
+  const input = wrapper.querySelector('textarea');
+  input.value = 'Latest\ntext';
+  input.dispatchEvent(new dom.window.Event('input'));
+  input.dispatchEvent(new dom.window.Event('blur'));
+  assert.deepEqual(sent.map(message => message.event), ['change', 'blur']);
+  assert.equal(sent.at(-1).payload.value, 'Latest\ntext');
+  page.restoringFocus = true;
+  input.dispatchEvent(new dom.window.Event('blur'));
+  assert.equal(sent.length, 2);
+});
+
+test('Markdown anchor titles remain literal and cannot introduce HTML', t => {
+  const { dom, page } = fixture(); t.after(() => dom.window.close());
+  const wrapper = dom.window.LichWebUI.render(page, { type: 'markdown', cid: 'help', props: {
+    content: '[Help](https://example.org/help "<img src=x> & a title")'
+  } });
+  assert.equal(wrapper.querySelector('a').title, '<img src=x> & a title');
+  assert.equal(wrapper.querySelector('a').href, 'https://example.org/help');
+  assert.equal(wrapper.querySelector('img'), null);
+});
