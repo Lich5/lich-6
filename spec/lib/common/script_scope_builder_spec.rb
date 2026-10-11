@@ -595,6 +595,21 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect { builder['entry'].max_length = 8193 }.to raise_error(gtk::UnsupportedOperation)
   end
 
+  it 'refuses internal combo entry character limits without retaining a partial Builder load' do
+    expect do
+      load_xml(<<~XML)
+        <object class="GtkComboBoxText" id="combo">
+          <property name="has-entry">True</property>
+          <child internal-child="entry"><object class="GtkEntry" id="entry">
+            <property name="text">Existing text</property>
+            <property name="max-length">3</property>
+          </object></child>
+        </object>
+      XML
+    end.to raise_error(gtk::BuilderError, /max_length=/)
+    expect(builder.objects).to be_empty
+  end
+
   it 'retains keyboard focus and server-owned values in read-only entries in either property order' do
     [['can-focus', 'editable'], ['editable', 'can-focus']].each do |order|
       candidate = gtk::Builder.new

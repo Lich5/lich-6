@@ -28,6 +28,14 @@ module Lich
           end
           alias set_text text=
 
+          # The owning select has no character-limit contract. Refuse before
+          # Entry's setter changes child state or clears the combo's text.
+          # @raise [UnsupportedOperation] internal entry limits are unsupported
+          def set_max_length(_value)
+            session.refuse(self, :max_length=)
+          end
+          alias max_length= set_max_length
+
           # The facade has no separate browser focus target. GTK's request to
           # suppress its focus is omitted; the combo remains keyboard accessible.
           def can_focus=(value)

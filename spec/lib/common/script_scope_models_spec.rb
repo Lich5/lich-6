@@ -536,6 +536,27 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(row[0]).to be_nil
   end
 
+  %i[max_length= set_max_length].each do |setter|
+    it "refuses internal combo entry #{setter} without changing text or emitting changed" do
+      combo = gtk::ComboBoxText.new(entry: true)
+      combo.child.text = 'Existing text'
+      changed = []
+      combo.child.signal_connect('changed') { |entry| changed << entry.text }
+      before = combo.send(:component_props).dup
+
+      [0, 3].each do |limit|
+        expect { combo.child.public_send(setter, limit) }.to raise_error(gtk::UnsupportedOperation, /max_length=/)
+        expect(combo.child.text).to eq('Existing text')
+        expect(combo.send(:component_props)).to eq(before)
+        expect(changed).to be_empty
+      end
+
+      combo.child.text = 'Subsequent text'
+      expect(combo.child.text).to eq('Subsequent text')
+      expect(changed).to eq(['Subsequent text'])
+    end
+  end
+
   it 'keeps editable free text distinct from IDs and preserves it while choices change' do
     combo = gtk::ComboBoxText.new(entry: true)
     combo.append_text('Choice')
