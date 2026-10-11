@@ -142,9 +142,16 @@ module Lich
               target = [page, node.cid, name]
               next
             end
-            viewer = viewer!
             validated = validate_property(node, handle, name, value)
-            @viewer_values[[viewer, handle, name]] = validated
+            selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+            if selected.nil? && !node.published
+              # A handle can exist before its first render. Initialization queued
+              # after construction still sets the authored default, not a draft.
+              # Once published, the normal explicit-viewer rule above applies.
+              node.props = node.props.merge(name => validated).freeze
+            else
+              @viewer_values[[viewer!, handle, name]] = validated
+            end
           else
             candidate = node.props.merge(name => value)
             # Model mutation retires identities atomically with its row snapshot.
@@ -599,7 +606,26 @@ module Lich
         return unless root.type == :page
 
         @dirty_roots[root] = true
-        @service.runtime.schedule_render(self, owner: @owner) { flush! }
+        return if @publication_pending
+
+        @publication_pending = true
+        @service.runtime.schedule_render(self, owner: @owner) do
+          # Publish after queued construction and callbacks, never in the middle
+          # of their model/default updates. Keep a single pending owner task even
+          # when a long callback spans several render-coalescing intervals.
+          begin
+            @service.runtime.dispatch(owner: @owner) do
+              @mutex.synchronize { @publication_pending = false }
+              flush!
+            end
+          rescue StandardError
+            @mutex.synchronize { @publication_pending = false }
+            raise
+          end
+        end
+      rescue StandardError
+        @publication_pending = false
+        raise
       end
 
       # Resolves a live node by its retained handle and exact identity, never Struct equality.

@@ -62,3 +62,24 @@ The preserved native WebUI versions of all three positive fixtures were reviewed
 for reusable behavior. Their settings and script-specific form code remain out
 of the shim. These tests do not execute game loops, certify all settings paths,
 or assert native desktop-window/pixel parity.
+
+Unchanged repository and go2 setup fixtures
+
+These retain the complete Setup classes from the same frozen EO source tree,
+including original XML, initialization, filtering/settings callbacks and Close.
+Only enclosing module/class/GTK-guard wrappers are supplied for isolated loading.
+Class hashes exclude wrappers and the trailing newline and are checked in RSpec.
+
+- repository: lines 880–1042; class ac0107e3149a487f61cfd345a3b962b7673df65ec99921f4b9fdd74d47dd86e5;
+  whole script d46a023aaac5f96c1395b89727d0640cee69a91a9103853353de3a1389fe1aa0.
+- go2: lines 474–842; class 8bdcf8959473c59d9da2eba4dbc69a2dd13185acd9a3c556288b1bd8198862b2;
+  whole script e4763e1fd11ee2645409067dd5ed3463d7e6f8fd48595ae01b19d4aea04237a6.
+
+Repository receives two inert listing records; its original download handler is
+captured at Script.run, so no download occurs. Tests verify numeric model sorting,
+filtering, single-click activation, command construction and Close/cleanup.
+Go2 receives inert GS/DR character data and an in-memory Go2.load destination.
+Both game layouts run original setup, updates and Close/destroy callbacks in Ruby
+and independent Chrome cases. No travel, repository network operation or gameplay
+loop executes. Converted WebUI counterparts informed acceptance behavior only;
+no converted business logic or script-name rendering cases enter the shim.

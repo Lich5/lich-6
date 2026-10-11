@@ -65,6 +65,13 @@ destroy the setup without saving. Fixture provenance and limits are recorded in
 The unchanged `ewaggle` Builder fixture adds table prefix search, cross-list
 transfers, original same-list duplication, named choices, numeric edits and save
 callbacks. It uses the same browser command below and runs in the existing CI job.
+The repository fixture also covers character-by-character search, fixed headers,
+the last column's keyboard resize handle and retained widths, and independent
+scrolling of long comments without moving the list. Its inert listing has enough
+rows to overflow the list viewport; original script construction and filtering
+remain unchanged. DOM tests force an older search response between newer edits
+and verify that superseded retries cannot replace the final query or prevent a
+subsequent intentional script reset.
 The original `ebounty`, `eherbs`, and `BlackArts` setups each have an independent
 browser example in that job. A failure in one does not skip the others. Their
 tests cover dependent checkbox resets, availability, editable combo choices,
@@ -99,7 +106,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has
@@ -117,7 +124,7 @@ directly through Close without preceding change events. It checks the original
 settings-file callback, independently of browser timing. Related cases verify
 that already accepted changes are not repeated and reconciliation is viewer-local.
 
-Ordinary `rspec` keeps the ten browser cases pending, so local Ruby testing does
+Ordinary `rspec` keeps the thirteen browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

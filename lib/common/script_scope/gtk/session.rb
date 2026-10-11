@@ -67,7 +67,7 @@ module Lich
             raise ArgumentError, 'work block is required' unless block
             return if @closed
             if cleanup_thread?
-              run_queue_block { synchronize { block.call unless @closed } }
+              run_queue_block { synchronize { model_batch { block.call unless @closed } } }
               return :queued
             end
             return if stopping?
@@ -81,7 +81,7 @@ module Lich
                 @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
                 Script.current # Honor pause after adopting the initially unowned worker.
                 synchronize do
-                  with_callback_context(context&.[](1), context&.[](2)) { block.call unless stopping? }
+                  with_callback_context(context&.[](1), context&.[](2)) { model_batch { block.call unless stopping? } }
                 end
               end
             end
@@ -152,7 +152,41 @@ module Lich
               @window_viewers[root] = event.viewer_id if root
               with_callback_context(event.viewer_id, root) do
                 root.commit_inputs if terminal && root
-                yield
+                model_batch { yield }
+              end
+            end
+          end
+
+          # Enlists a model lazily in the current dispatcher callback. Synchronous
+          # calls outside a callback retain immediate validation and publication.
+          # @return [Boolean] whether this callback defers the model's publication
+          # @api private
+          def defer_model(model)
+            return false unless @model_batch
+            unless @model_batch.key?(model)
+              model.begin_batch!
+              @model_batch[model] = true
+            end
+            true
+          end
+
+          # Validates all candidates before publishing any model. Widget operations
+          # use this barrier to retain synchronous script-visible UI behavior.
+          # @api private
+          def flush_models!
+            synchronize do
+              return if !@model_batch || @model_batch.empty? || @flushing_models
+              @flushing_models = true
+              models = @model_batch.keys
+              begin
+                models.each(&:validate_batch!)
+                models.each(&:publish_batch!)
+                models.each(&:finish_batch!)
+                @model_batch.clear
+              ensure
+                models.each(&:rollback_batch!)
+                @model_batch.clear
+                @flushing_models = false
               end
             end
           end
@@ -168,8 +202,8 @@ module Lich
 
           # Fails loudly with script, receiver, operation, and source-call attribution.
           # @raise [UnsupportedOperation] always
-          def refuse(receiver, operation)
-            raise UnsupportedOperation, attribution(receiver, operation)
+          def refuse(receiver, operation, error_class: UnsupportedOperation, **details)
+            raise error_class.new(attribution(receiver, operation), **details)
           end
 
           # Invalid source calls that preserve the existing widget tree remain
@@ -198,6 +232,21 @@ module Lich
           end
 
           private
+
+          # One rollback snapshot per model per callback or widget barrier. Nested
+          # signals share this batch under the existing owner/session monitor.
+          def model_batch
+            return yield if @model_batch
+            @model_batch = {}.compare_by_identity
+            begin
+              result = yield
+              flush_models!
+              result
+            ensure
+              @model_batch.each_key(&:rollback_batch!)
+              @model_batch = nil
+            end
+          end
 
           # Restore nested attribution even when a handler raises. The immutable
           # snapshot lets queue admission inspect thread ownership without waiting
@@ -231,6 +280,7 @@ module Lich
             # Builder failures carry structural diagnostics, not raw XML/property text.
             # Preserve these through the queue boundary so a refused form is actionable.
             detail = "#{detail} #{error.diagnostic}" if defined?(BuilderError) && error.is_a?(BuilderError)
+            detail = "#{detail} #{error.diagnostic}" if defined?(ModelValueError) && error.is_a?(ModelValueError)
             source_warning(self, :queue, "callback failed error=#{error.class} at=#{source || error.backtrace&.first}#{" rejected=#{detail}" if detail}")
             respond "error in Gtk.queue (#{@owner.name}): #{error.class}; see debug log"
             nil

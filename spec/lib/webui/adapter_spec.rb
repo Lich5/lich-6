@@ -11,6 +11,12 @@ RSpec.describe Lich::WebUI::Adapter do
 
   after { service.stop }
 
+  def drain_publication
+    barrier = Queue.new
+    service.runtime.dispatch(owner: owner) { barrier << true }
+    expect(barrier.pop(timeout: 3)).to be(true)
+  end
+
   it 'exposes exactly the ten locked operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
       :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema
@@ -94,6 +100,31 @@ RSpec.describe Lich::WebUI::Adapter do
 
     expect { adapter.get(password, :value) }.to raise_error(Lich::WebUI::SensitiveReadError)
     expect { adapter.set(password, :value, 'secret') }.to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'accepts unattributed defaults only before publication, preserving later viewer isolation' do
+    allow(service.runtime).to receive(:schedule_render)
+    identity = Struct.new(:viewer_id).new(nil)
+    port = described_class.new(owner: owner, service: service, viewer: identity)
+    root = port.create(:page, title: 'Queued initialization')
+    input = port.create(:text_input, value: 'before')
+    port.attach(root, input)
+    port.set(input, :value, 'initialized')
+    expect { port.get(input, :value) }.to raise_error(Lich::WebUI::AmbiguousViewerError)
+    port.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    expect(page.last_render.tree.children.first.props[:value]).to eq('initialized')
+    expect { port.set(input, :value, 'unattributed') }.to raise_error(Lich::WebUI::AmbiguousViewerError)
+    viewers = %w[first second].map do |id|
+      connection = double(id, viewer_id: id, alive?: true, send_text: true)
+      service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+      service.runtime.instance_variable_get(:@viewers).fetch(connection_id: id, address: service.registry.address_for(page)).viewer_id
+    end
+    identity.viewer_id = viewers.first
+    port.set(input, :value, 'first only')
+    expect(port.get(input, :value)).to eq('first only')
+    identity.viewer_id = viewers.last
+    expect(port.get(input, :value)).to eq('initialized')
   end
 
   it 'replaces select options without retaining a removed default or accepting an invalid option list' do
@@ -198,6 +229,7 @@ RSpec.describe Lich::WebUI::Adapter do
     second = port.create(:page, title: '')
 
     scheduled.shift.call
+    drain_publication
 
     expect(published.length).to eq(2)
     expect(published.map(&:id).uniq.length).to eq(2)
@@ -206,7 +238,32 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(service.registry.pages_for(owner)).to eq([published.last])
     port.set(second, :title, 'Still open')
     scheduled.shift.call
+    drain_publication
     expect(published.last.last_render.tree.props[:title]).to eq('Still open')
+  end
+
+  it 'keeps queued initialization ahead of one coalesced publication task' do
+    scheduled, ready, release = Queue.new, Queue.new, Queue.new
+    allow(service.runtime).to receive(:schedule_render) { |_key, **_options, &render| scheduled << render }
+    port = described_class.new(owner: owner, service: service)
+    service.runtime.dispatch(owner: owner) do
+      root = port.create(:page, title: 'Queued construction')
+      entry = port.create(:text_input, value: 'Initial')
+      port.attach(root, entry)
+      ready << true
+      release.pop
+      port.set(entry, :value, 'Completed before publication')
+    end
+    expect(ready.pop(timeout: 3)).to be(true)
+    scheduled.pop(timeout: 3).call
+    expect(service.registry.pages_for(owner)).to be_empty
+    expect(scheduled).to be_empty
+    release << true
+    drain_publication
+    page = service.registry.pages_for(owner).first
+    expect(page.last_render.tree.children.first.props[:value]).to eq('Completed before publication')
+  ensure
+    release&.push(true)
   end
 
   it 'resolves equal unrendered roots to their own handles' do
@@ -227,6 +284,7 @@ RSpec.describe Lich::WebUI::Adapter do
     adapter.attach(page_handle, button)
 
     scheduled.shift.call
+    drain_publication
     page = service.registry.pages_for(owner).fetch(0)
     first_generation = page.generation
 
@@ -235,6 +293,7 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(page.generation).to eq(first_generation)
 
     scheduled.shift.call
+    drain_publication
     expect(page.generation).to eq(first_generation + 1)
     expect(page.last_render.tree.children.first.props[:label]).to eq('After')
   end
@@ -299,6 +358,7 @@ RSpec.describe Lich::WebUI::Adapter do
       results << value
     end)
     scheduled.shift.call
+    drain_publication
     page = service.registry.pages_for(owner).first
     address = service.registry.address_for(page)
     connections = %w[first second].map do |id|

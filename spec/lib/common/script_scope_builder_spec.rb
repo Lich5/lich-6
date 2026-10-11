@@ -491,6 +491,27 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect { validator.validate_component!(:grid, { cols: 2, equal_rows: true, row_sizing: :spread }, owner: owner.name, page_id: nil, cid: nil) }.to raise_error(Lich::WebUI::SchemaViolationError)
   end
 
+  it 'keeps line justification independent of label placement in either declaration order' do
+    %w[left center right].each do |justify|
+      properties = ['<property name="halign">start</property>', "<property name=\"justify\">#{justify}</property>"]
+      [properties, properties.reverse].each do |ordered|
+        name = "label_#{builder.objects.length}"
+        load_xml("<object class=\"GtkLabel\" id=\"#{name}\">#{ordered.join}</object>")
+        label = builder[name]
+        expect(label.send(:component_props)).to include(align: :start, line_justify: justify.to_sym)
+        label.xalign = 1
+        expect(label.send(:component_props)).to include(align: :end, line_justify: justify.to_sym)
+      end
+    end
+    label = gtk::Label.new('Caption')
+    expect { label.justify = :fill }.to raise_error(gtk::UnsupportedOperation)
+    label.justify = :right
+    expect { label.set_markup('<a href="https://example.com">Link</a>') }.to raise_error(gtk::UnsupportedOperation)
+    linked = gtk::Label.new
+    linked.set_markup('<a href="https://example.com">Link</a>')
+    expect { linked.justify = :right }.to raise_error(gtk::UnsupportedOperation)
+  end
+
   it 'reuses one closed select for a noneditable combo entry and one numeric change stream' do
     load_xml(<<~XML)
       <object class="GtkComboBoxText" id="choice"><property name="has-entry">True</property>

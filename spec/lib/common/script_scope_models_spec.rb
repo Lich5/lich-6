@@ -65,6 +65,112 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     view
   end
 
+  def drain_models
+    barrier = Queue.new
+    gtk.queue { barrier << true }
+    expect(barrier.pop(timeout: 5)).to be(true)
+  end
+
+  it 'publishes a bulk callback once while keeping model reads and sorted paths current' do
+    model = gtk::ListStore.new(String, Integer)
+    view = table(model)
+    _window, page = show(view)
+    viewer = connect(page, 'batch')
+    expect(model).to receive(:begin_batch!).once.and_call_original
+    expect(view).to receive(:model_will_change!).once.and_call_original
+    expect(view).to receive(:model_changed!).once.and_call_original
+    readback = Queue.new
+    gtk.queue do
+      200.times do |index|
+        row = model.append
+        row[0], row[1] = "Row #{index}", 200 - index
+      end
+      model.set_sort_column_id(1, :ascending)
+      readback << [model.size, model.iter_first[0], model.iter_first.path.to_s]
+    end
+    drain_models
+    expect(readback.pop(timeout: 1)).to eq([200, 'Row 199', '0'])
+    wait_for { nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'].length == 200 }
+  end
+
+  it 'rolls back every staged model and removed iterator before publishing a rejected projection' do
+    first, second = gtk::ListStore.new(String), gtk::ListStore.new(String)
+    original, other = first.append, second.append
+    original[0], other[0] = 'Original', 'Other'
+    view = table(first)
+    combo = gtk::ComboBox.new(second)
+    show(view, combo)
+    expect(view).not_to receive(:model_changed!)
+    expect(combo).not_to receive(:model_changed!)
+    handles = Queue.new
+    gtk.queue do
+      first.remove(original)
+      added = first.append
+      added[0] = 'Candidate'
+      handles << added
+      other[0] = 'x' * 513
+    end
+    drain_models
+    expect(first.rows).to eq([original])
+    expect(original[0]).to eq('Original')
+    expect(first.iter_is_valid?(handles.pop(timeout: 1))).to be(false)
+    expect(other[0]).to eq('Other')
+    expect(Lich).to have_received(:log).with(/callback failed error=Lich::WebUI::SchemaViolationError/)
+  end
+
+  it 'flushes before widget reads and rolls back later writes when the callback raises' do
+    model = gtk::ListStore.new(String)
+    row = model.append
+    row[0] = 'Before'
+    view = table(model)
+    label = gtk::Label.new('Barrier')
+    show(view, label)
+    publications = []
+    allow(view).to receive(:model_changed!).and_wrap_original do |method|
+      publications << row[0]
+      method.call
+    end
+    gtk.queue do
+      row[0] = 'Committed at read'
+      label.text
+      row[0] = 'Rolled back'
+      raise 'abort this callback'
+    end
+    drain_models
+    expect(publications).to eq(['Committed at read'])
+    expect(row[0]).to eq('Committed at read')
+    row[0] = 'Direct write'
+    expect(publications.last).to eq('Direct write')
+  end
+
+  it 'repaints a failed edited callback only after its staged model mutation rolls back' do
+    model = gtk::ListStore.new(String)
+    row = model.append
+    row[0] = 'Original'
+    renderer = gtk::CellRendererText.new
+    renderer.editable = true
+    column = gtk::TreeViewColumn.new('Name', renderer, text: 0)
+    view = gtk::TreeView.new(model)
+    view.append_column(column)
+    renderer.signal_connect('edited') do |_cell, path, value|
+      model.get_iter(path)[0] = value
+      raise 'edit aborted'
+    end
+    _window, page = show(view)
+    viewer = connect(page, 'failed-editor')
+    publications = []
+    allow(view).to receive(:model_changed!).and_wrap_original do |method|
+      publications << row[0]
+      method.call
+    end
+    expect(send_event(page, viewer, :table, 'cell_edit', { row: row.key, column: column.key, value: 'Candidate' })).to eq(:queued)
+    drain_models
+    expect(row[0]).to eq('Original')
+    expect(publications).to eq(['Original'])
+    service.runtime.refresh(page)
+    expect(nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'].first['cells'].values).to eq(['Original'])
+  end
+
   it 'moves independent iterators without mutating rows and invalidates deleted handles' do
     store = gtk::ListStore.new(String, Integer)
     first = store.append
@@ -127,6 +233,46 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(store.get_iter('20')).to be_nil
     store.clear
     expect(store.append.key).not_to eq(row.key)
+  end
+
+  it 'preserves nullable model strings while projecting blank table and combo labels' do
+    model = gtk::ListStore.new(String, TrueClass)
+    absent, blank, text = model.append, model.append, model.append
+    absent[0], blank[0], text[0] = nil, '', 'Alpha'
+    view = table(model)
+    view.append_column(gtk::TreeViewColumn.new('Flag', gtk::CellRendererToggle.new, active: 1))
+    combo = gtk::ComboBox.new(model)
+    _window, page = show(view, combo)
+    viewer = connect(page, 'nullable')
+    expect(absent[0]).to be_nil
+    expect(nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'].first['cells'].values).to eq(['', false])
+    expect(nodes(viewer).find { |node| node['type'] == 'select' }['props']['options'].map { |option| option['label'] }).to eq(['', '', '', 'Alpha'])
+    model.set_sort_column_id(0, :ascending)
+    expect(model.rows.map { |iter| iter[0] }).to eq([nil, '', 'Alpha'])
+    model.set_sort_column_id(0, :descending)
+    expect(model.rows.map { |iter| iter[0] }).to eq(['Alpha', nil, ''])
+    expect { absent[1] = nil }.to raise_error(gtk::ModelValueError, /column=1 expected=TrueClass actual=NilClass/)
+  end
+
+  it 'keeps long model metadata lossless and reports rejected boundaries without cell contents' do
+    model = gtk::ListStore.new(String, String)
+    row = model.append
+    row[0] = 'Visible'
+    row[1] = 'x' * gtk::ListStore::MAX_STRING_LENGTH
+    _window, page = show(table(model))
+    viewer = connect(page, 'metadata')
+    expect(nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'].first['cells'].values).to eq(['Visible'])
+    expect(row[1].length).to eq(65_536)
+    expect { row[1] = 'private-content' * 5000 }.to raise_error(gtk::ModelValueError) do |error|
+      expect(error.message).to include('column=1 expected=String actual=String length=75000 limit=65536')
+      expect(error.message).not_to include('private-content')
+    end
+    expect(row[1].length).to eq(65_536)
+    barrier = Queue.new
+    gtk.queue { row[1] = 123 }
+    gtk.queue { barrier << true }
+    expect(barrier.pop(timeout: 3)).to be(true)
+    expect(Lich).to have_received(:log).with(/callback failed.*column=1 expected=String actual=Integer length=n\/a limit=65536/)
   end
 
   it 'resolves sorted rows and paths without a whole-store search for each lookup' do

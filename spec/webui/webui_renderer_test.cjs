@@ -160,6 +160,41 @@ test('hierarchical sorting keeps siblings together and model sorting waits for a
   assert.ok(sent.some(message => message.event === 'sort_change'));
 });
 
+test('single-click tables activate once for a double-click sequence and retain Enter activation', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  modelTable(receive, 1, { activation: 'single', rows: [{ key: 'a', cells: { name: 'A' } }] });
+  const cell = dom.window.document.querySelector('tbody td');
+  for (const [type, detail] of [['click', 1], ['click', 2], ['dblclick', 2]]) {
+    cell.dispatchEvent(new dom.window.MouseEvent(type, { bubbles: true, detail }));
+  }
+  assert.equal(sent.filter(message => message.event === 'row_activate').length, 1);
+  assert.deepEqual(sent.filter(message => message.event === 'row_activate')[0].payload, { row: 'a', column: 'name' });
+  dom.window.document.querySelector('tbody tr').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.equal(sent.filter(message => message.event === 'row_activate').length, 2);
+});
+
+test('hidden tab selectors keep the selected content accessible and other pages hidden', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'hidden-tabs' }] });
+  const render = (show_tabs, selected) => receive({ type: 'render', page: 'hidden-tabs', generation: selected + 1,
+    bindings: { tabs: ['select'] }, tree: { type: 'page', cid: 'root', props: {}, children: [{
+      type: 'tabs', cid: 'tabs', props: { names: ['First', 'Second'], show_tabs, selected, size_to_all: true },
+      children: [{ type: 'text', cid: 'first', props: { content: 'First content' } }, { type: 'text', cid: 'second', props: { content: 'Second content' } }]
+    }] } });
+  render(false, 0);
+  const document = dom.window.document;
+  assert.equal(document.querySelector('.tab-list').style.display, 'none');
+  assert.equal(document.querySelector('[data-cid="first"]').getAttribute('role'), 'group');
+  assert.equal(document.querySelector('[data-cid="first"]').getAttribute('aria-label'), 'First');
+  assert.equal(document.querySelector('[data-cid="second"]').hidden, true);
+  assert.equal(document.querySelector('[data-cid="second"]').inert, true);
+  render(true, 1);
+  assert.equal(document.querySelector('.tab-list').hidden, false);
+  assert.equal(document.querySelector('[data-cid="first"]').hidden, true);
+  assert.equal(document.querySelector('[data-cid="second"]').getAttribute('role'), 'tabpanel');
+});
+
 test('row activation reports the actual column and a removed cursor never focuses a replacement row', t => {
   const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
   receive({ type: 'hello', pages: [{ address: 'models' }] });
@@ -1207,4 +1242,72 @@ test('disabled menu containers make their action descendants inert', t => {
       { type: 'button', cid: 'action', props: { label: 'Unavailable' } }
     ] });
   assert.equal(menu.inert, true);
+});
+
+test('live input retains newer typing and caret through an older reply, then accepts a script reset', t => {
+  const { dom, sent, receive } = fixture(); t.after(() => dom.window.close());
+  const { document, Event } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'live-search' }] });
+  const render = (generation, value, request = 0) => receive({ type: 'render', page: 'live-search', generation,
+    input_requests: { query: request }, bindings: { query: ['change'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'text_input', cid: 'query', props: { value, change_mode: 'input' } }
+      ]
+    } });
+  const input = () => document.querySelector('input');
+  const type = value => {
+    input().value = value; input().setSelectionRange(value.length, value.length);
+    input().dispatchEvent(new Event('input'));
+    return sent.at(-1);
+  };
+  render(1, ''); input().focus();
+  const first = type('Drea'), latest = type('Dreaven');
+  render(2, 'Drea', first.request);
+  assert.equal(input().value, 'Dreaven');
+  assert.equal(input().selectionStart, 7);
+  assert.equal(document.activeElement, input());
+  receive({ type: 'refusal', reason: 'stale_generation', page: 'live-search', cid: 'query', event: 'change', request: first.request });
+  render(2, 'Drea', first.request);
+  assert.equal(sent.filter(message => message.event === 'change').length, 2, 'never replay superseded input');
+  assert.equal(document.querySelectorAll('.notification').length, 0, 'superseded input is not a user-visible failure');
+  receive({ type: 'refusal', reason: 'stale_generation', page: 'live-search', cid: 'query', event: 'change', request: latest.request });
+  render(2, 'Drea', first.request);
+  const retry = sent.at(-1);
+  assert.equal(retry.payload.value, 'Dreaven');
+  assert.equal(retry.generation, 2);
+  render(3, '', retry.request);
+  assert.equal(input().value, '', 'an acknowledged callback may deliberately clear the field');
+});
+
+test('automatic columns fit their allocation independently of long cells while authored and dragged widths survive', async t => {
+  const { dom, page } = fixture(); t.after(() => dom.window.close());
+  const { document, KeyboardEvent } = dom.window;
+  let resize, available = 0;
+  dom.window.ResizeObserver = class { constructor(callback) { resize = callback; } observe() {} disconnect() {} };
+  const longText = 'long tag '.repeat(200);
+  const table = dom.window.LichWebUI.render(page, { type: 'table', cid: 'bounded', props: {
+    columns: [{ key: 'fixed', label: 'Fixed', width: 120, resizable: true },
+      { key: 'zero', label: 'Zero', width: 0, resizable: true },
+      { key: 'tags', label: 'Tags', resizable: true }],
+    rows: [{ key: 'one', cells: { fixed: 'Name', zero: 'Value', tags: longText } }]
+  } });
+  Object.defineProperty(table, 'clientWidth', { get: () => available });
+  document.body.append(table);
+  const cols = [...table.querySelectorAll('col')];
+  [...table.querySelectorAll('th')].forEach((heading, index) => {
+    heading.firstElementChild.getBoundingClientRect = () => ({ width: 40 });
+    heading.getBoundingClientRect = () => ({ width: parseFloat(cols[index].style.width) || 0 });
+  });
+  await new Promise(resolve => dom.window.requestAnimationFrame(resolve));
+  assert.equal(cols[2].style.width, '', 'a hidden table must wait for allocation');
+  available = 300; resize();
+  assert.deepEqual(cols.map(col => parseFloat(col.style.width)), [120, 90, 90]);
+  assert.equal(table.querySelector('table').style.width, '300px');
+  assert.equal(table.querySelector('td:last-child').title, longText, 'clipping retains the complete literal cell text');
+  available = 500; resize();
+  assert.deepEqual(cols.map(col => parseFloat(col.style.width)), [120, 190, 190]);
+  table.querySelector('th:last-child .webui-column-resize').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+  assert.deepEqual(cols.map(col => parseFloat(col.style.width)), [120, 190, 200]);
+  available = 300; resize();
+  assert.equal(table.querySelector('table').style.width, '510px', 'explicit viewer sizing is not silently compressed');
 });

@@ -92,11 +92,25 @@ module Lich
           end
         end
 
+        # A rejected cell reports bounded schema metadata without its contents.
+        class ModelValueError < UnsupportedOperation
+          # Reports only schema metadata, never the rejected cell contents.
+          attr_reader :diagnostic
+
+          def initialize(message, column:, expected:, actual:, length:, limit:)
+            @diagnostic = "column=#{column} expected=#{expected} actual=#{actual} length=#{length || 'n/a'} limit=#{limit}"
+            super("#{message} #{@diagnostic}")
+          end
+        end
+
         # Script-owned scalar rows, reusable by multiple same-owner views. Viewer selection
         # never lives in the model. Observers are detached when views change models or die.
         class ListStore < ModelObject
           Row = Struct.new(:key, :parent, :cells)
           TYPES = [String, Integer, Float, TrueClass, FalseClass].freeze
+          # Model-only metadata need not fit a short display label. Projections
+          # enforce their own contracts; storage remains bounded and lossless.
+          MAX_STRING_LENGTH = 65_536
           attr_reader :column_types
 
           # Creates an empty store with a fixed bounded scalar schema.
@@ -143,6 +157,7 @@ module Lich
           # @param iter [TreeIter] live same-model handle
           # @return [Boolean] whether the supplied handle now names a next sibling
           def remove(iter)
+            original_key = iter.key if iter.is_a?(TreeIter)
             following = mutate do
               row = row_for(iter)
               following = iter_after(iter)&.key
@@ -151,6 +166,7 @@ module Lich
               @rows.reject! { |candidate| removed.key?(candidate.key) }
               following
             end
+            @batch_iterators[iter] ||= original_key if @batch_iterators
             iter.reposition(following)
             !following.nil?
           end
@@ -286,17 +302,23 @@ module Lich
           # Validates before changing the row; strings are copied to prevent hidden mutation.
           # @param iter [TreeIter] live row
           # @param column [Integer] schema column
-          # @param value [String, Integer, Float, Boolean] declared scalar value
+          # @param value [String, nil, Integer, Float, Boolean] nil is allowed only in String columns
           # @return [ListStore] self
           def set_value(iter, column, value)
-            mutate do
+            mutate(structural: false) do
               check_column(column)
               row = row_for(iter)
               type = column_types[column]
               valid = type == TrueClass ? value == true || value == false : value.is_a?(type)
+              valid ||= type == String && value.nil?
               valid &&= value.finite? if value.is_a?(Float)
-              valid &&= value.length <= Lich::WebUI::Contract::BOUNDS[:body_text] if value.is_a?(String)
-              session.refuse(self, :set_value) unless valid
+              valid &&= value.length <= MAX_STRING_LENGTH if value.is_a?(String)
+              unless valid
+                actual = [String, Integer, Float, TrueClass, FalseClass, NilClass].find { |klass| value.is_a?(klass) }
+                session.refuse(self, :set_value, error_class: ModelValueError, column: column,
+                                               expected: type.name, actual: actual&.name || 'other',
+                                               length: value.is_a?(String) ? value.length : nil, limit: MAX_STRING_LENGTH)
+              end
               row.cells[column] = value.is_a?(String) ? value.dup.freeze : value
             end
             self
@@ -307,7 +329,7 @@ module Lich
           # @param direction [Symbol] :ascending or :descending
           # @return [ListStore] self
           def set_sort_column_id(column, direction = :ascending)
-            mutate do
+            mutate(structural: false) do
               check_column(column) unless column == -2
               session.refuse(self, :set_sort_column_id) unless %i[ascending descending].include?(direction)
               @sort = column == -2 ? nil : [column, direction]
@@ -343,6 +365,35 @@ module Lich
             session.synchronize { @rows_by_key.key?(key) ? TreeIter.new(self, key) : nil }
           end
 
+          # A callback keeps one rollback snapshot, never one per scalar write.
+          # @api private
+          def begin_batch!
+            @batch_snapshot = [@rows.map { |row| Row.new(row.key, row.parent, row.cells.dup) }, @sort]
+            @batch_iterators = {}.compare_by_identity
+          end
+
+          # Validate every observer before any view sees the candidate data.
+          # @api private
+          def validate_batch! = @observers.dup.each(&:model_will_change!)
+          # @api private
+          def publish_batch! = @observers.dup.each(&:model_changed!)
+
+          # @api private
+          def finish_batch!
+            @batch_snapshot = @batch_iterators = nil
+          end
+
+          # Restores identities and values after a failed/interrupted callback.
+          # Serial IDs are never rewound, so rolled-back handles stay invalid.
+          # @api private
+          def rollback_batch!
+            return unless @batch_snapshot
+            @rows, @sort = @batch_snapshot
+            @batch_iterators.each { |iter, key| iter.reposition(key) }
+            finish_batch!
+            rebuild_indexes
+          end
+
           protected
 
           # Inserts in sibling order without exposing mutable row objects.
@@ -353,7 +404,8 @@ module Lich
           def insert_row(parent, position)
             mutate do
               parent_key = parent && row_for(parent).key
-              peers = siblings(parent_key)
+              # Appending needs only a count, not a freshly sorted peer list.
+              peers = position == -1 ? (@children[parent_key] || []) : siblings(parent_key)
               valid = position.is_a?(Integer) && position.between?(-1, peers.length)
               valid &&= @rows.length < Lich::WebUI::Contract::BOUNDS[:table_rows]
               valid &&= !parent || get_path(parent).depth < Lich::WebUI::Contract::BOUNDS[:tree_depth]
@@ -413,6 +465,9 @@ module Lich
                 column, direction = @sort
                 rows = rows.sort do |left, right|
                   a, b = left.cells[column], right.cells[column]
+                  # GTK compares null and empty strings equally. Normalize only
+                  # for comparison, retaining nil in script-visible model data.
+                  a, b = a.to_s, b.to_s if column_types[column] == String
                   a, b = a ? 1 : 0, b ? 1 : 0 if column_types[column] == TrueClass
                   comparison = a <=> b
                   comparison = -comparison if direction == :descending
@@ -450,13 +505,18 @@ module Lich
           # @yield model mutation under the reentrant session monitor
           # @return [Object] mutation result
           # @api private
-          def mutate
+          def mutate(structural: true)
             session.synchronize do
+              if session.defer_model(self)
+                result = yield
+                structural ? rebuild_indexes : invalidate_order
+                return result
+              end
               previous_rows = @rows.map { |row| Row.new(row.key, row.parent, row.cells.dup) }
               previous_sort = @sort
               begin
                 result = yield
-                rebuild_indexes
+                structural ? rebuild_indexes : invalidate_order
                 @observers.dup.each(&:model_will_change!)
               rescue StandardError
                 @rows, @sort = previous_rows, previous_sort
@@ -466,6 +526,13 @@ module Lich
               @observers.dup.each(&:model_changed!)
               result
             end
+          end
+
+          # Scalar edits cannot change row identity or parent indexes. Sorting
+          # snapshots still expire so reads inside the callback see current values.
+          def invalidate_order
+            @ordered_siblings, @sibling_positions = {}, {}
+            @revision += 1
           end
         end
 

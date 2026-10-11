@@ -52,11 +52,13 @@ module Lich
       # @param submissions [Hash] terminal controls mapped to submitted input IDs
       # @param resume [String, nil] private viewer reconnection token
       # @param window_presentation [Hash] properties handled by the owned OS window
+      # @param input_requests [Hash] latest accepted text-input request per viewer-local CID
       # @return [String] JSON render message
-      def render(address:, generation:, tree:, facilities: {}, bindings: {}, submissions: {}, resume: nil, window_presentation: {})
+      def render(address:, generation:, tree:, facilities: {}, bindings: {}, submissions: {}, resume: nil, window_presentation: {}, input_requests: {})
         payload = {
           type: 'render', page: address, generation: generation,
-          tree: tree, facilities: facilities, bindings: bindings, submissions: submissions
+          tree: tree, facilities: facilities, bindings: bindings, submissions: submissions,
+          input_requests: input_requests
         }
         payload[:resume] = resume if resume
         payload[:window_presentation] = window_presentation unless window_presentation.empty?

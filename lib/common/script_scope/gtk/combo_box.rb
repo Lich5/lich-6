@@ -303,7 +303,7 @@ module Lich
             # Custom models can be installed before pack_start/add_attribute chooses
             # their String column. Materialization still refuses an incomplete mapping.
             return unless model.column_types[@label_column] == String
-            options = [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column] } }
+            options = [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column].to_s } }
             session.refuse(self, :options) if options.length > Lich::WebUI::Contract::BOUNDS[:collection]
             old_keys = @props[:options].map { |option| option[:value] }
             new_keys = options.map { |option| option[:value] }
@@ -321,7 +321,7 @@ module Lich
           # @api private
           def model_will_change!
             return unless @handle || model.column_types[@label_column] == String
-            options = [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column] } }
+            options = [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column].to_s } }
             Lich::WebUI::Validator.new.validate_component!(:select, @props.merge(options: options, value: 'none'), owner: 'shim', page_id: nil, cid: nil)
           end
 

@@ -63,6 +63,13 @@ RSpec.describe 'WebUI browser bootstrap', browser: true do
     activated = false
     page = Lich::WebUI::Page.new(owner: Object.new, id: 'bootstrap', title: 'Browser fixture') do |ui|
       ui.text key: 'status', content: activated ? 'Callback received' : 'Awaiting callback'
+      # Placement aligns the whole text block; justification aligns its lines.
+      %w[start center end].each do |align|
+        ui.text key: "justified-#{align}", content: "Longer line\nshort", width: 240,
+                align: align, line_justify: :right, wrap: false
+      end
+      ui.text key: 'justified-wrap', content: 'Longer line short', width: 80,
+              align: :start, line_justify: :right, wrap: true
       ui.button key: 'activate', label: 'Activate', on: { activate: lambda { |_event|
         activated = true
         service.runtime.refresh(page)

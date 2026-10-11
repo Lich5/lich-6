@@ -84,6 +84,27 @@ RSpec.describe Lich::WebUI::ViewerStore do
     expect { store.serialize(attachment) }.to raise_error(Lich::WebUI::Error, /no delivered render/)
   end
 
+  it 'snapshots input acknowledgments with viewer values and discards removed identities' do
+    store = described_class.new
+    first = store.attach(connection_id: 'one', address: 'form', page: page)
+    second = store.attach(connection_id: 'two', address: 'form', page: page)
+    render = page.render
+    [first, second].each { |viewer| store.deliver(viewer, render) }
+    input = render.tree.children.first
+    store.update(first, input, :change, { value: 'Drea' }, 11)
+    captured = store.snapshot(first)
+    store.update(first, input, :change, { value: 'Dreaven' }, 12)
+    expect(captured.input_requests).to eq(input.cid => 11)
+    expect(captured.values[[input.cid, :value]]).to eq('Drea')
+    expect(store.snapshot(first).input_requests).to eq(input.cid => 12)
+    expect(store.snapshot(second).input_requests).to be_empty
+    empty = Lich::WebUI::Page.new(owner: owner, id: 'form', title: 'Empty') {}.render
+    store.deliver(first, empty)
+    expect(store.snapshot(first).input_requests).to be_empty
+    store.close(connection_id: 'two', address: 'form')
+    expect(second.input_requests).to be_empty
+  end
+
   it 'refuses radio selection before a render has been delivered without changing viewer state' do
     target = Lich::WebUI::Page.new(owner: owner, id: 'radio', title: 'Radio') do
       radio_option(group: 'choice', label: 'One', checked: true)

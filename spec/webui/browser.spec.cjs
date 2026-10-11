@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-repository', 'shim-go2', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -30,9 +30,115 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'native-bootstrap') {
+  if (['shim-repository', 'shim-go2'].includes(scenario)) {
+    const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const widget = name => page.locator(`[data-cid="${ids[name]}"]`);
+    if (scenario === 'shim-repository') {
+      // The script requests an 800px list plus its comments pane; headless
+      // Chrome cannot honor the renderer's native window resize request.
+      await page.setViewportSize({ width: 1200, height: 650 });
+      await expect(page.getByRole('tab')).toHaveCount(0);
+      const table = widget('repository');
+      await expect(table.locator('tbody tr')).toHaveCount(42);
+      const listScroll = table.locator('..');
+      const heading = table.locator('th').first();
+      const headerTop = (await heading.boundingBox()).y;
+      await listScroll.evaluate(element => { element.scrollTop = 300; });
+      await expect.poll(async () => Math.abs((await heading.boundingBox()).y - headerTop)).toBeLessThan(2);
+      await listScroll.evaluate(element => { element.scrollTop = 0; });
+      const lastHeader = table.locator('th').last();
+      const grip = lastHeader.getByRole('separator', { name: 'Resize Tags' });
+      // Do not scroll or focus the edge into view: the first display must expose
+      // the last column and its actual mouse target, even with long cell text.
+      await expect.poll(() => grip.evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return document.elementFromPoint(rect.x + rect.width / 2, rect.y + 10) === element;
+      })).toBe(true);
+      expect(await listScroll.evaluate(element => element.scrollLeft)).toBe(0);
+      const oldWidth = (await lastHeader.boundingBox()).width;
+      const edge = await grip.boundingBox();
+      await page.mouse.move(edge.x + edge.width / 2, edge.y + 10);
+      await page.mouse.down();
+      await page.mouse.move(edge.x + edge.width / 2 + 30, edge.y + 10, { steps: 6 });
+      await page.mouse.up();
+      expect((await lastHeader.boundingBox()).width).toBeGreaterThan(oldWidth + 28);
+      await grip.focus();
+      await grip.press('ArrowRight');
+      const resizedWidth = (await lastHeader.boundingBox()).width;
+      expect(resizedWidth).toBeGreaterThan(oldWidth + 38);
+      await listScroll.evaluate(element => { element.scrollLeft = 0; });
+      await table.getByRole('button', { name: 'Size', exact: true }).click();
+      await expect(table.locator('tbody tr').first()).toContainText('zeta.lic');
+      await table.getByText('zeta.lic', { exact: true }).click();
+      await expect(widget('comments')).toHaveText('');
+      const search = widget('search_entry').locator('input');
+      await search.click();
+      await search.pressSequentially('Dreaven', { delay: 480 });
+      await expect(search).toHaveValue('Dreaven');
+      await expect(table.locator('tbody tr')).toHaveCount(1);
+      expect(await search.evaluate(element => element.selectionStart)).toBe(7);
+      expect((await lastHeader.boundingBox()).width).toBeCloseTo(resizedWidth, 0);
+      await widget('search_entry').fill('travel');
+      await expect(table.locator('tbody tr')).toHaveCount(1);
+      await table.getByText('alpha.lic', { exact: true }).click();
+      await expect(widget('comments')).toHaveText('Alpha comments Dreaven' + ' more details.'.repeat(1000));
+      const commentsScroll = widget('comments').locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " webui-scroll ")][1]');
+      expect((await commentsScroll.boundingBox()).height).toBeLessThanOrEqual(510);
+      expect(Math.abs((await listScroll.boundingBox()).y - (await commentsScroll.boundingBox()).y)).toBeLessThan(2);
+      await commentsScroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
+      expect(await commentsScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(1000);
+      await expect(widget('download_link')).toHaveText('alpha.lic');
+      await widget('download_link').click();
+    } else {
+      const fragments = page.getByText('Minimum fragments before using', { exact: true });
+      if (await widget('portals_passes_frame').isVisible()) {
+        await expect(fragments).toBeVisible();
+        await fragments.scrollIntoViewIfNeeded();
+        const heading = page.getByText('Hinterwilds Travel Options', { exact: true });
+        expect(Math.abs((await fragments.boundingBox()).x - (await heading.boundingBox()).x)).toBeLessThan(2);
+      }
+      await widget('delay').fill('7');
+      await widget('echo_input').uncheck();
+    }
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'native-bootstrap') {
     await page.getByRole('button', { name: 'Activate' }).click();
     await expect(page.getByText('Callback received', { exact: true })).toBeVisible();
+    // Real line rectangles establish both line justification and placement;
+    // checking CSS alone would miss moving the whole label to the wrong edge.
+    for (const align of ['start', 'center', 'end']) {
+      const geometry = await page.locator(`[data-cid$="text:justified-${align}"]`).evaluate(label => {
+        const lines = label.firstElementChild, text = lines.firstChild;
+        const range = document.createRange();
+        range.setStart(text, 0); range.setEnd(text, 11);
+        const first = range.getBoundingClientRect();
+        range.setStart(text, 12); range.setEnd(text, 17);
+        const second = range.getBoundingClientRect();
+        const box = lines.getBoundingClientRect(), outer = label.getBoundingClientRect();
+        return { firstRight: first.right, secondRight: second.right, secondTop: second.top, firstTop: first.top,
+          left: box.left - outer.left, right: outer.right - box.right };
+      });
+      expect(Math.abs(geometry.firstRight - geometry.secondRight)).toBeLessThan(1);
+      expect(geometry.secondTop).toBeGreaterThan(geometry.firstTop);
+      if (align === 'start') expect(geometry.left).toBeLessThan(1);
+      if (align === 'end') expect(geometry.right).toBeLessThan(1);
+      if (align === 'center') expect(Math.abs(geometry.left - geometry.right)).toBeLessThan(1);
+    }
+    const wrapped = await page.locator('[data-cid$="text:justified-wrap"]').evaluate(label => {
+      const text = label.firstElementChild.firstChild, range = document.createRange();
+      const edges = new Map();
+      // pre-wrap preserves hanging spaces at a soft break. Measure visible
+      // words, since those spaces are not part of the justified ink edge.
+      for (const word of text.textContent.matchAll(/\S+/g)) {
+        range.setStart(text, word.index); range.setEnd(text, word.index + word[0].length);
+        for (const rect of range.getClientRects()) edges.set(rect.top, Math.max(edges.get(rect.top) || 0, rect.right));
+      }
+      const box = label.getBoundingClientRect();
+      return { count: edges.size, right: box.right, edges: [...edges.values()] };
+    });
+    expect(wrapped.count).toBeGreaterThan(1);
+    expect(wrapped.edges.every(right => Math.abs(right - wrapped.right) < 1)).toBe(true);
   } else if (['shim-ebounty', 'shim-eherbs', 'shim-blackarts'].includes(scenario)) {
     const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
     const widget = name => page.locator(`[data-cid="${ids[name]}"]`);

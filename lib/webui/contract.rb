@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.14.0'
+      VERSION = '2.16.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -30,6 +30,7 @@ module Lich
         identifier: 128,
         short_text: 512,
         body_text: 8192,
+        display_text: 65_536,
         rich_text: 65_536,
         input_text: 8192,
         multiline_text: 65_536,
@@ -256,6 +257,7 @@ module Lich
             names: property(array(SHORT, min: 1, max: BOUNDS[:collection]), required: true),
             vertical: property(BOOL, default: false), selected: property(integer(min: 0), scope: :viewer),
             size_to_all: property(BOOL, default: false),
+            show_tabs: property(BOOL, default: true),
           }, children: { kind: :named_from_property, property: :names },
           events: { select: event(record(index: property(integer(min: 0), required: true)), structural: true) }, value: nil,
         },
@@ -291,7 +293,7 @@ module Lich
         },
         divider: { properties: { label: property(SHORT) }, children: :none, events: {}, value: nil },
         text: {
-          properties: { content: property(BODY, required: true), wrap: property(BOOL, default: true),
+          properties: { content: property(string(:display_text), required: true), wrap: property(BOOL, default: true),
                         fragments: property(array(BODY, max: BOUNDS[:collection])),
                         max_width_chars: property(integer(min: 1, max: 1024)),
                         ellipsize: property(enum(:middle)) },
@@ -473,6 +475,7 @@ module Lich
         max_height: property(GEOMETRY),
         transfer_group: property(IDENT),
         search_column: property(IDENT),
+        activation: property(enum(:single, :double), default: 'double'),
       }.freeze
 
       TABLE_EVENTS = {
@@ -663,6 +666,7 @@ module Lich
               base[:properties].merge!(TEXT_STYLE_PROPERTIES)
               base[:properties].merge!(padding_x: property(integer(min: 0, max: 64)), padding_y: property(integer(min: 0, max: 64)),
                                        content_vertical_align: property(enum(:start, :center, :end)),
+                                       line_justify: property(enum(:left, :center, :right)),
                                        rotation: property(enum(0, 90, 180, 270)))
             end
             base[:properties][:fill] = property(BOOL, default: false) if %i[stack columns table split group].include?(type)

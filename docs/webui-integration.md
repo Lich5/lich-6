@@ -239,27 +239,52 @@ must use its asynchronous response handler rather than blocking the dispatcher.
 
 The GTK compatibility layer supports bounded `ListStore` and `TreeStore` models
 with String, Integer, Float and boolean columns. Models belong to one script
-session and may feed several views in that session. A mutation validates all
+session and may feed several views in that session. Model updates validate all
 attached projections before publishing; a value that fits a table but exceeds a
 ComboBox label limit is rejected without partially updating those views.
+String columns preserve `nil` as an absent value, matching GTK; table cells and
+combo labels display it as empty text without changing the stored value. Sorting
+compares absent and empty strings equally and preserves their insertion order.
+Other scalar columns still reject `nil`. Model strings are limited to 65,536
+characters, independently of the receiving control's display limits. Hidden
+metadata columns are not serialized into table cells. Plain-text content also
+accepts up to 65,536 characters so a selected record can display its complete
+description; input fields, tooltips and ComboBox label limits remain unchanged.
+No text is silently truncated. Rejected model assignments report the column,
+expected/actual type, string length and limit without logging cell contents.
 Replacing a view's model detaches its old observer. Window/widget destruction
 detaches observers without destroying a model that another view still uses.
 
-Model lookups use row-identity and parent/children indexes. Each candidate
-mutation rebuilds those indexes once; sibling ordering and path positions are
-cached for that model revision. Equal sort values retain explicit insertion
+Model lookups use row-identity and parent/children indexes. Structural changes
+rebuild those indexes; scalar edits invalidate ordering caches without rebuilding
+row indexes. Sibling ordering and path positions are cached for that model
+revision. Equal sort values retain explicit insertion
 positions, including prepend/insert. Rollback restores rows and sort state and
 rebuilds the indexes under a new revision, so rejected projections cannot be
-reused. The rollback snapshot still copies each row and its scalar cell array.
+reused.
+
+Within a `Gtk.queue` block or mapped signal callback, model changes are batched
+under the existing owner dispatcher and session monitor. A model gets one rollback
+snapshot per batch, while scalar/type/size checks and model reads remain synchronous.
+At the boundary, all affected models validate their projections before any are
+published. An invalid projection or raised exception restores pending model data,
+sort order and removed iterators; new rolled-back row identities stay invalid.
+Widget reads, writes and materialization flush pending models first, preserving
+their synchronous interaction with script code. Changes already flushed at such
+a barrier are committed; later failures roll back only the pending batch. Direct
+model calls outside these callbacks retain immediate validation and publication.
+Adapter publication is coalesced onto the same owner dispatcher after queued
+construction, so long initialization cannot publish a partially initialized form
+and turn its remaining default assignments into ambiguous viewer writes. No new
+queue, worker, script-specific path or adapter-port operation is introduced.
 
 Before a TreeView is materialized, model notifications validate column/editor
 configuration and retained selection, expansion and cursor references without
 projecting every cell. Model setters still enforce scalar, row-count and tree
 depth bounds; ComboBox and cell-editor choice limits still reject incompatible
 mutations. Materialized tables reuse their validated row projection when
-publishing that mutation. They still validate and publish complete row sets on
-each mutation; this optimization does not introduce batched or incremental
-updates to the shared table contract.
+publishing that batch. The shared table contract still receives complete row sets;
+batching is internal and does not introduce incremental wire updates.
 
 Rows have stable identities independent of their positional `TreePath`.
 `TreeIter#next!` moves an independent handle and invalidates it at the end;
@@ -409,12 +434,33 @@ including native WebKit gestures without a matching pointer release. The update
 is applied after event handlers finish; a subsequent click is not required and
 the transfer callback is not repeated.
 
-Builder also maps `TreeView.search-column` to a displayed String model column;
+Builder also maps `TreeView.search-column` to a displayed String or numeric model column;
 `-1` disables search and hidden/unmapped search columns remain unsupported.
 `fixed-height-mode=true` explicitly omits GTK's row-measurement optimization:
 browser layout measures row heights. Column `sizing=fixed` uses browser allocation
 and any explicit `fixed-width`; this is a reported approximation, not a promise
 of GTK's measurement algorithm. Other sizing modes are refused.
+
+`enable-search=false` disables incremental table search without disabling a
+separate SearchEntry. `enable-grid-lines` maps `none`, `horizontal`, `vertical`
+or `both` to the existing table borders. `activate-on-single-click` selects the
+shared `activation` policy (`single` or the default `double`); Enter still
+activates a row. A double-click sequence in single mode invokes activation once.
+Embedded editors and expansion controls retain their own gestures. Column
+`clickable` controls built-in sorting; `true` without a sort column is refused.
+CellRendererText `xalign` maps 0/1 to start/end and intermediate fractions to
+center. No arbitrary fractional cell positioning or custom header-click handler
+is implied.
+
+SearchEntry accepts only the standard `edit-find-symbolic` primary icon with
+`primary-icon-activatable=false` and `primary-icon-sensitive=false`. Its decoration
+follows the browser theme, a reported approximation; custom icons and icon actions
+remain refused.
+
+A compatibility handle can exist before its first render. An input assignment
+without a viewer during that interval updates the validated initial default.
+Once the control is published, input writes still require an explicit viewer;
+this initialization rule never broadcasts into existing viewer drafts.
 
 Named ComboBoxText items retain script IDs separately from stable wire row IDs.
 `set_active_id` selects a matching item, returns false without changing selection
@@ -471,6 +517,10 @@ GTK properties:
 | TextView `accepts-tab` | Only `false` is supported: Tab navigates to the next control rather than inserting a tab character. |
 | `shadow-type` | Frame accepts `none` as a real zero-width border. ScrolledWindow accepts `none` or `in`; **the inset decoration is deliberately omitted**, the browser theme remains, and the shim logs this declared omission once per session. Other shadow values are refused. |
 | `tab-fill` | Notebook accepts either boolean for nonexpanding tabs, whose natural allocation is unchanged. Expanded-tab packing remains unsupported. |
+| Notebook `show-tabs` | Maps to shared `tabs.show_tabs` (default true). False hides selectors while retaining the selected page; its content has a named group role. Other pages remain hidden. |
+| Notebook child `reorderable` | False is accepted. True is accepted and reported as ineffective only for a single page with hidden tabs, where there is no ordering gesture. Visible or multiple-page reordering remains refused. |
+| Label `justify` | Left/center/right align lines within the text block through the optional shared text `line_justify` property. They do not overwrite label placement or `xalign`; single-line labels retain their position. Wrapped and explicit multiline text use the same bounded mapping. Full justification and justification on linked Markdown labels are refused. |
+| Widget `visible=`, `set_margin_top`, `set_margin_bottom` | Reuse show/hide and bounded per-edge margins, including after publication; no control replacement is required. All four margin setters (and start/end aliases) preserve untouched edges, including a scalar margin established by `set_border_width`. Builder properties use the same setters. |
 
 Text values remain literal, including numeric-looking strings and whitespace.
 Only declared numeric and boolean properties coerce values. Unsupported classes,
@@ -530,6 +580,34 @@ replacement render's baseline so its older displayed value cannot masquerade
 as a new user edit when the retry is
 accepted. Unsubmitted changes retain their existing preservation behavior. This
 applies equally to native WebUI forms and shim-owned controls.
+
+Live text changes carry the existing request correlation ID. Render envelopes
+include `input_requests`, the latest accepted nonsensitive text-input request
+for each CID in that viewer's snapshot. The acknowledgment is captured under
+the same lock as the rendered values; it neither authorizes an event nor relaxes
+generation checks. Removed controls and closed attachments discard their IDs.
+The renderer retains newer typing and its caret until that request is accepted,
+supersedes older change retries, and then honors script normalization or clearing.
+Terminal submission supersedes the corresponding pending change retries. This
+prevents a slow search refresh from replacing a newer word with an earlier prefix
+without changing the script's search rules or delaying every keystroke.
+
+Table headers remain visible within their scrolling viewport. Every resizable
+column, including the last, has a visible divider and a keyboard-focusable resize
+handle (Left/Right adjust by ten pixels); horizontal overflow remains scrollable.
+For tables with headers and resizable columns, automatic widths (omitted or zero)
+share the visible table allocation, with minimums measured from header labels
+rather than the longest cell. Long tags or
+descriptions cannot push trailing automatic columns out of view when those header
+minimums fit. Clipped cells retain their full literal text as hover text. Positive
+script-specified widths and viewer resizing remain authoritative, including when
+they require horizontal scrolling; viewer widths survive data refreshes. Hidden
+tables wait for a real allocation, and automatic widths follow viewport changes.
+An unsized grid scroller sharing an
+explicitly placed row with a height-sized peer consumes that row's allocation
+rather than enlarging it to fit its contents. Centered columns use safe alignment:
+overflowing text starts at the scroll origin instead of losing its beginning above
+it. These shared renderer rules apply to both native and shim-backed pages.
 
 The unchanged `ebounty`, `eherbs` and `BlackArts` setups have independent Chrome
 examples. They exercise settings edits, availability, dependent controls,

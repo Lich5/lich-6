@@ -9,11 +9,11 @@ module Lich
     # Per-page viewer attachments and viewer-local state.
     class ViewerStore
       RECONNECT_WINDOW = 60
-      Snapshot = Data.define(:page, :viewer_id, :render, :values)
+      Snapshot = Data.define(:page, :viewer_id, :render, :values, :input_requests)
 
       class Attachment
         attr_accessor :connection_id, :render, :delivered_generation, :expires_at
-        attr_reader :viewer_id, :resume_token, :address, :page, :values, :delivered_read_only
+        attr_reader :viewer_id, :resume_token, :address, :page, :values, :delivered_read_only, :input_requests
 
         # Creates independent viewer identity, resume capability, and local state for a page.
         # The resume token is server-generated; no render is delivered yet.
@@ -24,6 +24,7 @@ module Lich
           @address = address.freeze
           @page = page
           @values = {}
+          @input_requests = {}
           @delivered_read_only = {}
           @render = nil
           @delivered_generation = nil
@@ -202,6 +203,8 @@ module Lich
           attachment.delivered_generation = render.generation
           previous = attachment.values.select { |(_cid, property), value| property == :checked && value }.keys
           seed_values!(attachment, render.tree, previous_components)
+          live_inputs = render.tree.each.select { |node| node.type == :text_input && !node.props[:sensitive] }.to_h { |node| [node.cid, true] }
+          attachment.input_requests.keep_if { |cid, _request| live_inputs.key?(cid) }
           render.tree.each.select { |node| node.type == :radio_option }.group_by { |node| node.props[:group] }.each_value do |members|
             selected = members.select { |node| attachment.values[[node.cid, :checked]] }
             next if selected.length < 2
@@ -215,8 +218,13 @@ module Lich
       # Applies a validated interaction to the corresponding viewer-local control state.
       # Password values are intentionally excluded from this persistent state map.
       # @return [void]
-      def update(attachment, component, event, payload)
+      # Request IDs acknowledge accepted live text input, never grant routing authority.
+      # They are captured with values so an older delivery cannot erase newer typing.
+      def update(attachment, component, event, payload, request = nil)
         @mutex.synchronize do
+          if request && component.type == :text_input && event == :change && !component.props[:sensitive]
+            attachment.input_requests[component.cid] = request
+          end
           case [component.type, event]
           when [:radio_option, :change]
             select_radio_option!(attachment, component) if payload[:value]
@@ -290,7 +298,7 @@ module Lich
               attachment.delivered_read_only[component.cid] = attachment.values.fetch([component.cid, :value], component.props[:value])
             end
           end
-          Snapshot.new(attachment.page, attachment.viewer_id, attachment.render, attachment.values.dup)
+          Snapshot.new(attachment.page, attachment.viewer_id, attachment.render, attachment.values.dup, attachment.input_requests.dup)
         end
       end
 
@@ -304,7 +312,7 @@ module Lich
           candidates = @by_resume.values.select { |attachment| attachment.page.equal?(page) && attachment.render }
           if candidates.one?
             attachment = candidates.first
-            Snapshot.new(page, attachment.viewer_id, attachment.render, attachment.values.dup)
+            Snapshot.new(page, attachment.viewer_id, attachment.render, attachment.values.dup, attachment.input_requests.dup)
           end
         end
       end
@@ -445,6 +453,7 @@ module Lich
         remove_connection_mapping!(attachment)
         @by_resume.delete(attachment.resume_token)
         attachment.values.clear
+        attachment.input_requests.clear
         attachment.delivered_read_only.clear
         attachment.render = nil
         attachment.delivered_generation = nil
