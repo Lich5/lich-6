@@ -1,0 +1,1972 @@
+{
+  "description": "Retained CSS decoration audit evidence for the approved fallback task; implementation not started.",
+  "focused_audit": {
+    "date": "2026-10-11",
+    "mode": "read-only analysis; no product implementation",
+    "baselines": {
+      "lich-6": "d3e41e71eb335acb80cdd599a3038026d5df5134",
+      "eo-originals": "7fd0b971387492cfd81b4bc7ef94428413965071",
+      "mirror": "549e33506e121453e3c01cfe5df46a902f44fc5f",
+      "converted": "EO local working-tree candidates; individual hashes below"
+    },
+    "cohorts": {
+      "builder13": [
+        "BlackArts",
+        "bigshot",
+        "ebounty",
+        "ecleanse",
+        "eherbs",
+        "eloot",
+        "ewaggle",
+        "go2",
+        "repository",
+        "huntplan",
+        "slootbeta",
+        "stormsync",
+        "bigshit2"
+      ],
+      "converted15": [
+        "BlackArts",
+        "bardwag",
+        "bigshot",
+        "calibrate_creaturebar",
+        "creaturebar",
+        "ebounty",
+        "ecleanse",
+        "eherbs",
+        "eloot",
+        "ewaggle",
+        "go2",
+        "jinx",
+        "map",
+        "repository",
+        "soundfx"
+      ],
+      "random12": [
+        "osacrewv2",
+        "sloot",
+        "song-manager",
+        "panelcontrol",
+        "Live_Market",
+        "old-service-cost",
+        "gemguard",
+        "osacrew_avalon_wizard",
+        "armor",
+        "fletching",
+        "isigils",
+        "loot-be-gone"
+      ],
+      "targeted8": [
+        "spellson",
+        "staminabar2",
+        "timers",
+        "manatimer",
+        "grids",
+        "as_audit",
+        "grinsawl",
+        "Combatical"
+      ],
+      "case": "tpick"
+    },
+    "random_method": {
+      "eligible_GTK_source_candidates": 198,
+      "excluded": "Builder13, Converted15, tpick; EO original preferred for duplicate basenames",
+      "selection": "first 12 after sorting SHA256(seed + colon + basename)",
+      "seed": "2026-10-11-css-audit"
+    },
+    "scope_notes": [
+      "Builder count covers direct definitions, not bsprofiles which dynamically reuses Bigshot Setup.",
+      "Absence of CSS provider calls is not whole-script compatibility: Pango and non-style API refusals remain distinct.",
+      "Sample uses original EO Git objects, not its locally converted sources.",
+      "No source freshness or upstream merge state was fetched.",
+      "Static parser analysis does not certify game operation or visual fidelity."
+    ],
+    "counts": {
+      "originals": 40,
+      "converted": 15,
+      "original_parse_errors": 0,
+      "converted_parse_errors": 0,
+      "Builder_stylesheet_demand": 1,
+      "converted_original_stylesheet_demand": 2,
+      "converted_candidate_stylesheet_demand": 0,
+      "random_stylesheet_demand": 1,
+      "random_other_color_API_demand": 2
+    },
+    "tpick": {
+      "version": 48,
+      "first_error": "UnsupportedOperation: CssProvider operation=load source=tpick.lic:95",
+      "global_stylesheet_characters": 4742,
+      "rules": 28,
+      "selectors": 80,
+      "property_names": 17,
+      "missing_apis": [
+        "StyleContext.add_provider_for_screen",
+        "Label#style_context",
+        "StyleContext#add_class"
+      ],
+      "non_css_blocker": "Gtk::HeaderBar"
+    },
+    "runtime_checks": {
+      "tpick_original_style_excerpt": "refused at load line 95",
+      "tpick_local_label_stylesheet": "refused",
+      "spellson_observed_palette": "accepted",
+      "staminabar2_original": "refused",
+      "staminabar2_diagnostic_final_semicolon_added": "accepted; original untouched",
+      "stormsync_selection_border_literal": "refused",
+      "OSA_gray_RGBA_parse": "refused",
+      "spellson_RSpec": "1 example, 0 failures; seed 58377"
+    },
+    "scripts": {
+      "BlackArts": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "15932bdd0fa9efcd0a4a13222ebbc3032dda22db8ab28c3effd542349c828703",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 5282
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/BlackArts.lic",
+        "converted": {
+          "sha256": "6251a19f6e2cbfac15d1b3fd167ba711cf3792e9ecf444104ef64ec458fb1b74",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "bigshot": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "f96ac381aa1f09f248f79de486bf236fa4ae558d3231ad90941333dd4e3f2873",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 1300
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/bigshot.lic",
+        "converted": {
+          "sha256": "b2b56ea16f6d6a3aa61ad070263bfb6c1f7c288754202dbc617cd13c578a425a",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "ebounty": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "9cb9dafe5941f8336a51006846b0c86b712cca2b2340ea1e1c042e7ede781ab7",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 1151
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/ebounty.lic",
+        "converted": {
+          "sha256": "58087e88de417d50424012cde95693f3c46c799231ce13cc1c344010cadd1423",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "ecleanse": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "64e7b1d920bed944b8b33bf9a192c13bb23289d932e6873f38d61579971da4bf",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 268
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/ecleanse.lic",
+        "converted": {
+          "sha256": "9124257517e3ee730cddbec6b0dff3c26102ce69859395c696a8f2145a3cad3b",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "eherbs": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "6feecbcec73718d8127432187f3453e06020ba52dc5f312efd4e9dcac5fe5083",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 525
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/eherbs.lic",
+        "converted": {
+          "sha256": "ee5094092f1c71bf9dd42e80f17a6c189eed893a4348eaf90b3da7db3cdc30da",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "eloot": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "1e1d5c5bc5e845f47821d1fe0b676b08cdbd139e83f8c594ff221e6cc707a349",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 720
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/eloot.lic",
+        "converted": {
+          "sha256": "0b52f967ea8e62022aeb7af6e8bf33194badcae2888c96f56325a6468281be50",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "ewaggle": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "fe74b93bbc73ce83981ff8e23dba11dcc0e51a905454685afb39988eb87726e4",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 201
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/ewaggle.lic",
+        "converted": {
+          "sha256": "b8d670c4ca6272d2b84c10a4914875f9520d5cb10786aeeced0ad5d6e64defc1",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "go2": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "e4763e1fd11ee2645409067dd5ed3463d7e6f8fd48595ae01b19d4aea04237a6",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 474
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/go2.lic",
+        "converted": {
+          "sha256": "3c58928f7928d95d1e7fe1342737340e3afa73c18739976f13009f2f3d57c57c",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "repository": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "d46a023aaac5f96c1395b89727d0640cee69a91a9103853353de3a1389fe1aa0",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 880
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/repository.lic",
+        "converted": {
+          "sha256": "dd50e1423806077fc7f326564e4e6f9946c0ae308ed5d14310a9a2f14d7afb9b",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "huntplan": {
+        "source": "mirror",
+        "sha256": "37a6af449da8f8bbf26cc63d8b714d52099c87fe994dabeddeac6f07a5fbd726",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 1992
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/huntplan.lic"
+      },
+      "slootbeta": {
+        "source": "mirror",
+        "sha256": "95ffd23436d3da57ee779613bc7d3b2bcb35c381dd2f377f11a0f39639b98ed1",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 57
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/slootbeta.lic"
+      },
+      "stormsync": {
+        "source": "mirror",
+        "sha256": "06b23dd95dde10c354c447033379a3c218757e23646ef2572a4b454f22660cb9",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "remove_provider",
+            "line": 3340
+          },
+          {
+            "name": "style_context",
+            "line": 3340
+          },
+          {
+            "name": "add_provider",
+            "line": 3341
+          },
+          {
+            "name": "style_context",
+            "line": 3341
+          },
+          {
+            "name": "style_context",
+            "line": 3346
+          },
+          {
+            "name": "add_provider",
+            "line": 3348
+          },
+          {
+            "name": "style_context",
+            "line": 3348
+          },
+          {
+            "name": "remove_provider",
+            "line": 3349
+          },
+          {
+            "name": "style_context",
+            "line": 3349
+          },
+          {
+            "name": "remove_provider",
+            "line": 3351
+          },
+          {
+            "name": "style_context",
+            "line": 3351
+          },
+          {
+            "name": "add_provider",
+            "line": 3352
+          },
+          {
+            "name": "style_context",
+            "line": 3352
+          },
+          {
+            "name": "remove_provider",
+            "line": 3354
+          },
+          {
+            "name": "style_context",
+            "line": 3354
+          },
+          {
+            "name": "remove_provider",
+            "line": 3355
+          },
+          {
+            "name": "style_context",
+            "line": 3355
+          },
+          {
+            "name": "add_provider",
+            "line": 3417
+          },
+          {
+            "name": "style_context",
+            "line": 3417
+          },
+          {
+            "name": "add_provider",
+            "line": 3418
+          },
+          {
+            "name": "style_context",
+            "line": 3418
+          },
+          {
+            "name": "add_provider",
+            "line": 3428
+          },
+          {
+            "name": "style_context",
+            "line": 3428
+          },
+          {
+            "name": "add_provider",
+            "line": 3578
+          },
+          {
+            "name": "style_context",
+            "line": 3578
+          },
+          {
+            "name": "add_provider",
+            "line": 3579
+          },
+          {
+            "name": "style_context",
+            "line": 3579
+          },
+          {
+            "name": "add_provider",
+            "line": 4677
+          },
+          {
+            "name": "style_context",
+            "line": 4677
+          },
+          {
+            "name": "add_provider",
+            "line": 4678
+          },
+          {
+            "name": "style_context",
+            "line": 4678
+          },
+          {
+            "name": "add_provider",
+            "line": 4679
+          },
+          {
+            "name": "style_context",
+            "line": 4679
+          },
+          {
+            "name": "add_provider",
+            "line": 4680
+          },
+          {
+            "name": "style_context",
+            "line": 4680
+          }
+        ],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 2870
+          },
+          {
+            "name": "CssProvider",
+            "line": 3571
+          },
+          {
+            "name": "CssProvider",
+            "line": 3572
+          },
+          {
+            "name": "CssProvider",
+            "line": 3574
+          },
+          {
+            "name": "CssProvider",
+            "line": 3577
+          },
+          {
+            "name": "CssProvider",
+            "line": 4676
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/stormsync.lic"
+      },
+      "bigshit2": {
+        "source": "mirror",
+        "sha256": "ec8c34459793dad872d50d215027a00847ffc9254ca7058d934a324cd1d3c1b6",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [
+          {
+            "name": "Builder",
+            "line": 907
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/bigshit2.lic"
+      },
+      "bardwag": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "3aaadd4bbde1bdee423e4bc68f7c9f1fcf2c77756f9519b8a7f758debfbb3e78",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/bardwag.lic",
+        "converted": {
+          "sha256": "4452d58549ab62e85b541660e6a9f0c45b6c5e7028717b37dd5315f4827c14e8",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "calibrate_creaturebar": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "e0744dc854f4cfbd154096f4646c01e14cc9491774bb02f5c2c252324418d1d0",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider_for_screen",
+            "line": 558
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 439
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/calibrate_creaturebar.lic",
+        "converted": {
+          "sha256": "b5dde4b7ff94dca5ac2240e02e298dd09a48db0b6510db74b6594b897ca73c4a",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "creaturebar": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "df970e56a146eb51e56873dd4510fd09694e56dbd424c8ad1a1d12c359a080d6",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider",
+            "line": 837
+          },
+          {
+            "name": "style_context",
+            "line": 837
+          },
+          {
+            "name": "style_context",
+            "line": 2609
+          },
+          {
+            "name": "style_context",
+            "line": 2615
+          },
+          {
+            "name": "add_class",
+            "line": 2617
+          },
+          {
+            "name": "remove_class",
+            "line": 2619
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 793
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/creaturebar.lic",
+        "converted": {
+          "sha256": "4e57eab9af5473a854e5951d08f0e5bbeb4fdc313d7577a92f940a9b5c807885",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "jinx": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "4e06cfe3140f5ee6f234ae61dbf0308e647eff0ce2d59b0f663329f9cef7aa85",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/jinx.lic",
+        "converted": {
+          "sha256": "417156aa9306f67de4f9cb4a8f89be2dc9525429510b2245fda80a258117ff83",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "map": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "b53351d31a5dedb5a3d71160c4792579caa6a32ff32027d174a9775d3bf144b7",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/map.lic",
+        "converted": {
+          "sha256": "d7672377976c12fe85fc8d14d843ca4aa7bb07dfa822cd7e6e44f0dcd3a64ce8",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "soundfx": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "0adaf7b1df3afb64c14a3c00598f39211f1717b75165bc5394f9e7bb0f8480f0",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/soundfx.lic",
+        "converted": {
+          "sha256": "1d69c88a1cb963435d53892dea9a7251369e29091a3ff473a0a8e19aac3be24a",
+          "parse_errors": [],
+          "calls": [],
+          "constants": []
+        }
+      },
+      "osacrewv2": {
+        "source": "mirror",
+        "sha256": "67040abeb016dc0375e6663647ea2d44f85b1dbdbaa6fca8db98f4092d166d7f",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/osacrewv2.lic"
+      },
+      "sloot": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "2d309244fe08cf5d1e19c1e3dea09a50041a5ad3856c2fe2b02f7fcc82892dc0",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/sloot.lic"
+      },
+      "song-manager": {
+        "source": "mirror",
+        "sha256": "56efe6a2ea0ad86e63d90d7df3844f03f593df40fe67e5e9a797fd7d834a46ba",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/song-manager.lic"
+      },
+      "panelcontrol": {
+        "source": "mirror",
+        "sha256": "2493c6211ff8024e148c42d7504ef75d7db9ffc6e8bd04811ac5adaf350eacaf",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_class",
+            "line": 677
+          },
+          {
+            "name": "style_context",
+            "line": 677
+          },
+          {
+            "name": "add_class",
+            "line": 680
+          },
+          {
+            "name": "style_context",
+            "line": 680
+          },
+          {
+            "name": "add_provider_for_screen",
+            "line": 707
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 705
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/panelcontrol.lic"
+      },
+      "Live_Market": {
+        "source": "mirror",
+        "sha256": "fdf42b37f88e3ed74e9de4c47eb0b1f018e99274f897c5cecfbcc931ec3d84ec",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/Live_Market.lic"
+      },
+      "old-service-cost": {
+        "source": "mirror",
+        "sha256": "6039fa4f3a5e8a79ed4bdf123f63af6c9d082ba79386264d08f652d8aa1c6ebd",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "override_color",
+            "line": 233
+          },
+          {
+            "name": "override_background_color",
+            "line": 239
+          },
+          {
+            "name": "override_color",
+            "line": 286
+          },
+          {
+            "name": "override_color",
+            "line": 300
+          },
+          {
+            "name": "override_background_color",
+            "line": 309
+          },
+          {
+            "name": "override_color",
+            "line": 342
+          },
+          {
+            "name": "override_color",
+            "line": 343
+          },
+          {
+            "name": "override_background_color",
+            "line": 344
+          },
+          {
+            "name": "override_color",
+            "line": 363
+          },
+          {
+            "name": "override_background_color",
+            "line": 364
+          },
+          {
+            "name": "override_color",
+            "line": 380
+          },
+          {
+            "name": "override_color",
+            "line": 385
+          },
+          {
+            "name": "override_color",
+            "line": 388
+          },
+          {
+            "name": "override_background_color",
+            "line": 389
+          },
+          {
+            "name": "override_color",
+            "line": 479
+          },
+          {
+            "name": "override_color",
+            "line": 484
+          },
+          {
+            "name": "override_background_color",
+            "line": 489
+          },
+          {
+            "name": "override_color",
+            "line": 589
+          },
+          {
+            "name": "override_background_color",
+            "line": 594
+          },
+          {
+            "name": "override_background_color",
+            "line": 719
+          },
+          {
+            "name": "override_color",
+            "line": 791
+          },
+          {
+            "name": "override_background_color",
+            "line": 796
+          },
+          {
+            "name": "override_color",
+            "line": 883
+          },
+          {
+            "name": "override_background_color",
+            "line": 888
+          },
+          {
+            "name": "override_color",
+            "line": 966
+          },
+          {
+            "name": "override_background_color",
+            "line": 971
+          },
+          {
+            "name": "override_color",
+            "line": 981
+          },
+          {
+            "name": "override_color",
+            "line": 1048
+          },
+          {
+            "name": "override_background_color",
+            "line": 1053
+          },
+          {
+            "name": "override_color",
+            "line": 1165
+          },
+          {
+            "name": "override_color",
+            "line": 1172
+          },
+          {
+            "name": "override_background_color",
+            "line": 1351
+          },
+          {
+            "name": "override_background_color",
+            "line": 1453
+          },
+          {
+            "name": "override_color",
+            "line": 1533
+          },
+          {
+            "name": "override_color",
+            "line": 1539
+          },
+          {
+            "name": "override_color",
+            "line": 1552
+          },
+          {
+            "name": "override_color",
+            "line": 1570
+          },
+          {
+            "name": "override_color",
+            "line": 1583
+          },
+          {
+            "name": "override_color",
+            "line": 1590
+          },
+          {
+            "name": "override_color",
+            "line": 1607
+          },
+          {
+            "name": "override_color",
+            "line": 1620
+          }
+        ],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/old-service-cost.lic"
+      },
+      "gemguard": {
+        "source": "mirror",
+        "sha256": "a37f140c7a26d7e45ebe41f52a56628afdfef3382bcb8e705005b3017964b319",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/gemguard.lic"
+      },
+      "osacrew_avalon_wizard": {
+        "source": "mirror",
+        "sha256": "ce3ce0c9d313bd41b9478de25896be64ef8aaab35dd05ff9b79faa1c9bd218a2",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "override_background_color",
+            "line": 139
+          },
+          {
+            "name": "override_background_color",
+            "line": 149
+          }
+        ],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/osacrew_avalon_wizard.lic"
+      },
+      "armor": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "2c04b22fd1a1620a1a372935cbea2a31d106f38853272d5ed50bfe591e3b0143",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/armor.lic"
+      },
+      "fletching": {
+        "source": "mirror",
+        "sha256": "8595f50839d7160bd7ca2a6e0214c83bd0e555e5f882da7a8b068a9c418dc09b",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/fletching.lic"
+      },
+      "isigils": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "68f08de9b3773656efe5ad77f8b53fa71b7a6a788f3cd6fba9fed3dd17d6f986",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/isigils.lic"
+      },
+      "loot-be-gone": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "00644fbf5811d42465d4969cfa5f685bac7221057cec914944332dca7d93495d",
+        "parse_errors": [],
+        "calls": [],
+        "constants": [],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/loot-be-gone.lic"
+      },
+      "spellson": {
+        "source": "eo HEAD 7fd0b971",
+        "sha256": "29b23b098e8d65e409f8f3366cd76a06e01073dca53df36e0a5405969e92e121",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider",
+            "line": 120
+          },
+          {
+            "name": "style_context",
+            "line": 120
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 116
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/scripts/scripts/spellson.lic"
+      },
+      "staminabar2": {
+        "source": "mirror",
+        "sha256": "c6d2d696ac57ea13d8359dc4650a4a7a209706ecf6c8af06e6be252e3058d377",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider",
+            "line": 37
+          },
+          {
+            "name": "style_context",
+            "line": 37
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 32
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/staminabar2.lic"
+      },
+      "timers": {
+        "source": "mirror",
+        "sha256": "79144e3b24e7b5fcb45e7cae65b0355354e0aff6334ddd30969ee68b593a3466",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "load_from_data",
+            "line": 392
+          },
+          {
+            "name": "load_from_data",
+            "line": 406
+          },
+          {
+            "name": "style_context",
+            "line": 409
+          },
+          {
+            "name": "add_provider",
+            "line": 410
+          },
+          {
+            "name": "load_from_data",
+            "line": 441
+          },
+          {
+            "name": "load_from_data",
+            "line": 451
+          },
+          {
+            "name": "style_context",
+            "line": 454
+          },
+          {
+            "name": "add_provider",
+            "line": 455
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 378
+          },
+          {
+            "name": "CssProvider",
+            "line": 394
+          },
+          {
+            "name": "CssProvider",
+            "line": 431
+          },
+          {
+            "name": "CssProvider",
+            "line": 443
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/timers.lic"
+      },
+      "manatimer": {
+        "source": "mirror",
+        "sha256": "ac33cc5b04bb6d4185063b552c1dcc8290b5cdfe752ba9ea36402f65a4f9bf2f",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider",
+            "line": 84
+          },
+          {
+            "name": "style_context",
+            "line": 84
+          },
+          {
+            "name": "load_from_data",
+            "line": 87
+          },
+          {
+            "name": "load_from_data",
+            "line": 88
+          },
+          {
+            "name": "load_from_data",
+            "line": 93
+          },
+          {
+            "name": "add_provider",
+            "line": 94
+          },
+          {
+            "name": "style_context",
+            "line": 94
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 83
+          },
+          {
+            "name": "CssProvider",
+            "line": 92
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/manatimer.lic"
+      },
+      "grids": {
+        "source": "mirror",
+        "sha256": "c509c2a4d17684d1a6f30bc51d786183c17ef1f16f542d670885849b8af58d5b",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "load_from_data",
+            "line": 1725
+          },
+          {
+            "name": "style_context",
+            "line": 1726
+          },
+          {
+            "name": "add_provider",
+            "line": 1727
+          },
+          {
+            "name": "load_from_data",
+            "line": 1779
+          },
+          {
+            "name": "style_context",
+            "line": 1780
+          },
+          {
+            "name": "add_provider",
+            "line": 1781
+          },
+          {
+            "name": "load_from_data",
+            "line": 1899
+          },
+          {
+            "name": "style_context",
+            "line": 1900
+          },
+          {
+            "name": "add_provider",
+            "line": 1901
+          },
+          {
+            "name": "load_from_data",
+            "line": 1948
+          },
+          {
+            "name": "style_context",
+            "line": 1950
+          },
+          {
+            "name": "add_provider",
+            "line": 1951
+          },
+          {
+            "name": "load_from_data",
+            "line": 1975
+          },
+          {
+            "name": "style_context",
+            "line": 1976
+          },
+          {
+            "name": "add_provider",
+            "line": 1977
+          },
+          {
+            "name": "load_from_data",
+            "line": 1998
+          },
+          {
+            "name": "style_context",
+            "line": 1999
+          },
+          {
+            "name": "add_provider",
+            "line": 2000
+          },
+          {
+            "name": "load_from_data",
+            "line": 2345
+          },
+          {
+            "name": "style_context",
+            "line": 2347
+          },
+          {
+            "name": "add_provider",
+            "line": 2348
+          },
+          {
+            "name": "load_from_data",
+            "line": 2385
+          },
+          {
+            "name": "style_context",
+            "line": 2387
+          },
+          {
+            "name": "add_provider",
+            "line": 2388
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 1718
+          },
+          {
+            "name": "CssProvider",
+            "line": 1731
+          },
+          {
+            "name": "CssProvider",
+            "line": 1865
+          },
+          {
+            "name": "CssProvider",
+            "line": 1931
+          },
+          {
+            "name": "CssProvider",
+            "line": 1955
+          },
+          {
+            "name": "CssProvider",
+            "line": 1981
+          },
+          {
+            "name": "CssProvider",
+            "line": 2338
+          },
+          {
+            "name": "CssProvider",
+            "line": 2379
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/grids.lic"
+      },
+      "as_audit": {
+        "source": "mirror",
+        "sha256": "78516cdd47c3b49b0b36cf6a5e89379825121b495dc2fb9b7973aebd66945bc7",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider",
+            "line": 2258
+          },
+          {
+            "name": "style_context",
+            "line": 2258
+          },
+          {
+            "name": "add_provider",
+            "line": 2259
+          },
+          {
+            "name": "style_context",
+            "line": 2259
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 2245
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/as_audit.lic"
+      },
+      "grinsawl": {
+        "source": "mirror",
+        "sha256": "ecc0f23c82bdd13183a274a961ac2eee3c1bed10ea9e44e8ea357523eb6e99a8",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_class",
+            "line": 2434
+          },
+          {
+            "name": "style_context",
+            "line": 2434
+          },
+          {
+            "name": "style_context",
+            "line": 2458
+          },
+          {
+            "name": "remove_class",
+            "line": 2459
+          },
+          {
+            "name": "add_class",
+            "line": 2460
+          },
+          {
+            "name": "add_provider_for_screen",
+            "line": 2499
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 2497
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/grinsawl.lic"
+      },
+      "Combatical": {
+        "source": "mirror",
+        "sha256": "153c4286870d5fc6aaab336302ab8f6e4dccbaa057b4e2626a421d978acb0e93",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_class",
+            "line": 1506
+          },
+          {
+            "name": "style_context",
+            "line": 1506
+          },
+          {
+            "name": "remove_class",
+            "line": 1508
+          },
+          {
+            "name": "style_context",
+            "line": 1508
+          },
+          {
+            "name": "add_class",
+            "line": 1699
+          },
+          {
+            "name": "style_context",
+            "line": 1699
+          },
+          {
+            "name": "add_class",
+            "line": 1868
+          },
+          {
+            "name": "style_context",
+            "line": 1868
+          },
+          {
+            "name": "add_class",
+            "line": 1871
+          },
+          {
+            "name": "style_context",
+            "line": 1871
+          },
+          {
+            "name": "add_class",
+            "line": 1886
+          },
+          {
+            "name": "style_context",
+            "line": 1886
+          },
+          {
+            "name": "add_class",
+            "line": 1889
+          },
+          {
+            "name": "style_context",
+            "line": 1889
+          },
+          {
+            "name": "add_class",
+            "line": 1906
+          },
+          {
+            "name": "style_context",
+            "line": 1906
+          },
+          {
+            "name": "add_class",
+            "line": 1908
+          },
+          {
+            "name": "style_context",
+            "line": 1908
+          },
+          {
+            "name": "add_class",
+            "line": 1989
+          },
+          {
+            "name": "style_context",
+            "line": 1989
+          },
+          {
+            "name": "add_class",
+            "line": 2015
+          },
+          {
+            "name": "style_context",
+            "line": 2015
+          },
+          {
+            "name": "add_class",
+            "line": 2040
+          },
+          {
+            "name": "style_context",
+            "line": 2040
+          },
+          {
+            "name": "remove_class",
+            "line": 2127
+          },
+          {
+            "name": "style_context",
+            "line": 2127
+          },
+          {
+            "name": "add_class",
+            "line": 2157
+          },
+          {
+            "name": "style_context",
+            "line": 2157
+          },
+          {
+            "name": "remove_class",
+            "line": 2162
+          },
+          {
+            "name": "style_context",
+            "line": 2162
+          },
+          {
+            "name": "add_class",
+            "line": 2192
+          },
+          {
+            "name": "style_context",
+            "line": 2192
+          },
+          {
+            "name": "remove_provider_for_screen",
+            "line": 2339
+          },
+          {
+            "name": "add_provider_for_screen",
+            "line": 2443
+          },
+          {
+            "name": "add_class",
+            "line": 3024
+          },
+          {
+            "name": "style_context",
+            "line": 3024
+          },
+          {
+            "name": "add_class",
+            "line": 3035
+          },
+          {
+            "name": "style_context",
+            "line": 3035
+          },
+          {
+            "name": "add_class",
+            "line": 3057
+          },
+          {
+            "name": "style_context",
+            "line": 3057
+          },
+          {
+            "name": "override_color",
+            "line": 3082
+          },
+          {
+            "name": "add_class",
+            "line": 3185
+          },
+          {
+            "name": "style_context",
+            "line": 3185
+          },
+          {
+            "name": "add_class",
+            "line": 3193
+          },
+          {
+            "name": "style_context",
+            "line": 3193
+          },
+          {
+            "name": "add_class",
+            "line": 3224
+          },
+          {
+            "name": "style_context",
+            "line": 3224
+          },
+          {
+            "name": "add_class",
+            "line": 3232
+          },
+          {
+            "name": "style_context",
+            "line": 3232
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 2342
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/Combatical.lic"
+      },
+      "tpick": {
+        "source": "mirror",
+        "sha256": "72e60fe9f4ceab3744fcfe7a5102c375e58489684946edd8315fb47db0f91080",
+        "parse_errors": [],
+        "calls": [
+          {
+            "name": "add_provider_for_screen",
+            "line": 291
+          },
+          {
+            "name": "add_provider",
+            "line": 2564
+          },
+          {
+            "name": "style_context",
+            "line": 2564
+          },
+          {
+            "name": "add_class",
+            "line": 2939
+          },
+          {
+            "name": "style_context",
+            "line": 2939
+          }
+        ],
+        "constants": [
+          {
+            "name": "CssProvider",
+            "line": 94
+          },
+          {
+            "name": "CssProvider",
+            "line": 2557
+          }
+        ],
+        "source_path": "/Users/doug/dev/Projects/lich_repo_mirror/lib/tpick.lic"
+      }
+    }
+  },
+  "whole_corpus_provider_references": [
+    {
+      "name": "Combatical",
+      "source": "mirror",
+      "sha256": "153c4286870d5fc6aaab336302ab8f6e4dccbaa057b4e2626a421d978acb0e93",
+      "provider_reference_lines": [
+        2342
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "UberBarWiz",
+      "source": "mirror",
+      "sha256": "64bdbb6c5f02ee1941695150ee5116a602f9a9542c8db5d07a4a654bfad607d8",
+      "provider_reference_lines": [
+        552,
+        561,
+        570,
+        579,
+        588,
+        597,
+        606,
+        615,
+        624,
+        633,
+        642
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "as_audit",
+      "source": "mirror",
+      "sha256": "78516cdd47c3b49b0b36cf6a5e89379825121b495dc2fb9b7973aebd66945bc7",
+      "provider_reference_lines": [
+        2245
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "bug-catcher",
+      "source": "mirror",
+      "sha256": "cdbc764706ea86d4f7bd62b24ae11751a5e32a162605a21bd72f14c6c80103c0",
+      "provider_reference_lines": [
+        266
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "calibrate_creaturebar",
+      "source": "eo HEAD 7fd0b971",
+      "sha256": "e0744dc854f4cfbd154096f4646c01e14cc9491774bb02f5c2c252324418d1d0",
+      "provider_reference_lines": [
+        439
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": true
+    },
+    {
+      "name": "creaturebar",
+      "source": "eo HEAD 7fd0b971",
+      "sha256": "df970e56a146eb51e56873dd4510fd09694e56dbd424c8ad1a1d12c359a080d6",
+      "provider_reference_lines": [
+        793
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": true
+    },
+    {
+      "name": "creaturewindow",
+      "source": "mirror",
+      "sha256": "2bd6d6e7dcfbf15be65dd2159c5dce9d5ba25902a1ba9b38c0cb04af8d997d72",
+      "provider_reference_lines": [
+        1169
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "exitwindow",
+      "source": "mirror",
+      "sha256": "90b31de4f12214e5d4399ab4d978a4923815139568d44e213ab7bf041fc943a1",
+      "provider_reference_lines": [
+        692
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "gemstone-tracker",
+      "source": "mirror",
+      "sha256": "e48fe872f646155668424e737efb6b91e361b7575d83d54b6a8e09f07aa23d53",
+      "provider_reference_lines": [
+        1175
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "gemstonev",
+      "source": "mirror",
+      "sha256": "a2b81ac7aa596305e7e90161aea380eeead4e91daf51647fbc3268dc8cb40483",
+      "provider_reference_lines": [
+        86,
+        87,
+        88
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "generate-gemstone",
+      "source": "mirror",
+      "sha256": "32dc963055fb91a10222a875d1e44375accfc3b31da82227682a2f353b6da178",
+      "provider_reference_lines": [
+        414
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "grids",
+      "source": "mirror",
+      "sha256": "c509c2a4d17684d1a6f30bc51d786183c17ef1f16f542d670885849b8af58d5b",
+      "provider_reference_lines": [
+        1718,
+        1731,
+        1865,
+        1931,
+        1955,
+        1981,
+        2338,
+        2379
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "grinsawl",
+      "source": "mirror",
+      "sha256": "ecc0f23c82bdd13183a274a961ac2eee3c1bed10ea9e44e8ea357523eb6e99a8",
+      "provider_reference_lines": [
+        2497
+      ],
+      "enclosing_rescue_candidates": [
+        [
+          2497,
+          [
+            2490
+          ]
+        ]
+      ],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "gshunting4all",
+      "source": "mirror",
+      "sha256": "9a2883dfbfe515f380d30fac5e5efc3bf87986a696ef0d0899a8fcf2400d4814",
+      "provider_reference_lines": [
+        2304
+      ],
+      "enclosing_rescue_candidates": [
+        [
+          2304,
+          [
+            2303
+          ]
+        ]
+      ],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "hazardwindow",
+      "source": "mirror",
+      "sha256": "7d56a639f242dda8896496d221d71c7a948be57e01e68dd6dfa3788462067954",
+      "provider_reference_lines": [
+        300
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "jastev",
+      "source": "mirror",
+      "sha256": "c9f597205780e460312fcc9572634cccd7a7085a9cc20d2f406e667392cfbfd7",
+      "provider_reference_lines": [
+        71
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "manatimer",
+      "source": "mirror",
+      "sha256": "ac33cc5b04bb6d4185063b552c1dcc8290b5cdfe752ba9ea36402f65a4f9bf2f",
+      "provider_reference_lines": [
+        83,
+        92
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "manatimer-gtk3",
+      "source": "mirror",
+      "sha256": "bcbe9b2dd5f4c9856d2c4c3b1ac557162aa5f8651d48e5c987e283b67fac16eb",
+      "provider_reference_lines": [
+        57
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "merchantical",
+      "source": "mirror",
+      "sha256": "5386c226b54a260658cba7b1f9b934fb82ba5085cf615eae2f27f800e77ba887",
+      "provider_reference_lines": [
+        2390
+      ],
+      "enclosing_rescue_candidates": [
+        [
+          2390,
+          [
+            2386
+          ]
+        ]
+      ],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "mission-gemstone",
+      "source": "mirror",
+      "sha256": "8c79884ba70772c80e29867b7e36f3b2e19ba622ee7de38c6ba4badacb2cdf59",
+      "provider_reference_lines": [
+        630
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "nautical-charts",
+      "source": "mirror",
+      "sha256": "13009a95df85849a8dc802c6ca43dc482482c4b8927a3251f82719f5a5116818",
+      "provider_reference_lines": [
+        381
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "panelcontrol",
+      "source": "mirror",
+      "sha256": "2493c6211ff8024e148c42d7504ef75d7db9ffc6e8bd04811ac5adaf350eacaf",
+      "provider_reference_lines": [
+        705
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "playerwindow",
+      "source": "mirror",
+      "sha256": "2dd398c69a57a5ea8318a53f5d9b57066c4b987db4e002dd8050230af4568302",
+      "provider_reference_lines": [
+        718
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "rafflewindow",
+      "source": "mirror",
+      "sha256": "969014c0db5c5bf3355de34a3cd28a2444e739a1831baef043b8f9fc3939534e",
+      "provider_reference_lines": [
+        752
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "spellson",
+      "source": "eo HEAD 7fd0b971",
+      "sha256": "29b23b098e8d65e409f8f3366cd76a06e01073dca53df36e0a5405969e92e121",
+      "provider_reference_lines": [
+        116
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "staminabar2",
+      "source": "mirror",
+      "sha256": "c6d2d696ac57ea13d8359dc4650a4a7a209706ecf6c8af06e6be252e3058d377",
+      "provider_reference_lines": [
+        32
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "stormsync",
+      "source": "mirror",
+      "sha256": "06b23dd95dde10c354c447033379a3c218757e23646ef2572a4b454f22660cb9",
+      "provider_reference_lines": [
+        3571,
+        3572,
+        3574,
+        3577,
+        4676
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "test-tpick",
+      "source": "mirror",
+      "sha256": "1dec7d525ee17b8c1e92da5e3ef29c431c7bce71e212f3fc287e1fff665e39ae",
+      "provider_reference_lines": [
+        563,
+        951
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "thunder",
+      "source": "mirror",
+      "sha256": "5047a5049b2b3a7ef8f56e9d37d12bd183d0fdf919abfa037e660642b944927c",
+      "provider_reference_lines": [
+        991
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "timers",
+      "source": "mirror",
+      "sha256": "79144e3b24e7b5fcb45e7cae65b0355354e0aff6334ddd30969ee68b593a3466",
+      "provider_reference_lines": [
+        378,
+        394,
+        431,
+        443
+      ],
+      "enclosing_rescue_candidates": [
+        [
+          394,
+          [
+            391
+          ]
+        ],
+        [
+          443,
+          [
+            440
+          ]
+        ]
+      ],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "tpick",
+      "source": "mirror",
+      "sha256": "72e60fe9f4ceab3744fcfe7a5102c375e58489684946edd8315fb47db0f91080",
+      "provider_reference_lines": [
+        94,
+        2557
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "tpick2",
+      "source": "mirror",
+      "sha256": "1889d510da47d7ee116c399ec19faaf2db527c7f4a4728b6742eb8b960c39849",
+      "provider_reference_lines": [
+        861,
+        1252
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    },
+    {
+      "name": "treasurewindow",
+      "source": "mirror",
+      "sha256": "fb76de05d2d630a09434d07edb03eddeffccb831afda97856ec1c89c25cbe991",
+      "provider_reference_lines": [
+        358
+      ],
+      "enclosing_rescue_candidates": [],
+      "parse_errors": [],
+      "converted": false
+    }
+  ],
+  "count_interpretation": {
+    "original_provider_script_names": 33,
+    "already_native_candidates": 2,
+    "currently_supported_spellson": 1,
+    "remaining_exposure": 30,
+    "current_working_file_count": 32,
+    "current_distinct_names": 31,
+    "duplicate": "GS/DR stormsync are byte-identical",
+    "not_a_fatal_failure_count": true,
+    "explicit_css_rescue_examples": [
+      "grinsawl",
+      "gshunting4all"
+    ],
+    "partial_rescue_example": "merchantical rescues provider loading but has other style-class calls"
+  }
+}

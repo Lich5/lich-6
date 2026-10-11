@@ -5,6 +5,19 @@ GTK compatibility layer. Both native and compatible GTK script interfaces use
 the same component contract, renderer, and window lifecycle. Core WebUI is
 independent of the compatibility layer and does not require the GTK gem.
 
+This guide describes the development tree after PR #38, at `d3e41e71`, rather
+than a released EO distribution. The [review-readiness record](webui-review-readiness.md)
+tracks merged work, acceptance limits, open items and proposed extraction
+boundaries. [Fixture provenance](../spec/fixtures/webui/README.txt) identifies
+the frozen script sources used for regression checks.
+
+The authoritative host/browser contract is
+[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.17.0**. It is an
+internal compatibility version, not a Lich or script release number. Versioned
+feature notes below describe when capabilities were introduced, not a second
+current contract. Ruby validation and browser handling must agree on the same
+capabilities.
+
 ## Rendering and event flow
 
 ```mermaid
@@ -38,9 +51,19 @@ The main responsibilities are:
 Scripts retain ownership of their calculations, defaults, ordering, persistence,
 validation and cancellation behavior. Presentation helpers do not supply those
 policies. Native consumers use WebUI directly; they do not pass through the shim.
-The compatibility layer is a supported subset of GTK, not a complete GTK runtime.
+The compatibility layer is a migration bridge with a supported subset of GTK,
+not a permanent replacement implementation of GTK.
 Unsupported interfaces require a native conversion or a separately designed
-contract extension.
+contract extension. Visual translation should remain a close match to the
+original GTK interface unless a documented architectural boundary requires a
+declared omission or approximation. Shared controls must remain useful to native
+consumers; script IDs, business rules and per-script layout branches do not
+belong in the shim or renderer.
+
+Graphical startup uses the native WebUI launcher. `--no-gui` and its legacy
+alias `--no-gtk` suppress that launcher; they do not select a native GTK backend
+or disable default-gem checks. macOS requires the bundled AppKit/WebKit helper;
+Windows/Linux require a supported Chromium browser as described below.
 
 ### Script dependency boundary
 
@@ -98,7 +121,9 @@ wait for another callback on the same owner or synchronously await a modal;
 use the existing asynchronous response callbacks instead.
 
 The worker adopts the calling Script's ownership and respects its pause/stop
-state. Legacy queue exceptions are reported without aborting later blocks.
+state. Ordinary legacy queue exceptions are reported without aborting later
+blocks. An unhandled `BuilderError` is deliberately different: it retires that
+owner's UI and requests asynchronous script termination, as detailed below.
 Pending work is canceled on owner termination, and a retained queue handle
 cannot restart a stopped host. Full dispatcher shutdown closes admission before
 collecting workers, including owners that have not previously submitted work.
@@ -377,7 +402,7 @@ session closes that owner's windows, refuses subsequent queued work and requests
 Lich's existing asynchronous script stop. Other script sessions are unaffected;
 a partially initialized setup must not remain running without its close handlers.
 
-The original `eloot` setup requests `exclusions_label`, which its XML does not
+The retained original `eloot` setup requests `exclusions_label`, which its XML does not
 declare. The shim therefore refuses that lookup during tooltip initialization.
 The source repair is to name the existing Exclusions label `exclusions_label`;
 the converted native WebUI version is also an available migration path. Production GTK can continue past this
@@ -406,8 +431,8 @@ legacy migration, profile load/new/overwrite/cancel/update, Close persistence an
 destroy without save. Each has an independent Chrome interaction case.
 Game catalogs, tip calculation/terminal formatting and persistence destinations
 are isolated harness dependencies. These are setup/UI checks, not gameplay or
-native desktop-window certification; upstream originals remain blocked until
-repaired by their authors.
+native desktop-window certification. The retained originals remain blocked;
+accepting a future author repair requires checking that new source separately.
 
 The explicit class/property mappings live in
 [`gtk/builder.rb`](../lib/common/script_scope/gtk/builder.rb). They cover existing
@@ -427,11 +452,23 @@ binding. Combo items have plain text labels and optional unique item IDs. Label
 `style` attributes accept `normal` or `italic` through the existing typed text
 property; `foreground` attributes accept six- and twelve-digit Pango RGB colors
 through the existing shared color channels. Other Pango attributes, markup outside
-the bounded forms below, caption styling and CSS are unsupported. Translation
+the bounded forms below, caption styling and Builder stylesheet declarations
+are unsupported. Translation
 annotations retain literal source text; Builder does not perform localization.
 Frame, expander and notebook captions copy their label text at load time, following
 the existing shim container APIs; later edits to those label objects do not update
 the copied captions.
+
+CSS support is distinct from typed presentation properties. Builder does not
+accept arbitrary stylesheets or CSS classes. Direct shim `CssProvider#load`
+accepts only the bounded progress stylesheet grammar implemented in
+[`gtk/style.rb`](../lib/common/script_scope/gtk/style.rb): bold label/trough/progress
+rules, 22px trough and 20px progress minima, no background image, and a supported
+fill color. It translates validated values into the shared progress control;
+source CSS never reaches the browser. Other declarations are refused. The fact
+that the renderer itself uses CSS does not implement GTK selectors, widget
+states or arbitrary native sizing semantics. Expanding that surface requires a
+separate evidence-based decision, not script-name exceptions.
 
 Layout translation uses the same typed properties as native conversions. Grid
 columns default to content-based sizing; `column-homogeneous` changes the actual
@@ -521,8 +558,9 @@ not perform an extra deletion. Other targets/actions, desktop/file drops,
 cross-window transfers, and automatic native model deletion are refused.
 
 Label `use-markup` is interpreted before materialization using bounded formatting.
-Plain text with HTTP(S) anchors maps to the existing Markdown control, with no
-raw HTML. Nested link markup, extra anchor attributes, credentials and other URL
+Plain text with HTTP(S) anchors and optional literal `title` attributes maps to
+the existing Markdown control, with no raw HTML. Nested link markup, other
+anchor attributes, credentials and other URL
 schemes are rejected. Linked labels cannot change component kind after publication
 or turn markup off after link conversion. The native host opens permitted
 main-frame link activations in the system browser; external sites never navigate
@@ -535,7 +573,7 @@ GTK properties:
 
 | Declaration | Accepted behavior |
 | --- | --- |
-| `can-focus` | The concrete control retains its existing browser focus behavior. Passive widgets accept `false`; interactive widgets generally require `true`. An editable combo accepts `false` on its container and either boolean on its internal entry facade. Closed combos also accept either boolean. A request to suppress combo focus is reported as an omission: its single browser input remains keyboard accessible. No separate focus target is created for the entry facade. Focusable labels and other changed focus policies remain refused. |
+| `can-focus` | The concrete control retains its existing browser focus behavior. Passive widgets accept `false`; interactive widgets generally require `true`. An editable combo accepts `false` on its container and either boolean on its internal entry facade. Closed combos also accept either boolean. A request to suppress combo focus is reported as an omission: its single browser input remains keyboard accessible. No separate focus target is created for the entry facade. Linked labels use anchor focus; focusable plain labels and other changed focus policies remain refused. |
 | `receives-default` | Button accepts `true`. CheckButton accepts either boolean and reports `true` as an ignored default-activation hint. A focused button activates with Enter; a checkbox toggles with Space or click. This does not establish a window-wide default button or checkbox Enter activation. |
 | `draw-indicator` | CheckButton accepts `true`, retaining its native indicator; `false` is refused. |
 | `label-xalign` | Frame accepts zero, retaining its left-aligned caption. Other values are refused. |
@@ -556,8 +594,8 @@ GTK properties:
 | Label `justify` | Left/center/right align lines within the text block through the optional shared text `line_justify` property. They do not overwrite label placement or `xalign`; single-line labels retain their position. Wrapped and explicit multiline text use the same bounded mapping. Full justification and justification on linked Markdown labels are refused. |
 | Widget `name` | Retains a literal, at-most-512-character script name. It does not alter `builder_name`, lookup IDs, DOM identity or CSS support. |
 | Entry `max-length` | Standalone entries accept integers 1–8192 to set the existing input character limit before materialization; zero uses the shared 8192-character bound. Existing and programmatically assigned text is truncated to the limit. Live limit changes and larger limits are refused. Internal combo entries refuse all character-limit requests, including zero, through Builder XML, `max_length=` and `set_max_length`, before changing text or emitting signals: their owning select has no character-limit contract. |
-| Entry `editable=false` | Uses a focusable, selectable shared `text_input` with `read_only=true`, configured before materialization. Server writes remain authoritative; client change events and forged terminal values are refused. |
-| Label `single-line-mode` | Either boolean is accepted for literal, unwrapped, single-line text; true reports use of browser font metrics. Multiline text, wrapping and linked markup with this mode are refused. |
+| Entry `editable=false` | A standalone Entry uses a focusable, selectable shared `text_input` with `read_only=true`, configured before materialization. Server writes remain authoritative; client change events and forged terminal values are refused. A combo's internal entry instead selects the closed-select presentation described below. |
+| Label `single-line-mode` | `true` requires literal, unwrapped, single-line text and reports use of browser font metrics; subsequent multiline text, wrapping and linked markup are refused while enabled. `false` clears that restriction. |
 | CheckButton `always-show-image` | Either boolean is accepted only for image-free checkboxes; true reports the hint has no effect. This does not add checkbox image support. |
 | Linked Label titles and focus | HTTP(S) anchors may include literal `title` text, mapped to a safe Markdown link title. Linked labels accept their existing anchor focus behavior. Arbitrary anchor attributes/markup and focusable plain labels remain refused. |
 | Combo entry tooltip and combo height | The internal entry forwards literal tooltips to its owner; combo height requests use the shared minimum height. Neither creates another input or fixed-height clipping. |
@@ -891,7 +929,8 @@ substitute for accurate contracts.
 
 ### Runtime checks
 
-For a short explicit desktop check, run `ruby bench/native_webui_smoke.rb`.
+For a short explicit desktop check on macOS or Windows, run
+`ruby bench/native_webui_smoke.rb`.
 It opens an offline native page and shim window through the production host.
 Toggle topmost and native-page opacity, type in the frontend, then close the
 windows independently. This fixture does not replace actual Map/Spellson runs.

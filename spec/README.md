@@ -1,6 +1,8 @@
-# lich-5 Test Suite
+# Lich Test Suite
 
-This directory contains RSpec tests and JavaScript renderer tests for the lich-5 codebase.
+This directory contains RSpec tests and JavaScript renderer tests for this
+lich-6 development tree. The [WebUI review record](../docs/webui-review-readiness.md)
+separates implementation, acceptance evidence and outstanding platform checks.
 
 ## Quick Start
 
@@ -42,7 +44,7 @@ OS-window geometry, restoration and cleanup require actual OS-window checks.
 The JavaScript suites alone do not establish any of those behaviors.
 The separate `WebUI Tests` GitHub Actions workflow runs these suites on Ubuntu 26.04.
 It runs on pull requests, pushes to `main`, and manual dispatch.
-Existing Ruby workflows are unchanged.
+RSpec runs separately in its own workflow; the renderer job does not replace it.
 
 ## WebUI Browser Tests
 
@@ -94,6 +96,15 @@ case covering controls, dependencies and Close/save. Ruby checks additionally
 cover all eloot list handlers, tipping dispatch, Bigshot profile/boon migration,
 scalar fields and text areas, and destruction without saving. The shared control
 browser case verifies TextView focus-out independently of text changes.
+
+Queued setup handlers may enqueue further handlers. A fixed number of queue
+markers proves only that preceding work has run, not that nested work is finished.
+For asynchronous acceptance, wait with a deadline for the required observable
+state and check callback diagnostics, then assert the result. The Bigshot profile
+load example checks its loaded fields and dependent fog control together. A
+timeout remains a failure; sleeps alone, extra markers and reruns must not stand
+in for completion. RSpec's random seed controls example ordering, not thread
+scheduling.
 
 Native external-link policy can be checked on macOS without opening a browser:
 
@@ -410,7 +421,12 @@ Lich::DragonRealms::MyModule = ::MyModule
 
 **Cause**: Production code relies on NilClass `method_missing` monkey-patch.
 
-**Fix**: Mock the specific method or stub the dependency.
+**Fix**: For a unit test, isolate the specific dependency. For original-script
+acceptance, do not fabricate nil behavior or silently repair the source. The
+Builder harness uses a separate Ruby process with Lich's actual NilClass
+extension where production behavior requires it, and keeps missing Builder IDs
+as explicit failures. Document that dependency and any separately labeled source
+repair; see [fixture provenance](fixtures/webui/README.txt).
 
 ### Missing Standard Library
 
@@ -472,7 +488,7 @@ include_examples 'guild predicate', 'Moon Mage', :moon_mage?
 
 #### Dependency Inversion (DIP)
 
-**Prefer public `reset!` APIs over `class_variable_set`:**
+**Prefer existing production lifecycle APIs or test-double `reset!` methods:**
 
 ```ruby
 # Good - uses public API
@@ -488,7 +504,7 @@ end
 
 **When `class_variable_set` is acceptable:**
 1. Testing the class variable implementation itself
-2. No `reset!` method exists (add TODO to create one)
+2. No suitable production lifecycle method exists; do not add a production reset solely for tests
 3. Document the reason with a comment
 
 ```ruby
@@ -553,24 +569,14 @@ Before submitting a spec file, verify:
 - [ ] `before(:each)` calls appropriate `reset!` methods
 - [ ] Global variables (`$foo`) are reset if modified
 - [ ] Class variables are reset via `reset!` or documented `class_variable_set`
-- [ ] Tests pass with `--order random` (run 3+ times)
+- [ ] Tests pass with randomized ordering; investigate a failing seed rather than rerunning until green
 - [ ] Tests pass in isolation: `rspec path/to/specific_spec.rb`
 - [ ] Tests pass when run with full suite: `rspec`
 
 ### Production Code Requirements for Testability
 
-When writing production code, include:
-
-1. **`reset!` method** for any class with mutable state
-2. **Frozen constants** for immutable data (`FREEZE` pattern constants)
-3. **Dependency injection** where practical (pass dependencies as args)
-
-```ruby
-module MyModule
-  @@some_state = []
-
-  def self.reset!
-    @@some_state = []
-  end
-end
-```
+Use production ownership and disposal boundaries, immutable constants, and
+dependency injection where practical. A real reset/close operation may be tested
+through its public API, but do not add test-only production methods. Test doubles
+may expose `reset!`; tests of legacy shared state may restore that state directly
+with a comment explaining the isolation requirement, as described above.

@@ -1,3 +1,11 @@
+WebUI setup fixture provenance and acceptance boundaries
+
+This record describes frozen fixtures, not the latest upstream script versions.
+There are ten script fixtures: eight unchanged positive setup candidates and
+two unchanged negative candidates (eloot and Bigshot), also exercised with
+explicit test-only source repairs. These ten fixtures are not a total-corpus
+compatibility count. See docs/webui-review-readiness.md for the current handoff.
+
 Unchanged ecleanse setup fixture
 
 `ecleanse_setup.lic` is the exact `Ecleanse::Setup` module at lines 267–623 of
@@ -55,7 +63,8 @@ ebounty/BlackArts retain source uniq!.sort! chains; subprocess tests load Lich's
 actual NilClass extension without changing the parent RSpec process. Removing
 that production extension will require source migration; it is not shim support.
 eloot is a negative fixture: its XML never declares exclusions_label, so tooltip
-initialization must report BuilderError even with nil suppression present. Unhandled queued Builder failures close the owner's UI and request the existing
+initialization must report BuilderError even with nil suppression present.
+Unhandled queued Builder failures close the owner's UI and request the existing
 asynchronous script stop. No widget is fabricated.
 
 The preserved native WebUI versions of all three positive fixtures were reviewed
@@ -75,12 +84,15 @@ Class hashes exclude wrappers and the trailing newline and are checked in RSpec.
 - go2: lines 474–842; class 8bdcf8959473c59d9da2eba4dbc69a2dd13185acd9a3c556288b1bd8198862b2;
   whole script e4763e1fd11ee2645409067dd5ed3463d7e6f8fd48595ae01b19d4aea04237a6.
 
-Repository receives two inert listing records; its original download handler is
-captured at Script.run, so no download occurs. Tests verify numeric model sorting,
+Repository's basic Ruby case receives two inert listing records. Additional
+cases supply long comments and enough synthetic rows to overflow the viewport.
+Its original download handler is captured at Script.run, so no download occurs.
+Tests verify numeric model sorting,
 filtering, single-click activation, command construction and Close/cleanup.
 Go2 receives inert GS/DR character data and an in-memory Go2.load destination.
-Both game layouts run original setup, updates and Close/destroy callbacks in Ruby
-and independent Chrome cases. No travel, repository network operation or gameplay
+Go2's GS and DR layouts run original setup, updates and Close/destroy callbacks in
+Ruby and independent Chrome cases; repository has its own GS case.
+No travel, repository network operation or gameplay
 loop executes. Converted WebUI counterparts informed acceptance behavior only;
 no converted business logic or script-name rendering cases enter the shim.
 
@@ -100,7 +112,7 @@ unused local exclusion apply only to these excerpts, not product or harness code
 
 Huntplan's original setup, input limits, invalid-slot refusal, Save & Exit and
 cleanup run in Ruby and Chrome with inert game data and in-memory persistence.
-Bigshot's original source currently fails on the undeclared boon_flee_from
+Bigshot's retained original source fails on the undeclared boon_flee_from
 tooltip target before connecting its XML signals. This is an expected source
 failure, not successful Bigshot acceptance. Its converted version was inspected
 as a behavior reference; converted business logic is not copied into the shim.
