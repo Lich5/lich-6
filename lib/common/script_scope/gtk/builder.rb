@@ -80,7 +80,7 @@ module Lich
             'halign' => [:halign=, :symbol], 'valign' => [:valign=, :symbol], 'hexpand' => [:set_hexpand, :boolean], 'vexpand' => [:set_vexpand, :boolean],
             'margin-start' => [:set_margin_start, :integer], 'margin-end' => [:set_margin_end, :integer],
             'margin-left' => [:set_margin_left, :integer], 'margin-right' => [:set_margin_right, :integer],
-            'margin-top' => [:margin_top, :integer], 'margin-bottom' => [:margin_bottom, :integer],
+            'margin-top' => [:set_margin_top, :integer], 'margin-bottom' => [:set_margin_bottom, :integer],
           }.freeze
           PROPERTIES = {
             Notebook           => { 'show-tabs' => [:show_tabs=, :boolean] },
@@ -419,11 +419,6 @@ module Lich
               else
                 converted ? object.show : object.hide
               end
-            when :margin_top, :margin_bottom
-              side = method == :margin_top ? :top : :bottom
-              current = object.instance_variable_get(:@props)[:margin]
-              margins = current.is_a?(Hash) ? current : %i[top right bottom left].to_h { |key| [key, current || 0] }
-              object.send(:write, :margin, margins.merge(side => converted))
             else object.public_send(method, converted)
             end
           end

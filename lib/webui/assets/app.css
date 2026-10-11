@@ -328,8 +328,13 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-stack.align-center { align-items: center; }
 .webui-composite.align-center { margin-inline: auto; }
 /* Native package browsers retain the original draggable column boundaries. */
-.webui-table th { position: relative; }
+.webui-table th { position: sticky; top: 0; z-index: 1; background: var(--input-surface); }
 .webui-column-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; cursor: col-resize; touch-action: none; }
+.webui-column-resize::after { content: ''; position: absolute; top: 3px; bottom: 3px; right: 1px; border-right: 1px solid var(--border); }
+.webui-column-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.webui-column-label { display: inline-block; white-space: nowrap; }
+.webui-table[data-bounded-columns="true"] th,
+.webui-table[data-bounded-columns="true"] td { overflow: hidden; text-overflow: ellipsis; }
 .webui-editable-select { display: flex; min-width: 0; }
 .webui-editable-select > input { min-width: 0; border-radius: 4px 0 0 4px !important; }
 .webui-editable-select > input::-webkit-calendar-picker-indicator { display: none; }

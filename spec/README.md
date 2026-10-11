@@ -65,6 +65,13 @@ destroy the setup without saving. Fixture provenance and limits are recorded in
 The unchanged `ewaggle` Builder fixture adds table prefix search, cross-list
 transfers, original same-list duplication, named choices, numeric edits and save
 callbacks. It uses the same browser command below and runs in the existing CI job.
+The repository fixture also covers character-by-character search, fixed headers,
+the last column's keyboard resize handle and retained widths, and independent
+scrolling of long comments without moving the list. Its inert listing has enough
+rows to overflow the list viewport; original script construction and filtering
+remain unchanged. DOM tests force an older search response between newer edits
+and verify that superseded retries cannot replace the final query or prevent a
+subsequent intentional script reset.
 The original `ebounty`, `eherbs`, and `BlackArts` setups each have an independent
 browser example in that job. A failure in one does not skip the others. Their
 tests cover dependent checkbox resets, availability, editable combo choices,

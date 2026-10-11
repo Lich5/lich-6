@@ -1243,3 +1243,71 @@ test('disabled menu containers make their action descendants inert', t => {
     ] });
   assert.equal(menu.inert, true);
 });
+
+test('live input retains newer typing and caret through an older reply, then accepts a script reset', t => {
+  const { dom, sent, receive } = fixture(); t.after(() => dom.window.close());
+  const { document, Event } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'live-search' }] });
+  const render = (generation, value, request = 0) => receive({ type: 'render', page: 'live-search', generation,
+    input_requests: { query: request }, bindings: { query: ['change'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'text_input', cid: 'query', props: { value, change_mode: 'input' } }
+      ]
+    } });
+  const input = () => document.querySelector('input');
+  const type = value => {
+    input().value = value; input().setSelectionRange(value.length, value.length);
+    input().dispatchEvent(new Event('input'));
+    return sent.at(-1);
+  };
+  render(1, ''); input().focus();
+  const first = type('Drea'), latest = type('Dreaven');
+  render(2, 'Drea', first.request);
+  assert.equal(input().value, 'Dreaven');
+  assert.equal(input().selectionStart, 7);
+  assert.equal(document.activeElement, input());
+  receive({ type: 'refusal', reason: 'stale_generation', page: 'live-search', cid: 'query', event: 'change', request: first.request });
+  render(2, 'Drea', first.request);
+  assert.equal(sent.filter(message => message.event === 'change').length, 2, 'never replay superseded input');
+  assert.equal(document.querySelectorAll('.notification').length, 0, 'superseded input is not a user-visible failure');
+  receive({ type: 'refusal', reason: 'stale_generation', page: 'live-search', cid: 'query', event: 'change', request: latest.request });
+  render(2, 'Drea', first.request);
+  const retry = sent.at(-1);
+  assert.equal(retry.payload.value, 'Dreaven');
+  assert.equal(retry.generation, 2);
+  render(3, '', retry.request);
+  assert.equal(input().value, '', 'an acknowledged callback may deliberately clear the field');
+});
+
+test('automatic columns fit their allocation independently of long cells while authored and dragged widths survive', async t => {
+  const { dom, page } = fixture(); t.after(() => dom.window.close());
+  const { document, KeyboardEvent } = dom.window;
+  let resize, available = 0;
+  dom.window.ResizeObserver = class { constructor(callback) { resize = callback; } observe() {} disconnect() {} };
+  const longText = 'long tag '.repeat(200);
+  const table = dom.window.LichWebUI.render(page, { type: 'table', cid: 'bounded', props: {
+    columns: [{ key: 'fixed', label: 'Fixed', width: 120, resizable: true },
+      { key: 'zero', label: 'Zero', width: 0, resizable: true },
+      { key: 'tags', label: 'Tags', resizable: true }],
+    rows: [{ key: 'one', cells: { fixed: 'Name', zero: 'Value', tags: longText } }]
+  } });
+  Object.defineProperty(table, 'clientWidth', { get: () => available });
+  document.body.append(table);
+  const cols = [...table.querySelectorAll('col')];
+  [...table.querySelectorAll('th')].forEach((heading, index) => {
+    heading.firstElementChild.getBoundingClientRect = () => ({ width: 40 });
+    heading.getBoundingClientRect = () => ({ width: parseFloat(cols[index].style.width) || 0 });
+  });
+  await new Promise(resolve => dom.window.requestAnimationFrame(resolve));
+  assert.equal(cols[2].style.width, '', 'a hidden table must wait for allocation');
+  available = 300; resize();
+  assert.deepEqual(cols.map(col => parseFloat(col.style.width)), [120, 90, 90]);
+  assert.equal(table.querySelector('table').style.width, '300px');
+  assert.equal(table.querySelector('td:last-child').title, longText, 'clipping retains the complete literal cell text');
+  available = 500; resize();
+  assert.deepEqual(cols.map(col => parseFloat(col.style.width)), [120, 190, 190]);
+  table.querySelector('th:last-child .webui-column-resize').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+  assert.deepEqual(cols.map(col => parseFloat(col.style.width)), [120, 190, 200]);
+  available = 300; resize();
+  assert.equal(table.querySelector('table').style.width, '510px', 'explicit viewer sizing is not silently compressed');
+});

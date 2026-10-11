@@ -244,25 +244,39 @@ module Lich
           # Updates the left entry of the widget's explicit per-side margin.
           # @return [Widget] self
           def set_margin_left(value)
-            write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(left: value))
+            set_margin_edge(:left, value)
           end
 
           # Updates the right entry of the widget's explicit per-side margin.
           # @return [Widget] self
           def set_margin_right(value)
-            write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(right: value))
+            set_margin_edge(:right, value)
           end
 
           # Updates one vertical edge without changing the other explicit margins.
           # @param value [Integer] margin in pixels, validated by the shared contract
           def set_margin_top(value)
-            write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(top: value))
+            set_margin_edge(:top, value)
           end
 
           # @param value [Integer] bottom margin in pixels
           def set_margin_bottom(value)
-            write(:margin, (@props[:margin].is_a?(Hash) ? @props[:margin] : {}).merge(bottom: value))
+            set_margin_edge(:bottom, value)
           end
+
+          # A scalar margin applies to every edge; changing one preserves the other three.
+          # Builder and direct GTK calls share this normalization and contract validation.
+          # @api private
+          def set_margin_edge(side, value)
+            current = @props[:margin]
+            margins = case current
+                      when Hash then current
+                      when Numeric then %i[top right bottom left].to_h { |key| [key, current] }
+                      else {}
+                      end
+            write(:margin, margins.merge(side => value))
+          end
+          private :set_margin_edge
 
           # Aligns the widget in its allocated grid cell or enclosing frame.
           # Content alignment (Label#yalign=) is a separate request.
@@ -337,6 +351,7 @@ module Lich
           # Creates descendants before the root can publish, then binds supported events once.
           # @return [Lich::WebUI::Adapter::Handle] cached opaque control handle
           def materialize
+            session.flush_models!
             return @handle if @handle
 
             # Build descendants before the page starts scheduling delivery. A
@@ -461,6 +476,7 @@ module Lich
           # @return [Object] synchronous script-visible value
           def read(property)
             session.synchronize do
+              session.flush_models!
               if property == input_property && @handle && !@destroyed && session.in_callback?
                 session.with_widget(self) { session.port.get(@handle, property) }
               else
@@ -474,6 +490,7 @@ module Lich
           # @return [Widget] self
           def write(property, value)
             session.synchronize do
+              session.flush_models!
               # A rejected port write must leave synchronous script reads at
               # their last valid value, including after window destruction.
               session.with_widget(self) { session.port.set(@handle, port_property(property), value) } if @handle && !@destroyed
@@ -1064,7 +1081,7 @@ module Lich
           # Only literal text and HTTP(S) anchors become existing typed Markdown.
           # Unsupported markup is refused, never passed to innerHTML or stripped.
           def set_link_markup(value)
-            session.refuse(self, :set_markup) if @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align])
+            session.refuse(self, :set_markup) if @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align line_justify])
             session.refuse(self, :set_markup) if @handle && !@link_markup
             document = REXML::Document.new("<label>#{value}</label>")
             content = document.root.children.map do |part|
@@ -1097,13 +1114,13 @@ module Lich
           alias set_line_wrap set_wrap
           alias line_wrap= set_wrap
 
-          # Maps line justification onto the shared text alignment vocabulary.
-          # Full justification has no accepted mapping in this bridge.
+          # Justifies lines inside the label's text block, independently of
+          # widget placement and xalign. A single line does not move the label.
+          # Full justification and linked Markdown labels remain unsupported.
           # @param value [Symbol] :left, :center or :right
           def justify=(value)
-            alignment = { left: :start, center: :center, right: :end }[value]
-            session.refuse(self, :justify=) unless alignment
-            write(:align, alignment)
+            session.refuse(self, :justify=) unless !@link_markup && %i[left center right].include?(value)
+            write(:line_justify, value)
           end
           alias set_justify justify=
 

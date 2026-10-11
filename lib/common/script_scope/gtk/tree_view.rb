@@ -712,12 +712,7 @@ module Lich
                 when :selection_change then selection.changed!
                 when :cell_edit
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
-                  begin
-                    column.renderer.emit_edit(iter.path.to_s, payload[:value]) if iter && column
-                  ensure
-                    # Repaint authoritative data after a no-op or failing handler too.
-                    model_changed!
-                  end
+                  column.renderer.emit_edit(iter.path.to_s, payload[:value]) if iter && column
                 when :sort_change
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
                   model.set_sort_column_id(column.sort_column_id, payload[:direction] == 'asc' ? :ascending : :descending) if model && column&.sortable?
@@ -729,6 +724,10 @@ module Lich
                 when :cursor_change then emit_row(event, 'cursor_changed') if iter
                 end
               end
+            ensure
+              # The callback must finish committing or rolling back before a
+              # no-op/failing editor is repainted from authoritative model data.
+              session.synchronize { model_changed! } if event == :cell_edit
             end)
           end
 
@@ -757,6 +756,7 @@ module Lich
           # @return [Array, Hash] scoped table state
           # @api private
           def view_state(property)
+            session.flush_models!
             if @handle && !destroyed? && session.in_callback?
               session.with_widget(self) { session.port.get(@handle, property) } || @props[property]
             else
@@ -783,7 +783,11 @@ module Lich
           def row_definitions
             return [] unless model
             model.rows.map do |iter|
-              row = { key: iter.key, cells: visible_columns.to_h { |column| [column.key, iter[column.value_column]] } }
+              cells = visible_columns.to_h do |column|
+                value = iter[column.value_column]
+                [column.key, value.nil? ? '' : value]
+              end
+              row = { key: iter.key, cells: cells }
               parent = model.iter_parent(iter)
               row[:parent] = parent.key if parent
               row

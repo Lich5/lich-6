@@ -606,7 +606,26 @@ module Lich
         return unless root.type == :page
 
         @dirty_roots[root] = true
-        @service.runtime.schedule_render(self, owner: @owner) { flush! }
+        return if @publication_pending
+
+        @publication_pending = true
+        @service.runtime.schedule_render(self, owner: @owner) do
+          # Publish after queued construction and callbacks, never in the middle
+          # of their model/default updates. Keep a single pending owner task even
+          # when a long callback spans several render-coalescing intervals.
+          begin
+            @service.runtime.dispatch(owner: @owner) do
+              @mutex.synchronize { @publication_pending = false }
+              flush!
+            end
+          rescue StandardError
+            @mutex.synchronize { @publication_pending = false }
+            raise
+          end
+        end
+      rescue StandardError
+        @publication_pending = false
+        raise
       end
 
       # Resolves a live node by its retained handle and exact identity, never Struct equality.

@@ -405,7 +405,7 @@ module Lich
         return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
 
         attachment.page.observe_window_geometry(payload) if component.type == :page && message[:event].to_sym == :configure
-        @viewers.update(attachment, component, message[:event].to_sym, payload)
+        @viewers.update(attachment, component, message[:event].to_sym, payload, message[:request])
         event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
         context = EventContext.new(
           attachment.viewer_id, attachment.page, component, message[:event].to_sym, payload, snapshot
@@ -558,6 +558,7 @@ module Lich
             address: attachment.address, generation: render.generation,
             tree: serialize_for_client(snapshot), facilities: render.facilities,
             bindings: bindings, submissions: render.submissions,
+            input_requests: snapshot.input_requests,
             resume: attachment.resume_token,
             window_presentation: @window_host&.call(attachment.page)&.presentation_support || {}
           )

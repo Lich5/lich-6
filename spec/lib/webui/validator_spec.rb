@@ -8,6 +8,25 @@ RSpec.describe Lich::WebUI::Validator do
 
   let(:context) { { owner: 'spec-owner', page_id: 'spec-page', cid: 'test:component' } }
 
+  it 'allows bounded long plain text without widening input or option label limits' do
+    content = 'x' * 65_536
+    expect(validator.validate_component!(:text, { content: content }, **context)[:content]).to eq(content)
+    expect { validator.validate_component!(:text, { content: content + 'x' }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError, /65536/)
+    expect { validator.validate_component!(:text_input, { value: 'x' * 8193 }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError, /8192/)
+    expect do
+      validator.validate_component!(:select, { options: [{ value: 'one', label: 'x' * 513 }] }, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /512/)
+  end
+
+  it 'accepts bounded plain-text line justification without changing placement or other controls' do
+    %i[left center right].each do |justify|
+      expect(validator.validate_component!(:text, { content: 'Caption', align: :start, line_justify: justify }, **context))
+        .to include(align: 'start', line_justify: justify.to_s)
+    end
+    expect { validator.validate_component!(:text, { content: 'Caption', line_justify: :fill }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_component!(:markdown, { content: 'Caption', line_justify: :right }, **context) }.to raise_error(Lich::WebUI::UnknownPropertyError)
+  end
+
   it 'requires the search column to belong to the table' do
     props = { columns: [{ key: 'text', label: 'Text' }], rows: [], search_column: 'missing' }
     expect { validator.validate_component!(:table, props, **context) }.to raise_error(Lich::WebUI::SchemaViolationError, /search column/)
@@ -129,8 +148,8 @@ RSpec.describe Lich::WebUI::Validator do
     expect { validator.validate_component!(:stack, { gap: 64 }, **context) }.not_to raise_error
     expect { validator.validate_component!(:stack, { gap: 65 }, **context) }
       .to raise_error(Lich::WebUI::SchemaViolationError, /must be <= 64/)
-    expect { validator.validate_component!(:text, { content: 'x' * 8193 }, **context) }
-      .to raise_error(Lich::WebUI::SchemaViolationError, /exceeds 8192/)
+    expect { validator.validate_component!(:text, { content: 'x' * 65_537 }, **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError, /exceeds 65536/)
   end
 
   it 'enforces option membership and uniqueness' do

@@ -40,7 +40,7 @@ RSpec.describe 'remaining Builder setup families' do
 
   # Keep all original construction and callbacks. Only game lookups, waiting
   # and external command/persistence destinations belong to this isolated harness.
-  def original(name, game: 'GS')
+  def original(name, game: 'GS', listing: nil)
     sandbox = Module.new
     sandbox.const_set(:Gtk, gtk)
     sandbox.const_set(:XMLData, double(game: game))
@@ -65,8 +65,8 @@ RSpec.describe 'remaining Builder setup families' do
     @settings = {}
     @form = nil
     if name == 'repository'
-      rows = [['header'], ['zeta.lic', 'GS', '2048', '1700000000', 'Zed', '1200', '8', '2', 'hunting', 'Zeta comments'],
-              ['alpha.lic', 'GS', '10240', '1700000000', 'Ada', '90', '5', '1', 'travel', 'Alpha comments']]
+      rows = listing || [['header'], ['zeta.lic', 'GS', '2048', '1700000000', 'Zed', '1200', '8', '2', 'hunting', 'Zeta comments'],
+                         ['alpha.lic', 'GS', '10240', '1700000000', 'Ada', '90', '5', '1', 'travel', 'Alpha comments']]
       # Its constructor owns the wait loop, so retain the allocated instance for cleanup.
       @form = klass.allocate
       @runner = Thread.new { @form.send(:initialize, rows) }
@@ -122,6 +122,31 @@ RSpec.describe 'remaining Builder setup families' do
     drain
   end
 
+  it 'preserves all untouched margins consistently through Builder and direct edge setters' do
+    %i[top right bottom left].each do |side|
+      widget = gtk::Box.new(:vertical, 0)
+      widget.set_border_width(10)
+      widget.public_send("set_margin_#{side}", 5)
+      expected = %i[top right bottom left].to_h { |key| [key, key == side ? 5 : 10] }
+      expect(widget.send(:component_props)[:margin]).to eq(expected)
+      builder = gtk::Builder.new
+      builder.add_from_string(<<~XML)
+        <interface><object class="GtkBox" id="box">
+          <property name="border-width">10</property>
+          <property name="margin-#{side}">5</property>
+        </object></interface>
+      XML
+      expect(builder['box'].send(:component_props)[:margin]).to eq(expected)
+      widget.public_send("set_margin_#{side}", 0)
+      expect(widget.send(:component_props)[:margin]).to eq(expected.merge(side => 0))
+    end
+    widget = gtk::Box.new(:vertical, 0)
+    widget.set_margin_start(3)
+    widget.set_margin_end(7)
+    widget.set_margin_bottom(2)
+    expect(widget.send(:component_props)[:margin]).to eq(right: 7, bottom: 2, left: 3)
+  end
+
   it 'loads repository, preserves numeric sorting and filters before activating the original download callback' do
     form = original('repository')
     connect
@@ -147,6 +172,26 @@ RSpec.describe 'remaining Builder setup families' do
     expect(service.registry.pages_for(owner)).to be_empty
   end
 
+  it 'populates repository with long and absent comments and displays each without truncation' do
+    comment = 'Full description. ' * 1000
+    listing = [['header'], ['long.lic', 'GS', '2048', '1700000000', 'Test', '1', '0', '0', '', comment],
+               ['absent.lic', 'GS', '2048', '1700000000', 'Test', '1', '0', '0', '', nil]]
+    form = original('repository', listing: listing)
+    connect
+    rows = form['repository_store'].rows
+    expect(rows.map { |iter| iter[13] }).to eq([nil, comment])
+    rows.reverse_each do |iter|
+      event(form['repository'], 'row_activate', { row: iter.key }, submission: :current)
+      expect(form['comments'].text).to eq(iter[13].to_s)
+      service.runtime.refresh(@page)
+      node = @page.last_render.tree.each.find { |item| item.cid == cid(form['comments']) }
+      expect(node.props[:content]).to eq(iter[13].to_s)
+    end
+    form.on_close_clicked
+    drain
+    expect(@runner.join(2)).to equal(@runner)
+  end
+
   %w[GS DR].each do |game|
     it "loads go2 #{game} settings and runs the original update/Close callbacks" do
       form = original('go2', game: game)
@@ -166,7 +211,14 @@ RSpec.describe 'remaining Builder setup families' do
     it "runs original #{name} #{game} setup interactions in Chrome", browser: true do
       skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
-      form = original(name, game: game)
+      # Include production-shaped missing and long metadata in the browser path,
+      # while retaining deterministic names, sorting and inert download targets.
+      listing = if name == 'repository'
+                  [['header'], ['zeta.lic', 'GS', '2048', '1700000000', 'Zed', '1200', '8', '2', 'hunting', nil],
+                   ['alpha.lic', 'GS', '10240', '1700000000', 'Ada', '90', '5', '1', 'travel', 'Alpha comments Dreaven' + (' more details.' * 1000)]] +
+                    Array.new(40) { |index| ["filler-#{index}.lic", 'GS', '20480', '1700000000', 'Fixture', '1', '0', '0', '', ''] }
+                end
+      form = original(name, game: game, listing: listing)
       controls = form.objects.filter_map do |widget|
         next unless widget.respond_to?(:builder_name) && widget.instance_variable_get(:@handle)
         [widget.builder_name, cid(widget)]

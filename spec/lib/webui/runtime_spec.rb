@@ -45,6 +45,26 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  it 'acknowledges validated text input only to its originating viewer' do
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'search', title: 'Search') do
+      text_input(key: 'query', value: '', change_mode: :input, on: { change: proc {} })
+    end)
+    address, frame = attach(first_connection, page)
+    attach(second_connection, page)
+    # Use the latest delivered generation for this viewer, independent of its peer.
+    input = frame['tree']['children'].first
+    expect(runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                          cid: input['cid'], event: 'change', payload: { value: 'Dreaven' }, request: 7)).to eq(:queued)
+    runtime.refresh(page)
+    expect(first_connection.sent.last['input_requests']).to eq(input['cid'] => 7)
+    expect(second_connection.sent.last['input_requests']).to be_empty
+    frame = first_connection.sent.last
+    expect(runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                          cid: input['cid'], event: 'change', payload: { value: 123 }, request: 8)).to eq(:refused)
+    runtime.refresh(page)
+    expect(first_connection.sent.last['input_requests']).to eq(input['cid'] => 7)
+  end
+
   it 'accepts delivered read-only text while preserving a newer server value and refusing forgeries' do
     received = Queue.new
     allow(runtime).to receive(:schedule_render)
