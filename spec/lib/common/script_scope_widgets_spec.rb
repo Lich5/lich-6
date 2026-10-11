@@ -1114,6 +1114,9 @@ RSpec.describe 'bounded script compatibility pilot' do
       blur_values = Queue.new
       view.signal_connect('focus-out-event') { blur_values << view.buffer.text }
       details.add(view)
+      redraw_status = compatibility::Label.new('Awaiting redraw')
+      redraw = compatibility::Button.new('Redraw fixture')
+      redraw.signal_connect('clicked') { redraw_status.text = 'Redraw received' }
       image = compatibility::Image.new(file: image_path)
       image.set_tooltip_text('Fixture image')
       actions = compatibility::Label.new('Actions')
@@ -1132,7 +1135,7 @@ RSpec.describe 'bounded script compatibility pilot' do
       actions.signal_connect('button-press-event') { |_widget, event| menu.popup_at_pointer(event) if event.button == 3 }
       save = compatibility::Button.new('Save')
       save.signal_connect('clicked') { window.destroy }
-      [first, second, toggle, spin, search, details, image, actions, save].each { |widget| column.pack_start(widget) }
+      [first, second, toggle, spin, search, details, redraw, redraw_status, image, actions, save].each { |widget| column.pack_start(widget) }
       window.add(column)
       window.show_all
       page = nil
@@ -1142,6 +1145,7 @@ RSpec.describe 'bounded script compatibility pilot' do
       expect([first.active?, second.active?, toggle.active?, spin.value, search.text]).to eq([false, true, true, 2.85, 'query'])
       expect(view.buffer.text).to eq("line one\nline two")
       expect(blur_values.pop(timeout: 2)).to eq("line one\nline two")
+      expect(blur_values).to be_empty
       expect(details.expanded?).to be(false)
       expect(image.pixbuf).to be_nil
       expect([check.active?, radio_first.active?, radio_second.active?]).to eq([true, false, true])
