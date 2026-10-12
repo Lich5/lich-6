@@ -616,6 +616,44 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(compatibility.const_get(:Settings).default.gtk_application_prefer_dark_theme?).to be false
   end
 
+  it 'reloads and removes progress providers through browser callbacks', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    window = compatibility::Window.new('Progress provider lifecycle')
+    column = compatibility::VBox.new(false, 4)
+    progress = compatibility::ProgressBar.new
+    provider = compatibility::CssProvider.new
+    css = 'label { font-weight: bold; } trough { font-weight: bold; min-height: 22px; } progress { font-weight: bold; min-height: 20px; background-image: none; background-color: blue }'
+    progress.style_context.add_provider(provider)
+    provider.load_from_data(css)
+    progress.set_fraction(0.5)
+    sibling = compatibility::Label.new('Unstyled sibling')
+    reload = compatibility::Button.new('Reload style')
+    remove = compatibility::Button.new('Remove style')
+    close = compatibility::Button.new('Close progress fixture')
+    calls = []
+    reload.signal_connect('clicked') do
+      provider.load(data: css.sub('blue', 'gold'))
+      progress.set_fraction(0.75)
+      calls << :reload
+    end
+    remove.signal_connect('clicked') do
+      progress.style_context.remove_provider(provider)
+      calls << :remove
+    end
+    close.signal_connect('clicked') { window.destroy }
+    [progress, sibling, reload, remove, close].each { |widget| column.add(widget) }
+    window.add(column)
+    window.show_all
+    page = nil
+    Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-progress-style')
+    expect(calls).to eq(%i[reload remove])
+    expect(progress.send(:component_props)).to include(value: 0.75)
+    expect(progress.send(:component_props)).not_to have_key(:fill_color)
+    expect(window).to be_destroyed
+  end
+
   it 'preserves the blue bold literal label used by the second control script boon' do
     label = compatibility.const_get(:Label).new
     label.set_markup('<span color="blue" weight="bold">Tip: (?) &amp; options</span>')

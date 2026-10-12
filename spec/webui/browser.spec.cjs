@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -30,7 +30,28 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (['shim-repository', 'shim-go2'].includes(scenario)) {
+  if (scenario === 'shim-progress-style') {
+    const bar = page.locator('.webui-progress');
+    const progress = bar.locator('progress');
+    const cid = await bar.getAttribute('data-cid');
+    const sibling = page.getByText('Unstyled sibling', { exact: true });
+    const weight = await sibling.evaluate(element => getComputedStyle(element).fontWeight);
+    await expect(bar).toHaveClass(/webui-progress-colored/);
+    await expect(bar).toHaveCSS('height', '24px');
+    await expect(progress).toHaveCSS('--progress-fill', 'rgba(0, 0, 255, 1)');
+    await page.getByRole('button', { name: 'Reload style', exact: true }).click();
+    await expect(progress).toHaveCSS('--progress-fill', 'rgba(255, 215, 0, 1)');
+    await expect(progress).toHaveJSProperty('value', 0.75);
+    await page.getByRole('button', { name: 'Remove style', exact: true }).click();
+    await expect(bar).not.toHaveClass(/webui-progress-colored/);
+    await expect.poll(() => bar.evaluate(element => element.style.height)).toBe('');
+    await expect.poll(() => progress.evaluate(element => element.style.getPropertyValue('--progress-fill'))).toBe('');
+    await expect(bar).toHaveAttribute('data-cid', cid);
+    await expect(progress).toHaveJSProperty('value', 0.75);
+    await expect(sibling).toHaveCSS('font-weight', weight);
+    await page.getByRole('button', { name: 'Close progress fixture', exact: true }).click();
+    await expect(progress).toHaveCount(0);
+  } else if (['shim-repository', 'shim-go2'].includes(scenario)) {
     const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
     const widget = name => page.locator(`[data-cid="${ids[name]}"]`);
     if (scenario === 'shim-repository') {

@@ -446,6 +446,7 @@ module Lich
             return if @destroyed
 
             @destroyed = true
+            @style_context&.send(:close)
             @children.dup.each(&:mark_destroyed)
             @destroy_handlers&.each { |handler| session.cleanup(self) { handler.call(self) } }
           end

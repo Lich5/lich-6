@@ -1,0 +1,211 @@
+# frozen_string_literal: true
+
+require_relative '../../spec_helper'
+require_relative '../../../lib/common/script_scope'
+
+RSpec.describe 'progress provider lifecycle' do
+  let(:scope) { Lich::Common::ScriptScope }
+  let(:gtk) { scope.const_get(:Gtk, false) }
+  let(:owner) { Struct.new(:name).new('style.lic') }
+  let(:service) { Lich::WebUI::Service.new }
+  let(:bar) { gtk.const_get(:ProgressBar).new }
+  let(:provider) { gtk.const_get(:CssProvider).new }
+  let(:application) { gtk.const_get(:StyleProvider)::PRIORITY_APPLICATION }
+  let(:user) { gtk.const_get(:StyleProvider)::PRIORITY_USER }
+  let(:blue) { { r: 0, g: 0, b: 255, a: 1.0 } }
+
+  before do
+    scope.activate!
+    stub_const('Lich::Common::Script', Class.new { def self.current; end })
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
+    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
+    allow(Lich).to receive(:log)
+  end
+
+  after do
+    Lich::Common::ScriptDeath.run(owner)
+    Lich::Common::ScriptDeath.run(@other_owner) if @other_owner
+    service.stop
+  end
+
+  def stylesheet(color = 'blue', terminator = ';')
+    "label { font-weight: bold; } trough {font-weight: bold; min-height: 22px; } progress {font-weight: bold; min-height: 20px; background-image: none; background-color: #{color}#{terminator}}"
+  end
+
+  def live_bar
+    window = gtk.const_get(:Window).new
+    window.add(bar)
+    window.materialize
+    bar.materialize
+  end
+
+  it 'accepts the staminabar2 progress declarations with no final semicolon' do
+    # Mirror lib/staminabar2.lic:34-36, whitespace normalized, unchanged declarations.
+    # SHA256 c6d2d696ac57ea13d8359dc4650a4a7a209706ecf6c8af06e6be252e3058d377.
+    provider.load(data: stylesheet('blue', ''))
+    bar.style_context.add_provider(provider, user)
+    expect(bar.send(:component_props)).to include(height: 24, fill_color: blue)
+  end
+
+  it 'updates every attached live bar when loaded after attachment or reloaded positionally' do
+    handle = live_bar
+    other = gtk.const_get(:ProgressBar).new
+    other_handle = other.materialize
+    bar.style_context.add_provider(provider, application)
+    other.style_context.add_provider(provider)
+    expect(provider.loaded?).to be false
+    expect(bar.session.port.get(handle, :fill_color)).to be_nil
+    expect(provider.load_from_data(stylesheet)).to be true
+    expect(provider.loaded?).to be true
+    expect(bar.session.port.get(handle, :fill_color)).to eq(blue)
+    provider.load(data: stylesheet('gold'))
+    [handle, other_handle].each do |target|
+      expect(bar.session.port.get(target, :fill_color)).to eq(r: 255, g: 215, b: 0, a: 1.0)
+    end
+    bar.set_fraction(0.75)
+    expect(bar.session.port.get(handle, :value)).to eq(0.75)
+    expect(bar.materialize).to equal(handle)
+  end
+
+  it 'restores omitted live properties without replacing the handle or disturbing fraction' do
+    handle = live_bar
+    provider.load(data: stylesheet)
+    bar.style_context.add_provider(provider, user)
+    bar.set_fraction(0.4)
+    bar.style_context.remove_provider(provider)
+    bar.style_context.remove_provider(provider)
+    expect(bar.materialize).to equal(handle)
+    expect(bar.session.port.get(handle, :fill_color)).to be_nil
+    expect(bar.session.port.get(handle, :height)).to be_nil
+    expect(bar.session.port.get(handle, :value)).to eq(0.4)
+    expect(bar.send(:component_props)).not_to have_key(:fill_color)
+    expect(bar.send(:component_props)).not_to have_key(:height)
+  end
+
+  it 'restores a height authored before attachment and preserves later explicit writes through reloads' do
+    bar.height_request = 31
+    handle = live_bar
+    provider.load(data: stylesheet)
+    bar.style_context.add_provider(provider)
+    expect(bar.session.port.get(handle, :height)).to eq(24)
+    bar.style_context.remove_provider(provider)
+    expect(bar.session.port.get(handle, :height)).to eq(31)
+    bar.style_context.add_provider(provider)
+    bar.height_request = 42
+    provider.load(data: stylesheet('gold'))
+    expect(bar.session.port.get(handle, :height)).to eq(42)
+    bar.style_context.remove_provider(provider)
+    expect(bar.session.port.get(handle, :height)).to eq(42)
+  end
+
+  it 'uses priority then attachment order and reveals the remaining provider on removal' do
+    provider.load(data: stylesheet)
+    second = gtk.const_get(:CssProvider).new
+    second.load(data: stylesheet('gold'))
+    bar.style_context.add_provider(provider, user)
+    bar.style_context.add_provider(second, application)
+    expect(bar.send(:component_props)[:fill_color]).to eq(blue)
+    bar.style_context.add_provider(second, user)
+    expect(bar.send(:component_props)[:fill_color][:r]).to eq(255)
+    bar.style_context.remove_provider(second)
+    expect(bar.send(:component_props)[:fill_color]).to eq(blue)
+    bar.style_context.remove_provider(provider)
+    expect(bar.send(:component_props)).not_to have_key(:fill_color)
+  end
+
+  it 'ignores unloaded higher-priority providers until successfully loaded' do
+    provider.load(data: stylesheet)
+    pending = gtk.const_get(:CssProvider).new
+    bar.style_context.add_provider(provider, application)
+    bar.style_context.add_provider(pending, user)
+    expect(bar.send(:component_props)[:fill_color]).to eq(blue)
+    pending.load(data: stylesheet('gold'))
+    expect(bar.send(:component_props)[:fill_color][:r]).to eq(255)
+  end
+
+  it 'refuses unsupported reloads and invalid inputs without changing the previous style' do
+    provider.load(data: stylesheet)
+    handle = live_bar
+    bar.style_context.add_provider(provider)
+    [nil, 12, 'x' * 8193, [255].pack('C').force_encoding('UTF-8'), stylesheet.encode('UTF-16LE'),
+     stylesheet('unknown'), stylesheet.sub('22px', '23px'),
+     stylesheet + 'button { color: red; }', stylesheet.sub('none', 'url(https://invalid)'),
+     stylesheet.sub('bold;', 'bold')].each do |input|
+      expect { provider.load(data: input) }.to raise_error(gtk.const_get(:UnsupportedOperation), /operation=load/)
+      expect(provider.fill_color).to eq(blue)
+      expect(bar.session.port.get(handle, :fill_color)).to eq(blue)
+    end
+  end
+
+  it 'rejects invalid attachments and attributes unknown style calls to source' do
+    [nil, Object.new].each do |invalid|
+      expect { bar.style_context.add_provider(invalid) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    end
+    [0, 600.0, '800', nil].each do |priority|
+      expect { bar.style_context.add_provider(provider, priority) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    end
+    expect { bar.style_context.instance_eval('invented_style', 'style.lic', 71) }
+      .to raise_error(gtk.const_get(:UnsupportedOperation), /operation=invented_style source=style.lic:71/)
+    expect(bar.style_context).not_to respond_to(:invented_style)
+    expect { provider.instance_eval('invented_style', 'style.lic', 72) }
+      .to raise_error(gtk.const_get(:UnsupportedOperation), /source=style.lic:72/)
+  end
+
+  it 'isolates owners and refuses cross-owner attachment and mutation' do
+    first_provider, first_bar = provider, bar
+    first_provider.load(data: stylesheet)
+    first_bar.style_context.add_provider(first_provider)
+    @other_owner = Struct.new(:name).new('other.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(@other_owner)
+    other = gtk.const_get(:ProgressBar).new
+    expect { other.style_context.add_provider(first_provider) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { first_provider.load(data: stylesheet('gold')) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { first_bar.style_context.remove_provider(first_provider) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect(first_bar.send(:component_props)[:fill_color]).to eq(blue)
+    expect(other.send(:component_props)).not_to have_key(:fill_color)
+  end
+
+  it 'releases providers when a parent retires descendants and on owner death for unattached bars' do
+    parent = gtk.const_get(:Box).new(:vertical)
+    parent.add(bar)
+    bar.style_context.add_provider(provider)
+    retained = bar.style_context
+    parent.destroy
+    expect { provider.load(data: stylesheet) }.not_to raise_error
+    expect(bar.send(:component_props)).not_to have_key(:fill_color)
+    expect { retained.add_provider(provider) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    other = gtk.const_get(:ProgressBar).new
+    other.style_context.add_provider(provider)
+    Lich::Common::ScriptDeath.run(owner)
+    expect { provider.load(data: stylesheet('gold')) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { other.style_context.remove_provider(provider) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect(provider.instance_variable_get(:@contexts)).to be_empty
+  end
+
+  it 'bounds registrations, permits reattachment at capacity and frees slots on removal' do
+    providers = Array.new(64) { gtk.const_get(:CssProvider).new }
+    providers.each { |candidate| bar.style_context.add_provider(candidate) }
+    expect { bar.style_context.add_provider(provider) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { bar.style_context.add_provider(providers.first, user) }.not_to raise_error
+    bar.style_context.remove_provider(providers.first)
+    expect { bar.style_context.add_provider(provider) }.not_to raise_error
+  end
+
+  it 'bounds session contexts and releases their slots when widgets retire' do
+    stub_const('Lich::WebUI::Contract::BOUNDS', Lich::WebUI::Contract::BOUNDS.merge(components: 1).freeze)
+    bar.style_context
+    other = gtk.const_get(:ProgressBar).new
+    expect { other.style_context }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    bar.destroy
+    expect { other.style_context }.not_to raise_error
+  end
+
+  it 'keeps the screen, classes, other widgets and unrelated style operations outside PR 1' do
+    expect { gtk.const_get(:HeaderBar) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    label = gtk.const_get(:Label).new('Unchanged')
+    expect { label.style_context }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { bar.style_context.add_class('required') }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect(gtk.const_get(:StyleContext)).not_to respond_to(:add_provider_for_screen)
+  end
+end

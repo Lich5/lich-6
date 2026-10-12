@@ -13,6 +13,10 @@ module Lich
     class Adapter
       OPERATIONS = %i[create get set attach detach bind unbind destroy modal schema].freeze
 
+      # Explicit reset token for optional shared properties. Never enters a render:
+      # set removes the property and revalidates defaults and dependent layout.
+      UNSET = Object.new.freeze
+
       class Handle
         # Keeps diagnostic output opaque instead of exposing adapter internals.
         # @return [String]
@@ -118,13 +122,19 @@ module Lich
       # Updates a property, releasing the adapter lock before viewer-state dispatch.
       # @param handle [Object] opaque component handle
       # @param property [Symbol, String] contract property
-      # @param value [Object] candidate value validated against the component schema
+      # @param value [Object] candidate value, or UNSET to reset an optional shared property
       # @return [nil]
       def set(handle, property, value)
         target = nil
         @mutex.synchronize do
           node = node!(handle)
           name, definition = property!(node, handle, property)
+          if value.equal?(UNSET) && (definition[:required] || definition[:scope] != :shared)
+            raise SchemaViolationError.new(
+              'only optional shared properties can be unset', owner: owner_label,
+              page_id: adapter_page_id, cid: handle_label(handle), field: name
+            )
+          end
           if sensitive_property?(node, name, definition)
             raise SchemaViolationError.new(
               'sensitive-write-only property cannot be set through server-held adapter state',
@@ -153,7 +163,7 @@ module Lich
               @viewer_values[[viewer!, handle, name]] = validated
             end
           else
-            candidate = node.props.merge(name => value)
+            candidate = value.equal?(UNSET) ? node.props.except(name) : node.props.merge(name => value)
             # Model mutation retires identities atomically with its row snapshot.
             # Defaults must remain valid before per-viewer reconciliation runs.
             if node.type == :table && name == :rows && value.is_a?(Array)

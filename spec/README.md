@@ -48,6 +48,18 @@ RSpec runs separately in its own workflow; the renderer job does not replace it.
 
 ## WebUI Browser Tests
 
+Progress-provider lifecycle checks live in
+`spec/lib/common/script_scope_style_spec.rb`, with the preserved spellson case in
+`script_scope_widgets_spec.rb`. They cover source-derived staminabar2 declarations
+(provenance recorded in the spec), positional loading, live reload/removal,
+priority, authored-value restoration, owner isolation and cleanup. These are
+isolated style/control checks, not whole-script or gameplay acceptance. The
+adapter specs verify optional-property reset validation and stable rendered
+identity; the compact renderer suite verifies that reset colors/heights disappear.
+The independent `shim-progress-style` Chrome case in the existing widget suite
+checks attach-before-load, callback-driven reload/removal, stable component identity,
+fraction preservation, unchanged sibling typography and final window closure.
+
 The same workflow has a separate Linux Chrome job. Playwright drives the existing
 shim entry/checkbox and separator fixtures, plus a native-page callback fixture.
 The model/tree/ComboBox case also checks expansion, text edits, toggles, multiple
@@ -148,7 +160,7 @@ directly through Close without preceding change events. It checks the original
 settings-file callback, independently of browser timing. Related cases verify
 that already accepted changes are not repeated and reconciliation is viewer-local.
 
-Ordinary `rspec` keeps the sixteen browser cases pending, so local Ruby testing does
+Ordinary `rspec` keeps the seventeen browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

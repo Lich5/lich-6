@@ -87,6 +87,54 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(adapter.get(grid, :cols)).to eq(4)
   end
 
+  it 'unsets optional shared properties and reapplies schema defaults without changing handles' do
+    bar = adapter.create(:progress, value: 0.5, height: 24, fill_color: { r: 0, g: 0, b: 255, a: 1.0 })
+    %i[height fill_color].each do |property|
+      expect(adapter.set(bar, property, described_class::UNSET)).to be_nil
+      expect(adapter.get(bar, property)).to be_nil
+    end
+    expect(adapter.get(bar, :value)).to eq(0.5)
+    text = adapter.create(:text, content: 'Wrapping', wrap: false)
+    adapter.set(text, :wrap, described_class::UNSET)
+    expect(adapter.get(text, :wrap)).to be true
+  end
+
+  it 'refuses unsetting required, viewer, sensitive and unknown properties' do
+    targets = [[:text, { content: 'Retained' }, :content], [:text_input, { value: 'Retained' }, :value],
+               [:password_input, {}, :value]]
+    targets.each do |type, props, property|
+      handle = adapter.create(type, props)
+      expect { adapter.set(handle, property, described_class::UNSET) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    bar = adapter.create(:progress, value: 0, height: 24)
+    expect { adapter.set(bar, :invented, described_class::UNSET) }.to raise_error(Lich::WebUI::UnknownPropertyError)
+    expect { adapter.set(bar, :height, nil) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect(adapter.get(bar, :height)).to eq(24)
+  end
+
+  it 'revalidates component invariants before unsetting an optional shared property' do
+    bar = adapter.create(:progress, value: 0.5)
+    expect { adapter.set(bar, :value, described_class::UNSET) }.to raise_error(Lich::WebUI::SchemaViolationError, /value is required/)
+    expect(adapter.get(bar, :value)).to eq(0.5)
+  end
+
+  it 'publishes reset presentation as absent properties with the same component identity' do
+    allow(service.runtime).to receive(:schedule_render)
+    root = adapter.create(:page, title: 'Progress')
+    bar = adapter.create(:progress, value: 0.5, height: 24, fill_color: { r: 0, g: 0, b: 255, a: 1.0 })
+    adapter.attach(root, bar)
+    adapter.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    before = page.last_render.tree.children.first
+    %i[height fill_color].each { |property| adapter.set(bar, property, described_class::UNSET) }
+    adapter.send(:flush!)
+    after = page.last_render.tree.children.first
+    expect(after.cid).to eq(before.cid)
+    expect(after.props).to include(value: 0.5)
+    expect(after.props).not_to have_key(:height)
+    expect(after.props).not_to have_key(:fill_color)
+  end
+
   it 'retires a replaced binding so its old token cannot remove the new callback' do
     button = adapter.create(:button, label: 'Save')
     previous = adapter.bind(button, :activate, proc {})

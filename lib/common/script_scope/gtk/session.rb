@@ -36,6 +36,32 @@ module Lich
             @mutex.synchronize(&block)
           end
 
+          # Serializes mutable style state on the existing owner monitor.
+          # @raise [UnsupportedOperation] after teardown or for another script
+          # @api private
+          def style_operation(receiver, operation)
+            synchronize do
+              refuse(receiver, operation) if @closed || !Script.current.equal?(@owner)
+              yield
+            end
+          end
+
+          # Retains only live contexts, including widgets not attached to windows.
+          # @api private
+          def register_style_context(context)
+            style_operation(context, :style_context) do
+              @style_contexts ||= {}.compare_by_identity
+              refuse(context, :style_context) if @style_contexts.size >= Lich::WebUI::Contract::BOUNDS[:components]
+              @style_contexts[context] = true
+            end
+          end
+
+          # Releases a retired context immediately rather than waiting for owner death.
+          # @api private
+          def forget_style_context(context)
+            @style_contexts&.delete(context)
+          end
+
           # Reuses one owner-scoped authenticated route per accepted image directory.
           # @param path [String] canonical file path, never a URL or native pixel object
           # @return [String] encoded relative file URL
@@ -228,7 +254,10 @@ module Lich
           # @return [void]
           def close
             @closed = true
-            synchronize { @windows.dup.each { |window| cleanup(window) { window.destroy } } }
+            synchronize do
+              @style_contexts&.keys&.each { |context| context.send(:close) }
+              @windows.dup.each { |window| cleanup(window) { window.destroy } }
+            end
           end
 
           private

@@ -1,7 +1,18 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
-Date: 2026-10-11. Status: **approved for implementation; implementation has not
-started**. The owner requested this handoff before beginning a fresh session.
+Date: 2026-10-11. Updated 2026-10-12: **PR 1 ready for owner review; fallback PR 2 not started**.
+The owner approved the two-PR sequence in the
+[current tracker](webui-review-readiness.md#css-decoration-work-tracker).
+PR 1 adds progress-provider lifecycle support; arbitrary CSS still refuses until
+PR 2. The original handoff and historical evidence below remain dated provenance.
+
+PR 1 starts from synchronized `main` at
+`c2f4a2a2f0cee4ab01aa53e91886423143afb884` on
+`feat/webui-progress-provider-lifecycle`. The owner explicitly approved a narrow
+shared-core extension: `Adapter#set(handle, property, Adapter::UNSET)` removes an
+optional shared property and revalidates the result without replacing its handle.
+This restores absent progress fill/height without inventing theme values. No
+renderer or component-schema expansion is required.
 
 ## Assignment and controlling decision
 
@@ -11,9 +22,9 @@ The owner's implementation authorization was:
 > progress styling, document the omissions, and test against tpick and the other
 > CSS scripts. Unsupported widgets and behavior should still hard stop.
 
-The owner then interrupted the turn to request this engineering brief. Only an
+At the original handoff, the owner interrupted the turn to request this engineering brief. Only an
 implementation handshake had been sent; no fallback code or tests were changed.
-The fresh session should carry out the approved work, not repeat the decision
+The receiving session should carry out the approved work, not repeat the decision
 discussion or begin the earlier, substantially larger CSS translation proposal.
 
 The approved approach deliberately permits omitted CSS decoration while rendering
