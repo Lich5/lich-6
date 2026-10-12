@@ -473,13 +473,14 @@ omitted, including unrecognized colors, malformed CSS and URL/import declaration
 They are inert: no source CSS is retained, evaluated, fetched or sent to the browser.
 The first omission logs `operation=css_decoration` once per script/session, with
 script, receiver and call-site attribution (or `source=unknown` when unavailable).
-The notice does not include source CSS. This is the first implemented PR 2 slice.
-The fact
-that the renderer itself uses CSS does not implement GTK selectors, widget
+The notice does not include source CSS. Loads, non-progress widget attachments,
+screen attachments and class additions share this one omission notice.
+The fact that the renderer itself uses CSS does not implement GTK selectors, widget
 states or arbitrary native sizing semantics. Expanding that surface requires a
 separate evidence-based decision, not script-name exceptions.
 
-`ProgressBar#style_context` retains same-owner providers, including providers
+Every supported `Widget#style_context` returns a cached, owner-bound facade that
+retains same-owner providers, including providers
 attached before loading. `add_provider(provider, priority)` accepts APPLICATION
 (600, also the omitted-argument default) or USER (800). Higher priority wins;
 the most recently attached provider wins ties. Reattachment replaces that
@@ -494,7 +495,9 @@ the previous state or presentation; unsupported call shapes still raise.
 `remove_provider(provider)` reveals remaining providers, then the authored values
 or default theme. Repeated removal of a same-owner provider is harmless.
 
-Recognized providers supply fill color and 24px height only. Authored values are
+Only local `ProgressBar` contexts apply recognized fill color and 24px height.
+Attaching even a recognized stylesheet to labels or other widgets is inert;
+it cannot change their contents, typed properties or callbacks. Authored values are
 retained separately; explicit script writes made during styling win through
 reload and removal. No style is copied to sibling labels. Contexts are limited to
 64 distinct attached providers and the session's existing 20,000-component bound;
@@ -503,10 +506,29 @@ contexts on unattached widgets. Widget destruction and the window's retained
 geometry snapshot use the same session monitor as provider reloads, so direct or
 ancestor destruction cannot retire a handle during a style publication or leave
 other attached bars stale. Cross-owner attachment/mutation and unknown style
-methods refuse explicitly. General widget contexts, screen providers, CSS classes,
-the screen-geometry notice correction and corpus-wide acceptance remain unfinished
-PR 2 work. Provider-load success alone does not establish whole-script support;
+methods refuse explicitly. Access to cached contexts also checks ownership and
+lifetime. Corpus-wide size measurements and acceptance remain unfinished PR 2
+work. Provider-load success alone does not establish whole-script support;
 unsupported widgets such as HeaderBar and unrelated behavior still hard stop.
+
+`StyleContext#add_class`, `remove_class`, `has_class?` and `list_classes` maintain
+widget-local metadata only. They accept nonempty, valid ASCII-compatible strings
+of up to 512 characters, with at most 64 distinct classes per context. Repeated
+addition/removal is harmless; `list_classes` returns an independent snapshot.
+Names never become DOM classes or selectors, so required-field colors, selection
+borders and drag/drop indicators requested through classes remain omitted. Destroy
+and owner shutdown clear both class names and provider references.
+
+`StyleContext.add_provider_for_screen(screen, provider, priority)` and
+`remove_provider_for_screen(screen, provider)` validate both objects against the
+current script. Priority accepts APPLICATION, USER or an omitted argument as above.
+Registration is bounded to 64 distinct providers per session; reattachment updates
+an existing entry and repeated removal is harmless. These calls only maintain
+owner-scoped bookkeeping, with no visible effect on any widget or native page.
+Fresh `Gdk::Screen.default` tokens from the same session address the same registry;
+owner shutdown clears it. Obtaining the token no longer reports a geometry
+degradation. Reading `width` or `height` reports the nominal geometry once per
+session, with source attribution, and returns the existing 1024/768 hints.
 
 The adapter's existing `set` operation accepts the explicit Ruby token
 `Lich::WebUI::Adapter::UNSET` for **optional shared** properties. It removes the

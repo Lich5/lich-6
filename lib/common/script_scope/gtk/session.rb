@@ -62,6 +62,25 @@ module Lich
             @style_contexts&.delete(context)
           end
 
+          # Runs bounded screen-provider bookkeeping under the existing owner monitor.
+          # Screen tokens from this session all denote the same nominal screen.
+          # @api private
+          def screen_style_operation(receiver, operation, screen, provider)
+            style_operation(receiver, operation) do
+              valid = screen.is_a?(Gdk::Screen) && screen.session.equal?(self) &&
+                      provider.is_a?(CssProvider) && provider.session.equal?(self)
+              refuse(receiver, operation) unless valid
+              @screen_style_providers ||= {}.compare_by_identity
+              yield @screen_style_providers
+            end
+          end
+
+          # Consolidates all CSS omissions without retaining or logging source CSS.
+          # @api private
+          def omit_css(receiver)
+            degrade(:css_decoration, 'CSS decoration omitted; supported controls use the WebUI theme', receiver: receiver)
+          end
+
           # Reuses one owner-scoped authenticated route per accepted image directory.
           # @param path [String] canonical file path, never a URL or native pixel object
           # @return [String] encoded relative file URL
@@ -258,6 +277,7 @@ module Lich
             @closed = true
             synchronize do
               @style_contexts&.keys&.each { |context| context.send(:close) }
+              @screen_style_providers&.clear
               @windows.dup.each { |window| cleanup(window) { window.destroy } }
             end
           end

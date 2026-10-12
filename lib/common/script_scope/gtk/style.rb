@@ -47,7 +47,7 @@ module Lich
               color = Color.parse(match[1]) if match
               @fill_color = color
               @state = color ? :recognized : :omitted
-              session.degrade(:css_decoration, 'CSS decoration omitted; supported controls use the WebUI theme', receiver: self) unless color
+              session.omit_css(self) unless color
               @contexts.each_key { |context| context.send(:refresh) }
               true
             end
@@ -85,12 +85,42 @@ module Lich
         end
 
         class StyleContext
+          # Records an owner-scoped screen attachment; it never styles controls.
+          # @return [nil]
+          def self.add_provider_for_screen(screen, provider, priority = StyleProvider::PRIORITY_APPLICATION)
+            session = Gtk.session
+            session.screen_style_operation(self, :add_provider_for_screen, screen, provider) do |providers|
+              valid = priority.is_a?(Integer) && [StyleProvider::PRIORITY_APPLICATION, StyleProvider::PRIORITY_USER].include?(priority)
+              session.refuse(self, :add_provider_for_screen) unless valid && (providers.key?(provider) || providers.size < 64)
+              providers[provider] = priority
+              session.omit_css(self)
+            end
+            nil
+          end
+
+          # Removes an owner-scoped attachment; repeating removal is harmless.
+          # @return [nil]
+          def self.remove_provider_for_screen(screen, provider)
+            Gtk.session.screen_style_operation(self, :remove_provider_for_screen, screen, provider) do |providers|
+              providers.delete(provider)
+            end
+            nil
+          end
+
+          # Refuses class APIs outside the explicit screen-provider surface.
+          def self.method_missing(name, *, **, &)
+            Gtk.session.refuse(self, name)
+          end
+
+          def self.respond_to_missing?(*args) = super
+
           # Binds the restricted style facade to its compatibility widget.
           def initialize(widget)
             @session = Gtk.session
-            @session.refuse(self, :new) unless widget.is_a?(ProgressBar) && widget.session.equal?(@session) && !widget.destroyed?
+            @session.refuse(self, :new) unless widget.is_a?(Widget) && widget.session.equal?(@session) && !widget.destroyed?
             @widget = widget
             @providers = {}.compare_by_identity
+            @classes = {}
             @session.register_style_context(self)
           end
 
@@ -107,9 +137,47 @@ module Lich
               @providers.delete(provider)
               @providers[provider] = priority
               provider.send(:attach, self)
+              @session.omit_css(self) unless @widget.is_a?(ProgressBar)
               refresh
             end
             self
+          end
+
+          # Retains up to 64 local class names, never DOM classes or CSS selectors.
+          # @return [StyleContext] self
+          def add_class(name)
+            operation(:add_class) do
+              validate_class(name, :add_class)
+              @session.refuse(self, :add_class) unless @classes.key?(name) || @classes.size < 64
+              @classes[name.dup.freeze] = true
+              @session.omit_css(self)
+            end
+            self
+          end
+
+          # Removes only this widget's metadata; an absent class is harmless.
+          # @return [StyleContext] self
+          def remove_class(name)
+            operation(:remove_class) do
+              validate_class(name, :remove_class)
+              @classes.delete(name)
+            end
+            self
+          end
+
+          # Queries bounded class metadata without applying any styling.
+          # @return [Boolean]
+          def has_class?(name)
+            operation(:has_class?) do
+              validate_class(name, :has_class?)
+              @classes.key?(name)
+            end
+          end
+
+          # Returns an independent snapshot of local class names.
+          # @return [Array<String>]
+          def list_classes
+            operation(:list_classes) { @classes.keys.map(&:dup) }
           end
 
           # Removes only this context's registration; missing same-owner providers
@@ -147,7 +215,14 @@ module Lich
             @session.refuse(self, operation) unless provider.is_a?(CssProvider) && provider.session.equal?(@session)
           end
 
+          def validate_class(name, operation)
+            valid = name.is_a?(String) && name.valid_encoding? && name.encoding.ascii_compatible? && name.length.between?(1, 512)
+            @session.refuse(self, operation) unless valid
+          end
+
           def refresh
+            return unless @widget.is_a?(ProgressBar)
+
             candidates = @providers.each_with_index.select { |(provider, _priority), _index| provider.state == :recognized }
             selected = candidates.max_by { |(_provider, priority), index| [priority, index] }
             provider = selected&.first&.first
@@ -159,6 +234,7 @@ module Lich
             @session.synchronize do
               @providers.each_key { |provider| provider.send(:detach, self) }
               @providers.clear
+              @classes.clear
               @widget = nil
               @session.forget_style_context(self)
             end
@@ -214,19 +290,37 @@ module Lich
         # Screen dimensions are a declared degradation: this nominal work area
         # supplies initial size hints only; the browser host controls placement.
         class Screen
-          # Reports nominal screen geometry as a degradation instead of querying an OS display.
-          # @return [Screen] initial-size hint provider
-          def self.default
-            Gtk.session.degrade(:screen_geometry, 'nominal initial size; browser host owns screen geometry')
-            new
+          attr_reader :session
+
+          # Captures the owner of this nominal screen token, without querying an OS display.
+          def initialize
+            @session = Gtk.session
           end
+
+          # Returns an owner-bound token; geometry is not read by CSS attachment.
+          # @return [Screen] initial-size hint provider
+          def self.default = new
 
           # Supplies a nominal initial width, not a measurement of the user's display.
           # @return [Integer] 1024
-          def width = 1024
+          def width
+            dimension(:width, 1024)
+          end
+
           # Supplies a nominal initial height, not a measurement of the user's display.
           # @return [Integer] 768
-          def height = 768
+          def height
+            dimension(:height, 768)
+          end
+
+          private
+
+          def dimension(operation, value)
+            session.style_operation(self, operation) do
+              session.degrade(:screen_geometry, 'nominal initial size; browser host owns screen geometry', receiver: self)
+              value
+            end
+          end
         end
 
         # Refuses GDK facilities outside the bounded compatibility constants.

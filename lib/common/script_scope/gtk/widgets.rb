@@ -82,6 +82,15 @@ module Lich
             super
           end
 
+          # Returns the widget-local decoration facade without exposing DOM styling.
+          # @return [StyleContext]
+          def style_context
+            session.style_operation(self, :style_context) do
+              session.refuse(self, :style_context) if destroyed?
+              @style_context ||= StyleContext.new(self)
+            end
+          end
+
           # Appends a same-session child through the shared single-parent/cycle checks.
           # @return [Widget] self
           def add(child)

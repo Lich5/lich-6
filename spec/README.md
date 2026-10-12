@@ -57,13 +57,17 @@ isolated style/control checks, not whole-script or gameplay acceptance. PR 2's
 first slice adds synthetic cases for unloaded/recognized/omitted states,
 recognized-to-omitted resets, lower-priority recognized providers, re-recognition,
 inert URL/import strings, bounded-input refusals and per-owner attributed notices.
-These do not replace the remaining cached-corpus acceptance and size measurements. The
-adapter specs verify optional-property reset validation and stable rendered
+`script_scope_decoration_spec.rb` adds synthetic checks for shared widget contexts,
+class snapshots and bounds, screen-provider bookkeeping, owner/lifetime rejection,
+cleanup and consolidated CSS versus geometry notices. These do not replace the
+remaining cached-corpus acceptance and size measurements. The adapter specs verify
+optional-property reset validation and stable rendered
 identity; the compact renderer suite verifies that reset colors/heights disappear.
 The independent `shim-progress-style` Chrome case in the existing widget suite
 checks attach-before-load, callback-driven reload/omission/re-recognition/removal,
 stable component identity, fraction preservation, unchanged sibling typography,
-no request to the omitted CSS URL and final window closure.
+no request to the omitted CSS URL and final window closure. Its label context and
+screen attachment remain inert, and local class names do not appear in the DOM.
 
 The same workflow has a separate Linux Chrome job. Playwright drives the existing
 shim entry/checkbox and separator fixtures, plus a native-page callback fixture.

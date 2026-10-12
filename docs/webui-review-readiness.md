@@ -116,7 +116,7 @@ with current evidence and the next concrete slice.
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
 | 1. Progress provider lifecycle and compatibility | `CssProvider#load` and positional `load_from_data`; optional final semicolon in the bounded progress grammar; `ProgressBar` provider references, attach-before-load, reload and removal; APPLICATION/USER priorities and attachment-order ties; restoration of authored/default fill and height; owner synchronization, isolation and cleanup. Focused spellson/staminabar2 and lifecycle regressions. Explicitly approved adapter `UNSET` reset for optional shared properties. | **Merged**: [PR #41](https://github.com/Lich5/lich-6/pull/41), confirmed through GitHub on 2026-10-12, merged at `2026-10-12T07:35:31Z` as `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. Includes the destruction-race review fix from head `6943dda12c24b24b53cf2ddb2e4dc14038690837`. |
-| 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **In progress** on `feat/webui-css-decoration-fallback`, from synchronized `main` at `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. First local slice implements provider states, attributed load-omission notices and progress reset/re-recognition. Shared widget/screen/class APIs, screen notice correction and corpus measurements/acceptance remain. No remote PR created. |
+| 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **In progress** on `feat/webui-css-decoration-fallback`, from synchronized `main` at `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. Provider states/reset, shared widget contexts, class metadata, screen providers and attributed omission/geometry notices are implemented locally. Corpus size measurements and source-derived acceptance remain. Remote publication/merge status was not refreshed for this local slice. |
 
 Post-merge synchronization, 2026-10-12: fetched `origin`, switched from the clean
 PR 1 branch to `main`, and fast-forwarded to the merge commit above. Verified
@@ -125,13 +125,11 @@ The tree was clean before the documentation-only status update. No feature
 branch was deleted. The owner then authorized PR 2's first implementation slice;
 the new branch preserved those uncommitted documentation updates.
 
-Next small implementation: move style contexts to the shared Widget surface with
-bounded local class membership and owner-scoped screen provider bookkeeping;
-preserve progress-only visible effects and move screen geometry notices to actual
-dimension reads. Reuse the attributed omission notice path. Use the cached cohort
-to measure stylesheet lengths before changing the 8,192-character bound, then
-complete source-derived CSS call-chain and next-blocker acceptance accounting.
-Preserve the owner dispatcher, cleanup and unsupported-behavior hard stops.
+Next slice: use the cached cohort and pinned source revisions to measure stylesheet
+lengths before changing the 8,192-character bound. Complete source-derived CSS
+call-chain and next-blocker acceptance accounting, including tpick's independent
+HeaderBar hard stop. Preserve the owner dispatcher, cleanup and unsupported-behavior
+hard stops; do not rescan unrelated scripts or reopen excluded Builder expansion.
 
 PR 2 first-slice inventory, 2026-10-12:
 
@@ -167,6 +165,53 @@ Commands used the initialized host gems directly; no dependencies were changed.
 No additional renderer suite was needed for unchanged renderer code. This is a
 validated local slice, not completion of PR 2 or a native-window/whole-script
 acceptance claim. No staging, commit, push or remote PR creation was performed.
+
+PR 2 second-slice inventory, 2026-10-12: continued on the same branch from the
+owner's first-slice commit `6ddd5798d8f8a468ab3885481fd6c1510833e551`; the tree was
+clean at entry and all prior behavior/documentation was preserved.
+
+- `lib/common/script_scope/gtk/widgets.rb` and `lib/common/script_scope/gtk/displays.rb`:
+  move the cached context accessor to Widget and check ownership/lifetime even
+  for cached access.
+- `lib/common/script_scope/gtk/style.rb`: retain providers on all supported
+  widgets, with visible effects only on ProgressBar; add bounded class metadata
+  and screen registration/removal APIs; attribute geometry notices only on
+  width/height reads. Unknown APIs and widgets still refuse.
+- `lib/common/script_scope/gtk/session.rb`: owner-bound, monitor-protected screen
+  registry and teardown; share one attributed CSS-omission notice across loads,
+  non-progress widget attachments, screen attachments and class additions.
+- `spec/lib/common/script_scope_decoration_spec.rb` (new),
+  `spec/lib/common/script_scope_style_spec.rb`,
+  `spec/lib/common/script_scope_widgets_spec.rb`, `spec/webui/browser.spec.cjs`:
+  synthetic shared-context/class/screen coverage and extended Chrome checks.
+- Documentation: `docs/webui-integration.md`,
+  `docs/webui-css-decoration-fallback-brief.md`, this tracker and `spec/README.md`.
+
+Limits are 64 providers per widget context, 64 screen providers per session, 64
+class names per context and 512 characters per class name. Class lists are
+independent snapshots; names never become DOM classes. Screen registrations have
+no visible effect, including for recognized progress CSS. All registrations and
+classes are released on their widget/session lifetime boundary. The existing
+session monitor and dispatcher are reused; no shared-core, real GTK, renderer,
+script-source or non-GUI changes are included.
+
+Second-slice validation, retained host `rubystd` Ruby 4.0.5, 2026-10-12:
+
+- Focused decoration/style/widget specs: **100 examples, zero failures, four
+  browser-only pending**, seed `45614`.
+- Explicit Chrome progress lifecycle: **one example, zero failures**, seed
+  `43745`. Label contexts and class names do not affect typography or DOM classes;
+  a screen registration does not retain progress styling after local removal.
+  Existing reload/omission, stable identity, fraction and callback checks pass.
+- Full RSpec: **9,058 examples, zero failures, 17 browser-only pending**, seed `11614`.
+- RuboCop: **1,308 files, no offenses** after correcting one spacing offense.
+  `git diff --check` passed.
+
+Validation used host gems directly, with no dependency changes. The cached audit
+was consulted for the API surface; no script-wide or EO PR rescan was performed.
+Corpus acceptance, size measurements and native-window certification are not
+claimed by these synthetic tests. No staging, commit, push or external write was
+performed by the assistant.
 
 Each PR includes relevant tests and documentation, full RSpec and RuboCop, and
 renderer/browser checks where needed. Real GTK, script source changes, non-GUI
@@ -238,7 +283,7 @@ the dated product validation was not rerun for these status-only edits.
 | eloot and Bigshot author repairs | Await source updates; retain original negative tests and separately labeled corrected candidates. |
 | Windows/Linux native-window acceptance | Still open for actual focus, topmost/opacity where supported, geometry and process cleanup; Linux Chrome transport tests do not certify these. |
 | macOS distribution | Signed/notarized helper packaging, older supported macOS and physical Intel acceptance remain release work. Local helper builds are not distribution certification. |
-| Arbitrary GTK CSS and internal combo-entry character limits | PR 2's first local slice omits bounded unrecognized provider data with a notice. General widget/screen/class call chains and corpus acceptance remain unfinished. Full CSS translation and combo-entry character-limit expansion remain excluded. |
+| Arbitrary GTK CSS and internal combo-entry character limits | PR 2's local slices implement bounded CSS omission and widget/screen/class bookkeeping. Corpus size measurements and source-derived acceptance remain unfinished. Full CSS translation and combo-entry character-limit expansion remain excluded. |
 | stormsync | Excluded from further Builder expansion by owner direction. |
 | bigshit2 | Not a target for further expansion by owner direction; do not infer its acceptance from Bigshot. |
 | slootbeta and remaining corpus questions | Outside the ten-fixture acceptance proof. Recover the retained child-structure/corpus audit before restating detailed counts or proposing expansion. |

@@ -401,11 +401,10 @@ RSpec.describe 'progress provider lifecycle' do
     expect { other.style_context }.not_to raise_error
   end
 
-  it 'keeps the screen, classes, other widgets and unrelated style operations outside PR 1' do
+  it 'keeps unsupported widgets and unrelated style operations as explicit hard stops' do
     expect { gtk.const_get(:HeaderBar) }.to raise_error(gtk.const_get(:UnsupportedOperation))
     label = gtk.const_get(:Label).new('Unchanged')
-    expect { label.style_context }.to raise_error(gtk.const_get(:UnsupportedOperation))
-    expect { bar.style_context.add_class('required') }.to raise_error(gtk.const_get(:UnsupportedOperation))
-    expect(gtk.const_get(:StyleContext)).not_to respond_to(:add_provider_for_screen)
+    expect { label.style_context.get_property('color') }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { gtk.const_get(:StyleContext).reset_widgets }.to raise_error(gtk.const_get(:UnsupportedOperation))
   end
 end

@@ -5,8 +5,10 @@ The owner approved the two-PR sequence in the
 [current tracker](webui-review-readiness.md#css-decoration-work-tracker).
 PR 1 added progress-provider lifecycle support. PR 2's first local slice adds
 explicit provider states, inert omission with an attributed notice, and reset of
-previous progress effects. Shared widget/screen/class APIs and corpus acceptance
-remain unfinished. The original handoff and evidence below remain dated provenance.
+previous progress effects. The second local slice adds shared widget contexts,
+bounded class metadata, owner-scoped screen providers and dimension-only geometry
+notices. Corpus size measurements and source-derived acceptance remain unfinished.
+The original handoff and evidence below remain dated provenance.
 
 PR #41 merged at `2026-10-12T07:35:31Z` as
 `de8765199cdea6e73ed19cd5a9b6fcab759abea6`, including the destruction-race fix.

@@ -36,6 +36,8 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     const cid = await bar.getAttribute('data-cid');
     const sibling = page.getByText('Unstyled sibling', { exact: true });
     const weight = await sibling.evaluate(element => getComputedStyle(element).fontWeight);
+    await expect(page.locator('.required-setting')).toHaveCount(0);
+    await expect(sibling).not.toHaveCSS('font-weight', '700');
     await expect(bar).toHaveClass(/webui-progress-colored/);
     await expect(bar).toHaveCSS('height', '24px');
     await expect(progress).toHaveCSS('--progress-fill', 'rgba(0, 0, 255, 1)');

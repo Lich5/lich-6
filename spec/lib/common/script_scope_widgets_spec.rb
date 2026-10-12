@@ -631,6 +631,10 @@ RSpec.describe 'bounded script compatibility pilot' do
     provider.load_from_data(css)
     progress.set_fraction(0.5)
     sibling = compatibility::Label.new('Unstyled sibling')
+    sibling.style_context.add_provider(provider)
+    sibling.style_context.add_class('required-setting')
+    screen = scope.const_get(:Gdk, false)::Screen.default
+    compatibility::StyleContext.add_provider_for_screen(screen, provider, compatibility::StyleProvider::PRIORITY_USER)
     reload = compatibility::Button.new('Reload style')
     omit = compatibility::Button.new('Omit style')
     remove = compatibility::Button.new('Remove style')
@@ -659,6 +663,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(calls).to eq(%i[reload omit reload remove])
     expect(progress.send(:component_props)).to include(value: 0.75)
     expect(progress.send(:component_props)).not_to have_key(:fill_color)
+    expect(Lich).not_to have_received(:log).with(/screen_geometry/)
     expect(window).to be_destroyed
   end
 
