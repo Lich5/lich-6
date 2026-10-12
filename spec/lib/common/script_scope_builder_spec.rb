@@ -42,10 +42,17 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     allow(Lich::Common::Script).to receive(:current).and_return(owner)
     allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
     allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
-    allow(Lich).to receive(:log)
+    # Kept quiet unless the example fails: runtime refusals and callback errors
+    # are the only evidence of a lost browser event (see the after hook).
+    @lich_log = []
+    allow(Lich).to receive(:log) { |message| @lich_log << message }
   end
 
-  after do
+  after do |example|
+    if example.exception
+      warn "Lich.log during #{example.full_description}:\n  #{@lich_log.last(50).join("\n  ")}" if @lich_log.any?
+      warn "Script messages:\n  #{@messages.last(20).join("\n  ")}" if @messages&.any?
+    end
     Lich::Common::ScriptDeath.run(owner)
     service.stop
   end
