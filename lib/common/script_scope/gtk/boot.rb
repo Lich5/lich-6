@@ -13,6 +13,7 @@ require_relative 'inputs'
 require_relative 'dialogs'
 require_relative 'style'
 require_relative 'displays'
+require_relative 'header_bar'
 require_relative 'text'
 require_relative 'images'
 require_relative 'menus'
@@ -27,6 +28,13 @@ module Lich
       HAVE_GTK = true
 
       module Gtk
+        module Align
+          START = :start
+          CENTER = :center
+          const_set(:END, :end)
+          FILL = :fill
+        end
+
         module WindowType
           TOPLEVEL = :toplevel
         end

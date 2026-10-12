@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.17.0'
+      VERSION = '2.18.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -254,7 +254,7 @@ module Lich
         },
         tabs: {
           properties: {
-            names: property(array(SHORT, min: 1, max: BOUNDS[:collection]), required: true),
+            names: property(array(SHORT, max: BOUNDS[:collection]), required: true),
             vertical: property(BOOL, default: false), selected: property(integer(min: 0), scope: :viewer),
             size_to_all: property(BOOL, default: false),
             show_tabs: property(BOOL, default: true),

@@ -30,6 +30,57 @@ RSpec.describe 'progress provider lifecycle' do
     service.stop
   end
 
+  it 'applies arbitrary class-qualified label cues through provider and ancestor lifecycles' do
+    screen = scope.const_get(:Gdk, false)::Screen.default
+    window = gtk::Window.new('Cues')
+    window.set_name('review_form')
+    grid = gtk::Grid.new
+    label = gtk::Label.new('Required value')
+    label.style_context.add_class('mandatory')
+    grid.attach(label, 0, 0, 1, 1)
+    window.add(grid)
+    gtk::StyleContext.add_provider_for_screen(screen, provider, user)
+    provider.load(data: '#review_form grid label.mandatory { color: #ff4d4d; }')
+    window.show_all
+    handle = label.materialize
+    expect(label.session.port.get(handle, :foreground)).to eq(r: 255, g: 77, b: 77, a: 1.0)
+    label.style_context.remove_class('mandatory')
+    expect(label.session.port.get(handle, :foreground)).to be_nil
+    label.style_context.add_class('mandatory')
+    window.name = 'different'
+    expect(label.session.port.get(handle, :foreground)).to be_nil
+    window.name = 'review_form'
+    provider.load_from_data('label.mandatory {color: #0000ff}')
+    expect(label.session.port.get(handle, :foreground)).to eq(blue)
+    local = gtk::CssProvider.new
+    local.load(data: 'label.mandatory {color: #00ff00}')
+    label.style_context.add_provider(local, user)
+    expect(label.session.port.get(handle, :foreground)).to eq(r: 0, g: 255, b: 0, a: 1.0)
+    label.style_context.remove_provider(local)
+    expect(label.session.port.get(handle, :foreground)).to eq(blue)
+    gtk::StyleContext.remove_provider_for_screen(screen, provider)
+    expect(label.session.port.get(handle, :foreground)).to be_nil
+    expect(label.materialize).to equal(handle)
+    provider.load(data: 'label.mandatory {color: url(https://invalid.example)}')
+    expect(provider.label_rules).to be_empty
+  end
+
+  it 'isolates label rules across owners and releases contexts after destruction' do
+    label = gtk::Label.new('First')
+    label.style_context.add_class('notice')
+    provider.load(data: 'label.notice {color: #0000ff}')
+    gtk::StyleContext.add_provider_for_screen(scope.const_get(:Gdk, false)::Screen.default, provider)
+    expect(label.send(:component_props)[:foreground]).to eq(blue)
+    @other_owner = Struct.new(:name).new('other.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(@other_owner)
+    other = gtk::Label.new('Other')
+    other.style_context.add_class('notice')
+    expect(other.send(:component_props)).not_to have_key(:foreground)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    label.destroy
+    expect { provider.load(data: 'label.notice {color: #00ff00}') }.not_to raise_error
+  end
+
   def stylesheet(color = 'blue', terminator = ';')
     "label { font-weight: bold; } trough {font-weight: bold; min-height: 22px; } progress {font-weight: bold; min-height: 20px; background-image: none; background-color: #{color}#{terminator}}"
   end
@@ -402,7 +453,7 @@ RSpec.describe 'progress provider lifecycle' do
   end
 
   it 'keeps unsupported widgets and unrelated style operations as explicit hard stops' do
-    expect { gtk.const_get(:HeaderBar) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { gtk.const_get(:FlowBox) }.to raise_error(gtk.const_get(:UnsupportedOperation))
     label = gtk.const_get(:Label).new('Unchanged')
     expect { label.style_context.get_property('color') }.to raise_error(gtk.const_get(:UnsupportedOperation))
     expect { gtk.const_get(:StyleContext).reset_widgets }.to raise_error(gtk.const_get(:UnsupportedOperation))

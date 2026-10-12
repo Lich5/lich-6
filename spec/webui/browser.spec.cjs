@@ -6,7 +6,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -30,7 +30,73 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'shim-progress-style') {
+  if (scenario === 'shim-headerbar') {
+    const title = page.getByText('Header actions', { exact: true });
+    const close = page.getByRole('button', { name: 'Close', exact: true });
+    const entry = page.getByRole('textbox');
+    await expect(title).toBeVisible();
+    const titleBounds = await title.boundingBox();
+    const closeBounds = await close.boundingBox();
+    const contentBounds = await entry.boundingBox();
+    expect(Math.abs(titleBounds.y - closeBounds.y)).toBeLessThan(25);
+    expect(contentBounds.y).toBeGreaterThan(titleBounds.y);
+    await page.getByRole('button', { name: 'Header action', exact: true }).click();
+    await expect(page.getByText('Header action worked', { exact: true })).toBeVisible();
+    await entry.fill('Unsaved draft');
+    await close.click();
+    await expect(page.getByText('Close vetoed', { exact: true })).toBeVisible();
+    await expect(entry).toHaveValue('Unsaved draft');
+    await close.click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-tpick-information') {
+    await page.setViewportSize({ width: 1100, height: 850 });
+    await page.getByRole('tab', { name: 'Messages', exact: true }).click();
+    await expect(page.getByRole('log')).toContainText('Fixture update');
+    await page.getByRole('tab', { name: 'Stats', exact: true }).click();
+    await page.getByRole('tab', { name: 'Lockpicking', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Traps', exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Main', exact: true }).click();
+    await page.getByRole('button', { name: 'Start', exact: true }).click();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-tpick-settings') {
+    const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const entry = page.locator(`[data-cid="${ids.vaalin}"] input`);
+    await page.setViewportSize({ width: 1100, height: 850 });
+    for (const name of ['Lockpicks', 'Repair', 'Containers', 'Other', 'Rogues Only', 'Spells', 'Experience', 'Speech', 'Popping', 'Pool']) {
+      await page.getByRole('tab', { name, exact: true }).click();
+      await expect(page.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true');
+    }
+    await page.getByRole('tab', { name: 'Main', exact: true }).click();
+    await page.getByRole('combobox').selectOption({label: 'Second'});
+    await page.getByRole('button', { name: 'Load', exact: true }).click();
+    await page.getByRole('tab', { name: 'Lockpicks', exact: true }).click();
+    await expect(entry).toHaveValue('second pick');
+    const grid = entry.locator('xpath=ancestor::*[contains(@class,"webui-grid")][1]');
+    await expect(grid).toHaveCSS('display', 'grid');
+    const label = page.getByText('2.50 mod (Vaalin Lockpick)', {exact: true});
+    const fieldBounds = await entry.boundingBox(), labelBounds = await label.boundingBox();
+    expect(Math.abs(fieldBounds.y + fieldBounds.height / 2 - labelBounds.y - labelBounds.height / 2)).toBeLessThan(3);
+    expect(fieldBounds.x).toBeGreaterThan(labelBounds.x);
+
+    await expect(page.getByText('2.50 mod (Vaalin Lockpick)', {exact: true})).toHaveCSS('color', 'rgb(255, 77, 77)');
+    await page.getByRole('tab', { name: 'Main', exact: true }).click();
+    await page.getByRole('button', { name: 'Defaults', exact: true }).click();
+    await page.getByRole('tab', { name: 'Lockpicks', exact: true }).click();
+    await expect(entry).toHaveValue('');
+    await entry.fill('WebKit acceptance pick');
+    await page.getByRole('tab', { name: 'Main', exact: true }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-tpick-welcome') {
+    await expect(page.getByText('WELCOME TO TPICK!', { exact: true })).toBeVisible();
+    await expect(page.getByRole('log')).toContainText('Welcome to ;tpick!');
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-progress-style') {
     const bar = page.locator('.webui-progress');
     const progress = bar.locator('progress');
     const cid = await bar.getAttribute('data-cid');

@@ -17,9 +17,9 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(barrier.pop(timeout: 3)).to be(true)
   end
 
-  it 'exposes exactly the ten locked operations' do
+  it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid
     )
   end
 
@@ -133,6 +133,30 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(after.props).to include(value: 0.5)
     expect(after.props).not_to have_key(:height)
     expect(after.props).not_to have_key(:fill_color)
+  end
+
+  it 'atomically repositions grid children and rejects invalid or foreign replacements' do
+    allow(service.runtime).to receive(:schedule_render)
+    root = adapter.create(:page, title: 'Live grid')
+    grid = adapter.create(:grid, cols: 2)
+    input = adapter.create(:text_input, value: 'retained', placement: { column: 1, row: 1 })
+    adapter.attach(root, grid)
+    adapter.attach(grid, input)
+    adapter.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    before = page.last_render.tree.children.first.children.first
+    adapter.layout_grid(grid, columns: 3, placements: { input => { column: 3, row: 2 } })
+    adapter.send(:flush!)
+    after = page.last_render.tree.children.first.children.first
+    expect(after.cid).to eq(before.cid)
+    expect(after.placement).to include(column: 3, row: 2)
+    expect(after.props[:value]).to eq('retained')
+    expect { adapter.layout_grid(grid, columns: 1, placements: { input => { column: 2 } }) }.to raise_error(Lich::WebUI::Error)
+    expect(adapter.get(grid, :cols)).to eq(3)
+    other = adapter.create(:grid, cols: 1)
+    expect { adapter.layout_grid(other, columns: 1, placements: { input => { column: 1 } }) }.to raise_error(Lich::WebUI::Error, /foreign/)
+    adapter.send(:flush!)
+    expect(page.last_render.tree.children.first.children.first.placement).to eq(after.placement)
   end
 
   it 'retires a replaced binding so its old token cannot remove the new callback' do

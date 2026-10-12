@@ -47,7 +47,7 @@ RSpec.describe Lich::Common::BindHostResolver do
 
   describe '.resolve with lan' do
     it 'prefers the default-route address when it is private' do
-      addresses = address_list('127.0.0.1', '172.17.0.1', '192.168.1.20', '10.0.0.7')
+      addresses = address_list('127.0.0.1', '172.18.0.1', '192.168.1.20', '10.0.0.7')
 
       resolution = described_class.resolve('lan', address_list: addresses, route_probe: -> { '10.0.0.7' })
 
@@ -64,7 +64,7 @@ RSpec.describe Lich::Common::BindHostResolver do
     end
 
     it 'prefers household ranges over the Docker/VM 172.16/12 range when no route is known' do
-      addresses = address_list('172.17.0.1', '192.168.1.20')
+      addresses = address_list('172.18.0.1', '192.168.1.20')
 
       resolution = described_class.resolve('lan', address_list: addresses, route_probe: no_route)
 

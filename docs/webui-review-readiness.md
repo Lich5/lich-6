@@ -1,7 +1,7 @@
 # WebUI review readiness and handoff
 
 Current baseline: 2026-10-12, synchronized `main` at
-`de8765199cdea6e73ed19cd5a9b6fcab759abea6` (PR #41 merged). This record describes
+`bea51ac3522d894ecc33c39abcccdc00a8017661` (PRs #41 and #42 merged). This record describes
 the development tree, not an EO release. The original documentation reconciliation
 was reviewed on 2026-10-11 against PR #38 at
 `d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
@@ -29,7 +29,7 @@ are a reproducible acceptance set, not a substitute denominator.
 
 Core WebUI owns contracts, validation, transport, viewer state, callback
 dispatch, authentication and window lifecycle. Native consumers use it directly.
-The script-local GTK shim translates a bounded surface through the ten-operation
+The script-local GTK shim translates a bounded surface through the bounded
 [adapter](../lib/webui/adapter.rb); it does not own another service or event loop.
 GTK support is a migration bridge. Unsupported meaningful behavior is refused;
 a deliberately ignored presentation hint must have an explicit documented
@@ -68,11 +68,12 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 | repository/go2 families and shared renderer repairs | Merged | PR #37, `57d31829` |
 | Bigshot/Huntplan families, corrected-source acceptance and final review repairs | Merged | PR #38, `d3e41e71` |
 | Progress provider lifecycle, optional-property reset and synchronized destruction | Merged | PR #41, `de876519` |
+| CSS decoration fallback, widget contexts, class/screen providers and corpus acceptance | Merged | PR #42, `bea51ac3` |
 
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
 outstanding. The latter preserves existing text and emits no change signal;
-standalone Entry limits remain supported. The host/browser contract is 2.17.0.
+standalone Entry limits remain supported. The host/browser contract is 2.18.0.
 
 ## Builder setup acceptance
 
@@ -116,7 +117,7 @@ with current evidence and the next concrete slice.
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
 | 1. Progress provider lifecycle and compatibility | `CssProvider#load` and positional `load_from_data`; optional final semicolon in the bounded progress grammar; `ProgressBar` provider references, attach-before-load, reload and removal; APPLICATION/USER priorities and attachment-order ties; restoration of authored/default fill and height; owner synchronization, isolation and cleanup. Focused spellson/staminabar2 and lifecycle regressions. Explicitly approved adapter `UNSET` reset for optional shared properties. | **Merged**: [PR #41](https://github.com/Lich5/lich-6/pull/41), confirmed through GitHub on 2026-10-12, merged at `2026-10-12T07:35:31Z` as `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. Includes the destruction-race review fix from head `6943dda12c24b24b53cf2ddb2e4dc14038690837`. |
-| 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **Ready for owner review** on `feat/webui-css-decoration-fallback`, from synchronized `main` at `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. Implementation, cached-cohort measurements and source-derived acceptance are complete within the bounded scope. Remote publication/merge status was not refreshed. Whole-script/native-window acceptance is not claimed. |
+| 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **Merged**: [PR #42](https://github.com/Lich5/lich-6/pull/42), confirmed through GitHub on 2026-10-12, merged at `2026-10-12T14:08:58Z` as `bea51ac3522d894ecc33c39abcccdc00a8017661`. Includes the bounded stale-generation test-helper retry from head `857a8e04ee189444b94fcae7ae35192e3ef8c207`. Whole-script/native-window acceptance is not claimed. |
 
 Post-merge synchronization, 2026-10-12: fetched `origin`, switched from the clean
 PR 1 branch to `main`, and fast-forwarded to the merge commit above. Verified
@@ -125,13 +126,158 @@ The tree was clean before the documentation-only status update. No feature
 branch was deleted. The owner then authorized PR 2's first implementation slice;
 the new branch preserved those uncommitted documentation updates.
 
-Next: owner review of PR 2's complete local scope and the
-[measurement/acceptance report](webui-css-decoration-acceptance.md). The 8,192-character
+PR 2 post-merge synchronization, 2026-10-12: fetched `origin`, switched from the
+clean feature branch to `main`, and fast-forwarded to `bea51ac3522d894ecc33c39abcccdc00a8017661`.
+Verified zero divergence between `main` and `origin/main` and inclusion of the
+reviewed PR head. The tree was clean before this documentation-only update;
+the feature branch was retained. GitHub reports successful RSpec, RuboCop,
+Ruby syntax, JavaScript renderer and Chrome integration checks. The final local
+test-helper validation passed with seed `57467`: **9,107 examples, zero failures,
+17 browser-only pending**; focused RuboCop and diff checks also passed.
+
+Both approved CSS decoration PRs are merged; no implementation remains in that
+two-PR plan. The next authorized branch is tracked below. The
+[measurement/acceptance report](webui-css-decoration-acceptance.md) retains the
+acceptance boundaries. The 8,192-character
 bound is retained: all 71 payloads from 33 pinned scripts fit, with a measured
-maximum of 6,230. Dynamic settings can still exceed it. Actual tpick HeaderBar
-and manatimer Display calls remain independent hard stops. Do not reopen excluded
-Builder expansion or infer whole-script acceptance. Await the owner's merge
-confirmation before synchronizing `main` for any subsequent implementation PR.
+maximum of 6,230. Dynamic settings can still exceed it. The subsequent HeaderBar
+slice accepts tpick's headers; manatimer Display still refuses. Do not reopen excluded
+Builder expansion or infer whole-script acceptance.
+
+### Refreshed GTK compatibility work tracker
+
+Read-only source survey, 2026-10-12: fetched EO `origin/master` at
+`c4a96840ea2a29a445fd797c7baec0b012b0dd12` and mirror `origin/main` at
+`2fa28f1e540e97c468af88bbc8c432d3cebf8755`. Excluding EO test fixtures, 2,590
+committed script files yielded 230 GTK-related lexical candidates (51 EO, 179
+mirror); 113 changed since 2025-10-12 (27 EO, 86 mirror). Fourteen candidates
+changed since the cached source baselines. Mirror dates describe observed
+snapshots, not author release dates. HeaderBar appears in 12 scripts, 11 updated
+within the year. tpick v48 was last observed changing on October 6; manatimer
+v0.1 on June 22. Both still match their cached source versions.
+
+Only the first implementation slice below is authorized. The remaining rows are
+proposals, including the owner-deferred optional image-window follow-up. Each future branch
+starts from synchronized `main` after its predecessor merges.
+
+| Proposed PR | Included features / methods / widgets | Status |
+| --- | --- | --- |
+| 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **Implemented; validated; ready for owner review** on `feat/webui-headerbar-tpick`, based on synchronized `main` at `bea51ac3`. |
+| 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Not started; owner deferred** from PR 1 on 2026-10-12. Default `Show Images = No` setup is covered in PR 1. |
+| 2. Manatimer progress/overlay semantics | `ProgressBar#show_text=`, overlay pass-through, label/fraction and pointer behavior. No CSS grammar expansion implied. | **Not started; proposed** |
+| 3. Display/monitor geometry | Host-owned monitor-at-point/geometry and bounded Gdk projection; actual multi-monitor coordinates and unavailable-host behavior. No fabricated monitor data. | **Not started; requires core design decision** |
+| 4. Owner-bound GLib scheduling | Observed Timeout/Idle/Source cancellation calls through the existing owner dispatcher; repository and sail2 acceptance. | **Not started; proposed** |
+| 5. Source acceptance refresh | Re-pin changed repository/eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. | **Not started; proposed** |
+
+PR 1 implementation boundaries: HeaderBar composes existing boxes, labels and
+buttons; signed Grid positions are translated uniformly into positive shared
+placements. Table's unsigned coordinate rules remain unchanged. The owner approved
+`Adapter#layout_grid` for atomic column/placement updates without replacing handles,
+and empty `tabs.names` with no selectable page until populated. Contract 2.18.0
+records the latter. Notebook appends publish names before attaching live children.
+The viewport CSS preserves grid tab panels instead of changing them into flex stacks.
+
+Class-qualified label foreground rules are a bounded, reusable cue surface:
+`label.<class>` with optional descendant type/`#name` ancestors and supported literal
+colors. No script name, required-setting class name, DOM selector or raw stylesheet
+is hardcoded or forwarded to the renderer. Provider priority, selector specificity,
+source order, class/ancestor changes, reload/removal and owner cleanup determine the
+typed `foreground`; other CSS remains omitted. Progress styling remains separate.
+
+Pinned evidence: `spec/fixtures/webui/tpick-titlebar.json` retains unchanged methods,
+constants, setup data/defaults/tooltips and stylesheet, each hashed with original
+line ranges, from mirror `2fa28f1e540e97c468af88bbc8c432d3cebf8755` (v48).
+`script_scope_tpick_setup_spec.rb` supplies character/spell/inventory answers and
+isolated settings files. It runs original GUI and persistence code, not top-level
+game initialization. Rogue, Warrior, Bard and Wizard settings construct; the default
+information window populates queued statistics, updates messages and closes cleanly.
+Profile Load, Defaults and Save execute original callbacks. Scan's game commands
+and real gameplay are not executed. Real GTK remains excluded from production.
+
+Explicit source limits: spell-less Monk/Paladin settings access a missing
+`Spells Main` grid at original line 2926. Negative tests retain that source defect;
+no nil suppression or script-specific repair is added. Optional `Show Images`
+construction currently refuses `Window#decorated=` at line 2750; further transient
+window and overlay/image requirements belong to owner-deferred PR 1b. These are not
+claims of universal whole-script or native GTK visual equivalence.
+
+Validation for expanded PR 1 (2026-10-12), retained host `rubystd` Ruby 4.0.5:
+
+- Full RSpec, seed `57467`: **9,135 examples, zero failures, 21 browser-only pending**.
+- Focused explicit Chrome run (HeaderBar and complete tpick setup): **24 examples,
+  zero failures**, including four browser scenarios and a Grid alignment assertion.
+- Full explicit Chrome browser suite, seed `57467`: **21 examples, zero failures**.
+- Full RuboCop: **1,313 files, no offenses**. Renderer JavaScript: **157 tests,
+  zero failures**. `git diff --check` passed.
+- Native macOS WKWebView settings: profile loading, Defaults, required red label,
+  entry editing, original Save to a temporary file and Close/cleanup passed.
+  A native layout check exposed viewport CSS flattening Grid panels into stacks;
+  the fix was visually rechecked and the native edit/save/close case passed again.
+- Native information: Messages, populated nested Stats, Settings, return to Main,
+  original Start callback and close/save cleanup passed (**one example, zero failures**).
+  An earlier combined native run lost reliable UI control after replacing its host;
+  that information check was interrupted/closed and failed its unexecuted Start
+  assertion. The isolated rerun above passed; this is not counted as a clean combined run.
+
+Review follow-up, 2026-10-12: the Grid attachment rollback finding is addressed.
+An `add(child)` failure restores the prior logical origins, exact row/column
+geometry and placements in both the shim and adapter; an inserted child is
+detached, and the original error is re-raised. Detached child placement is restored
+even when it extends beyond the old grid width. Existing handles, bindings and
+input values survive, and a subsequent attachment succeeds. No shared-core API
+extension was needed.
+
+Three injected live failures reproduced the defect before the fix: adapter attach,
+refused insertion and failure after insertion. All now pass, along with a fourth
+regression for an unmaterialized grid (no handle allocation) and a fifth for
+rollback at the placement-map capacity bound. Post-fix focused
+HeaderBar/tpick/adapter acceptance with Chrome: **62 examples, zero failures**,
+seed `57467`. Focused RuboCop: **two files, no offenses**; diff check passed.
+Full post-fix RSpec, seed `57467`: **9,140 examples, zero failures, 21 browser-only
+pending**. This follow-up
+changes only `lib/common/script_scope/gtk/layout.rb`,
+`spec/lib/common/script_scope_header_bar_spec.rb` and this tracker; prior work is
+preserved. No staging, commit or push.
+
+Exact local changed-file inventory (including preserved work from earlier slices):
+
+```text
+docs/webui-css-decoration-acceptance.md
+docs/webui-css-decoration-fallback-brief.md
+docs/webui-integration.md
+docs/webui-review-readiness.md
+lib/common/script_scope/gtk/boot.rb
+lib/common/script_scope/gtk/header_bar.rb
+lib/common/script_scope/gtk/layout.rb
+lib/common/script_scope/gtk/session.rb
+lib/common/script_scope/gtk/style.rb
+lib/common/script_scope/gtk/widgets.rb
+lib/webui/adapter.rb
+lib/webui/assets/app.css
+lib/webui/assets/app.js
+lib/webui/contract.rb
+lib/webui/validator.rb
+spec/README.md
+spec/fixtures/webui/README.txt
+spec/fixtures/webui/tpick-titlebar.json
+spec/lib/common/bind_host_resolver_spec.rb
+spec/lib/common/script_scope_css_corpus_spec.rb
+spec/lib/common/script_scope_header_bar_spec.rb
+spec/lib/common/script_scope_style_spec.rb
+spec/lib/common/script_scope_tpick_setup_spec.rb
+spec/lib/webui/adapter_spec.rb
+spec/lib/webui/contract_foundation_spec.rb
+spec/lib/webui/contract_spec.rb
+spec/lib/webui/server_spec.rb
+spec/lib/webui/validator_spec.rb
+spec/webui/browser.spec.cjs
+```
+
+Scope exceptions used: owner-approved atomic grid-layout and empty-notebook shared
+extensions, plus the explicitly authorized required-setting cue surface. Cached
+script evidence was read only; real GTK, non-GUI script logic and optional image
+windows remain outside this implementation. No staging, commit or push.
+Next: owner review of PR 1; PR 1b remains deferred.
 
 PR 2 first-slice inventory, 2026-10-12:
 
@@ -317,7 +463,7 @@ the dated product validation was not rerun for these status-only edits.
 | eloot and Bigshot author repairs | Await source updates; retain original negative tests and separately labeled corrected candidates. |
 | Windows/Linux native-window acceptance | Still open for actual focus, topmost/opacity where supported, geometry and process cleanup; Linux Chrome transport tests do not certify these. |
 | macOS distribution | Signed/notarized helper packaging, older supported macOS and physical Intel acceptance remain release work. Local helper builds are not distribution certification. |
-| Arbitrary GTK CSS and internal combo-entry character limits | PR 2 is locally ready for review: bounded omission, widget/screen/class bookkeeping, cached-cohort measurements and source-derived acceptance. Full CSS translation, whole-script acceptance and combo-entry character-limit expansion remain excluded. |
+| Arbitrary GTK CSS and internal combo-entry character limits | PR #42 merged: bounded omission, widget/screen/class bookkeeping, cached-cohort measurements and source-derived acceptance. Full CSS translation, whole-script acceptance and combo-entry character-limit expansion remain excluded. |
 | stormsync | Excluded from further Builder expansion by owner direction. |
 | bigshit2 | Not a target for further expansion by owner direction; do not infer its acceptance from Bigshot. |
 | slootbeta and remaining corpus questions | Outside the ten-fixture acceptance proof. Recover the retained child-structure/corpus audit before restating detailed counts or proposing expansion. |

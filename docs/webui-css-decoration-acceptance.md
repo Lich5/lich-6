@@ -80,7 +80,7 @@ All other non-CSS blockers are unknown unless explicitly identified below.
 | test-tpick | Remaining exposure | 75 | Literal | Omitted |
 | thunder | Remaining exposure | 191 | Sample | Omitted |
 | timers | Remaining exposure | 143 | Sample | Omitted |
-| tpick | Remaining exposure | 4,742 | Literal | Omitted |
+| tpick | Remaining exposure | 4,742 | Literal | Label foreground cues recognized; other decoration omitted |
 | tpick2 | Remaining exposure | 75 | Literal | Omitted |
 | treasurewindow | Remaining exposure | 1,211 | Sample | Omitted |
 
@@ -95,7 +95,7 @@ the spec. It also replays all 81 observed widget/screen attachment signatures:
 
 | Source | Excerpt result | Non-CSS/acceptance boundary |
 | --- | --- | --- |
-| tpick | Global CSS/load/screen registration at 94–291, label-local CSS at 2557–2564 and required-setting class at 2939 continue. First omission is attributed to line 95. | Actual `Gtk::HeaderBar.new` at 2084 still refuses. This is a confirmed independent blocker, not a claim to have found the first failure of a complete game setup. |
+| tpick | Global CSS/load/screen registration at 94–291, label-local CSS at 2557–2564 and required-setting class at 2939 continue. First omission is attributed to line 95. | The subsequent HeaderBar slice accepts the original constructor at 2084. Separate tpick welcome/header-method acceptance and expanded default settings/information acceptance are recorded in the handoff; CSS acceptance alone still does not establish complete setup. |
 | manatimer | Original 83–94 attaches before load and reloads through both original procs. Fraction survives, CSS fill is omitted. | Actual `Gdk::Display` at 76 still refuses and occurs before these CSS calls. |
 | spellson / staminabar2 | Original load/attach excerpts preserve typed color and 24px height, including staminabar2's missing final semicolon. | Full running scripts not exercised. |
 | timers | Original generated progress CSS, positional load and attachment continue with fixed test settings. | Custom colors/heights are omitted; fraction is preserved. Full setup not exercised. |
@@ -106,9 +106,10 @@ the spec. It also replays all 81 observed widget/screen attachment signatures:
 | grids | Original image, radial and linear branches continue as inert CSS with fixed test settings. | Images/gradients are omitted; no referenced image is opened. Whole setup not exercised. |
 | stormsync | Original selection-border CSS and no-priority attachment calls continue. The default color-grid payload also loads. | Selection borders/colors are omitted. No excluded Builder setup was opened or expanded. |
 
-Required-field colors, selection borders, drag/drop indicators, typography and
-palette cues can carry information. Their loss is intentional and visible in this
-report; fallback is not pixel parity or proof of equivalent whole-script usability.
+Selection borders, drag/drop indicators, typography and palette cues can carry
+information. Their omission remains explicit; the later bounded label-color
+expansion preserves tpick required-field cues. Fallback is not pixel parity or
+proof of equivalent whole-script usability.
 Unknown widget/API and invalid Builder-reference hard stops remain. Original eloot
 and Bigshot negative acceptance is retained in the full suite.
 
@@ -134,3 +135,13 @@ NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb --example 'r
 Routine specs use only the retained fixture; they do not need the source checkouts,
 Prism extraction, network access, native GTK, game data or source-script execution.
 Validation results are recorded in the [PR tracker](webui-review-readiness.md#css-decoration-work-tracker).
+
+## Subsequent default tpick setup expansion (2026-10-12)
+
+The HeaderBar PR now includes signed Grid origins, empty/live notebooks and a
+bounded class-qualified label-color grammar. Required-field labels retain their
+source-defined color; unrelated theme CSS remains omitted. The original settings,
+profile/default/save and information/message/statistics flows run from hashed
+source excerpts. See the current [tracker](webui-review-readiness.md) for validation
+and explicit source defects/optional-image limits. Historical CSS-only results
+above do not themselves establish this broader setup acceptance.

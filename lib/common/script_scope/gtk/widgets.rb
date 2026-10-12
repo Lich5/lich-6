@@ -53,6 +53,7 @@ module Lich
           def set_name(value)
             session.refuse(self, :name=) unless value.is_a?(String) && value.length <= 512
             @widget_name = value.dup.freeze
+            session.refresh_label_styles
             self
           end
           alias name= set_name
@@ -72,6 +73,7 @@ module Lich
             session.port.detach(@handle, child.materialize) if @handle
             @children.delete(child)
             child.parent = nil
+            session.refresh_label_styles
             refresh_layout!
             self
           end
@@ -133,6 +135,7 @@ module Lich
             session.port.attach(@handle, child.materialize, index) if @handle
             child.parent = self
             @children.insert(index, child)
+            session.refresh_label_styles
             refresh_layout!
             self
           end
@@ -572,6 +575,8 @@ module Lich
         class Window < Widget
           include Container
 
+          attr_reader :titlebar
+
           TOPLEVEL = :toplevel
           Allocation = Data.define(:width, :height)
 
@@ -595,6 +600,41 @@ module Lich
           # Reads the current shadow window title.
           # @return [String]
           def title = read(:title)
+
+          # A HeaderBar is a separate first child; the normal content stays intact.
+          # Live replacement preserves both the page handle and detached titlebar.
+          def set_titlebar(bar)
+            session.synchronize do
+              session.refuse(self, :set_titlebar) if destroyed?
+              session.refuse(self, :set_titlebar) unless bar.nil? || bar.is_a?(HeaderBar)
+              return self if bar.equal?(@titlebar)
+
+              if bar
+                valid = bar.is_a?(HeaderBar) && bar.session.equal?(session) && !bar.destroyed? && !bar.parent
+                session.refuse(self, :set_titlebar) unless valid && !toplevel.equal?(bar)
+                insert_child(bar, 0)
+              end
+              remove(@titlebar) if @titlebar
+              @titlebar = bar
+            end
+            self
+          end
+          alias titlebar= set_titlebar
+
+          def remove(child)
+            super
+            @titlebar = nil if child.equal?(@titlebar)
+            self
+          end
+
+          # Programmatic and header closes follow the existing owner dispatcher.
+          # A true delete-event result vetoes destruction; destroyed windows are inert.
+          def close
+            return self if destroyed?
+
+            session.queue { destroy unless destroyed? || emit_handlers(:close) == true }
+            self
+          end
 
           # Requests integer window dimensions through the shared page size property.
           # @return [Window] self
@@ -737,7 +777,7 @@ module Lich
           # Applies content margins and materializes this page for the shared publication path.
           # @return [Window] self
           def show_all
-            @children.each { |child| child.set_border_width(@content_margin) } if @content_margin
+            @children.each { |child| child.set_border_width(@content_margin) unless child.equal?(@titlebar) } if @content_margin
             @children.each(&:show_all)
             show
           end
@@ -756,6 +796,11 @@ module Lich
           protected
 
           def component_type = :page
+
+          def forget_child(child)
+            @titlebar = nil if child.equal?(@titlebar)
+            super
+          end
 
           def layout_props
             props = { viewport: expands?(:vertical) }
@@ -1006,9 +1051,19 @@ module Lich
           # Appends a child and its label in source order.
           # @return [Integer] zero-based index of the appended page
           def append_page(child, label)
-            @props[:names] << label.text
-            add(child)
-            @children.length - 1
+            session.synchronize do
+              names = @props[:names] + [label.text]
+              # A queued producer may populate an already visible empty notebook.
+              # Publish names before attach so slot/capacity validation sees them.
+              write(:names, names)
+              begin
+                add(child)
+              rescue StandardError
+                write(:names, names[0...-1])
+                raise
+              end
+              @children.length - 1
+            end
           end
 
           protected
@@ -1173,6 +1228,14 @@ module Lich
           alias set_line_wrap set_wrap
           alias line_wrap= set_wrap
 
+          # Maps the supported Pango word/none wrapping modes to typed text wrap.
+          # @return [Label] self
+          def set_wrap_mode(value)
+            session.refuse(self, :wrap_mode=) unless %i[word none].include?(value)
+            set_wrap(value == :word)
+          end
+          alias wrap_mode= set_wrap_mode
+
           # Justifies lines inside the label's text block, independently of
           # widget placement and xalign. A single line does not move the label.
           # Full justification and linked Markdown labels remain unsupported.
@@ -1218,6 +1281,18 @@ module Lich
 
           protected
 
+          # Applies a typed foreground cue, restoring authored/default color when
+          # the matching class or provider disappears. Literal content is unchanged.
+          def apply_label_color(color)
+            return if @link_markup
+            before = @label_color || @props[:foreground]
+            after = color || @props[:foreground]
+            if @handle && !destroyed? && before != after
+              session.port.set(@handle, :foreground, after || Lich::WebUI::Adapter::UNSET)
+            end
+            @label_color = color
+          end
+
           def component_type = @link_markup ? :markdown : :text
 
           # Preserve the declared single-line boundary on later text/markup writes.
@@ -1230,6 +1305,7 @@ module Lich
 
           def component_props
             props = super
+            props = props.merge(foreground: @label_color) if @label_color
             @link_markup ? props.slice(:content, :key, :hidden, :align, :margin, :width) : props
           end
         end

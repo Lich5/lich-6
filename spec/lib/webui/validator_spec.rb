@@ -8,6 +8,13 @@ RSpec.describe Lich::WebUI::Validator do
 
   let(:context) { { owner: 'spec-owner', page_id: 'spec-page', cid: 'test:component' } }
 
+  it 'accepts an empty tab set but refuses selection until a page exists' do
+    props = validator.validate_component!(:tabs, { names: [], selected: 0 }, **context)
+    expect(props[:names]).to be_empty
+    expect { validator.validate_component!(:tabs, { names: [], selected: 1 }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_event!(:tabs, :select, { index: 0 }, props: props, **context) }.to raise_error(Lich::WebUI::Error)
+  end
+
   it 'allows bounded long plain text without widening input or option label limits' do
     content = 'x' * 65_536
     expect(validator.validate_component!(:text, { content: content }, **context)[:content]).to eq(content)
