@@ -159,6 +159,12 @@ jobs:
           restore-keys: rspec-runtime-
       - name: Run RSpec tests
         if: steps.preflight.outputs.should_test == 'true'
+        env:
+          # Four workers share four vCPUs, which inflates example times 2-3x, so
+          # the 2s slow-example warning is noise here. The "Changed spec files on
+          # their own" job runs unloaded at the default 2s and covers the files a
+          # PR changes; 60s here only flags pathological examples.
+          RSPEC_SLOW_EXAMPLE_SECONDS: '60'
         run: |
           seed=$RANDOM
           echo "RSpec seed: $seed"
