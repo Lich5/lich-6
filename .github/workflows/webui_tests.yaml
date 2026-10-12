@@ -1,3 +1,12 @@
+# ------------------------------------------------------------------------------
+# WebUI Tests
+#
+# On pull requests both jobs run only when a WebUI-relevant path changed (see
+# WEBUI_PATHS in the changes job); otherwise they are skipped, which GitHub
+# reports as passing for required checks. Pushes to main and manual runs always
+# run both jobs, so anything a PR filter misses is still caught on main. If the
+# changed-file list cannot be read, the jobs run.
+# ------------------------------------------------------------------------------
 name: WebUI Tests
 
 on:
@@ -8,18 +17,66 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changed files
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      webui: ${{ steps.classify.outputs.webui }}
+    steps:
+      - name: Classify changed files
+        id: classify
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // Paths the renderer and browser jobs depend on. Prefix match for
+            // entries ending in '/' or '_', exact match otherwise.
+            const WEBUI_PATHS = [
+              'lib/webui/', 'lib/webui.rb',
+              'lib/common/script_scope/', 'lib/common/script_scope.rb', 'lib/common/script_death.rb',
+              'spec/webui/', 'spec/fixtures/webui/', 'spec/lib/webui/', 'spec/lib/common/script_scope_',
+              'spec/support/webui_', 'spec/spec_helper.rb',
+              'Gemfile', 'Gemfile.lock', '.github/workflows/webui_tests.yaml',
+            ];
+            const matches = path => WEBUI_PATHS.some(p => p.endsWith('/') || p.endsWith('_') ? path.startsWith(p) : path === p);
+            if (context.eventName !== 'pull_request') {
+              core.info(`Event ${context.eventName}: running WebUI jobs.`);
+              core.setOutput('webui', 'true');
+              return;
+            }
+            try {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number, per_page: 100,
+              });
+              // A rename out of a WebUI path still counts: check the old name too.
+              const hits = files.filter(f => matches(f.filename) || (f.previous_filename && matches(f.previous_filename)));
+              // The API returns at most 3,000 files; a capped list may hide a WebUI path.
+              const capped = files.length >= 3000;
+              core.info(`Changed files = ${files.length}${capped ? ' (API limit reached)' : ''}, WebUI-relevant = ${hits.length}`);
+              core.setOutput('webui', capped || hits.length > 0 ? 'true' : 'false');
+            } catch (error) {
+              core.notice(`Could not read changed files (${error.message}); running WebUI jobs.`);
+              core.setOutput('webui', 'true');
+            }
+
   renderer:
     name: JavaScript renderer
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '26.5.0'
@@ -30,6 +87,8 @@ jobs:
 
   browser:
     name: Chrome browser integration
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
@@ -37,6 +96,8 @@ jobs:
       NATIVE_BROWSER: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
         with:
           bundler-cache: true
@@ -50,6 +111,10 @@ jobs:
         working-directory: spec/webui
         run: npx --no-install playwright install --with-deps chrome
       - name: Exercise shim controls and file bootstrap
+        env:
+          # End-to-end Chrome scenarios take seconds by design; 60s here only
+          # flags pathological examples (the 2s default is for unit examples).
+          RSPEC_SLOW_EXAMPLE_SECONDS: '60'
         run: bundle exec rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
       - name: Upload browser failure diagnostics
         if: failure()

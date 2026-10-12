@@ -63,7 +63,8 @@ checks; GTK visual parity requires comparison with the original GTK interface;
 OS-window geometry, restoration and cleanup require actual OS-window checks.
 The JavaScript suites alone do not establish any of those behaviors.
 The separate `WebUI Tests` GitHub Actions workflow runs these suites on Ubuntu 26.04.
-It runs on pull requests, pushes to `main`, and manual dispatch.
+It runs on pushes to `main` and manual dispatch, and on pull requests that change
+WebUI-relevant paths (listed in the workflow); other pull requests skip it.
 RSpec runs separately in its own workflow; the renderer job does not replace it.
 
 ## WebUI Browser Tests

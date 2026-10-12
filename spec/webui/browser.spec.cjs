@@ -3,7 +3,43 @@ const { test, expect } = require('@playwright/test');
 // Ruby owns the service and verifies the resulting script-side state. Each run
 // starts with a fresh browser cookie jar and the actual private file bootstrap.
 const scenario = process.env.WEBUI_TEST_SCENARIO;
+
+// Compact websocket/console record, printed only when the test fails. Traces
+// do not capture websocket frames, so without this a lost event (for example a
+// Close that never reaches the server) leaves no evidence in CI.
+const wire = [];
+const wireStart = Date.now();
+function record(direction, data) {
+  const raw = String(data).slice(0, 200);
+  let summary = raw;
+  // Only websocket frames are condensed; console text is kept as written.
+  if (direction !== 'console') {
+    try {
+      const message = JSON.parse(data);
+      summary = ['type', 'event', 'cid', 'page', 'generation', 'request', 'reason']
+        .filter(key => message[key] !== undefined)
+        .map(key => `${key}=${typeof message[key] === 'string' ? message[key].slice(0, 40) : message[key]}`)
+        .join(' ') || raw;
+    } catch (_error) { /* non-JSON frame: keep the truncated text */ }
+  }
+  wire.push(`${String(Date.now() - wireStart).padStart(6)}ms ${direction} ${summary}`);
+  if (wire.length > 200) wire.shift();
+}
+
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  const body = wire.join('\n');
+  console.log(`WebUI wire log (${scenario}, last ${wire.length} entries):\n${body}`);
+  await testInfo.attach('webui-wire.log', { body, contentType: 'text/plain' });
+});
+
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
+  page.on('websocket', socket => {
+    socket.on('framesent', frame => record('->', frame.payload));
+    socket.on('framereceived', frame => record('<-', frame.payload));
+    socket.on('close', () => record('--', 'socket closed'));
+  });
+  page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
   expect(['shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);

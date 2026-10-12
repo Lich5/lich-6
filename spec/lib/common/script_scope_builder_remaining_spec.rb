@@ -144,9 +144,20 @@ RSpec.describe 'remaining Builder setup families' do
     widget.session.port.send(:node!, handle).cid
   end
 
-  def event(widget, name, payload, submission: nil)
-    service.runtime.refresh(@page)
+  # Each render of these forms costs tens of milliseconds. Only a :current
+  # submission needs a fresh tree: viewer value changes do not re-render, so the
+  # last delivered tree can hold stale input values. Other events only need the
+  # delivered generation; queue_event already retries a stale one once.
+  def render_for(submission)
     render = @messages.reverse.find { |message| message['type'] == 'render' }
+    return render if render && submission != :current
+
+    service.runtime.refresh(@page)
+    @messages.reverse.find { |message| message['type'] == 'render' }
+  end
+
+  def event(widget, name, payload, submission: nil)
+    render = render_for(submission)
     message = { type: 'event', page: service.registry.address_for(@page), generation: render['generation'],
                 cid: cid(widget), event: name, payload: payload }
     if submission == :current
@@ -345,7 +356,7 @@ RSpec.describe 'remaining Builder setup families' do
   end
 
   [true, false, nil].each do |legacy|
-    it "migrates corrected bigshot legacy boon flag #{legacy.inspect} without replaying it" do
+    it "migrates corrected bigshot legacy boon flag #{legacy.inspect} without replaying it", :slow do
       form = original('bigshot', corrected: true, settings: { boon_flee_from: legacy })
       connect
       expect(form.settings).not_to have_key(:boon_flee_from)
@@ -433,7 +444,7 @@ RSpec.describe 'remaining Builder setup families' do
     expect(@variables.op).to be_nil
   end
 
-  it 'runs corrected bigshot new-profile, overwrite/cancel and update-profile paths' do
+  it 'runs corrected bigshot new-profile, overwrite/cancel and update-profile paths', :slow do
     form = original('bigshot', corrected: true)
     connect
     existing = Dir.children(@profile_directory)
