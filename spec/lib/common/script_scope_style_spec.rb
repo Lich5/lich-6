@@ -125,18 +125,117 @@ RSpec.describe 'progress provider lifecycle' do
     expect(bar.send(:component_props)[:fill_color][:r]).to eq(255)
   end
 
-  it 'refuses unsupported reloads and invalid inputs without changing the previous style' do
+  it 'refuses invalid input without changing the previous style' do
     provider.load(data: stylesheet)
     handle = live_bar
     bar.style_context.add_provider(provider)
-    [nil, 12, 'x' * 8193, [255].pack('C').force_encoding('UTF-8'), stylesheet.encode('UTF-16LE'),
-     stylesheet('unknown'), stylesheet.sub('22px', '23px'),
-     stylesheet + 'button { color: red; }', stylesheet.sub('none', 'url(https://invalid)'),
-     stylesheet.sub('bold;', 'bold')].each do |input|
+    [nil, 12, 'x' * 8193, [255].pack('C').force_encoding('UTF-8'), stylesheet.encode('UTF-16LE')].each do |input|
       expect { provider.load(data: input) }.to raise_error(gtk.const_get(:UnsupportedOperation), /operation=load/)
       expect(provider.fill_color).to eq(blue)
       expect(bar.session.port.get(handle, :fill_color)).to eq(blue)
     end
+  end
+
+  it 'distinguishes unloaded, recognized and omitted providers without retaining source CSS' do
+    expect(provider.state).to eq(:unloaded)
+    expect(provider.loaded?).to be false
+    expect(provider.load_from_data('button { color: red; }')).to be true
+    expect(provider.state).to eq(:omitted)
+    expect(provider.loaded?).to be true
+    expect(provider.fill_color).to be_nil
+    provider.load(data: stylesheet)
+    expect(provider.state).to eq(:recognized)
+    expect(provider.fill_color).to eq(blue)
+    ['', 'x' * 8192, stylesheet('unknown'), stylesheet.sub('22px', '23px'),
+     stylesheet + 'button { color: red; }', stylesheet.sub('bold;', 'bold'),
+     '@import url(https://invalid/private); progress { background: url(file:///private/secret); }'].each do |css|
+      expect(provider.load(data: css)).to be true
+      expect(provider.state).to eq(:omitted)
+      expect(provider.fill_color).to be_nil
+      expect(provider.instance_variables.map { |name| provider.instance_variable_get(name) }).not_to include(css)
+    end
+    expect(Lich).to have_received(:log).with(/operation=css_decoration/).once
+    expect(Lich).not_to have_received(:log).with(/private\/secret|https:\/\/invalid/)
+  end
+
+  it 'clears recognized effects on every live bar when reloaded as omitted and can restore them' do
+    handle = live_bar
+    other = gtk.const_get(:ProgressBar).new
+    other.height_request = 31
+    other_handle = other.materialize
+    bar.style_context.add_provider(provider)
+    other.style_context.add_provider(provider)
+    provider.load(data: 'button { color: red; }')
+    expect(bar.session.port.get(handle, :fill_color)).to be_nil
+    provider.load(data: stylesheet)
+    bar.set_fraction(0.4)
+    other.set_fraction(0.7)
+    provider.load_from_data('progress { background-image: url(https://invalid); }')
+    [handle, other_handle].each { |target| expect(bar.session.port.get(target, :fill_color)).to be_nil }
+    expect(bar.session.port.get(handle, :height)).to be_nil
+    expect(bar.session.port.get(other_handle, :height)).to eq(31)
+    expect(bar.session.port.get(handle, :value)).to eq(0.4)
+    expect(bar.session.port.get(other_handle, :value)).to eq(0.7)
+    expect(bar.materialize).to equal(handle)
+    expect(other.materialize).to equal(other_handle)
+    provider.load(data: stylesheet('gold'))
+    [handle, other_handle].each do |target|
+      expect(bar.session.port.get(target, :fill_color)).to eq(r: 255, g: 215, b: 0, a: 1.0)
+      expect(bar.session.port.get(target, :height)).to eq(24)
+    end
+    other.height_request = 42
+    provider.load(data: 'label { color: red; }')
+    expect(bar.session.port.get(other_handle, :height)).to eq(42)
+  end
+
+  it 'reveals another recognized provider when the higher priority one becomes omitted' do
+    provider.load(data: stylesheet)
+    second = gtk.const_get(:CssProvider).new
+    second.load(data: stylesheet('gold'))
+    bar.style_context.add_provider(provider, application)
+    bar.style_context.add_provider(second, user)
+    second.load(data: 'progress { border: 1px solid red; }')
+    expect(bar.send(:component_props)).to include(fill_color: blue, height: 24)
+    bar.style_context.remove_provider(provider)
+    expect(bar.send(:component_props)).not_to have_key(:fill_color)
+    expect(bar.send(:component_props)).not_to have_key(:height)
+    second.load(data: stylesheet('gold'))
+    expect(bar.send(:component_props)[:fill_color][:r]).to eq(255)
+    bar.style_context.remove_provider(second)
+    expect(bar.send(:component_props)).not_to have_key(:fill_color)
+  end
+
+  it 'preserves unloaded and omitted states on invalid input and refuses unsupported call shapes' do
+    [false, true].each do |loaded|
+      provider.load(data: 'label { color: red; }') if loaded
+      state = provider.state
+      expect { provider.load(data: nil) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+      expect { provider.load('label {}') }.to raise_error(ArgumentError)
+      expect { provider.load(data: '', unrelated: true) }.to raise_error(ArgumentError)
+      expect(provider.state).to eq(state)
+      expect(provider.loaded?).to eq(loaded)
+    end
+  end
+
+  it 'attributes one omission notice per owner and keeps omitted providers isolated and detached' do
+    first_provider, first_bar = provider, bar
+    first_bar.style_context.add_provider(first_provider)
+    2.times { first_provider.instance_eval("load(data: 'label { color: red; }')", 'style.lic', 95) }
+    gtk.const_get(:CssProvider).new.load(data: 'button { color: red; }')
+    expect(Lich).to have_received(:log).with(/script=style.lic .*operation=css_decoration source=style.lic:95/).once
+    @other_owner = Struct.new(:name).new('other.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(@other_owner)
+    other_provider = gtk.const_get(:CssProvider).new
+    other_provider.instance_eval("load(data: 'label { color: red; }')", 'other.lic', 21)
+    expect(Lich).to have_received(:log).with(/script=other.lic .*operation=css_decoration source=other.lic:21/).once
+    expect { first_provider.load(data: stylesheet) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect(first_provider.state).to eq(:omitted)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    first_bar.destroy
+    expect(first_provider.instance_variable_get(:@contexts)).to be_empty
+    expect { first_provider.load(data: stylesheet) }.not_to raise_error
+    Lich::Common::ScriptDeath.run(owner)
+    expect { first_provider.load(data: 'label {}') }.to raise_error(gtk.const_get(:UnsupportedOperation))
   end
 
   it 'rejects invalid attachments and attributes unknown style calls to source' do

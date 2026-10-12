@@ -597,8 +597,11 @@ RSpec.describe 'bounded script compatibility pilot' do
     label = compatibility.const_get(:Label).new('Elemental Defense I')
     expect(label.send(:component_props)).to include(align: :center, wrap: false)
     expect(label.send(:component_props)[:emphasis]).not_to eq(:strong)
-    expect { provider.load(data: 'progress { background-image: url(https://untrusted); }') }
-      .to raise_error(StandardError, /operation=load/)
+    expect(provider.load(data: 'progress { background-image: url(https://untrusted); }')).to be true
+    expect(provider.state).to eq(:omitted)
+    expect(progress.send(:component_props)).not_to have_key(:fill_color)
+    expect(progress.send(:component_props)).not_to have_key(:height)
+    expect(label.send(:component_props)[:emphasis]).not_to eq(:strong)
   end
 
   it 'uses a real split row and the GTK default light palette without extra window chrome' do
@@ -616,7 +619,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(compatibility.const_get(:Settings).default.gtk_application_prefer_dark_theme?).to be false
   end
 
-  it 'reloads and removes progress providers through browser callbacks', browser: true do
+  it 'reloads, omits and removes progress providers through browser callbacks', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
     window = compatibility::Window.new('Progress provider lifecycle')
@@ -629,6 +632,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     progress.set_fraction(0.5)
     sibling = compatibility::Label.new('Unstyled sibling')
     reload = compatibility::Button.new('Reload style')
+    omit = compatibility::Button.new('Omit style')
     remove = compatibility::Button.new('Remove style')
     close = compatibility::Button.new('Close progress fixture')
     calls = []
@@ -637,18 +641,22 @@ RSpec.describe 'bounded script compatibility pilot' do
       progress.set_fraction(0.75)
       calls << :reload
     end
+    omit.signal_connect('clicked') do
+      provider.load(data: 'progress { background-image: url(https://invalid); }')
+      calls << :omit
+    end
     remove.signal_connect('clicked') do
       progress.style_context.remove_provider(provider)
       calls << :remove
     end
     close.signal_connect('clicked') { window.destroy }
-    [progress, sibling, reload, remove, close].each { |widget| column.add(widget) }
+    [progress, sibling, reload, omit, remove, close].each { |widget| column.add(widget) }
     window.add(column)
     window.show_all
     page = nil
     Timeout.timeout(5) { sleep 0.01 until (page = service.registry.pages_for(owner).first)&.last_render }
     WebUIBrowser.check(service: service, page: page, scenario: 'shim-progress-style')
-    expect(calls).to eq(%i[reload remove])
+    expect(calls).to eq(%i[reload omit reload remove])
     expect(progress.send(:component_props)).to include(value: 0.75)
     expect(progress.send(:component_props)).not_to have_key(:fill_color)
     expect(window).to be_destroyed

@@ -22,44 +22,47 @@ module Lich
           end
         end
 
-        # Parse only the measured spell-monitor progress declarations.
+        # Preserve measured progress declarations and explicitly omit other CSS.
         # The browser receives bounded color/geometry values, never source CSS.
         class CssProvider
-          attr_reader :session, :fill_color
+          attr_reader :session, :fill_color, :state
 
           # Captures the creating owner; retained providers cannot cross sessions.
           def initialize
             @session = Gtk.session
             @contexts = {}.compare_by_identity
+            @state = :unloaded
           end
 
-          # Accepts the measured progress stylesheet grammar and extracts a bounded fill color.
-          # Arbitrary CSS never reaches the renderer.
-          # @param data [String] supported stylesheet, at most 8,192 characters
-          # @return [Boolean] true on successful validation and notification
-          # @raise [UnsupportedOperation] for any unsupported grammar or color
+          # Recognizes measured progress styling or omits decoration with a notice.
+          # Omitted CSS is inert and is not retained, parsed further or sent to the renderer.
+          # @param data [String] stylesheet, at most 8,192 characters
+          # @return [Boolean] true on recognized or omitted decoration
+          # @raise [UnsupportedOperation] for invalid input or owner/lifetime violations
           def load(data:)
             session.style_operation(self, :load) do
               valid = data.is_a?(String) && data.valid_encoding? && data.encoding.ascii_compatible? && data.length <= 8192
-              match = data.match(/\Alabel\s*\{\s*font-weight:\s*bold;\s*\}\s*trough\s*\{\s*font-weight:\s*bold;\s*min-height:\s*22px;\s*\}\s*progress\s*\{\s*font-weight:\s*bold;\s*min-height:\s*20px;\s*background-image:\s*none;\s*background-color:\s*(#[0-9a-fA-F]{6}|[a-z]+)\s*;?\s*\}\z/) if valid
+              session.refuse(self, :load) unless valid
+              match = data.match(/\Alabel\s*\{\s*font-weight:\s*bold;\s*\}\s*trough\s*\{\s*font-weight:\s*bold;\s*min-height:\s*22px;\s*\}\s*progress\s*\{\s*font-weight:\s*bold;\s*min-height:\s*20px;\s*background-image:\s*none;\s*background-color:\s*(#[0-9a-fA-F]{6}|[a-z]+)\s*;?\s*\}\z/)
               color = Color.parse(match[1]) if match
-              session.refuse(self, :load) unless color
               @fill_color = color
+              @state = color ? :recognized : :omitted
+              session.degrade(:css_decoration, 'CSS decoration omitted; supported controls use the WebUI theme', receiver: self) unless color
               @contexts.each_key { |context| context.send(:refresh) }
               true
             end
           end
 
           # Positional GTK spelling; shares validation and reload notification.
-          # @param data [String] bounded supported progress stylesheet
+          # @param data [String] bounded stylesheet
           # @return [Boolean] true on successful load
           def load_from_data(data)
             load(data: data)
           end
 
-          # Reports successful validation of this provider's stylesheet.
+          # Reports a completed load, including explicitly omitted decoration.
           # @return [Boolean]
-          def loaded? = !@fill_color.nil?
+          def loaded? = @state != :unloaded
 
           # Refuses style APIs outside the measured progress surface.
           # @raise [UnsupportedOperation] always
@@ -145,7 +148,7 @@ module Lich
           end
 
           def refresh
-            candidates = @providers.each_with_index.select { |(provider, _priority), _index| provider.loaded? }
+            candidates = @providers.each_with_index.select { |(provider, _priority), _index| provider.state == :recognized }
             selected = candidates.max_by { |(_provider, priority), index| [priority, index] }
             provider = selected&.first&.first
             # GTK's 22px trough content includes a one-pixel border on each side.

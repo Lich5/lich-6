@@ -461,15 +461,20 @@ the copied captions.
 
 CSS support is distinct from typed presentation properties. Builder does not
 accept arbitrary stylesheets or CSS classes. Direct shim `CssProvider#load(data:)`
-and positional `load_from_data(data)`
-accepts only the bounded progress stylesheet grammar implemented in
+and positional `load_from_data(data)` recognize the bounded progress grammar in
 [`gtk/style.rb`](../lib/common/script_scope/gtk/style.rb): bold label/trough/progress
 rules, 22px trough and 20px progress minima, no background image, and a supported
 fill color. The final color declaration may omit its terminating semicolon;
 other declarations and their ordering remain bounded. Input remains limited to
 8,192 characters; this is not a measured maximum for all CSS consumers.
-It translates validated values into the shared progress control;
-source CSS never reaches the browser. Other declarations are refused. The fact
+Recognized CSS translates validated values into the shared progress control;
+source CSS never reaches the browser. Other bounded strings are explicitly
+omitted, including unrecognized colors, malformed CSS and URL/import declarations.
+They are inert: no source CSS is retained, evaluated, fetched or sent to the browser.
+The first omission logs `operation=css_decoration` once per script/session, with
+script, receiver and call-site attribution (or `source=unknown` when unavailable).
+The notice does not include source CSS. This is the first implemented PR 2 slice.
+The fact
 that the renderer itself uses CSS does not implement GTK selectors, widget
 states or arbitrary native sizing semantics. Expanding that surface requires a
 separate evidence-based decision, not script-name exceptions.
@@ -478,9 +483,14 @@ separate evidence-based decision, not script-name exceptions.
 attached before loading. `add_provider(provider, priority)` accepts APPLICATION
 (600, also the omitted-argument default) or USER (800). Higher priority wins;
 the most recently attached provider wins ties. Reattachment replaces that
-provider's registration; an unloaded provider contributes no effect. Successful
-loads update every attached bar under the existing session monitor. Invalid or
-unsupported reloads preserve the last valid provider and widget presentation.
+provider's registration. Providers have explicit `unloaded`, `recognized` and
+`omitted` states; `loaded?` is true for the latter two. Only recognized providers
+contribute progress effects. Loads update every attached bar under the existing
+session monitor. Recognized-to-omitted reloads reveal another recognized provider,
+then authored values or theme defaults; stale fill/height effects are cleared.
+An omitted provider can become recognized again on a later load. Non-string,
+invalid/incompatible-encoding and over-limit input still refuses without changing
+the previous state or presentation; unsupported call shapes still raise.
 `remove_provider(provider)` reveals remaining providers, then the authored values
 or default theme. Repeated removal of a same-owner provider is harmless.
 
@@ -493,8 +503,10 @@ contexts on unattached widgets. Widget destruction and the window's retained
 geometry snapshot use the same session monitor as provider reloads, so direct or
 ancestor destruction cannot retire a handle during a style publication or leave
 other attached bars stale. Cross-owner attachment/mutation and unknown style
-methods refuse explicitly. General widget contexts, screen providers, CSS classes
-and decoration omission are the separate approved PR 2, not implemented here.
+methods refuse explicitly. General widget contexts, screen providers, CSS classes,
+the screen-geometry notice correction and corpus-wide acceptance remain unfinished
+PR 2 work. Provider-load success alone does not establish whole-script support;
+unsupported widgets such as HeaderBar and unrelated behavior still hard stop.
 
 The adapter's existing `set` operation accepts the explicit Ruby token
 `Lich::WebUI::Adapter::UNSET` for **optional shared** properties. It removes the

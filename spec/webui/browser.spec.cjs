@@ -42,6 +42,21 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.getByRole('button', { name: 'Reload style', exact: true }).click();
     await expect(progress).toHaveCSS('--progress-fill', 'rgba(255, 215, 0, 1)');
     await expect(progress).toHaveJSProperty('value', 0.75);
+    const cssRequests = [];
+    page.on('request', request => {
+      if (new URL(request.url()).hostname === 'invalid') cssRequests.push(request.url());
+    });
+    await page.getByRole('button', { name: 'Omit style', exact: true }).click();
+    await expect(bar).not.toHaveClass(/webui-progress-colored/);
+    await expect.poll(() => bar.evaluate(element => element.style.height)).toBe('');
+    await expect.poll(() => progress.evaluate(element => element.style.getPropertyValue('--progress-fill'))).toBe('');
+    await expect(bar).toHaveAttribute('data-cid', cid);
+    await expect(progress).toHaveJSProperty('value', 0.75);
+    await expect(sibling).toHaveCSS('font-weight', weight);
+    await page.getByRole('button', { name: 'Reload style', exact: true }).click();
+    await expect(bar).toHaveClass(/webui-progress-colored/);
+    await expect(bar).toHaveCSS('height', '24px');
+    await expect(progress).toHaveCSS('--progress-fill', 'rgba(255, 215, 0, 1)');
     await page.getByRole('button', { name: 'Remove style', exact: true }).click();
     await expect(bar).not.toHaveClass(/webui-progress-colored/);
     await expect.poll(() => bar.evaluate(element => element.style.height)).toBe('');
@@ -51,6 +66,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(sibling).toHaveCSS('font-weight', weight);
     await page.getByRole('button', { name: 'Close progress fixture', exact: true }).click();
     await expect(progress).toHaveCount(0);
+    expect(cssRequests).toEqual([]);
   } else if (['shim-repository', 'shim-go2'].includes(scenario)) {
     const ids = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
     const widget = name => page.locator(`[data-cid="${ids[name]}"]`);

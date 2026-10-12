@@ -1,12 +1,22 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
-Date: 2026-10-11. Updated 2026-10-12: **PR 1 ready for owner review; fallback PR 2 not started**.
+Date: 2026-10-11. Updated 2026-10-12: **PR 1 merged as [#41](https://github.com/Lich5/lich-6/pull/41); fallback PR 2 in progress**.
 The owner approved the two-PR sequence in the
 [current tracker](webui-review-readiness.md#css-decoration-work-tracker).
-PR 1 adds progress-provider lifecycle support; arbitrary CSS still refuses until
-PR 2. The original handoff and historical evidence below remain dated provenance.
+PR 1 added progress-provider lifecycle support. PR 2's first local slice adds
+explicit provider states, inert omission with an attributed notice, and reset of
+previous progress effects. Shared widget/screen/class APIs and corpus acceptance
+remain unfinished. The original handoff and evidence below remain dated provenance.
 
-PR 1 starts from synchronized `main` at
+PR #41 merged at `2026-10-12T07:35:31Z` as
+`de8765199cdea6e73ed19cd5a9b6fcab759abea6`, including the destruction-race fix.
+Local `main` was fast-forwarded to that commit and verified equal to `origin/main`.
+PR 2 started on `feat/webui-css-decoration-fallback` from that synchronized base,
+preserving the uncommitted post-merge documentation updates. Provider state and
+recognized-to-omitted reload/reset work uses the existing owner monitor. The
+8,192-character bound remains unchanged pending the cohort measurements.
+
+PR 1 started from synchronized `main` at
 `c2f4a2a2f0cee4ab01aa53e91886423143afb884` on
 `feat/webui-progress-provider-lifecycle`. The owner explicitly approved a narrow
 shared-core extension: `Adapter#set(handle, property, Adapter::UNSET)` removes an
@@ -71,16 +81,17 @@ Cross-repository source changes are not part of this assignment.
 
 ## Why this work is needed
 
-Current `CssProvider#load` in
+At the original audit, `CssProvider#load` in
 [`style.rb`](../lib/common/script_scope/gtk/style.rb) accepts only an exact
 progress-stylesheet grammar originally measured from `spellson`. It extracts
 an allowed fill color. `StyleContext#add_provider` applies that color and a
 24-pixel progress height at `PRIORITY_USER`.
 
-This is not a general CSS parser. Even `staminabar2`'s almost identical stylesheet
-fails because its final color declaration lacks a trailing semicolon. An isolated
+This was not a general CSS parser. Even `staminabar2`'s almost identical stylesheet
+failed because its final color declaration lacked a trailing semicolon. An isolated
 diagnostic string with that semicolon added passes; the source script was not
-edited. Preserve existing accepted progress rendering, but do not turn this task
+edited. PR #41 subsequently accepted that missing final semicolon. Preserve
+existing accepted progress rendering, but do not turn this task
 into a collection of script-specific regex exceptions.
 
 For mirror `tpick.lic` version 48:

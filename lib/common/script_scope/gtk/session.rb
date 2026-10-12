@@ -218,12 +218,14 @@ module Lich
           end
 
           # Logs each unsupported presentation approximation once per session.
+          # @param receiver [Object, nil] include source attribution when supplied
           # @return [void]
-          def degrade(operation, reason)
+          def degrade(operation, reason, receiver: nil)
             return if @degradations[operation]
 
             @degradations[operation] = true
-            Lich.log("#{@owner.name}: compatibility #{operation}: #{reason}")
+            source = receiver ? attribution(receiver, operation) : "#{@owner.name}: compatibility #{operation}"
+            Lich.log("#{source}: #{reason}")
           end
 
           # Fails loudly with script, receiver, operation, and source-call attribution.
