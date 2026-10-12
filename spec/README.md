@@ -70,8 +70,19 @@ The independent `shim-progress-style` Chrome case in the existing widget suite
 checks attach-before-load, callback-driven reload/omission/re-recognition/removal,
 stable component identity, fraction preservation, unchanged sibling typography,
 no request to the omitted CSS URL and final window closure. Its label context and
-screen attachment remain inert, and local class names do not appear in the DOM.
-It also loads original tpick global/label CSS from the retained corpus fixture
+unmatched screen rules remain inert, and local class names do not appear in the DOM.
+HeaderBar coverage in `script_scope_header_bar_spec.rb` verifies title replacement,
+owner isolation, content identity, close vetoes and cleanup. With
+`NATIVE_BROWSER=1`, it also checks header action/input behavior and the original
+tpick welcome setup in Chrome. `fixtures/webui/tpick-titlebar.json` retains
+unchanged source methods and hashes. Information/settings header construction
+passes. `script_scope_tpick_setup_spec.rb` adds full default settings/information,
+source data and callbacks, required cues, profile/default/save persistence and
+explicit Monk/Paladin source-defect and optional-image boundaries. Grid rebasing,
+label provider lifecycle, empty/live notebooks and renderer layout are separately
+regressed. Native WKWebView validation is recorded in the handoff.
+
+The progress browser fixture also loads original tpick global/label CSS from the retained corpus fixture
 and verifies that its requested font does not replace the WebUI theme.
 
 The same workflow has a separate Linux Chrome job. Playwright drives the existing

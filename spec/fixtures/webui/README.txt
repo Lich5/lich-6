@@ -20,12 +20,31 @@ Git blobs. Prism decodes selected strings; extraction never evaluates source Rub
 The corpus spec uses only this retained artifact and runs reviewed CSS-only
 excerpts from eleven sources, with explicit test widget/settings bindings. It
 does not execute game loops, downloads, persistence, or excluded Builder setup.
-Original tpick HeaderBar and manatimer Display calls remain negative checks.
+The original tpick HeaderBar constructor now succeeds; manatimer Display remains
+a negative check. The CSS evidence remains separate from setup acceptance below.
 
 The Chrome progress harness loads the retained tpick global and label CSS, but
 does not render the original tpick setup. See `docs/webui-css-decoration-acceptance.md`
 for per-script size/disposition, sample-versus-maximum limits, omissions and
 rebuild/validation commands. No script source was repaired for this acceptance.
+
+tpick setup fixture (separate from the ten Builder setup fixtures)
+
+`tpick-titlebar.json` retains unchanged GUI/persistence methods, constants,
+stylesheet and setup-data/default/tooltip blocks from mirror `lib/tpick.lic` v48
+at `2fa28f1e540e97c468af88bbc8c432d3cebf8755`. Each block/method carries its
+source SHA-256 and original line range. No source repairs are applied.
+`script_scope_header_bar_spec.rb` uses its first eight methods for narrow tests;
+`script_scope_tpick_setup_spec.rb` exercises the broader original default flows.
+The harness substitutes only game-facing character/profession/spell/inventory
+answers, message/running boundaries and temporary settings destinations. It does
+not execute top-level initialization, downloads, Scan/game commands or gameplay.
+Settings coverage includes Rogue/Warrior/Bard/Wizard, all their tabs, original
+profile/default/save behavior and required-setting colors. Information coverage
+includes deferred stats tabs, message updates, Start flag and close/save cleanup.
+Native WKWebView and Chrome acceptance results are recorded in the handoff.
+Negative cases retain spell-less Monk/Paladin's absent Spells grid and optional
+image mode's first unsupported window call. Image mode is an owner-deferred PR.
 
 Unchanged ecleanse setup fixture
 

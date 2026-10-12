@@ -12,7 +12,7 @@ boundaries. [Fixture provenance](../spec/fixtures/webui/README.txt) identifies
 the frozen script sources used for regression checks.
 
 The authoritative host/browser contract is
-[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.17.0**. It is an
+[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.18.0**. It is an
 internal compatibility version, not a Lich or script release number. Versioned
 feature notes below describe when capabilities were introduced, not a second
 current contract. Ruby validation and browser handling must agree on the same
@@ -470,7 +470,7 @@ other declarations and their ordering remain bounded. Input remains limited to
 cover 71 payloads across 33 pinned scripts: the largest literal is 4,742 characters
 and the largest constructed sample is 6,230. The bound is retained; dynamic user
 settings can still exceed it, so these samples are not a universal runtime maximum.
-Recognized CSS translates validated values into the shared progress control;
+Recognized CSS translates validated values into progress effects or bounded label cues;
 source CSS never reaches the browser. Other bounded strings are explicitly
 omitted, including unrecognized colors, malformed CSS and URL/import declarations.
 They are inert: no source CSS is retained, evaluated, fetched or sent to the browser.
@@ -488,7 +488,7 @@ attached before loading. `add_provider(provider, priority)` accepts APPLICATION
 (600, also the omitted-argument default) or USER (800). Higher priority wins;
 the most recently attached provider wins ties. Reattachment replaces that
 provider's registration. Providers have explicit `unloaded`, `recognized` and
-`omitted` states; `loaded?` is true for the latter two. Only recognized providers
+`omitted` states; `loaded?` is true for the latter two. Only providers with a recognized progress fill
 contribute progress effects. Loads update every attached bar under the existing
 session monitor. Recognized-to-omitted reloads reveal another recognized provider,
 then authored values or theme defaults; stale fill/height effects are cleared.
@@ -499,8 +499,7 @@ the previous state or presentation; unsupported call shapes still raise.
 or default theme. Repeated removal of a same-owner provider is harmless.
 
 Only local `ProgressBar` contexts apply recognized fill color and 24px height.
-Attaching even a recognized stylesheet to labels or other widgets is inert;
-it cannot change their contents, typed properties or callbacks. Authored values are
+Progress rules attached to labels or other widgets remain inert. Authored progress values are
 retained separately; explicit script writes made during styling win through
 reload and removal. No style is copied to sibling labels. Contexts are limited to
 64 distinct attached providers and the session's existing 20,000-component bound;
@@ -513,22 +512,60 @@ methods refuse explicitly. Access to cached contexts also checks ownership and
 lifetime. Cached-cohort sizes and source-derived acceptance are recorded in the
 [acceptance report](webui-css-decoration-acceptance.md). Provider-load success alone
 does not establish whole-script support;
-unsupported widgets such as HeaderBar and unrelated behavior still hard stop.
+unsupported widgets such as FlowBox and unrelated behavior still hard stop.
+
+`Gtk::HeaderBar` composes existing boxes, labels and buttons into a client-area
+title row. `set_custom_title`/`custom_title=`, `set_title`/`title=`, `pack_start`,
+`pack_end`, `remove` and the boolean `show_close_button` setters preserve widget
+identity and callbacks. `Window#set_titlebar`/`titlebar=` attaches that row before
+content; replacement detaches the previous row without rebuilding the page or
+destroying script-held widgets. Window content margins exclude the titlebar.
+The Close action uses `Window#close` through the existing owner dispatcher,
+preserving terminal input, delete-event vetoes, destroy handlers and cleanup.
+This does not replace OS titlebar chrome or implement decoration layouts,
+minimize/maximize controls, HeaderBar Builder XML, or arbitrary GTK CSS.
+
+`Grid#attach` accepts bounded signed row/column origins and positive spans.
+The shim retains logical coordinates and uniformly rebases negative origins into
+positive WebUI placements, including live insertion/removal/destruction. The
+owner-approved `Adapter#layout_grid(parent, columns:, placements:, expand_columns:)`
+validates the complete candidate layout before mutation and preserves handles,
+bindings and viewer input. Existing 24-column/span and 1,024-row bounds remain.
+`Table#attach` still requires unsigned opposing edges. `Gtk::Align` constants map
+to supported symbols; `Label#wrap_mode=` accepts `:word` and `:none`.
+
+Contract 2.18.0 permits empty tab names with selected index zero representing no
+active page. Empty tabs reject all select events. Notebook appends work after
+materialization; grid panels keep grid layout in viewport and hidden measurement.
+
+Pinned tpick v48 tests cover original welcome, complete default information setup,
+settings for Rogue/Warrior/Bard/Wizard, required cues, profile/default/save callbacks,
+queued statistics/messages and cleanup with isolated game answers and settings paths.
+Spell-less Monk/Paladin source construction still accesses an absent Spells grid;
+optional image windows remain a separately approved follow-up. Gameplay, image mode
+and full native-GTK appearance are not certified.
 
 `StyleContext#add_class`, `remove_class`, `has_class?` and `list_classes` maintain
-widget-local metadata only. They accept nonempty, valid ASCII-compatible strings
+widget-local metadata. They accept nonempty, valid ASCII-compatible strings
 of up to 512 characters, with at most 64 distinct classes per context. Repeated
 addition/removal is harmless; `list_classes` returns an independent snapshot.
-Names never become DOM classes or selectors, so required-field colors, selection
-borders and drag/drop indicators requested through classes remain omitted. Destroy
+Names never become DOM classes or selectors. The bounded cue grammar accepts
+`label.<class>` with optional descendant widget-type or `#name` ancestors and a
+literal supported `color` declaration. Identifier names are generic; no script or
+class-name special cases exist. Matching rules project only the existing typed
+label `foreground`. Priority, specificity and source order determine the winner;
+class/name/parent changes and provider reload/removal recompute it, restoring
+authored/default foreground when no rule matches. Unsupported selectors/properties,
+selection borders and drag/drop effects remain omitted. Destroy
 and owner shutdown clear both class names and provider references.
 
 `StyleContext.add_provider_for_screen(screen, provider, priority)` and
 `remove_provider_for_screen(screen, provider)` validate both objects against the
 current script. Priority accepts APPLICATION, USER or an omitted argument as above.
 Registration is bounded to 64 distinct providers per session; reattachment updates
-an existing entry and repeated removal is harmless. These calls only maintain
-owner-scoped bookkeeping, with no visible effect on any widget or native page.
+an existing entry and repeated removal is harmless. These calls maintain
+owner-scoped providers for matching label cues only; they never affect another
+script or native page. Unmatched labels retain the WebUI theme.
 Fresh `Gdk::Screen.default` tokens from the same session address the same registry;
 owner shutdown clears it. Obtaining the token no longer reports a geometry
 degradation. Reading `width` or `height` reports the nominal geometry once per

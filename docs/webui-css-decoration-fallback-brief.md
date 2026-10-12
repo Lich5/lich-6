@@ -1,5 +1,14 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
+Current follow-on decision (2026-10-12): CSS fallback PRs #41 and #42 are merged.
+The owner expanded the HeaderBar PR to signed Grid origins and default tpick setup,
+including generic class-qualified label foreground cues. Explicitly approved shared
+extensions are atomic `Adapter#layout_grid` and empty notebooks (contract 2.18.0).
+Optional image windows remain a separate follow-up by owner decision. The
+[current tracker](webui-review-readiness.md#refreshed-gtk-compatibility-work-tracker)
+records acceptance and source limitations. These decisions supersede the older
+exclusions only for those bounded surfaces; the brief below remains provenance.
+
 Date: 2026-10-11. Updated 2026-10-12: **PR 1 merged as [#41](https://github.com/Lich5/lich-6/pull/41); fallback PR 2 ready for owner review locally**.
 The owner approved the two-PR sequence in the
 [current tracker](webui-review-readiness.md#css-decoration-work-tracker).

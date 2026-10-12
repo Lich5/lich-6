@@ -17,9 +17,9 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(barrier.pop(timeout: 3)).to be(true)
   end
 
-  it 'exposes exactly the ten locked operations' do
+  it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid
     )
   end
 
@@ -42,6 +42,48 @@ RSpec.describe Lich::WebUI::Adapter do
     expect { adapter.attach(grid, overflow) }.to raise_error(Lich::WebUI::Error, /placement/)
     # The refused attach is atomic; the child can still join a wider grid.
     expect(adapter.attach(adapter.create(:grid, cols: 4), invalid)).to be_nil
+  end
+
+  %i[grid tabs].each do |type|
+    it "rolls back #{type} attachment when render scheduling fails, preserving slots and retry" do
+      allow(service.runtime).to receive(:schedule_render)
+      root = adapter.create(:page, title: 'Transactional attachment')
+      parent = adapter.create(type, type == :grid ? { cols: 1 } : { names: %w[First Second Third] })
+      first = adapter.create(:text, content: 'First')
+      last = adapter.create(:text, content: 'Last')
+      candidate = adapter.create(:text_input, value: 'Retained draft')
+      binding = adapter.bind(candidate, :change, proc {})
+      adapter.attach(root, parent)
+      adapter.attach(parent, first)
+      adapter.attach(parent, last)
+      adapter.send(:flush!)
+      nodes = adapter.instance_variable_get(:@nodes)
+      slots = [first, last].map { |handle| nodes.fetch(handle).slot }
+      error = Lich::WebUI::Error.new('render owner is terminated')
+      # The setup scheduler is inert; expose the next real scheduling attempt.
+      adapter.instance_variable_set(:@publication_pending, false)
+      allow(service.runtime).to receive(:schedule_render).and_raise(error)
+
+      expect { adapter.attach(parent, candidate, 1) }.to(raise_error { |raised| expect(raised).to equal(error) })
+      expect(nodes.fetch(parent).children).to eq([first, last])
+      expect(nodes.fetch(candidate).parent).to be_nil
+      expect(nodes.fetch(candidate).slot).to be_nil
+      expect([first, last].map { |handle| nodes.fetch(handle).slot }).to eq(slots)
+      expect(nodes.fetch(candidate).bindings.values).to include(binding)
+      expect(adapter.get(candidate, :value)).to eq('Retained draft')
+      expect(adapter.instance_variable_get(:@publication_pending)).to be(false)
+
+      allow(service.runtime).to receive(:schedule_render).and_call_original
+      expect(adapter.attach(parent, candidate, 1)).to be_nil
+      page = service.registry.pages_for(owner).first
+      Timeout.timeout(3) do
+        sleep 0.005 until page.last_render.tree.children.first.children.length == 3
+      end
+      expect(nodes.fetch(parent).children).to eq([first, candidate, last])
+      expect(nodes.fetch(candidate).parent).to equal(parent)
+      expect(page.last_render.tree.children.first.children[1].props[:value]).to eq('Retained draft')
+      expect([first, candidate, last].map { |handle| nodes.fetch(handle).slot }).to eq(%w[First Second Third]) if type == :tabs
+    end
   end
 
   it 'gets and sets validated server-held state with explicit viewer scope' do
@@ -133,6 +175,30 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(after.props).to include(value: 0.5)
     expect(after.props).not_to have_key(:height)
     expect(after.props).not_to have_key(:fill_color)
+  end
+
+  it 'atomically repositions grid children and rejects invalid or foreign replacements' do
+    allow(service.runtime).to receive(:schedule_render)
+    root = adapter.create(:page, title: 'Live grid')
+    grid = adapter.create(:grid, cols: 2)
+    input = adapter.create(:text_input, value: 'retained', placement: { column: 1, row: 1 })
+    adapter.attach(root, grid)
+    adapter.attach(grid, input)
+    adapter.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    before = page.last_render.tree.children.first.children.first
+    adapter.layout_grid(grid, columns: 3, placements: { input => { column: 3, row: 2 } })
+    adapter.send(:flush!)
+    after = page.last_render.tree.children.first.children.first
+    expect(after.cid).to eq(before.cid)
+    expect(after.placement).to include(column: 3, row: 2)
+    expect(after.props[:value]).to eq('retained')
+    expect { adapter.layout_grid(grid, columns: 1, placements: { input => { column: 2 } }) }.to raise_error(Lich::WebUI::Error)
+    expect(adapter.get(grid, :cols)).to eq(3)
+    other = adapter.create(:grid, cols: 1)
+    expect { adapter.layout_grid(other, columns: 1, placements: { input => { column: 1 } }) }.to raise_error(Lich::WebUI::Error, /foreign/)
+    adapter.send(:flush!)
+    expect(page.last_render.tree.children.first.children.first.placement).to eq(after.placement)
   end
 
   it 'retires a replaced binding so its old token cannot remove the new callback' do

@@ -22,19 +22,20 @@ module Lich
           end
         end
 
-        # Preserve measured progress declarations and explicitly omit other CSS.
+        # Preserve measured progress declarations and bounded label foreground cues.
         # The browser receives bounded color/geometry values, never source CSS.
         class CssProvider
-          attr_reader :session, :fill_color, :state
+          attr_reader :session, :fill_color, :state, :label_rules
 
           # Captures the creating owner; retained providers cannot cross sessions.
           def initialize
             @session = Gtk.session
             @contexts = {}.compare_by_identity
             @state = :unloaded
+            @label_rules = []
           end
 
-          # Recognizes measured progress styling or omits decoration with a notice.
+          # Recognizes bounded progress/label styling; omitted decoration gets a notice.
           # Omitted CSS is inert and is not retained, parsed further or sent to the renderer.
           # @param data [String] stylesheet, at most 8,192 characters
           # @return [Boolean] true on recognized or omitted decoration
@@ -45,10 +46,12 @@ module Lich
               session.refuse(self, :load) unless valid
               match = data.match(/\Alabel\s*\{\s*font-weight:\s*bold;\s*\}\s*trough\s*\{\s*font-weight:\s*bold;\s*min-height:\s*22px;\s*\}\s*progress\s*\{\s*font-weight:\s*bold;\s*min-height:\s*20px;\s*background-image:\s*none;\s*background-color:\s*(#[0-9a-fA-F]{6}|[a-z]+)\s*;?\s*\}\z/)
               color = Color.parse(match[1]) if match
+              @label_rules = parse_label_rules(data)
               @fill_color = color
-              @state = color ? :recognized : :omitted
+              @state = color || !@label_rules.empty? ? :recognized : :omitted
               session.omit_css(self) unless color
               @contexts.each_key { |context| context.send(:refresh) }
+              session.refresh_label_styles
               true
             end
           end
@@ -64,7 +67,7 @@ module Lich
           # @return [Boolean]
           def loaded? = @state != :unloaded
 
-          # Refuses style APIs outside the measured progress surface.
+          # Refuses style APIs outside the bounded compatibility surface.
           # @raise [UnsupportedOperation] always
           def method_missing(name, *, **, &)
             session.refuse(self, name)
@@ -74,6 +77,28 @@ module Lich
           def respond_to_missing?(*args) = super
 
           private
+
+          # Only class-qualified label foreground cues are translated. Other
+          # selectors/declarations remain omitted, including URLs and functions.
+          # Rules are flat and bounded by the provider's existing input limit.
+          def parse_label_rules(data)
+            clean = data.gsub(%r{/\*.*?\*/}m, '')
+            return [] unless clean.gsub(/[^{}]+\{[^{}]*\}/, '').strip.empty?
+            clean.scan(/([^{}]+)\{([^{}]*)\}/).flat_map do |selectors, body|
+              declarations = body.split(';').filter_map do |declaration|
+                match = declaration.strip.match(/\Acolor\s*:\s*(#[0-9a-fA-F]{6}|[a-z]+)\z/)
+                Color.parse(match[1]) if match
+              end
+              next [] if declarations.empty?
+              selectors.split(',').filter_map do |selector|
+                tokens = selector.strip.split(/\s+/)
+                next unless tokens.last&.match?(/\Alabel\.[a-zA-Z_][\w-]*\z/)
+                next unless tokens[0...-1].all? { |token| token.match?(/\A(?:#[a-zA-Z_][\w-]*|[a-zA-Z][\w-]*)\z/) }
+                { ancestors: tokens[0...-1].freeze, class: tokens.last.delete_prefix('label.').freeze,
+                  color: declarations.last, specificity: [tokens.count { |token| token.start_with?('#') }, 1, tokens.count { |token| !token.start_with?('#') }] }.freeze
+              end
+            end.freeze
+          end
 
           def attach(context)
             @contexts[context] = true
@@ -85,14 +110,16 @@ module Lich
         end
 
         class StyleContext
-          # Records an owner-scoped screen attachment; it never styles controls.
+          # Records an owner-scoped screen provider for bounded label foreground cues.
           # @return [nil]
           def self.add_provider_for_screen(screen, provider, priority = StyleProvider::PRIORITY_APPLICATION)
             session = Gtk.session
             session.screen_style_operation(self, :add_provider_for_screen, screen, provider) do |providers|
               valid = priority.is_a?(Integer) && [StyleProvider::PRIORITY_APPLICATION, StyleProvider::PRIORITY_USER].include?(priority)
               session.refuse(self, :add_provider_for_screen) unless valid && (providers.key?(provider) || providers.size < 64)
+              providers.delete(provider)
               providers[provider] = priority
+              session.refresh_label_styles
               session.omit_css(self)
             end
             nil
@@ -103,6 +130,7 @@ module Lich
           def self.remove_provider_for_screen(screen, provider)
             Gtk.session.screen_style_operation(self, :remove_provider_for_screen, screen, provider) do |providers|
               providers.delete(provider)
+              Gtk.session.refresh_label_styles
             end
             nil
           end
@@ -150,6 +178,7 @@ module Lich
               validate_class(name, :add_class)
               @session.refuse(self, :add_class) unless @classes.key?(name) || @classes.size < 64
               @classes[name.dup.freeze] = true
+              refresh
               @session.omit_css(self)
             end
             self
@@ -161,6 +190,7 @@ module Lich
             operation(:remove_class) do
               validate_class(name, :remove_class)
               @classes.delete(name)
+              refresh
             end
             self
           end
@@ -221,13 +251,38 @@ module Lich
           end
 
           def refresh
+            return unless @widget
+            refresh_label if @widget.is_a?(Label)
             return unless @widget.is_a?(ProgressBar)
 
-            candidates = @providers.each_with_index.select { |(provider, _priority), _index| provider.state == :recognized }
+            candidates = @providers.each_with_index.select { |(provider, _priority), _index| provider.fill_color }
             selected = candidates.max_by { |(_provider, priority), index| [priority, index] }
             provider = selected&.first&.first
             # GTK's 22px trough content includes a one-pixel border on each side.
             @widget.send(:apply_progress_style, provider ? { fill_color: provider.fill_color, height: 24 } : {})
+          end
+
+          # Match script-local metadata only; no selector or class reaches DOM.
+          def refresh_label
+            candidates = []
+            providers = @session.screen_style_providers.to_a + @providers.to_a
+            providers.each_with_index do |(provider, priority), order|
+              provider.label_rules.each_with_index do |rule, index|
+                next unless @classes.key?(rule[:class]) && ancestors_match?(rule[:ancestors])
+                candidates << [[priority, *rule[:specificity], order, index], rule[:color]]
+              end
+            end
+            @widget.send(:apply_label_color, candidates.max_by(&:first)&.last)
+          end
+
+          def ancestors_match?(tokens)
+            ancestor = @widget.parent
+            tokens.reverse_each do |token|
+              ancestor = ancestor.parent while ancestor && !(token.start_with?('#') ? ancestor.name == token.delete_prefix('#') : ancestor.class.name.split('::').last.downcase == token)
+              return false unless ancestor
+              ancestor = ancestor.parent
+            end
+            true
           end
 
           def close

@@ -74,7 +74,7 @@ RSpec.describe 'source-derived CSS decoration acceptance' do
         value = sample.fetch('css')
         result = sample.fetch('loader_method') == 'load' ? provider.load(data: value) : provider.load_from_data(value)
         expect(result).to be true
-        expect(provider.state).to eq(expected)
+        expect(provider.state).to eq(provider.label_rules.empty? ? expected : :recognized)
         expect(bar.session.port.get(handle, :value)).to eq(0.375)
         expect(bar.materialize).to equal(handle)
         expect(label.send(:component_props)).to eq(before)
@@ -113,7 +113,7 @@ RSpec.describe 'source-derived CSS decoration acceptance' do
     expect(Lich).to have_received(:log).with(/operation=css_decoration/).once
   end
 
-  it 'continues tpick global/local CSS and required-setting calls, while HeaderBar still hard stops' do
+  it 'continues tpick global/local CSS, required-setting and HeaderBar construction calls' do
     record = corpus.fetch('scripts').find { |r| r['name'] == 'tpick' }
     target.instance_variable_set(:@labels, { 'field' => label })
     run_excerpt(record, 94)
@@ -121,7 +121,8 @@ RSpec.describe 'source-derived CSS decoration acceptance' do
     run_excerpt(record, 2939, label: label)
     expect(label.style_context.has_class?('required-setting')).to be true
     expect(label.send(:component_props)[:content]).to eq('Retained text')
-    expect { run_excerpt(record, 2084) }.to raise_error(gtk.const_get(:UnsupportedOperation), /operation=HeaderBar source=tpick.lic:2084/)
+    run_excerpt(record, 2084)
+    expect(source_binding.local_variable_get(:welcome_titlebar)).to be_a(gtk.const_get(:HeaderBar))
     expect(Lich).to have_received(:log).with(/operation=css_decoration source=tpick.lic:95/).once
   end
 

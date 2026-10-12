@@ -220,6 +220,8 @@ module Lich
       end
 
       # Inserts an unparented child after checking cycles, capacity, and placement.
+      # Publication failure restores membership and named slots before re-raising;
+      # handles, bindings and viewer values remain available for a later retry.
       # @param parent [Handle] owning container
       # @param child [Handle] child to attach
       # @param index [Integer, nil] insertion position; nil appends
@@ -240,12 +242,57 @@ module Lich
           validate_placement!(parent_node, child_node, child)
           parent_node.children.insert(position, child)
           child_node.parent = parent
-          assign_child_slots!(parent_node)
-          dirty!(root_for(parent_node))
+          begin
+            assign_child_slots!(parent_node)
+            dirty!(root_for(parent_node))
+          rescue StandardError
+            parent_node.children.delete(child)
+            child_node.parent = nil
+            child_node.slot = nil
+            assign_child_slots!(parent_node)
+            raise
+          end
         end
         nil
       rescue ArgumentError, TypeError
         raise attributed_error('child index is out of range', parent, :index)
+      end
+
+      # Atomically changes a grid's bounded geometry and placements without
+      # replacing handles, bindings or viewer-owned input. Unparented children
+      # may be prepared for a subsequent attach; foreign parents are refused.
+      # @param parent [Handle] grid container
+      # @param columns [Integer] positive shared-contract column count
+      # @param placements [Hash{Handle => Hash}] replacement child placements
+      # @param expand_columns [Array<Integer>] expanding tracks in the new geometry
+      # @return [nil]
+      def layout_grid(parent, columns:, placements:, expand_columns: [])
+        @mutex.synchronize do
+          grid = node!(parent)
+          raise attributed_error('grid required', parent) unless grid.type == :grid
+          raise attributed_error('placement map required', parent) unless placements.is_a?(Hash) && placements.size <= Contract::BOUNDS[:children]
+          proposed = grid.dup
+          proposed.props = @validator.validate_component!(
+            :grid, grid.props.merge(cols: columns, expand_columns: expand_columns),
+            owner: owner_label, page_id: adapter_page_id, cid: handle_label(parent)
+          )
+          replacements = placements.to_h do |handle, placement|
+            child = node!(handle)
+            raise attributed_error('foreign grid child', handle) if child.parent && child.parent != parent
+            raise attributed_error('placement must be a Hash', handle) unless placement.is_a?(Hash)
+            candidate = child.dup
+            candidate.placement = symbolize(placement).freeze
+            validate_placement!(proposed, candidate, handle)
+            [handle, candidate.placement]
+          end
+          grid.children.each do |handle|
+            validate_placement!(proposed, node!(handle), handle) unless replacements.key?(handle)
+          end
+          grid.props = proposed.props
+          replacements.each { |handle, placement| node!(handle).placement = placement }
+          dirty!(root_for(grid))
+        end
+        nil
       end
 
       # Unparents a child without destroying its handle or descendants.

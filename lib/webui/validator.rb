@@ -337,6 +337,7 @@ module Lich
 
       def validate_tabs!(props, context)
         return unless props.key?(:selected)
+        return if props[:names].empty? && props[:selected].zero?
         return if props[:selected] < props[:names].length
 
         violation!('selected tab index is out of range', context, :selected)

@@ -75,6 +75,16 @@ module Lich
             end
           end
 
+          # Screen providers are session-local; callers receive an independent map.
+          # @api private
+          def screen_style_providers = (@screen_style_providers || {}).dup
+
+          # Re-evaluates bounded label cues after provider or ancestor changes.
+          # @api private
+          def refresh_label_styles
+            synchronize { @style_contexts&.each_key { |context| context.send(:refresh) } }
+          end
+
           # Consolidates all CSS omissions without retaining or logging source CSS.
           # @api private
           def omit_css(receiver)

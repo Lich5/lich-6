@@ -100,6 +100,7 @@ module Lich
           # Creates the origin-plus-extent grid variant with one initial cell.
           def initialize
             super(1, 1)
+            @grid_origins = {}.compare_by_identity
           end
 
           alias row_spacing= row_spacings=
@@ -123,10 +124,110 @@ module Lich
           end
           alias set_row_homogeneous row_homogeneous=
 
-          # Translates zero-based origin plus width/height to Table's opposing cell edges.
+          # Retains signed GTK origins and maps them into positive shared grid
+          # coordinates. The translation is uniform, preserving gaps and spans.
           # @return [Grid] self
           def attach(child, left, top, width, height)
-            super(child, left, left + width, top, top + height)
+            session.synchronize do
+              valid = [left, top, width, height].all? { |value| value.is_a?(Integer) }
+              valid &&= width.positive? && height.positive? && left.abs <= 65_536 && top.abs <= 65_536
+              session.refuse(self, :attach) unless valid && !destroyed? && child.is_a?(Widget) &&
+                                                   child.session.equal?(session) && !child.destroyed? && !child.parent
+              ancestor = self
+              while ancestor
+                session.refuse(self, :attach) if ancestor.equal?(child)
+                ancestor = ancestor.parent
+              end
+              proposed = @grid_origins.merge(child => [left, top, width, height])
+              previous = { origins: @grid_origins, columns: @columns, rows: @n_rows,
+                           placements: (@children + [child]).to_h { |widget| [widget, widget.instance_variable_get(:@placement)] } }
+              apply_grid_origins(proposed)
+              @grid_origins = proposed
+              begin
+                add(child)
+              rescue StandardError
+                restore_attachment(child, previous)
+                raise
+              end
+            end
+            self
+          end
+
+          # Rebase remaining placements after detaching while keeping handles live.
+          def remove(child)
+            session.synchronize do
+              super
+              @grid_origins.delete(child)
+              apply_grid_origins(@grid_origins)
+            end
+            self
+          end
+
+          protected
+
+          def forget_child(child)
+            @grid_origins.delete(child)
+            super
+            apply_grid_origins(@grid_origins) unless destroyed?
+          end
+
+          private
+
+          # Restore both representations, including an already inserted child and
+          # detached controls whose old placement exceeds this grid's old width.
+          def restore_attachment(child, previous)
+            if child.parent.equal?(self)
+              session.port.detach(@handle, child.materialize) if @handle
+              @children.delete(child)
+              child.parent = nil
+            end
+            @grid_origins = previous[:origins]
+            previous[:placements].each { |widget, placement| widget.placement = placement }
+            @columns, @n_rows = previous.values_at(:columns, :rows)
+            @props[:cols] = @columns
+            if @handle
+              placements = previous[:placements].filter_map do |widget, placement|
+                handle = widget.instance_variable_get(:@handle)
+                [handle, placement || {}] if handle
+              end.to_h
+              child_handle = child.instance_variable_get(:@handle)
+              child_placement = placements.delete(child_handle)
+              expanding = layout_props.fetch(:expand_columns)
+              session.port.layout_grid(@handle, columns: @columns, placements: placements, expand_columns: expanding)
+              if child_handle
+                # Separate the rejected child so a full grid's rollback stays
+                # within the adapter's placement-map capacity.
+                columns = [@columns, child_placement.fetch(:column, 1) + child_placement.fetch(:span, 1) - 1].max
+                session.port.layout_grid(@handle, columns: columns, placements: { child_handle => child_placement }, expand_columns: expanding)
+                session.port.layout_grid(@handle, columns: @columns, placements: {}, expand_columns: expanding) if columns != @columns
+              end
+            end
+            session.refresh_label_styles
+            refresh_layout!
+          end
+
+          def apply_grid_origins(origins)
+            left = [0, *origins.values.map(&:first)].min
+            top = [0, *origins.values.map { |origin| origin[1] }].min
+            placements = origins.to_h do |child, (x, y, width, height)|
+              [child, { column: x - left + 1, row: y - top + 1, span: width, row_span: height }]
+            end
+            columns = [1, *placements.values.map { |p| p[:column] + p[:span] - 1 }].max
+            rows = [1, *placements.values.map { |p| p[:row] + p[:row_span] - 1 }].max
+            valid = columns <= 24 && rows <= Lich::WebUI::Contract::BOUNDS[:children] &&
+                    placements.values.all? { |p| p[:row_span] <= 24 }
+            session.refuse(self, :attach) unless valid
+            expanding = placements.flat_map do |child, p|
+              child.expands?(:horizontal) ? (p[:column]...(p[:column] + p[:span])).to_a : []
+            end.uniq.sort
+            if @handle
+              handles = placements.to_h { |child, p| [child.materialize, p] }
+              session.port.layout_grid(@handle, columns: columns, placements: handles, expand_columns: expanding)
+            end
+            placements.each { |child, p| child.placement = p }
+            @columns, @n_rows = columns, rows
+            @props[:cols] = columns
+            refresh_layout!
           end
         end
 
