@@ -55,7 +55,14 @@ end
 $LOAD_PATH.unshift(File.expand_path('../lib', __FILE__)) unless $LOAD_PATH.include?(File.expand_path('../lib', __FILE__))
 LIB_DIR = File.join(File.expand_path("..", File.dirname(__FILE__)), 'lib') unless defined?(LIB_DIR)
 
-# Load toolkit-independent authentication and persistence code.
+# ::Frontend must be the spec mock before account_manager loads the real
+# frontend.rb, or the real one takes the top-level name for the whole process.
+require_relative 'support/frontend_mock'
+
+# Load toolkit-independent authentication and persistence code. AccountManager
+# and EntryStore call GUI::Utilities without requiring it; production loads it
+# earlier, so load it here for specs that run without another file first.
+require 'common/gui/utilities'
 require 'common/gui/account_manager'
 require 'common/authentication/entry_store'
 require 'common/authentication/authenticator'
