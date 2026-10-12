@@ -489,7 +489,10 @@ retained separately; explicit script writes made during styling win through
 reload and removal. No style is copied to sibling labels. Contexts are limited to
 64 distinct attached providers and the session's existing 20,000-component bound;
 destroying a subtree detaches descendant contexts, and owner shutdown also clears
-contexts on unattached widgets. Cross-owner attachment/mutation and unknown style
+contexts on unattached widgets. Widget destruction and the window's retained
+geometry snapshot use the same session monitor as provider reloads, so direct or
+ancestor destruction cannot retire a handle during a style publication or leave
+other attached bars stale. Cross-owner attachment/mutation and unknown style
 methods refuse explicitly. General widget contexts, screen providers, CSS classes
 and decoration omission are the separate approved PR 2, not implemented here.
 

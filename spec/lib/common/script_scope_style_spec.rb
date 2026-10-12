@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'timeout'
 require_relative '../../spec_helper'
 require_relative '../../../lib/common/script_scope'
 
@@ -181,6 +182,106 @@ RSpec.describe 'progress provider lifecycle' do
     expect { provider.load(data: stylesheet('gold')) }.to raise_error(gtk.const_get(:UnsupportedOperation))
     expect { other.style_context.remove_provider(provider) }.to raise_error(gtk.const_get(:UnsupportedOperation))
     expect(provider.instance_variable_get(:@contexts)).to be_empty
+  end
+
+  %i[bar window].each do |target_kind|
+    it "serializes #{target_kind} destruction with reloads of a shared provider" do
+      window = gtk.const_get(:Window).new
+      window.add(bar)
+      window.materialize
+      handle = bar.materialize
+      other = gtk.const_get(:ProgressBar).new
+      other_handle = other.materialize
+      provider.load(data: stylesheet)
+      bar.style_context.add_provider(provider)
+      other.style_context.add_provider(provider)
+      target = target_kind == :bar ? bar : window
+      destroyed = []
+      bar.signal_connect('destroy') { destroyed << :bar }
+      entered, resume, started = Queue.new, Queue.new, Queue.new
+      port = bar.session.port
+      allow(port).to receive(:set).and_wrap_original do |original, control, property, value|
+        if control.equal?(handle) && property == :fill_color
+          entered << true
+          resume.pop
+        end
+        original.call(control, property, value)
+      end
+      loader = Thread.new { provider.load(data: stylesheet('gold')) }
+      Timeout.timeout(3) { entered.pop }
+      destroyer = Thread.new do
+        started << true
+        target.destroy
+      end
+      Timeout.timeout(3) do
+        started.pop
+        sleep 0.001 until destroyer.status == 'sleep' || !destroyer.alive?
+      end
+      # The publisher has checked liveness but has not yet written the new fill.
+      # Destruction must wait before retiring the adapter handle, not just cleanup.
+      expect(port.get(handle, :fill_color)).to eq(blue)
+      resume << true
+      expect(Timeout.timeout(3) { loader.value }).to be true
+      expect(Timeout.timeout(3) { destroyer.value }).to equal(target)
+      expect(port.get(other_handle, :fill_color)).to eq(r: 255, g: 215, b: 0, a: 1.0)
+      expect(destroyed).to eq([:bar])
+      expect(target.destroy).to equal(target)
+      expect(destroyed).to eq([:bar])
+      provider.load(data: stylesheet('orchid'))
+      expect(port.get(other_handle, :fill_color)).to eq(r: 218, g: 112, b: 214, a: 1.0)
+      expect(provider.instance_variable_get(:@contexts).keys).to eq([other.style_context])
+    ensure
+      resume << true if resume
+      [loader, destroyer].compact.each do |worker|
+        worker.report_on_exception = false
+        worker.join(3) || worker.kill.join
+      rescue StandardError
+        # Preserve the original assertion failure while cleaning up test threads.
+      end
+    end
+  end
+
+  it 'serializes repeated window destruction including its retained geometry snapshot' do
+    window = gtk.const_get(:Window).new
+    window.set_default_size(320, 180)
+    handle = window.materialize
+    entered, resume, started = Queue.new, Queue.new, Queue.new
+    port = window.session.port
+    first = nil
+    allow(port).to receive(:get).and_wrap_original do |original, control, property|
+      if Thread.current.equal?(first) && control.equal?(handle) && property == :size
+        entered << true
+        resume.pop
+      end
+      original.call(control, property)
+    end
+    first = Thread.new do
+      started.pop
+      window.destroy
+    end
+    started << true
+    Timeout.timeout(3) { entered.pop }
+    second = Thread.new do
+      started << true
+      window.destroy
+    end
+    Timeout.timeout(3) do
+      started.pop
+      sleep 0.001 until second.status == 'sleep' || !second.alive?
+    end
+    expect(port.get(handle, :size)).to eq([320, 180])
+    resume << true
+    expect(Timeout.timeout(3) { first.value }).to equal(window)
+    expect(Timeout.timeout(3) { second.value }).to equal(window)
+    expect([window.allocation.width, window.allocation.height]).to eq([320, 180])
+  ensure
+    resume << true if resume
+    [first, second].compact.each do |worker|
+      worker.report_on_exception = false
+      worker.join(3) || worker.kill.join
+    rescue StandardError
+      # Preserve the original assertion failure while cleaning up test threads.
+    end
   end
 
   it 'bounds registrations, permits reattachment at capacity and frees slots on removal' do

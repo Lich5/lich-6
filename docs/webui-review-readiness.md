@@ -113,7 +113,7 @@ with current evidence and the next concrete slice.
 
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
-| 1. Progress provider lifecycle and compatibility | `CssProvider#load` and positional `load_from_data`; optional final semicolon in the bounded progress grammar; `ProgressBar` provider references, attach-before-load, reload and removal; APPLICATION/USER priorities and attachment-order ties; restoration of authored/default fill and height; owner synchronization, isolation and cleanup. Focused spellson/staminabar2 and lifecycle regressions. Explicitly approved adapter `UNSET` reset for optional shared properties. | **Ready for owner review**: local working-tree implementation on `feat/webui-progress-provider-lifecycle`, based on `main` at `c2f4a2a2f0cee4ab01aa53e91886423143afb884`. Not staged, committed, pushed or confirmed merged. |
+| 1. Progress provider lifecycle and compatibility | `CssProvider#load` and positional `load_from_data`; optional final semicolon in the bounded progress grammar; `ProgressBar` provider references, attach-before-load, reload and removal; APPLICATION/USER priorities and attachment-order ties; restoration of authored/default fill and height; owner synchronization, isolation and cleanup. Focused spellson/staminabar2 and lifecycle regressions. Explicitly approved adapter `UNSET` reset for optional shared properties. | **Ready for owner review**: [PR #41](https://github.com/Lich5/lich-6/pull/41) is open at `13837e10be31568a8996e1d0fac1ed4856eac64a` on `feat/webui-progress-provider-lifecycle`; the destruction-race review fix is local and uncommitted. Merge is not confirmed. |
 | 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **Not started**; starts after owner confirms PR 1 merged. |
 
 Each PR includes relevant tests and documentation, full RSpec and RuboCop, and
@@ -152,6 +152,27 @@ PR 1 validation, 2026-10-12, host Ruby 4.0.5:
   progress grammar, owner isolation, cleanup, bounds and refusal checks now pass.
 - `git diff --check` passed. These checks do not certify native OS-window behavior
   or whole-script/gameplay acceptance. No staging, commit or push was performed.
+
+PR #41 review follow-up, 2026-10-12: the
+[destruction-race finding](https://github.com/Lich5/lich-6/pull/41#discussion_r4245486693)
+was reproduced. `Widget#destroy` now holds the existing session monitor through
+handle retirement and provider detachment; `Window#destroy` also protects its
+geometry snapshot. Three regressions failed on the reviewed head and pass with
+the fix: direct progress-bar destruction, ancestor-window destruction during a
+shared-provider reload, and simultaneous repeated window destruction. The first
+two also verify that surviving bars receive the reload and later updates, while
+destroyed bars detach and their destroy handler runs once. No exception is hidden
+by the product fix, and no dispatcher, renderer or shared-core extension is added.
+
+Follow-up validation under the retained `rubystd` Ruby 4.0.5 session:
+focused style/widget specs **85 examples, zero failures, four browser-only pending**
+(seed `28035`); full RSpec **9,043 examples, zero failures, 17 browser-only pending**
+(seed `6121`); RuboCop **1,307 files, no offenses**; `git diff --check` passed.
+RSpec and RuboCop ran directly with the host gems: `bundle exec` could not resolve
+the lockfile's exact installed versions. No dependency files or gems were changed.
+Browser/renderer checks were not repeated for this Ruby synchronization fix;
+the earlier evidence above remains separate. The fix is uncommitted; no staging,
+commit, push, remote review reply or thread resolution was performed.
 
 ### Other open work
 
