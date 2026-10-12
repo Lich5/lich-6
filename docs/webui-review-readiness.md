@@ -162,7 +162,7 @@ starts from synchronized `main` after its predecessor merges.
 
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
-| 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **Implemented; validated; ready for owner review** on `feat/webui-headerbar-tpick`, based on synchronized `main` at `bea51ac3`. |
+| 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **PR [#43](https://github.com/Lich5/lich-6/pull/43) open; review fixes implemented locally** on `feat/webui-headerbar-tpick`, based on synchronized `main` at `bea51ac3`. |
 | 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Not started; owner deferred** from PR 1 on 2026-10-12. Default `Show Images = No` setup is covered in PR 1. |
 | 2. Manatimer progress/overlay semantics | `ProgressBar#show_text=`, overlay pass-through, label/fraction and pointer behavior. No CSS grammar expansion implied. | **Not started; proposed** |
 | 3. Display/monitor geometry | Host-owned monitor-at-point/geometry and bounded Gdk projection; actual multi-monitor coordinates and unavailable-host behavior. No fabricated monitor data. | **Not started; requires core design decision** |
@@ -239,7 +239,33 @@ changes only `lib/common/script_scope/gtk/layout.rb`,
 `spec/lib/common/script_scope_header_bar_spec.rb` and this tracker; prior work is
 preserved. No staging, commit or push.
 
-Exact local changed-file inventory (including preserved work from earlier slices):
+PR #43 review follow-up, 2026-10-12 (reviewed head `6b72f814`):
+
+- Made `Adapter#attach` transactional when post-insertion slot assignment or
+  render scheduling raises. It removes the inserted child, clears its adapter
+  parent/slot, restores sibling slots and re-raises, before the shim sets its
+  Ruby parent. Handles, bindings and values remain available for retry.
+- Two scheduling-failure regressions (grid and named tabs) failed before the
+  change and now pass. They verify membership, slots, retained binding/value,
+  cleared publication-pending state and successful retry with real scheduling.
+- Documented all **11 HeaderBar methods**, including seven previously missing
+  method comments, with behavior and relevant YARD argument/return/exception
+  details. RSpec files remain excluded from docstring work. CodeRabbit reported
+  **53.13% against 60%** on the published head; its exact revised percentage
+  requires its next review after owner publication and is not claimed locally.
+- Restored both resolver fixture addresses to `172.17.0.1`; that file now has
+  no net diff from `main`. These were accidental version-replacement edits.
+
+Focused validation: **71 examples, zero failures, two browser-only pending**,
+seed `57467`; focused RuboCop **four files, no offenses**. Full Chrome browser suite: **21
+examples, zero failures**; full RuboCop: **1,313 files, no offenses**. Full RSpec,
+seed `57467`: **9,142 examples, zero failures, 21 browser-only pending**.
+This follow-up changes only `lib/webui/adapter.rb`,
+`lib/common/script_scope/gtk/header_bar.rb`, `spec/lib/webui/adapter_spec.rb`,
+`spec/lib/common/bind_host_resolver_spec.rb` and this tracker. The owner explicitly
+authorized the shared adapter fix. No API expansion, staging, commit or push.
+
+PR changed-file inventory relative to `main` (including earlier slices):
 
 ```text
 docs/webui-css-decoration-acceptance.md
@@ -260,7 +286,6 @@ lib/webui/validator.rb
 spec/README.md
 spec/fixtures/webui/README.txt
 spec/fixtures/webui/tpick-titlebar.json
-spec/lib/common/bind_host_resolver_spec.rb
 spec/lib/common/script_scope_css_corpus_spec.rb
 spec/lib/common/script_scope_header_bar_spec.rb
 spec/lib/common/script_scope_style_spec.rb

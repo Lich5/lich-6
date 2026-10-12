@@ -44,6 +44,48 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(adapter.attach(adapter.create(:grid, cols: 4), invalid)).to be_nil
   end
 
+  %i[grid tabs].each do |type|
+    it "rolls back #{type} attachment when render scheduling fails, preserving slots and retry" do
+      allow(service.runtime).to receive(:schedule_render)
+      root = adapter.create(:page, title: 'Transactional attachment')
+      parent = adapter.create(type, type == :grid ? { cols: 1 } : { names: %w[First Second Third] })
+      first = adapter.create(:text, content: 'First')
+      last = adapter.create(:text, content: 'Last')
+      candidate = adapter.create(:text_input, value: 'Retained draft')
+      binding = adapter.bind(candidate, :change, proc {})
+      adapter.attach(root, parent)
+      adapter.attach(parent, first)
+      adapter.attach(parent, last)
+      adapter.send(:flush!)
+      nodes = adapter.instance_variable_get(:@nodes)
+      slots = [first, last].map { |handle| nodes.fetch(handle).slot }
+      error = Lich::WebUI::Error.new('render owner is terminated')
+      # The setup scheduler is inert; expose the next real scheduling attempt.
+      adapter.instance_variable_set(:@publication_pending, false)
+      allow(service.runtime).to receive(:schedule_render).and_raise(error)
+
+      expect { adapter.attach(parent, candidate, 1) }.to(raise_error { |raised| expect(raised).to equal(error) })
+      expect(nodes.fetch(parent).children).to eq([first, last])
+      expect(nodes.fetch(candidate).parent).to be_nil
+      expect(nodes.fetch(candidate).slot).to be_nil
+      expect([first, last].map { |handle| nodes.fetch(handle).slot }).to eq(slots)
+      expect(nodes.fetch(candidate).bindings.values).to include(binding)
+      expect(adapter.get(candidate, :value)).to eq('Retained draft')
+      expect(adapter.instance_variable_get(:@publication_pending)).to be(false)
+
+      allow(service.runtime).to receive(:schedule_render).and_call_original
+      expect(adapter.attach(parent, candidate, 1)).to be_nil
+      page = service.registry.pages_for(owner).first
+      Timeout.timeout(3) do
+        sleep 0.005 until page.last_render.tree.children.first.children.length == 3
+      end
+      expect(nodes.fetch(parent).children).to eq([first, candidate, last])
+      expect(nodes.fetch(candidate).parent).to equal(parent)
+      expect(page.last_render.tree.children.first.children[1].props[:value]).to eq('Retained draft')
+      expect([first, candidate, last].map { |handle| nodes.fetch(handle).slot }).to eq(%w[First Second Third]) if type == :tabs
+    end
+  end
+
   it 'gets and sets validated server-held state with explicit viewer scope' do
     input = adapter.create(:text_input, value: 'before')
     button = adapter.create(:button, label: 'Before')

@@ -220,6 +220,8 @@ module Lich
       end
 
       # Inserts an unparented child after checking cycles, capacity, and placement.
+      # Publication failure restores membership and named slots before re-raising;
+      # handles, bindings and viewer values remain available for a later retry.
       # @param parent [Handle] owning container
       # @param child [Handle] child to attach
       # @param index [Integer, nil] insertion position; nil appends
@@ -240,8 +242,16 @@ module Lich
           validate_placement!(parent_node, child_node, child)
           parent_node.children.insert(position, child)
           child_node.parent = parent
-          assign_child_slots!(parent_node)
-          dirty!(root_for(parent_node))
+          begin
+            assign_child_slots!(parent_node)
+            dirty!(root_for(parent_node))
+          rescue StandardError
+            parent_node.children.delete(child)
+            child_node.parent = nil
+            child_node.slot = nil
+            assign_child_slots!(parent_node)
+            raise
+          end
         end
         nil
       rescue ArgumentError, TypeError
