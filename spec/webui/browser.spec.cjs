@@ -10,14 +10,18 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 const wire = [];
 const wireStart = Date.now();
 function record(direction, data) {
-  let summary = String(data).slice(0, 200);
-  try {
-    const message = JSON.parse(data);
-    summary = ['type', 'event', 'cid', 'page', 'generation', 'request', 'reason']
-      .filter(key => message[key] !== undefined)
-      .map(key => `${key}=${typeof message[key] === 'string' ? message[key].slice(0, 40) : message[key]}`)
-      .join(' ');
-  } catch (_error) { /* non-JSON frame: keep the truncated text */ }
+  const raw = String(data).slice(0, 200);
+  let summary = raw;
+  // Only websocket frames are condensed; console text is kept as written.
+  if (direction !== 'console') {
+    try {
+      const message = JSON.parse(data);
+      summary = ['type', 'event', 'cid', 'page', 'generation', 'request', 'reason']
+        .filter(key => message[key] !== undefined)
+        .map(key => `${key}=${typeof message[key] === 'string' ? message[key].slice(0, 40) : message[key]}`)
+        .join(' ') || raw;
+    } catch (_error) { /* non-JSON frame: keep the truncated text */ }
+  }
   wire.push(`${String(Date.now() - wireStart).padStart(6)}ms ${direction} ${summary}`);
   if (wire.length > 200) wire.shift();
 }
