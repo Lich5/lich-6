@@ -169,8 +169,65 @@ RSpec.describe 'remaining Builder setup families' do
     elsif submission
       message[:submission] = submission
     end
-    expect(service.runtime.handle(@connection, message)).to eq(:queued), @messages.last.inspect
+    queue_event(message)
     drain
+  end
+
+  def queue_event(message)
+    2.times do |attempt|
+      first_response = @messages.length
+      result = service.runtime.handle(@connection, message)
+      responses = @messages.drop(first_response)
+      refusal = responses.reverse.find do |response|
+        response['type'] == 'refusal' && %i[page cid event].all? { |key| response[key.to_s] == message[key] }
+      end
+      if attempt.zero? && result == :refused && refusal&.fetch('reason') == 'stale_generation'
+        render = responses.reverse.find { |response| response['type'] == 'render' && response['page'] == message[:page] }
+        if render
+          message = message.merge(generation: render.fetch('generation'))
+          next
+        end
+      end
+      expect(result).to eq(:queued), "Event #{message[:event]} for #{message[:cid]}: #{refusal.inspect} (result: #{result.inspect})"
+      break
+    end
+  end
+
+  it 'retries a stale event once with its original payload and submission' do
+    @messages, @connection = [], double('viewer')
+    message = { type: 'event', page: 'fixture', cid: 'entry', event: 'change', generation: 1,
+                payload: { value: 'draft' }, submission: ['original'] }
+    refusal = { 'type' => 'refusal', 'page' => 'fixture', 'cid' => 'entry', 'event' => 'change', 'reason' => 'stale_generation' }
+    expect(service.runtime).to receive(:handle).with(@connection, message).ordered do
+      @messages.push(refusal, { 'type' => 'render', 'page' => 'fixture', 'generation' => 2 })
+      :refused
+    end
+    expect(service.runtime).to receive(:handle).with(@connection, message.merge(generation: 2)).ordered.and_return(:queued)
+    queue_event(message)
+    expect(message[:generation]).to eq(1)
+  end
+
+  it 'reports a repeated stale refusal without a third attempt' do
+    @messages, @connection = [], double('viewer')
+    message = { type: 'event', page: 'fixture', cid: 'entry', event: 'change', generation: 1, payload: { value: 'draft' } }
+    expect(service.runtime).to receive(:handle).twice do
+      @messages.push({ 'type' => 'refusal', 'page' => 'fixture', 'cid' => 'entry', 'event' => 'change', 'reason' => 'stale_generation' },
+                     { 'type' => 'render', 'page' => 'fixture', 'generation' => 2 })
+      :refused
+    end
+    expect { queue_event(message) }.to raise_error(RSpec::Expectations::ExpectationNotMetError, /stale_generation/)
+  end
+
+  it 'reports other refusals without retrying or reusing an earlier stale refusal' do
+    @connection = double('viewer')
+    message = { type: 'event', page: 'fixture', cid: 'entry', event: 'change', generation: 1, payload: { value: 'draft' } }
+    refusal = { 'type' => 'refusal', 'page' => 'fixture', 'cid' => 'entry', 'event' => 'change', 'reason' => 'stale_generation' }
+    @messages = [refusal]
+    expect(service.runtime).to receive(:handle).once do
+      @messages << refusal.merge('reason' => 'payload')
+      :refused
+    end
+    expect { queue_event(message) }.to raise_error(RSpec::Expectations::ExpectationNotMetError, /"reason" => "payload"/)
   end
 
   it 'preserves all untouched margins consistently through Builder and direct edge setters' do
