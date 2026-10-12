@@ -1,13 +1,15 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
-Date: 2026-10-11. Updated 2026-10-12: **PR 1 merged as [#41](https://github.com/Lich5/lich-6/pull/41); fallback PR 2 in progress**.
+Date: 2026-10-11. Updated 2026-10-12: **PR 1 merged as [#41](https://github.com/Lich5/lich-6/pull/41); fallback PR 2 ready for owner review locally**.
 The owner approved the two-PR sequence in the
 [current tracker](webui-review-readiness.md#css-decoration-work-tracker).
 PR 1 added progress-provider lifecycle support. PR 2's first local slice adds
 explicit provider states, inert omission with an attributed notice, and reset of
 previous progress effects. The second local slice adds shared widget contexts,
 bounded class metadata, owner-scoped screen providers and dimension-only geometry
-notices. Corpus size measurements and source-derived acceptance remain unfinished.
+notices. The final local slice records [corpus measurements and source-derived
+acceptance](webui-css-decoration-acceptance.md), with whole-setup limits and
+independent hard stops kept explicit.
 The original handoff and evidence below remain dated provenance.
 
 PR #41 merged at `2026-10-12T07:35:31Z` as
@@ -16,7 +18,9 @@ Local `main` was fast-forwarded to that commit and verified equal to `origin/mai
 PR 2 started on `feat/webui-css-decoration-fallback` from that synchronized base,
 preserving the uncommitted post-merge documentation updates. Provider state and
 recognized-to-omitted reload/reset work uses the existing owner monitor. The
-8,192-character bound remains unchanged pending the cohort measurements.
+8,192-character bound remains unchanged: all 71 retained literals/samples from
+the 33 cached scripts fit, with a measured maximum of 6,230. Dynamic strings and
+settings are not proven universally bounded by those samples.
 
 PR 1 started from synchronized `main` at
 `c2f4a2a2f0cee4ab01aa53e91886423143afb884` on

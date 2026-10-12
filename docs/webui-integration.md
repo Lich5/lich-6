@@ -466,7 +466,10 @@ and positional `load_from_data(data)` recognize the bounded progress grammar in
 rules, 22px trough and 20px progress minima, no background image, and a supported
 fill color. The final color declaration may omit its terminating semicolon;
 other declarations and their ordering remain bounded. Input remains limited to
-8,192 characters; this is not a measured maximum for all CSS consumers.
+8,192 characters. The [cached-cohort measurements](webui-css-decoration-acceptance.md)
+cover 71 payloads across 33 pinned scripts: the largest literal is 4,742 characters
+and the largest constructed sample is 6,230. The bound is retained; dynamic user
+settings can still exceed it, so these samples are not a universal runtime maximum.
 Recognized CSS translates validated values into the shared progress control;
 source CSS never reaches the browser. Other bounded strings are explicitly
 omitted, including unrecognized colors, malformed CSS and URL/import declarations.
@@ -507,8 +510,9 @@ geometry snapshot use the same session monitor as provider reloads, so direct or
 ancestor destruction cannot retire a handle during a style publication or leave
 other attached bars stale. Cross-owner attachment/mutation and unknown style
 methods refuse explicitly. Access to cached contexts also checks ownership and
-lifetime. Corpus-wide size measurements and acceptance remain unfinished PR 2
-work. Provider-load success alone does not establish whole-script support;
+lifetime. Cached-cohort sizes and source-derived acceptance are recorded in the
+[acceptance report](webui-css-decoration-acceptance.md). Provider-load success alone
+does not establish whole-script support;
 unsupported widgets such as HeaderBar and unrelated behavior still hard stop.
 
 `StyleContext#add_class`, `remove_class`, `has_class?` and `list_classes` maintain

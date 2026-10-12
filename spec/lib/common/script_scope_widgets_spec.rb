@@ -635,6 +635,14 @@ RSpec.describe 'bounded script compatibility pilot' do
     sibling.style_context.add_class('required-setting')
     screen = scope.const_get(:Gdk, false)::Screen.default
     compatibility::StyleContext.add_provider_for_screen(screen, provider, compatibility::StyleProvider::PRIORITY_USER)
+    # Retained original tpick global and label CSS, without its game setup or HeaderBar.
+    corpus = JSON.parse(File.read(File.expand_path('../../fixtures/webui/css-decoration.json', __dir__)))
+    tpick = corpus.fetch('scripts').find { |record| record.fetch('name') == 'tpick' }
+    global_css, label_css = tpick.fetch('samples').map do |sample|
+      compatibility::CssProvider.new.tap { |css_provider| css_provider.load(data: sample.fetch('css')) }
+    end
+    compatibility::StyleContext.add_provider_for_screen(screen, global_css, compatibility::StyleProvider::PRIORITY_USER)
+    sibling.style_context.add_provider(label_css, compatibility::StyleProvider::PRIORITY_USER)
     reload = compatibility::Button.new('Reload style')
     omit = compatibility::Button.new('Omit style')
     remove = compatibility::Button.new('Remove style')

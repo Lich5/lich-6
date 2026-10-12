@@ -59,8 +59,11 @@ recognized-to-omitted resets, lower-priority recognized providers, re-recognitio
 inert URL/import strings, bounded-input refusals and per-owner attributed notices.
 `script_scope_decoration_spec.rb` adds synthetic checks for shared widget contexts,
 class snapshots and bounds, screen-provider bookkeeping, owner/lifetime rejection,
-cleanup and consolidated CSS versus geometry notices. These do not replace the
-remaining cached-corpus acceptance and size measurements. The adapter specs verify
+cleanup and consolidated CSS versus geometry notices. `script_scope_css_corpus_spec.rb`
+tests all 71 retained payloads and executes reviewed CSS-only excerpts from eleven
+scripts. `fixtures/webui/css-decoration.json` records source hashes, lines, call
+shapes, substitutions and measurements. See the [acceptance report](../docs/webui-css-decoration-acceptance.md)
+for reproduction and per-script limitations; no whole game scripts run. The adapter specs verify
 optional-property reset validation and stable rendered
 identity; the compact renderer suite verifies that reset colors/heights disappear.
 The independent `shim-progress-style` Chrome case in the existing widget suite
@@ -68,6 +71,8 @@ checks attach-before-load, callback-driven reload/omission/re-recognition/remova
 stable component identity, fraction preservation, unchanged sibling typography,
 no request to the omitted CSS URL and final window closure. Its label context and
 screen attachment remain inert, and local class names do not appear in the DOM.
+It also loads original tpick global/label CSS from the retained corpus fixture
+and verifies that its requested font does not replace the WebUI theme.
 
 The same workflow has a separate Linux Chrome job. Playwright drives the existing
 shim entry/checkbox and separator fixtures, plus a native-page callback fixture.
