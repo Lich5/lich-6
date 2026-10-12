@@ -67,12 +67,6 @@ module Lich
             write(:value, fraction.clamp(0.0, 1.0))
           end
 
-          # Returns the cached bounded progress-style facade for this widget.
-          # @return [StyleContext]
-          def style_context
-            session.synchronize { @style_context ||= StyleContext.new(self) }
-          end
-
           protected
 
           # Style effects overlay authored values; provider removal never loses a

@@ -6,6 +6,27 @@ two unchanged negative candidates (eloot and Bigshot), also exercised with
 explicit test-only source repairs. These ten fixtures are not a total-corpus
 compatibility count. See docs/webui-review-readiness.md for the current handoff.
 
+CSS decoration cohort (separate from the ten setup fixtures)
+
+`css-decoration.json` retains 71 stylesheet payloads from the cached 33-script
+provider cohort, covering 66 load sites. It is not another full setup fixture.
+All source hashes match `docs/webui-css-decoration-audit.json`, using EO revision
+`7fd0b971387492cfd81b4bc7ef94428413965071` and mirror revision
+`549e33506e121453e3c01cfe5df46a902f44fc5f`. Paths, line ranges, raw call shapes,
+payload hashes and all interpolation/assembly substitutions are recorded inside.
+
+`spec/support/build_css_decoration_corpus.rb` rebuilds it from only those pinned
+Git blobs. Prism decodes selected strings; extraction never evaluates source Ruby.
+The corpus spec uses only this retained artifact and runs reviewed CSS-only
+excerpts from eleven sources, with explicit test widget/settings bindings. It
+does not execute game loops, downloads, persistence, or excluded Builder setup.
+Original tpick HeaderBar and manatimer Display calls remain negative checks.
+
+The Chrome progress harness loads the retained tpick global and label CSS, but
+does not render the original tpick setup. See `docs/webui-css-decoration-acceptance.md`
+for per-script size/disposition, sample-versus-maximum limits, omissions and
+rebuild/validation commands. No script source was repaired for this acceptance.
+
 Unchanged ecleanse setup fixture
 
 `ecleanse_setup.lic` is the exact `Ecleanse::Setup` module at lines 267–623 of

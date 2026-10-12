@@ -1,9 +1,10 @@
 # WebUI review readiness and handoff
 
-Reviewed baseline: 2026-10-11, `main` at `d3e41e71eb335acb80cdd599a3038026d5df5134`
-(PR #38 merged). This record describes the development tree, not an EO release.
-The documentation reconciliation branch is `docs/webui-review-readiness`.
-Update the baseline and affected status rows when subsequent work is adopted.
+Current baseline: 2026-10-12, synchronized `main` at
+`de8765199cdea6e73ed19cd5a9b6fcab759abea6` (PR #41 merged). This record describes
+the development tree, not an EO release. The original documentation reconciliation
+was reviewed on 2026-10-11 against PR #38 at
+`d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
 
 ## Reading the evidence
 
@@ -66,6 +67,7 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 | ebounty/eherbs/BlackArts families and eloot refusal | Merged | PR #36, `fac0d525` |
 | repository/go2 families and shared renderer repairs | Merged | PR #37, `57d31829` |
 | Bigshot/Huntplan families, corrected-source acceptance and final review repairs | Merged | PR #38, `d3e41e71` |
+| Progress provider lifecycle, optional-property reset and synchronized destruction | Merged | PR #41, `de876519` |
 
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
@@ -113,8 +115,137 @@ with current evidence and the next concrete slice.
 
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
-| 1. Progress provider lifecycle and compatibility | `CssProvider#load` and positional `load_from_data`; optional final semicolon in the bounded progress grammar; `ProgressBar` provider references, attach-before-load, reload and removal; APPLICATION/USER priorities and attachment-order ties; restoration of authored/default fill and height; owner synchronization, isolation and cleanup. Focused spellson/staminabar2 and lifecycle regressions. Explicitly approved adapter `UNSET` reset for optional shared properties. | **Ready for owner review**: [PR #41](https://github.com/Lich5/lich-6/pull/41) is open at `13837e10be31568a8996e1d0fac1ed4856eac64a` on `feat/webui-progress-provider-lifecycle`; the destruction-race review fix is local and uncommitted. Merge is not confirmed. |
-| 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **Not started**; starts after owner confirms PR 1 merged. |
+| 1. Progress provider lifecycle and compatibility | `CssProvider#load` and positional `load_from_data`; optional final semicolon in the bounded progress grammar; `ProgressBar` provider references, attach-before-load, reload and removal; APPLICATION/USER priorities and attachment-order ties; restoration of authored/default fill and height; owner synchronization, isolation and cleanup. Focused spellson/staminabar2 and lifecycle regressions. Explicitly approved adapter `UNSET` reset for optional shared properties. | **Merged**: [PR #41](https://github.com/Lich5/lich-6/pull/41), confirmed through GitHub on 2026-10-12, merged at `2026-10-12T07:35:31Z` as `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. Includes the destruction-race review fix from head `6943dda12c24b24b53cf2ddb2e4dc14038690837`. |
+| 2. Explicit CSS decoration fallback and acceptance | Unloaded/recognized/omitted providers; shared `Widget#style_context`; widget and owner-scoped screen provider attachment/removal; class add/remove/query; observed call forms; consolidated attributed omission notices; Screen geometry notice correction; CSS size measurements and cached-corpus acceptance accounting. Preserve unsupported-widget/behavior hard stops, including HeaderBar. | **Ready for owner review** on `feat/webui-css-decoration-fallback`, from synchronized `main` at `de8765199cdea6e73ed19cd5a9b6fcab759abea6`. Implementation, cached-cohort measurements and source-derived acceptance are complete within the bounded scope. Remote publication/merge status was not refreshed. Whole-script/native-window acceptance is not claimed. |
+
+Post-merge synchronization, 2026-10-12: fetched `origin`, switched from the clean
+PR 1 branch to `main`, and fast-forwarded to the merge commit above. Verified
+`main` and `origin/main` have zero divergence and contain the reviewed PR head.
+The tree was clean before the documentation-only status update. No feature
+branch was deleted. The owner then authorized PR 2's first implementation slice;
+the new branch preserved those uncommitted documentation updates.
+
+Next: owner review of PR 2's complete local scope and the
+[measurement/acceptance report](webui-css-decoration-acceptance.md). The 8,192-character
+bound is retained: all 71 payloads from 33 pinned scripts fit, with a measured
+maximum of 6,230. Dynamic settings can still exceed it. Actual tpick HeaderBar
+and manatimer Display calls remain independent hard stops. Do not reopen excluded
+Builder expansion or infer whole-script acceptance. Await the owner's merge
+confirmation before synchronizing `main` for any subsequent implementation PR.
+
+PR 2 first-slice inventory, 2026-10-12:
+
+- `lib/common/script_scope/gtk/style.rb`: explicit provider states; bounded
+  unrecognized strings become inert omitted decoration; only recognized providers
+  contribute progress effects. Reloads reset or reveal remaining recognized effects.
+- `lib/common/script_scope/gtk/session.rb`: optional receiver attribution in the
+  existing degradation helper; CSS-load omission reports once per owner/session.
+- `spec/lib/common/script_scope_style_spec.rb`, `spec/lib/common/script_scope_widgets_spec.rb`
+  and `spec/webui/browser.spec.cjs`: state transitions, authored/default restoration,
+  provider priority, isolation, cleanup, hard stops and Chrome reset/recovery.
+- This tracker, the fallback brief, integration guide and `spec/README.md` describe
+  the partial implementation and remaining scope. The audit JSON stays historical.
+
+No shared-core, renderer, real GTK, script-source or non-GUI changes. The input
+bound is unchanged and has not been reclassified as a measured corpus maximum.
+The new cases use synthetic CSS alongside the existing source-derived progress
+cases; they do not establish tpick or other whole-script acceptance.
+
+First-slice validation, retained host `rubystd` Ruby 4.0.5, 2026-10-12:
+
+- Before implementation, six focused cases failed on the merged PR 1 behavior.
+  Afterward, focused style/widget specs: **90 examples, zero failures, four
+  browser-only pending**, seed `35456`.
+- Explicit Chrome progress lifecycle: **one example, zero failures**, seed
+  `16466`; omission clears custom fill/height, re-recognition restores them,
+  fraction/identity and sibling typography remain intact, and the omitted CSS URL
+  produces no browser request.
+- Full RSpec: **9,048 examples, zero failures, 17 browser-only pending**, seed `1283`.
+- RuboCop: **1,307 files, no offenses**. `git diff --check` passed.
+
+Commands used the initialized host gems directly; no dependencies were changed.
+No additional renderer suite was needed for unchanged renderer code. This is a
+validated local slice, not completion of PR 2 or a native-window/whole-script
+acceptance claim. No staging, commit, push or remote PR creation was performed.
+
+PR 2 second-slice inventory, 2026-10-12: continued on the same branch from the
+owner's first-slice commit `6ddd5798d8f8a468ab3885481fd6c1510833e551`; the tree was
+clean at entry and all prior behavior/documentation was preserved.
+
+- `lib/common/script_scope/gtk/widgets.rb` and `lib/common/script_scope/gtk/displays.rb`:
+  move the cached context accessor to Widget and check ownership/lifetime even
+  for cached access.
+- `lib/common/script_scope/gtk/style.rb`: retain providers on all supported
+  widgets, with visible effects only on ProgressBar; add bounded class metadata
+  and screen registration/removal APIs; attribute geometry notices only on
+  width/height reads. Unknown APIs and widgets still refuse.
+- `lib/common/script_scope/gtk/session.rb`: owner-bound, monitor-protected screen
+  registry and teardown; share one attributed CSS-omission notice across loads,
+  non-progress widget attachments, screen attachments and class additions.
+- `spec/lib/common/script_scope_decoration_spec.rb` (new),
+  `spec/lib/common/script_scope_style_spec.rb`,
+  `spec/lib/common/script_scope_widgets_spec.rb`, `spec/webui/browser.spec.cjs`:
+  synthetic shared-context/class/screen coverage and extended Chrome checks.
+- Documentation: `docs/webui-integration.md`,
+  `docs/webui-css-decoration-fallback-brief.md`, this tracker and `spec/README.md`.
+
+Limits are 64 providers per widget context, 64 screen providers per session, 64
+class names per context and 512 characters per class name. Class lists are
+independent snapshots; names never become DOM classes. Screen registrations have
+no visible effect, including for recognized progress CSS. All registrations and
+classes are released on their widget/session lifetime boundary. The existing
+session monitor and dispatcher are reused; no shared-core, real GTK, renderer,
+script-source or non-GUI changes are included.
+
+Second-slice validation, retained host `rubystd` Ruby 4.0.5, 2026-10-12:
+
+- Focused decoration/style/widget specs: **100 examples, zero failures, four
+  browser-only pending**, seed `45614`.
+- Explicit Chrome progress lifecycle: **one example, zero failures**, seed
+  `43745`. Label contexts and class names do not affect typography or DOM classes;
+  a screen registration does not retain progress styling after local removal.
+  Existing reload/omission, stable identity, fraction and callback checks pass.
+- Full RSpec: **9,058 examples, zero failures, 17 browser-only pending**, seed `11614`.
+- RuboCop: **1,308 files, no offenses** after correcting one spacing offense.
+  `git diff --check` passed.
+
+Validation used host gems directly, with no dependency changes. The cached audit
+was consulted for the API surface; no script-wide or EO PR rescan was performed.
+Corpus acceptance, size measurements and native-window certification are not
+claimed by these synthetic tests. No staging, commit, push or external write was
+performed by the assistant.
+
+PR 2 final evidence slice, 2026-10-12: continued from the owner's clean
+`947a9fdcca7ba879ff3d18309d97e4827d8585c6` commit. No product code or bounds changed.
+
+- New `spec/support/build_css_decoration_corpus.rb` reads only the 33 cached,
+  pinned source blobs and verifies their hashes. It never evaluates source Ruby.
+- New `spec/fixtures/webui/css-decoration.json` retains 71 payloads covering all
+  66 load sites, provenance, substitutions, measurements and reviewed excerpts.
+- New `spec/lib/common/script_scope_css_corpus_spec.rb` exercises all payloads,
+  every observed attachment signature, and CSS-only excerpts from eleven scripts.
+  Only spellson/staminabar2 samples are recognized; all others are omitted.
+- `spec/lib/common/script_scope_widgets_spec.rb` and `spec/webui/browser.spec.cjs`
+  add retained tpick global/label CSS to the controlled Chrome fixture.
+- New `docs/webui-css-decoration-acceptance.md` records all 33 dispositions,
+  size-limit reasoning, losses, independent blockers and whole-setup limitations.
+  Updated this tracker, `docs/webui-css-decoration-fallback-brief.md`,
+  `docs/webui-integration.md`, `spec/README.md` and `spec/fixtures/webui/README.txt`.
+
+Final-slice validation, retained host `rubystd` Ruby 4.0.5:
+
+- Corpus acceptance: **46 examples, zero failures**, seed `16010`.
+- Chrome with retained tpick CSS: **one example, zero failures**, seed `34274`.
+- Full RSpec: **9,104 examples, zero failures, 17 browser-only pending**, seed `65374`.
+- RuboCop: **1,310 files, no offenses**.
+- Rebuilding the fixture from the pinned sources matches byte-for-byte;
+  `git diff --check` passed.
+
+Cross-repository access was limited to the already authorized read-only EO and
+mirror source blobs. No scripts, real GTK, non-GUI logic, shared core, renderer,
+dependencies, or EO PR state were changed. Full original setup/gameplay and
+native-window acceptance remain outside this evidence. No staging, commit, push
+or external write was performed by the assistant.
 
 Each PR includes relevant tests and documentation, full RSpec and RuboCop, and
 renderer/browser checks where needed. Real GTK, script source changes, non-GUI
@@ -138,7 +269,7 @@ No product renderer, protocol schema, script source, or non-GUI logic changes.
 Source-derived progress checks do not certify whole-script setup or gameplay.
 Manatimer's broader CSS, stormsync's decoration call chains and tpick
 remain outside PR 1 acceptance; their dispositions belong to PR 2. The 8,192
-character input limit remains unchanged pending that slice's measurements.
+character input limit remains unchanged after PR 2's measurements above.
 
 PR 1 validation, 2026-10-12, host Ruby 4.0.5:
 
@@ -171,8 +302,11 @@ focused style/widget specs **85 examples, zero failures, four browser-only pendi
 RSpec and RuboCop ran directly with the host gems: `bundle exec` could not resolve
 the lockfile's exact installed versions. No dependency files or gems were changed.
 Browser/renderer checks were not repeated for this Ruby synchronization fix;
-the earlier evidence above remains separate. The fix is uncommitted; no staging,
-commit, push, remote review reply or thread resolution was performed.
+the earlier evidence above remains separate. At that validation, the fix was
+uncommitted and the assistant performed no staging, commit, push, remote review
+reply or thread resolution. The owner subsequently published it and PR #41 merged
+as recorded above. The post-merge documentation update passed `git diff --check`;
+the dated product validation was not rerun for these status-only edits.
 
 ### Other open work
 
@@ -183,7 +317,7 @@ commit, push, remote review reply or thread resolution was performed.
 | eloot and Bigshot author repairs | Await source updates; retain original negative tests and separately labeled corrected candidates. |
 | Windows/Linux native-window acceptance | Still open for actual focus, topmost/opacity where supported, geometry and process cleanup; Linux Chrome transport tests do not certify these. |
 | macOS distribution | Signed/notarized helper packaging, older supported macOS and physical Intel acceptance remain release work. Local helper builds are not distribution certification. |
-| Arbitrary GTK CSS and internal combo-entry character limits | Arbitrary CSS still refuses in PR 1; explicit decoration omission is approved for PR 2 above. Full CSS translation and combo-entry character-limit expansion remain excluded. |
+| Arbitrary GTK CSS and internal combo-entry character limits | PR 2 is locally ready for review: bounded omission, widget/screen/class bookkeeping, cached-cohort measurements and source-derived acceptance. Full CSS translation, whole-script acceptance and combo-entry character-limit expansion remain excluded. |
 | stormsync | Excluded from further Builder expansion by owner direction. |
 | bigshit2 | Not a target for further expansion by owner direction; do not infer its acceptance from Bigshot. |
 | slootbeta and remaining corpus questions | Outside the ten-fixture acceptance proof. Recover the retained child-structure/corpus audit before restating detailed counts or proposing expansion. |

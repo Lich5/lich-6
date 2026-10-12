@@ -461,30 +461,46 @@ the copied captions.
 
 CSS support is distinct from typed presentation properties. Builder does not
 accept arbitrary stylesheets or CSS classes. Direct shim `CssProvider#load(data:)`
-and positional `load_from_data(data)`
-accepts only the bounded progress stylesheet grammar implemented in
+and positional `load_from_data(data)` recognize the bounded progress grammar in
 [`gtk/style.rb`](../lib/common/script_scope/gtk/style.rb): bold label/trough/progress
 rules, 22px trough and 20px progress minima, no background image, and a supported
 fill color. The final color declaration may omit its terminating semicolon;
 other declarations and their ordering remain bounded. Input remains limited to
-8,192 characters; this is not a measured maximum for all CSS consumers.
-It translates validated values into the shared progress control;
-source CSS never reaches the browser. Other declarations are refused. The fact
-that the renderer itself uses CSS does not implement GTK selectors, widget
+8,192 characters. The [cached-cohort measurements](webui-css-decoration-acceptance.md)
+cover 71 payloads across 33 pinned scripts: the largest literal is 4,742 characters
+and the largest constructed sample is 6,230. The bound is retained; dynamic user
+settings can still exceed it, so these samples are not a universal runtime maximum.
+Recognized CSS translates validated values into the shared progress control;
+source CSS never reaches the browser. Other bounded strings are explicitly
+omitted, including unrecognized colors, malformed CSS and URL/import declarations.
+They are inert: no source CSS is retained, evaluated, fetched or sent to the browser.
+The first omission logs `operation=css_decoration` once per script/session, with
+script, receiver and call-site attribution (or `source=unknown` when unavailable).
+The notice does not include source CSS. Loads, non-progress widget attachments,
+screen attachments and class additions share this one omission notice.
+The fact that the renderer itself uses CSS does not implement GTK selectors, widget
 states or arbitrary native sizing semantics. Expanding that surface requires a
 separate evidence-based decision, not script-name exceptions.
 
-`ProgressBar#style_context` retains same-owner providers, including providers
+Every supported `Widget#style_context` returns a cached, owner-bound facade that
+retains same-owner providers, including providers
 attached before loading. `add_provider(provider, priority)` accepts APPLICATION
 (600, also the omitted-argument default) or USER (800). Higher priority wins;
 the most recently attached provider wins ties. Reattachment replaces that
-provider's registration; an unloaded provider contributes no effect. Successful
-loads update every attached bar under the existing session monitor. Invalid or
-unsupported reloads preserve the last valid provider and widget presentation.
+provider's registration. Providers have explicit `unloaded`, `recognized` and
+`omitted` states; `loaded?` is true for the latter two. Only recognized providers
+contribute progress effects. Loads update every attached bar under the existing
+session monitor. Recognized-to-omitted reloads reveal another recognized provider,
+then authored values or theme defaults; stale fill/height effects are cleared.
+An omitted provider can become recognized again on a later load. Non-string,
+invalid/incompatible-encoding and over-limit input still refuses without changing
+the previous state or presentation; unsupported call shapes still raise.
 `remove_provider(provider)` reveals remaining providers, then the authored values
 or default theme. Repeated removal of a same-owner provider is harmless.
 
-Recognized providers supply fill color and 24px height only. Authored values are
+Only local `ProgressBar` contexts apply recognized fill color and 24px height.
+Attaching even a recognized stylesheet to labels or other widgets is inert;
+it cannot change their contents, typed properties or callbacks. Authored values are
 retained separately; explicit script writes made during styling win through
 reload and removal. No style is copied to sibling labels. Contexts are limited to
 64 distinct attached providers and the session's existing 20,000-component bound;
@@ -493,8 +509,30 @@ contexts on unattached widgets. Widget destruction and the window's retained
 geometry snapshot use the same session monitor as provider reloads, so direct or
 ancestor destruction cannot retire a handle during a style publication or leave
 other attached bars stale. Cross-owner attachment/mutation and unknown style
-methods refuse explicitly. General widget contexts, screen providers, CSS classes
-and decoration omission are the separate approved PR 2, not implemented here.
+methods refuse explicitly. Access to cached contexts also checks ownership and
+lifetime. Cached-cohort sizes and source-derived acceptance are recorded in the
+[acceptance report](webui-css-decoration-acceptance.md). Provider-load success alone
+does not establish whole-script support;
+unsupported widgets such as HeaderBar and unrelated behavior still hard stop.
+
+`StyleContext#add_class`, `remove_class`, `has_class?` and `list_classes` maintain
+widget-local metadata only. They accept nonempty, valid ASCII-compatible strings
+of up to 512 characters, with at most 64 distinct classes per context. Repeated
+addition/removal is harmless; `list_classes` returns an independent snapshot.
+Names never become DOM classes or selectors, so required-field colors, selection
+borders and drag/drop indicators requested through classes remain omitted. Destroy
+and owner shutdown clear both class names and provider references.
+
+`StyleContext.add_provider_for_screen(screen, provider, priority)` and
+`remove_provider_for_screen(screen, provider)` validate both objects against the
+current script. Priority accepts APPLICATION, USER or an omitted argument as above.
+Registration is bounded to 64 distinct providers per session; reattachment updates
+an existing entry and repeated removal is harmless. These calls only maintain
+owner-scoped bookkeeping, with no visible effect on any widget or native page.
+Fresh `Gdk::Screen.default` tokens from the same session address the same registry;
+owner shutdown clears it. Obtaining the token no longer reports a geometry
+degradation. Reading `width` or `height` reports the nominal geometry once per
+session, with source attribution, and returns the existing 1024/768 hints.
 
 The adapter's existing `set` operation accepts the explicit Ruby token
 `Lich::WebUI::Adapter::UNSET` for **optional shared** properties. It removes the
