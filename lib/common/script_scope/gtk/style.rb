@@ -5,6 +5,7 @@ module Lich
     module ScriptScope
       module Gtk
         module StyleProvider
+          PRIORITY_APPLICATION = 600
           PRIORITY_USER = 800
         end
 
@@ -21,42 +22,143 @@ module Lich
           end
         end
 
-        # Parse only the stylesheet actually used by the accepted spell monitor.
+        # Parse only the measured spell-monitor progress declarations.
         # The browser receives bounded color/geometry values, never source CSS.
         class CssProvider
-          attr_reader :fill_color
+          attr_reader :session, :fill_color
+
+          # Captures the creating owner; retained providers cannot cross sessions.
+          def initialize
+            @session = Gtk.session
+            @contexts = {}.compare_by_identity
+          end
 
           # Accepts the measured progress stylesheet grammar and extracts a bounded fill color.
           # Arbitrary CSS never reaches the renderer.
           # @param data [String] supported stylesheet, at most 8,192 characters
+          # @return [Boolean] true on successful validation and notification
           # @raise [UnsupportedOperation] for any unsupported grammar or color
           def load(data:)
-            valid = data.is_a?(String) && data.length <= 8192
-            valid &&= data.match?(/\Alabel\s*\{\s*font-weight:\s*bold;\s*\}\s*trough\s*\{\s*font-weight:\s*bold;\s*min-height:\s*22px;\s*\}\s*progress\s*\{\s*font-weight:\s*bold;\s*min-height:\s*20px;\s*background-image:\s*none;\s*background-color:\s*(?:#[0-9a-fA-F]{6}|[a-z]+);\s*\}\z/)
-            Gtk.session.refuse(self, :load) unless valid
-            color = data.match(/background-color:\s*([^;]+);/)[1]
-            @fill_color = Color.parse(color) || Gtk.session.refuse(self, :load)
-            @loaded = true
+            session.style_operation(self, :load) do
+              valid = data.is_a?(String) && data.valid_encoding? && data.encoding.ascii_compatible? && data.length <= 8192
+              match = data.match(/\Alabel\s*\{\s*font-weight:\s*bold;\s*\}\s*trough\s*\{\s*font-weight:\s*bold;\s*min-height:\s*22px;\s*\}\s*progress\s*\{\s*font-weight:\s*bold;\s*min-height:\s*20px;\s*background-image:\s*none;\s*background-color:\s*(#[0-9a-fA-F]{6}|[a-z]+)\s*;?\s*\}\z/) if valid
+              color = Color.parse(match[1]) if match
+              session.refuse(self, :load) unless color
+              @fill_color = color
+              @contexts.each_key { |context| context.send(:refresh) }
+              true
+            end
+          end
+
+          # Positional GTK spelling; shares validation and reload notification.
+          # @param data [String] bounded supported progress stylesheet
+          # @return [Boolean] true on successful load
+          def load_from_data(data)
+            load(data: data)
           end
 
           # Reports successful validation of this provider's stylesheet.
           # @return [Boolean]
-          def loaded? = @loaded == true
+          def loaded? = !@fill_color.nil?
+
+          # Refuses style APIs outside the measured progress surface.
+          # @raise [UnsupportedOperation] always
+          def method_missing(name, *, **, &)
+            session.refuse(self, name)
+          end
+
+          # Keeps unsupported methods absent from reflection.
+          def respond_to_missing?(*args) = super
+
+          private
+
+          def attach(context)
+            @contexts[context] = true
+          end
+
+          def detach(context)
+            @contexts.delete(context)
+          end
         end
 
         class StyleContext
           # Binds the restricted style facade to its compatibility widget.
           def initialize(widget)
+            @session = Gtk.session
+            @session.refuse(self, :new) unless widget.is_a?(ProgressBar) && widget.session.equal?(@session) && !widget.destroyed?
             @widget = widget
+            @providers = {}.compare_by_identity
+            @session.register_style_context(self)
           end
 
-          # Maps the accepted user-priority provider to progress fill and trough height.
-          # @raise [UnsupportedOperation] for other providers, unloaded CSS, or priorities
-          def add_provider(provider, priority)
-            Gtk.session.refuse(self, :add_provider) unless provider.is_a?(CssProvider) && provider.loaded? && priority == StyleProvider::PRIORITY_USER
-            @widget.send(:write, :fill_color, provider.fill_color)
-            # GTK's 22px trough content has a one-pixel border on both sides.
-            @widget.send(:write, :height, 24)
+          # Attaches before or after load. Higher priority wins; the most recent
+          # attachment breaks ties. Reattaching replaces the existing registration.
+          # @param provider [CssProvider] provider from this owner
+          # @param priority [Integer] APPLICATION (default) or USER
+          # @return [StyleContext] self
+          def add_provider(provider, priority = StyleProvider::PRIORITY_APPLICATION)
+            operation(:add_provider) do
+              validate_provider(provider, :add_provider)
+              valid = priority.is_a?(Integer) && [StyleProvider::PRIORITY_APPLICATION, StyleProvider::PRIORITY_USER].include?(priority)
+              @session.refuse(self, :add_provider) unless valid && (@providers.key?(provider) || @providers.size < 64)
+              @providers.delete(provider)
+              @providers[provider] = priority
+              provider.send(:attach, self)
+              refresh
+            end
+            self
+          end
+
+          # Removes only this context's registration; missing same-owner providers
+          # are harmless. Remaining providers or authored/default values reappear.
+          # @return [StyleContext] self
+          def remove_provider(provider)
+            operation(:remove_provider) do
+              validate_provider(provider, :remove_provider)
+              @providers.delete(provider)
+              provider.send(:detach, self)
+              refresh
+            end
+            self
+          end
+
+          # Unknown style behavior remains an attributed hard stop.
+          # @raise [UnsupportedOperation] always
+          def method_missing(name, *, **, &)
+            @session.refuse(self, name)
+          end
+
+          # Keeps unsupported methods absent from reflection.
+          def respond_to_missing?(*args) = super
+
+          private
+
+          def operation(name, &block)
+            @session.style_operation(self, name) do
+              @session.refuse(self, name) unless @widget && !@widget.destroyed?
+              block.call
+            end
+          end
+
+          def validate_provider(provider, operation)
+            @session.refuse(self, operation) unless provider.is_a?(CssProvider) && provider.session.equal?(@session)
+          end
+
+          def refresh
+            candidates = @providers.each_with_index.select { |(provider, _priority), _index| provider.loaded? }
+            selected = candidates.max_by { |(_provider, priority), index| [priority, index] }
+            provider = selected&.first&.first
+            # GTK's 22px trough content includes a one-pixel border on each side.
+            @widget.send(:apply_progress_style, provider ? { fill_color: provider.fill_color, height: 24 } : {})
+          end
+
+          def close
+            @session.synchronize do
+              @providers.each_key { |provider| provider.send(:detach, self) }
+              @providers.clear
+              @widget = nil
+              @session.forget_style_context(self)
+            end
           end
         end
 

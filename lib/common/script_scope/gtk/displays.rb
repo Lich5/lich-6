@@ -69,9 +69,45 @@ module Lich
 
           # Returns the cached bounded progress-style facade for this widget.
           # @return [StyleContext]
-          def style_context = @style_context ||= StyleContext.new(self)
+          def style_context
+            session.synchronize { @style_context ||= StyleContext.new(self) }
+          end
 
           protected
+
+          # Style effects overlay authored values; provider removal never loses a
+          # preexisting request. A later explicit write wins until styling clears.
+          def component_props
+            super.merge(@progress_style || {}).merge(@style_overrides || {})
+          end
+
+          def write(property, value)
+            session.synchronize do
+              super
+              (@style_overrides ||= {})[property] = value if @progress_style&.key?(property)
+            end
+            self
+          end
+
+          # Publishes typed effects through the existing handle. Clearing an
+          # absent authored property uses the adapter's explicit reset token.
+          # @api private
+          def apply_progress_style(style)
+            session.synchronize do
+              overrides = style.empty? ? {} : (@style_overrides || {})
+              before = component_props
+              after = @props.merge(style).merge(overrides)
+              if @handle && !@destroyed
+                %i[fill_color height].each do |property|
+                  next if before[property] == after[property]
+                  value = after.fetch(property, Lich::WebUI::Adapter::UNSET)
+                  session.with_widget(self) { session.port.set(@handle, property, value) }
+                end
+              end
+              @progress_style = style
+              @style_overrides = overrides
+            end
+          end
 
           def component_type = :progress
         end

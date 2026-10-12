@@ -460,15 +460,48 @@ the existing shim container APIs; later edits to those label objects do not upda
 the copied captions.
 
 CSS support is distinct from typed presentation properties. Builder does not
-accept arbitrary stylesheets or CSS classes. Direct shim `CssProvider#load`
+accept arbitrary stylesheets or CSS classes. Direct shim `CssProvider#load(data:)`
+and positional `load_from_data(data)`
 accepts only the bounded progress stylesheet grammar implemented in
 [`gtk/style.rb`](../lib/common/script_scope/gtk/style.rb): bold label/trough/progress
 rules, 22px trough and 20px progress minima, no background image, and a supported
-fill color. It translates validated values into the shared progress control;
+fill color. The final color declaration may omit its terminating semicolon;
+other declarations and their ordering remain bounded. Input remains limited to
+8,192 characters; this is not a measured maximum for all CSS consumers.
+It translates validated values into the shared progress control;
 source CSS never reaches the browser. Other declarations are refused. The fact
 that the renderer itself uses CSS does not implement GTK selectors, widget
 states or arbitrary native sizing semantics. Expanding that surface requires a
 separate evidence-based decision, not script-name exceptions.
+
+`ProgressBar#style_context` retains same-owner providers, including providers
+attached before loading. `add_provider(provider, priority)` accepts APPLICATION
+(600, also the omitted-argument default) or USER (800). Higher priority wins;
+the most recently attached provider wins ties. Reattachment replaces that
+provider's registration; an unloaded provider contributes no effect. Successful
+loads update every attached bar under the existing session monitor. Invalid or
+unsupported reloads preserve the last valid provider and widget presentation.
+`remove_provider(provider)` reveals remaining providers, then the authored values
+or default theme. Repeated removal of a same-owner provider is harmless.
+
+Recognized providers supply fill color and 24px height only. Authored values are
+retained separately; explicit script writes made during styling win through
+reload and removal. No style is copied to sibling labels. Contexts are limited to
+64 distinct attached providers and the session's existing 20,000-component bound;
+destroying a subtree detaches descendant contexts, and owner shutdown also clears
+contexts on unattached widgets. Widget destruction and the window's retained
+geometry snapshot use the same session monitor as provider reloads, so direct or
+ancestor destruction cannot retire a handle during a style publication or leave
+other attached bars stale. Cross-owner attachment/mutation and unknown style
+methods refuse explicitly. General widget contexts, screen providers, CSS classes
+and decoration omission are the separate approved PR 2, not implemented here.
+
+The adapter's existing `set` operation accepts the explicit Ruby token
+`Lich::WebUI::Adapter::UNSET` for **optional shared** properties. It removes the
+property, applies schema defaults when defined, and revalidates component and
+child-placement constraints before publication. Required, viewer-scoped,
+sensitive and unknown properties still refuse; `nil` is not a reset token.
+The handle remains stable, and the sentinel never appears in browser data.
 
 Layout translation uses the same typed properties as native conversions. Grid
 columns default to content-based sizing; `column-homogeneous` changes the actual

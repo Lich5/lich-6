@@ -378,6 +378,17 @@ test('colored progress receives the source color, fraction and 24px height', () 
   assert.equal(bar.children[0].style['--progress-fill'], 'rgba(176, 224, 230, 1)');
 });
 
+test('removing progress presentation restores default rendering while retaining fraction', () => {
+  const f = viewer();
+  const reset = frame(2);
+  reset.tree.children[0].children[1].props = { value: 0.75 };
+  f.receive(reset);
+  const bar = f.elements.pages.children[0].children[0].children[2].children[0];
+  assert.equal(bar.style.height || '', '');
+  assert.equal(bar.children[0].style['--progress-fill'] || '', '');
+  assert.equal(bar.children[0].value, 0.75);
+});
+
 test('a render arriving during divider drag is applied before committing against its generation', () => {
   const f = viewer();
   const root = f.elements.pages.children[0], handle = root.children[0].children[1];

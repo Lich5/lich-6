@@ -429,15 +429,18 @@ module Lich
           # Removes the widget once and runs each destroy handler independently.
           # @return [Widget] self, including repeated destruction
           def destroy
-            return self if @destroyed
+            session.synchronize do
+              return self if @destroyed
 
-            @dialogs&.dup&.each { |dialog| session.cleanup(dialog) { dialog.destroy } }
-            session.port.destroy(@handle) if @handle
-            @parent&.send(:forget_child, self)
-            @parent = nil
-            mark_destroyed
-            session.forget(self)
-            self
+              # Keep handle retirement and provider detachment atomic with reloads.
+              @dialogs&.dup&.each { |dialog| session.cleanup(dialog) { dialog.destroy } }
+              session.port.destroy(@handle) if @handle
+              @parent&.send(:forget_child, self)
+              @parent = nil
+              mark_destroyed
+              session.forget(self)
+              self
+            end
           end
 
           # Marks the shadow subtree retired while preserving script-readable metadata.
@@ -446,6 +449,7 @@ module Lich
             return if @destroyed
 
             @destroyed = true
+            @style_context&.send(:close)
             @children.dup.each(&:mark_destroyed)
             @destroy_handlers&.each { |handler| session.cleanup(self) { handler.call(self) } }
           end
@@ -666,11 +670,13 @@ module Lich
           # Keep geometry available to original destroy/exit handlers after
           # the adapter has retired the window handle.
           def destroy
-            unless destroyed?
-              dimensions = allocation
-              @observed_geometry = { width: dimensions.width, height: dimensions.height, position: position }
+            session.synchronize do
+              unless destroyed?
+                dimensions = allocation
+                @observed_geometry = { width: dimensions.width, height: dimensions.height, position: position }
+              end
+              super
             end
-            super
           end
 
           # Validates the legacy flag and reports that window resizing is host-controlled.
