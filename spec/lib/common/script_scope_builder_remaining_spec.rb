@@ -356,7 +356,7 @@ RSpec.describe 'remaining Builder setup families' do
   end
 
   [true, false, nil].each do |legacy|
-    it "migrates corrected bigshot legacy boon flag #{legacy.inspect} without replaying it" do
+    it "migrates corrected bigshot legacy boon flag #{legacy.inspect} without replaying it", :slow do
       form = original('bigshot', corrected: true, settings: { boon_flee_from: legacy })
       connect
       expect(form.settings).not_to have_key(:boon_flee_from)
@@ -444,7 +444,7 @@ RSpec.describe 'remaining Builder setup families' do
     expect(@variables.op).to be_nil
   end
 
-  it 'runs corrected bigshot new-profile, overwrite/cancel and update-profile paths' do
+  it 'runs corrected bigshot new-profile, overwrite/cancel and update-profile paths', :slow do
     form = original('bigshot', corrected: true)
     connect
     existing = Dir.children(@profile_directory)

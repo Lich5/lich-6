@@ -200,7 +200,7 @@ jobs:
             const specs = files
               .filter(f => f.status !== 'removed' && /^spec\/.+_spec\.rb$/.test(f.filename))
               .map(f => f.filename);
-            core.notice(`Changed spec files: ${specs.length}`);
+            core.info(`Changed spec files: ${specs.length}`);
             core.setOutput('specs', specs.join('\n'));
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.list.outputs.specs != ''
