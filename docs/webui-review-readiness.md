@@ -75,7 +75,9 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
 outstanding. The latter preserves existing text and emits no change signal;
-standalone Entry limits remain supported. The host/browser contract is 2.18.0.
+standalone Entry limits remain supported.
+
+The current development baseline uses host/browser contract 2.19.0.
 
 ## Builder setup acceptance
 
