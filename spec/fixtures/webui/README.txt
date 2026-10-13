@@ -173,3 +173,15 @@ and text-area callbacks, boon selection/migration, profile load/new/overwrite/
 cancel/update, Close/save and destroy without save. Both also run in Chrome.
 This establishes setup/UI acceptance for those explicit repairs, not live-game
 behavior or proof that an upstream author has adopted the same repairs.
+
+Manatimer progress/overlay fixture
+
+`manatimer.json` retains unchanged v0.1 blocks from mirror `lib/manatimer.lic` at
+`2fa28f1e540e97c468af88bbc8c432d3cebf8755`, with source and block SHA-256 hashes.
+Positive controls acceptance runs 50–75 and 80–96 separately, explicitly excluding
+monitor restoration 76–79. It also runs the original queued countdown 176–182
+and before_dying cleanup 101–116 against an isolated settings hash. The unmodified
+49–97 setup is a negative acceptance test: Gdk::Display still refuses at line 76.
+No source rewriting, game loop, pulse catcher, real GTK or live settings writes.
+The browser adds harness buttons to drive original updates and end the fixture;
+right-click executes the original callback. This is not whole-script acceptance.

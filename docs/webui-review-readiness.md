@@ -1,7 +1,8 @@
 # WebUI review readiness and handoff
 
-Current baseline: 2026-10-12, synchronized `main` at
-`bea51ac3522d894ecc33c39abcccdc00a8017661` (PRs #41 and #42 merged). This record describes
+Current baseline: 2026-10-12, PR 2 branch `feat/webui-manatimer-progress-overlay`
+from synchronized `main` / `origin/main` at `157c25890e755739e4a7febe5e3092c34f679c74`
+(PRs #41, #42, #43 and subsequent main updates merged). This record describes
 the development tree, not an EO release. The original documentation reconciliation
 was reviewed on 2026-10-11 against PR #38 at
 `d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
@@ -69,11 +70,14 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 | Bigshot/Huntplan families, corrected-source acceptance and final review repairs | Merged | PR #38, `d3e41e71` |
 | Progress provider lifecycle, optional-property reset and synchronized destruction | Merged | PR #41, `de876519` |
 | CSS decoration fallback, widget contexts, class/screen providers and corpus acceptance | Merged | PR #42, `bea51ac3` |
+| HeaderBar/titlebar, signed Grid origins/rollback, required label cues and default tpick setup | Merged | PR #43, `cd10f7b2` |
 
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
 outstanding. The latter preserves existing text and emits no change signal;
-standalone Entry limits remain supported. The host/browser contract is 2.18.0.
+standalone Entry limits remain supported.
+
+The current development baseline uses host/browser contract 2.19.0.
 
 ## Builder setup acceptance
 
@@ -156,18 +160,123 @@ snapshots, not author release dates. HeaderBar appears in 12 scripts, 11 updated
 within the year. tpick v48 was last observed changing on October 6; manatimer
 v0.1 on June 22. Both still match their cached source versions.
 
-Only the first implementation slice below is authorized. The remaining rows are
-proposals, including the owner-deferred optional image-window follow-up. Each future branch
+The first implementation slice below is merged. PR 2 is implemented locally;
+the other rows remain proposals, including the owner-deferred image-window follow-up. Each future branch
 starts from synchronized `main` after its predecessor merges.
 
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
-| 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **PR [#43](https://github.com/Lich5/lich-6/pull/43) open; review fixes implemented locally** on `feat/webui-headerbar-tpick`, based on synchronized `main` at `bea51ac3`. |
-| 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Not started; owner deferred** from PR 1 on 2026-10-12. Default `Show Images = No` setup is covered in PR 1. |
-| 2. Manatimer progress/overlay semantics | `ProgressBar#show_text=`, overlay pass-through, label/fraction and pointer behavior. No CSS grammar expansion implied. | **Not started; proposed** |
+| 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **Merged**: [PR #43](https://github.com/Lich5/lich-6/pull/43), confirmed 2026-10-12; `cd10f7b2`. Includes transactional adapter attachment and HeaderBar documentation follow-ups. |
+| 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Owner deferred** from PR 1. Generic decoration toggling is supplied by PR 2; transient/image behavior remains unstarted. Default `Show Images = No` setup is covered in PR 1. |
+| 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Validated locally; ready for owner review** on `feat/webui-manatimer-progress-overlay`. Complete setup remains blocked by PR 3. |
 | 3. Display/monitor geometry | Host-owned monitor-at-point/geometry and bounded Gdk projection; actual multi-monitor coordinates and unavailable-host behavior. No fabricated monitor data. | **Not started; requires core design decision** |
 | 4. Owner-bound GLib scheduling | Observed Timeout/Idle/Source cancellation calls through the existing owner dispatcher; repository and sail2 acceptance. | **Not started; proposed** |
 | 5. Source acceptance refresh | Re-pin changed repository/eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. | **Not started; proposed** |
+
+PR 2 implementation, 2026-10-12: fetched origin, confirmed main at `157c2589`
+with zero ahead/behind commits, and created `feat/webui-manatimer-progress-overlay`.
+Preserved the existing two post-merge documentation edits. The owner explicitly
+approved bounded overlay pass-through and progress pointer-event extensions.
+Contract 2.19.0 adds those surfaces; text visibility and window decoration reuse
+existing properties. `Adapter#set_overlay_pass_through` preserves identity and
+viewer drafts, validates membership/boolean input, and rolls back publication
+failure. Overlay removal/destruction clears relationship state. Browser layout
+also required progress width requests to be minima rather than fixed allocations.
+
+Owner-approved rendering follow-up: all progress controls now share their base
+trough, border and accent fill. Recognized colors override only fill; explicit
+dimensions work even with omitted CSS. The default track is 18px high; an enabled
+label takes its normal line above the remaining track allocation. Indeterminate
+progress retains a moving segment and honors reduced motion. No script-name
+branches, CSS grammar expansion or additional contract properties were added.
+
+`spec/fixtures/webui/manatimer.json` pins unchanged v0.1 blocks from mirror
+`2fa28f1e540e97c468af88bbc8c432d3cebf8755`, source SHA-256
+`ac33cc5b04bb6d4185063b552c1dcc8290b5cdfe752ba9ea36402f65a4f9bf2f`.
+The partial harness runs controls (50–75), providers (80–96), countdown (176–182)
+and cleanup (101–116), using isolated settings and bounded queue waits. The full
+49–97 setup remains a negative test at `Gdk::Display`, line 76. Restoration
+76–79 is explicitly excluded from positive acceptance. No game loop or pulse
+catcher runs. Missing saved position and clamping that ignores monitor x/y are
+source limitations, not shim repairs. Red/green CSS remains omitted. Generic
+borderless support does not complete deferred tpick image-window acceptance.
+
+Final validation (host rubystd Ruby 4.0.5, seed 57467):
+
+- Full RSpec: **9,154 examples, zero failures, 23 browser-only pending**.
+- Explicit Chrome CI selection, including manatimer and core progress sizing: **19 examples, zero failures**.
+- Full RuboCop: **1,318 files, zero offenses**.
+- Renderer suites: **159 tests, zero failures**.
+- `git diff --check`: clean.
+
+Native macOS WebKit: **one explicit fixture example, zero failures**;
+visually verified centered `01:00` over 50% progress, native titlebar removal and
+restoration through the original right-click callback, pass-through disabled
+blocking that callback, and Finish closing the owned host. A temporary harness
+opened the same source-derived browser fixture through production `Service#open`;
+no native host or script source modification was needed. The temporary harness was
+`/private/tmp/manatimer-webkit-acceptance.rb`. Logs are `/private/tmp/pr2-full.log`,
+`pr2-chrome-full.log`, `pr2-rubocop.log`, `pr2-renderer.log` and `pr2-webkit.log`.
+An initial full run correctly exposed the moved tpick image-mode refusal; its
+negative acceptance now asserts `transient_for=` at line 2751. Chrome also exposed
+fixed progress-width allocation, repaired and verified before final validation.
+
+Rendering follow-up WebKit acceptance: **one explicit core fixture example,
+zero failures**, through `/private/tmp/progress-sizing-webkit.rb`. Visually
+compared plain/colored 18/24/36px tracks, label allocation, the 18px default,
+animated indeterminate progress and color removal with unchanged dimensions.
+Chrome additionally checks exact bounds and reduced-motion behavior. Its provider
+lifecycle case still restores default height/fill after omission or removal.
+Follow-up logs: `/private/tmp/pr2-sizing-browser.log`, `pr2-sizing-webkit.log`,
+`pr2-sizing-full.log`, `pr2-sizing-renderer.log` and `pr2-sizing-rubocop.log`.
+
+PR 2 changed-file inventory (includes preserved post-merge documentation edits):
+
+```text
+.github/workflows/webui_tests.yaml
+docs/webui-css-decoration-fallback-brief.md
+docs/webui-integration.md
+docs/webui-review-readiness.md
+lib/common/script_scope/gtk/displays.rb
+lib/common/script_scope/gtk/menus.rb
+lib/common/script_scope/gtk/widgets.rb
+lib/webui/adapter.rb
+lib/webui/assets/app.css
+lib/webui/assets/app.js
+lib/webui/contract.rb
+spec/README.md
+spec/fixtures/webui/README.txt
+spec/fixtures/webui/manatimer.json
+spec/lib/common/script_scope_manatimer_spec.rb
+spec/lib/common/script_scope_tpick_setup_spec.rb
+spec/lib/webui/adapter_spec.rb
+spec/lib/webui/browser_integration_spec.rb
+spec/lib/webui/contract_foundation_spec.rb
+spec/lib/webui/contract_spec.rb
+spec/lib/webui/server_spec.rb
+spec/webui/browser.spec.cjs
+spec/webui/webui_renderer_test.cjs
+```
+
+Scope exceptions: the owner-approved overlay pass-through and progress
+pointer-event core extensions, and generic core progress rendering correction.
+Existing owner dispatch, non-GUI logic, CSS
+omission and real-GTK exclusion remain intact. No staging, commit or push;
+owner publication remains pending.
+
+PR #43 post-merge synchronization, 2026-10-12: GitHub confirms merge at
+`2026-10-12T16:43:09Z` as `cd10f7b29e9d9b5319702881f17eb9bcea18aecf`, from
+head `b876c2a119c3e3ca73affcc88b467d848218c130`. The feature working tree was
+clean. Fetched `origin`, switched to `main`, and fast-forwarded; verified
+`HEAD == main == origin/main` with zero ahead/behind commits. The merged tree
+matches the reviewed feature head exactly. The feature branch is retained.
+
+Final-head GitHub checks passed: Ruby tests/syntax, RuboCop, JavaScript renderer,
+Chrome integration and PR title. CodeRabbit reports review skipped because
+automatic reviews are disabled; no revised remote docstring percentage is
+asserted. Existing local validation below remains applicable; no code tests were
+rerun for this synchronization and documentation-only update. Only this tracker
+and the brief were edited afterward, left unstaged. No staging, commit or push.
 
 PR 1 implementation boundaries: HeaderBar composes existing boxes, labels and
 buttons; signed Grid positions are translated uniformly into positive shared
@@ -197,7 +306,8 @@ and real gameplay are not executed. Real GTK remains excluded from production.
 Explicit source limits: spell-less Monk/Paladin settings access a missing
 `Spells Main` grid at original line 2926. Negative tests retain that source defect;
 no nil suppression or script-specific repair is added. Optional `Show Images`
-construction currently refuses `Window#decorated=` at line 2750; further transient
+construction now passes `Window#decorated=` through PR 2 and refuses
+`Window#transient_for=` at line 2751; further transient
 window and overlay/image requirements belong to owner-deferred PR 1b. These are not
 claims of universal whole-script or native GTK visual equivalence.
 
@@ -265,7 +375,7 @@ This follow-up changes only `lib/webui/adapter.rb`,
 `spec/lib/common/bind_host_resolver_spec.rb` and this tracker. The owner explicitly
 authorized the shared adapter fix. No API expansion, staging, commit or push.
 
-PR changed-file inventory relative to `main` (including earlier slices):
+Merged PR #43 changed-file inventory relative to its base (including earlier slices):
 
 ```text
 docs/webui-css-decoration-acceptance.md
@@ -302,7 +412,10 @@ Scope exceptions used: owner-approved atomic grid-layout and empty-notebook shar
 extensions, plus the explicitly authorized required-setting cue surface. Cached
 script evidence was read only; real GTK, non-GUI script logic and optional image
 windows remain outside this implementation. No staging, commit or push.
-Next: owner review of PR 1; PR 1b remains deferred.
+Current slice: PR 2, Manatimer progress/overlay semantics, implemented locally above.
+Next proposed slice after its merge: PR 3, host-backed Display/monitor geometry.
+PR 1b optional image windows remains deferred; Display/monitor geometry stays a
+separate core decision and prerequisite for broader manatimer setup acceptance.
 
 PR 2 first-slice inventory, 2026-10-12:
 

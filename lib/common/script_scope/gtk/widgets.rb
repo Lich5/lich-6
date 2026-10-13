@@ -486,11 +486,11 @@ module Lich
             refresh_layout!
           end
 
-          # Vertical allocation is supported in grids and single-child frames.
+          # Vertical allocation is supported in grids, overlays and single-child frames.
           # Refuse other parents instead of accidentally treating a flex cross axis
           # as vertical. Builder attaches parents before this validation runs.
           def component_props
-            if @props.key?(:vertical_align) && parent && !parent.is_a?(Table) && !parent.is_a?(Frame) &&
+            if @props.key?(:vertical_align) && parent && !parent.is_a?(Table) && !parent.is_a?(Frame) && !parent.is_a?(Overlay) &&
                !(parent.is_a?(Box) && !parent.vertical?)
               session.refuse(self, :valign_parent)
             end
@@ -766,6 +766,21 @@ module Lich
             write(:presentation, (@props[:presentation] || {}).merge(always_on_top: value))
           end
           alias set_keep_above keep_above=
+
+          # Requests native chrome using the existing bounded presentation contract.
+          # Browser-only hosts retain the request with their normal host limitation.
+          # @param value [Boolean] whether to retain window decorations
+          # @return [Window] self
+          def set_decorated(value)
+            session.refuse(self, :decorated=) unless [true, false].include?(value)
+            session.synchronize do
+              write(:presentation, (@props[:presentation] || {}).merge(borderless: !value))
+            end
+          end
+          alias decorated= set_decorated
+
+          # @return [Boolean] requested decoration state; true by default
+          def decorated? = !read(:presentation)&.fetch(:borderless, false)
 
           # Window borders belong to its content, not the page schema.
           def set_border_width(value)

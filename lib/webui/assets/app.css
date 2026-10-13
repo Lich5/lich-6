@@ -44,6 +44,10 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-split[data-orientation="vertical"] > .split-handle::after { inset: -3px 0; }
 .split-handle:focus-visible { outline: 2px solid var(--accent); z-index: 1; }
 .webui-overlay > .webui-text { align-self: center; }
+/* Hit testing belongs to the overlay relationship, including nested controls.
+   Keyboard focus remains available; pass-through is not disabled/inert state. */
+.webui-overlay > [data-overlay-pass-through="true"],
+.webui-overlay > [data-overlay-pass-through="true"] * { pointer-events: none !important; }
 .align-center { text-align: center; }
 .align-start { text-align: left; }
 .align-end { text-align: right; }
@@ -152,11 +156,23 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-context-menu [data-indicator]::before { content: ""; display: inline-block; width: 16px; flex: none; }
 .webui-context-menu [data-indicator="check"][aria-checked="true"]::before { content: "✓"; }
 .webui-context-menu [data-indicator="radio"][aria-checked="true"]::before { content: "●"; }
-.webui-progress-colored { display: block; min-width: 0; line-height: 0; }
-.webui-progress-colored progress { display: block; appearance: none; width: 100%; height: 100%; border: 0; background: transparent; }
-.webui-progress-colored progress::-webkit-progress-bar { background: var(--trough); border: 1px solid var(--border); border-radius: 3px; }
-.webui-progress-colored progress::-webkit-progress-value { background: var(--progress-fill); border: 1px solid #0078d7; border-radius: 2px; }
-.webui-progress-colored progress::-moz-progress-bar { background: var(--progress-fill); border: 1px solid #0078d7; border-radius: 2px; }
+/* Every progress control owns its geometry, independently of a color override.
+   An optional label takes its normal line above the remaining track allocation. */
+.webui-progress { display: flex; flex-direction: column; min-width: 0; }
+.webui-progress > span { flex: none; }
+.webui-progress > progress { display: block; appearance: none; width: 100%; height: 18px; min-height: 0; flex: 1 1 auto; border: 0; background: var(--trough); border-radius: 3px; }
+.webui-progress > progress::-webkit-progress-bar { background: var(--trough); border: 1px solid var(--border); border-radius: 3px; }
+.webui-progress > progress::-webkit-progress-value { background: var(--progress-fill, var(--accent)); border: 1px solid #0078d7; border-radius: 2px; }
+.webui-progress > progress::-moz-progress-bar { background: var(--progress-fill, var(--accent)); border: 1px solid #0078d7; border-radius: 2px; }
+/* Keep an unknown value visibly distinct without inventing a numeric fraction. */
+.webui-progress > progress:indeterminate { border: 1px solid var(--border); background: linear-gradient(var(--progress-fill, var(--accent)), var(--progress-fill, var(--accent))) -55% 0 / 35% 100% no-repeat var(--trough); animation: webui-progress-pending 1.5s ease-in-out infinite alternate; }
+.webui-progress > progress:indeterminate::-webkit-progress-bar { background: transparent; border: 0; }
+.webui-progress > progress:indeterminate::-webkit-progress-value { background: transparent; border: 0; }
+.webui-progress > progress:indeterminate::-moz-progress-bar { background: transparent; border: 0; }
+@keyframes webui-progress-pending { to { background-position: 155% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .webui-progress > progress:indeterminate { animation: none; background-position: 50% 0; }
+}
 .webui-divider { border-top: 1px solid var(--border); margin-block: 8px; }
 .webui-page[data-density="compact"] .webui-divider { margin-block: 0; }
 

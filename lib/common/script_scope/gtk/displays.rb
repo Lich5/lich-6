@@ -36,11 +36,100 @@ module Lich
         end
 
         class Overlay < Widget
-          alias add_overlay add
+          # Records overlay children separately from the underlying content.
+          def initialize
+            super
+            @overlays = {}.compare_by_identity
+          end
+
+          # Adds a same-owner layer; pointer events reach this layer by default.
+          # @return [Overlay] self
+          def add_overlay(child)
+            session.synchronize do
+              session.refuse(self, :add_overlay) if destroyed? || child.is_a?(Widget) && child.destroyed?
+              session.refuse(self, :add_overlay) if children.include?(child) && !@overlays.key?(child)
+              add(child)
+              @overlays[child] = false unless @overlays.key?(child)
+            end
+            self
+          end
+
+          # Changes hit testing without replacing the child, its input or bindings.
+          # @param child [Widget] a live layer added with add_overlay
+          # @param value [Boolean] whether pointer events pass through the layer
+          # @return [Overlay] self
+          def set_overlay_pass_through(child, value)
+            session.synchronize do
+              validate_overlay(child, :set_overlay_pass_through)
+              session.refuse(self, :set_overlay_pass_through) unless [true, false].include?(value)
+              session.port.set_overlay_pass_through(@handle, child.materialize, value) if @handle
+              @overlays[child] = value
+            end
+            self
+          end
+
+          # @return [Boolean] the layer's requested pointer pass-through state
+          def get_overlay_pass_through(child)
+            session.synchronize do
+              validate_overlay(child, :get_overlay_pass_through)
+              @overlays.fetch(child)
+            end
+          end
+
+          # Applies pending layer flags before the enclosing page can publish.
+          # @return [Lich::WebUI::Adapter::Handle]
+          def materialize
+            session.synchronize do
+              handle = super
+              @overlays.each { |child, value| session.port.set_overlay_pass_through(handle, child.materialize, value) }
+              handle
+            end
+          end
+
+          # Detachment releases relationship state so reparenting starts normally.
+          def remove(child)
+            session.synchronize do
+              super
+              @overlays.delete(child)
+            end
+            self
+          end
+
+          # Reordering briefly detaches a handle; retain this layer's hit testing.
+          # @return [Overlay] self
+          def reorder_child(child, index)
+            session.synchronize do
+              super
+              if @handle && @overlays.key?(child)
+                session.port.set_overlay_pass_through(@handle, child.materialize, @overlays.fetch(child))
+              end
+            end
+            self
+          end
+
+          # Owner/window destruction releases all layer metadata.
+          def mark_destroyed
+            super
+            @overlays.clear
+          end
 
           protected
 
+          # Child destruction also retires its overlay relationship.
+          def forget_child(child)
+            @overlays.delete(child)
+            super
+          end
+
           def component_type = :overlay
+
+          private
+
+          # Refuses stale, foreign and ordinary content children.
+          def validate_overlay(child, operation)
+            valid = !destroyed? && @overlays.key?(child) && !child.destroyed? && child.parent.equal?(self)
+            session.refuse(self, operation) unless valid
+          end
         end
 
         class ProgressBar < Widget
@@ -49,6 +138,14 @@ module Lich
             super
             @props[:value] = 0.0
           end
+
+          # A GTK width request is a minimum; the trough fills its overlay cell.
+          # @param value [Integer] minimum width in pixels
+          # @return [ProgressBar] self
+          def set_width_request(value)
+            write(:min_width, Integer(value))
+          end
+          alias width_request= set_width_request
 
           # Bounds the displayed fraction without changing the script's arithmetic.
           # NaN has no representable WebUI fraction; retain the last display value
@@ -64,10 +161,67 @@ module Lich
               return self
             end
 
-            write(:value, fraction.clamp(0.0, 1.0))
+            session.synchronize do
+              write(:value, fraction.clamp(0.0, 1.0))
+              refresh_progress_text if show_text? && @text.nil?
+            end
+            self
           end
+          alias fraction= set_fraction
+
+          # @return [Float] retained bounded fraction
+          def fraction = read(:value)
+
+          # Hides only the bar's own text; independent overlay labels remain visible.
+          # @param value [Boolean] whether to display authored text or a percentage
+          # @return [ProgressBar] self
+          def set_show_text(value)
+            session.refuse(self, :show_text=) unless [true, false].include?(value)
+            session.synchronize do
+              publish_progress_text(value, @text)
+              @show_text = value
+            end
+            self
+          end
+          alias show_text= set_show_text
+
+          # @return [Boolean] false until explicitly enabled
+          def show_text? = @show_text == true
+
+          # Retains bounded plain text even while hidden; nil selects percentage text.
+          # @param value [String, nil] literal progress text
+          # @return [ProgressBar] self
+          def set_text(value)
+            valid = value.nil? || (value.is_a?(String) && value.length <= Lich::WebUI::Contract::BOUNDS[:short_text])
+            session.refuse(self, :text=) unless valid
+            session.synchronize do
+              text = value&.dup&.freeze
+              publish_progress_text(show_text?, text)
+              @text = text
+            end
+            self
+          end
+          alias text= set_text
+
+          # @return [String, nil] authored text, independent of its visibility
+          def text = @text
 
           protected
+
+          # Fraction changes update the default percentage through the same handle.
+          def refresh_progress_text
+            publish_progress_text(show_text?, @text)
+          end
+
+          # Uses the existing optional label, removing it entirely when hidden.
+          def publish_progress_text(visible, text)
+            if visible
+              write(:label, text || "#{(fraction * 100).round}%")
+            else
+              session.port.set(@handle, :label, Lich::WebUI::Adapter::UNSET) if @handle && !destroyed?
+              @props.delete(:label)
+            end
+          end
 
           # Style effects overlay authored values; provider removal never loses a
           # preexisting request. A later explicit write wins until styling clears.

@@ -92,6 +92,17 @@ checks attach-before-load, callback-driven reload/omission/re-recognition/remova
 stable component identity, fraction preservation, unchanged sibling typography,
 no request to the omitted CSS URL and final window closure. Its label context and
 unmatched screen rules remain inert, and local class names do not appear in the DOM.
+`script_scope_manatimer_spec.rb` checks progress text/fraction, overlay alignment,
+pass-through lifetime, window decoration requests and unchanged source blocks.
+Its `shim-manatimer` Chrome scenario checks centered text, fraction updates and
+right-click routing through the layer; toggling pass-through off blocks the bar.
+It runs in the existing Chrome CI job. The whole source setup remains a negative
+Display test. See `fixtures/webui/manatimer.json` for the excluded monitor lines.
+`browser_integration_spec.rb` adds `native-progress-sizing`: plain and colored
+tracks at 18/24/36px, color removal without geometry changes, visible labels,
+the 18px default and indeterminate/reduced-motion behavior. It uses the same
+core renderer as shim controls and runs in the existing browser CI selection.
+
 HeaderBar coverage in `script_scope_header_bar_spec.rb` verifies title replacement,
 owner isolation, content identity, close vetoes and cleanup. With
 `NATIVE_BROWSER=1`, it also checks header action/input behavior and the original
@@ -188,7 +199,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has

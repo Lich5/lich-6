@@ -42,13 +42,21 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('response', response => {
     if (response.request().resourceType() === 'document') documents.push(response);
   });
+  if (scenario === 'shim-manatimer') {
+    // Chrome verifies the existing presentation request; native host behavior is
+    // checked separately in the actual macOS WebKit window.
+    await page.addInitScript(() => {
+      window.fixturePresentation = {};
+      window.lichNativeWindow = { present: props => { window.fixturePresentation = props; } };
+    });
+  }
   await page.goto(target);
   await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/\?page=/);
   await expect(page.locator('.webui-page')).toBeVisible();
@@ -66,7 +74,71 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'shim-headerbar') {
+  if (scenario === 'native-progress-sizing') {
+    const control = key => page.locator(`[data-cid$="progress:${key}"]`);
+    const sizes = async () => {
+      for (const height of [18, 24, 36]) {
+        for (const kind of ['plain', 'colored']) {
+          const root = control(`${kind}-${height}`);
+          const track = root.locator('progress');
+          const box = await track.boundingBox();
+          expect(box.width).toBeCloseTo(300, 0);
+          expect(box.height).toBeCloseTo(height, 0);
+          await expect(track).toHaveJSProperty('value', 0.5);
+          await expect(track).toHaveCSS('appearance', 'none');
+        }
+      }
+    };
+    await sizes();
+    const painted = control('colored-24').locator('progress');
+    await expect(painted).toHaveCSS('--progress-fill', 'rgba(176, 224, 230, 1)');
+    const labeled = control('labeled');
+    const textBox = await labeled.locator('span').boundingBox();
+    const trackBox = await labeled.locator('progress').boundingBox();
+    expect(textBox.height).toBeGreaterThan(0);
+    expect(trackBox.height).toBeGreaterThan(0);
+    expect(trackBox.y).toBeGreaterThanOrEqual(textBox.y + textBox.height);
+    expect((await labeled.boundingBox()).height).toBeCloseTo(48, 0);
+    expect((await control('default').locator('progress').boundingBox()).height).toBeCloseTo(18, 0);
+    const pending = control('pending').locator('progress');
+    await expect(pending).not.toHaveAttribute('value');
+    await expect(pending).toHaveCSS('animation-name', 'webui-progress-pending');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(pending).toHaveCSS('animation-name', 'none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.getByRole('button', { name: 'Toggle colors', exact: true }).click();
+    await expect(painted).toHaveCSS('--progress-fill', '');
+    await sizes();
+    await page.getByRole('button', { name: 'Finish', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-manatimer') {
+    const overlay = page.locator('.webui-overlay');
+    const label = overlay.locator('.webui-text');
+    const bar = overlay.locator('progress');
+    await page.getByRole('button', { name: 'Next tick', exact: true }).click();
+    await expect(label).toHaveText('01:00');
+    await expect(bar).toHaveJSProperty('value', 0.5);
+    await expect(overlay.locator('.webui-progress > span')).toHaveCount(0);
+    const bounds = await Promise.all([label.boundingBox(), bar.boundingBox()]);
+    expect(bounds[1].height).toBeCloseTo(18, 0);
+    expect(Math.abs(bounds[0].y + bounds[0].height / 2 - bounds[1].y - bounds[1].height / 2)).toBeLessThan(2);
+    expect(Math.abs(bounds[0].x + bounds[0].width / 2 - bounds[1].x - bounds[1].width / 2)).toBeLessThan(2);
+    const center = () => label.boundingBox().then(box => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 }));
+    let point = await center();
+    await page.mouse.click(point.x, point.y, { button: 'right' });
+    await expect.poll(() => page.evaluate(() => window.fixturePresentation.borderless)).toBe(true);
+    await page.getByRole('button', { name: 'Toggle pass-through', exact: true }).click();
+    await expect(label).not.toHaveAttribute('data-overlay-pass-through', 'true');
+    point = await center();
+    const presses = wire.filter(entry => entry.includes('->') && entry.includes('event=pointer_press')).length;
+    await page.mouse.click(point.x, point.y, { button: 'right' });
+    await page.getByRole('button', { name: 'Next tick', exact: true }).click();
+    await expect(bar).toHaveJSProperty('value', 0.5);
+    expect(wire.filter(entry => entry.includes('->') && entry.includes('event=pointer_press')).length).toBe(presses);
+    await expect.poll(() => page.evaluate(() => window.fixturePresentation.borderless)).toBe(true);
+    await page.getByRole('button', { name: 'Finish', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-headerbar') {
     const title = page.getByText('Header actions', { exact: true });
     const close = page.getByRole('button', { name: 'Close', exact: true });
     const entry = page.getByRole('textbox');
@@ -141,7 +213,8 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(page.locator('.required-setting')).toHaveCount(0);
     await expect(sibling).not.toHaveCSS('font-weight', '700');
     await expect(sibling).not.toHaveCSS('font-family', /Courier New/);
-    await expect(bar).toHaveClass(/webui-progress-colored/);
+    await expect(progress).toHaveCSS('appearance', 'none');
+    await expect(progress).toHaveCSS('height', '24px');
     await expect(bar).toHaveCSS('height', '24px');
     await expect(progress).toHaveCSS('--progress-fill', 'rgba(0, 0, 255, 1)');
     await page.getByRole('button', { name: 'Reload style', exact: true }).click();
@@ -152,18 +225,21 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       if (new URL(request.url()).hostname === 'invalid') cssRequests.push(request.url());
     });
     await page.getByRole('button', { name: 'Omit style', exact: true }).click();
-    await expect(bar).not.toHaveClass(/webui-progress-colored/);
+    await expect(progress).toHaveCSS('appearance', 'none');
+    await expect(progress).toHaveCSS('height', '18px');
     await expect.poll(() => bar.evaluate(element => element.style.height)).toBe('');
     await expect.poll(() => progress.evaluate(element => element.style.getPropertyValue('--progress-fill'))).toBe('');
     await expect(bar).toHaveAttribute('data-cid', cid);
     await expect(progress).toHaveJSProperty('value', 0.75);
     await expect(sibling).toHaveCSS('font-weight', weight);
     await page.getByRole('button', { name: 'Reload style', exact: true }).click();
-    await expect(bar).toHaveClass(/webui-progress-colored/);
+    await expect(progress).toHaveCSS('appearance', 'none');
+    await expect(progress).toHaveCSS('height', '24px');
     await expect(bar).toHaveCSS('height', '24px');
     await expect(progress).toHaveCSS('--progress-fill', 'rgba(255, 215, 0, 1)');
     await page.getByRole('button', { name: 'Remove style', exact: true }).click();
-    await expect(bar).not.toHaveClass(/webui-progress-colored/);
+    await expect(progress).toHaveCSS('appearance', 'none');
+    await expect(progress).toHaveCSS('height', '18px');
     await expect.poll(() => bar.evaluate(element => element.style.height)).toBe('');
     await expect.poll(() => progress.evaluate(element => element.style.getPropertyValue('--progress-fill'))).toBe('');
     await expect(bar).toHaveAttribute('data-cid', cid);

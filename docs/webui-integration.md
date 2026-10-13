@@ -12,7 +12,7 @@ boundaries. [Fixture provenance](../spec/fixtures/webui/README.txt) identifies
 the frozen script sources used for regression checks.
 
 The authoritative host/browser contract is
-[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.18.0**. It is an
+[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.19.0**. It is an
 internal compatibility version, not a Lich or script release number. Versioned
 feature notes below describe when capabilities were introduced, not a second
 current contract. Ruby validation and browser handling must agree on the same
@@ -82,6 +82,46 @@ This process-wide dependency guard is installed by the script plugin; core WebUI
 does not depend on the shim. It is not a sandbox against arbitrary Ruby, renamed
 native binaries, or direct FFI calls. Native GTK loading, event loops, and fallback
 are unsupported; installed GTK gems do not extend the compatibility contract.
+
+### Progress and overlay compatibility (contract 2.19.0)
+
+`ProgressBar#fraction=` shares `set_fraction` validation and clamping. `show_text=`
+and `show_text?` control only the bar's own text, hidden by default. `text=`/`text`
+retain a bounded literal string while hidden; nil displays a rounded percentage
+when text is enabled. These map to the existing optional progress `label` property.
+Width requests use the existing minimum-width property, and the HTML trough fills
+its allocation so an aligned overlay label remains over the bar.
+
+All core progress controls share the same trough, border and default accent fill,
+whether their script CSS is recognized or omitted. A recognized color overrides
+only the fill. Explicit width/height allocations apply independently; the default
+track height is 18px. An enabled label occupies its normal line above the track
+within the requested height. Indeterminate controls retain an unknown value and
+use a moving segment, held still when reduced motion is requested.
+
+`Overlay#add_overlay`, `set_overlay_pass_through(child, boolean)` and
+`get_overlay_pass_through(child)` retain owner-local layer relationships. Overlay
+children honor horizontal and vertical alignment. The core overlay child placement
+`pass_through` disables pointer hit testing for that subtree, including nested
+controls, without making it keyboard-disabled or inert. The explicitly approved
+`Adapter#set_overlay_pass_through(parent, child, boolean)` validates live updates,
+preserves handles/bindings/viewer drafts and rolls back placement on publication
+failure. Detachment clears the flag; child and owner destruction release metadata.
+
+Progress controls now accept the existing opt-in `pointer_events`/`pointer_press`
+contract, with the same bounded payload and event validation as other pointer
+surfaces. `Gdk::Event::BUTTON_PRESS_MASK` aliases the supported EventMask constant;
+other native event families remain unsupported. `Window#decorated=`/`decorated?`
+map to the existing `presentation.borderless` request and preserve other presentation
+properties. Native WebKit applies it; ordinary browsers cannot remove OS chrome.
+The getter reports the requested state, not a claim of browser enforcement.
+
+The pinned manatimer fixture covers unchanged control, provider, countdown,
+right-click and cleanup code. The partial harness explicitly skips restoration
+lines 76–79. Unchanged full setup still refuses `Gdk::Display` at line 76; monitor
+geometry requires a separate host/core decision. Missing saved position and the
+source clamp's ignored monitor origin remain script defects. Red/green CSS pulse
+cues remain omitted; no CSS grammar, game logic, GLib scheduler or real GTK was added.
 
 ### Script bindings and helpers
 
@@ -209,7 +249,7 @@ windows remain closable with Cmd-W. Windows uses
 request, preserving keyboard focus in the frontend. Alt-F4 closes its windows.
 The shim retains `Gtk::Window#keep_above=`
 in the page's presentation property, validated by the same schema as native
-presentation facilities. The ten adapter operations are unchanged. Windows
+presentation facilities; window presentation adds no adapter operation. Windows
 Chrome/Edge still do not support the borderless request: Chromium draws its own
 title bar. Linux retains the existing browser limitations.
 

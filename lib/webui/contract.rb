@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.18.0'
+      VERSION = '2.19.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -276,7 +276,7 @@ module Lich
         },
         overlay: {
           properties: {}, children: :many,
-          child_properties: { z: property(integer(min: 0, max: 99)) }, events: {}, value: nil,
+          child_properties: { z: property(integer(min: 0, max: 99)), pass_through: property(BOOL) }, events: {}, value: nil,
         },
         scroll: {
           properties: {
@@ -650,7 +650,7 @@ module Lich
 
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
             end
-            if %i[page text image group].include?(type)
+            if %i[page text image group progress].include?(type)
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
             end

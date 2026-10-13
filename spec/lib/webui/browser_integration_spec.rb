@@ -7,6 +7,42 @@ require_relative '../../support/webui_browser'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'WebUI browser bootstrap', browser: true do
+  it 'keeps progress dimensions and labels stable when color overrides change' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    service = Lich::WebUI::Service.new
+    colored = true
+    finished = false
+    page = Lich::WebUI::Page.new(owner: Object.new, id: 'progress-sizing', title: 'Core progress sizing') do |ui|
+      ui.text content: 'Same core control: plain, colored, labeled and pending'
+      [18, 24, 36].each do |height|
+        ui.progress key: "plain-#{height}", value: 0.5, width: 300, height: height
+        props = colored ? { fill_color: { r: 176, g: 224, b: 230, a: 1 } } : {}
+        ui.progress key: "colored-#{height}", value: 0.5, width: 300, height: height, **props
+      end
+      ui.progress key: 'labeled', value: 0.5, label: 'Visible progress label', width: 300, height: 48
+      ui.progress key: 'pending', indeterminate: true, width: 300, height: 24
+      ui.progress key: 'default', value: 0.5, width: 300
+      ui.button label: 'Toggle colors', on: { activate: lambda { |_event|
+        colored = !colored
+        service.runtime.refresh(page)
+      } }
+      ui.button label: 'Finish', on: { activate: lambda { |_event|
+        finished = true
+        service.runtime.close_page(page)
+        service.close_window(page)
+      } }
+    end
+    service.registry.register(page)
+    page.bind_runtime(service.runtime)
+    page.render
+    WebUIBrowser.check(service: service, page: page, scenario: 'native-progress-sizing')
+    expect(colored).to be(false)
+    expect(finished).to be(true)
+  ensure
+    service&.stop
+  end
+
   it 'round-trips model selection, tree expansion, cell edits and duplicate combo choices' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 

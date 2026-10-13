@@ -1212,6 +1212,43 @@ for (const opening of ['client', 'server']) {
   }
 }
 
+test('overlay alignment and pass-through are layer-local and disappear after a live reset', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'overlay' }] });
+  const render = (generation, passThrough) => receive({ type: 'render', page: 'overlay', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'overlay', cid: 'layers', props: {}, children: [
+      { type: 'progress', cid: 'bar', props: { value: 0.5, pointer_events: true } },
+      { type: 'text', cid: 'label', props: { content: '01:00', align: 'end', vertical_align: 'start' }, placement: { pass_through: passThrough } }
+    ] }] } });
+  render(1, true);
+  let label = dom.window.document.querySelector('[data-cid="label"]');
+  assert.equal(label.style.justifySelf, 'end');
+  assert.equal(label.style.alignSelf, 'start');
+  assert.equal(label.dataset.overlayPassThrough, 'true');
+  assert.equal(dom.window.document.querySelector('[data-cid="bar"]').dataset.overlayPassThrough, undefined);
+  render(2, false);
+  label = dom.window.document.querySelector('[data-cid="label"]');
+  assert.equal(label.dataset.overlayPassThrough, undefined);
+});
+
+test('progress pointer presses reuse the bounded event payload and suppress the browser menu', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'progress' }] });
+  receive({ type: 'render', page: 'progress', generation: 1, bindings: { bar: ['pointer_press'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'progress', cid: 'bar', props: { pointer_events: true, value: 0.5 } }
+    ] } });
+  const bar = dom.window.document.querySelector('progress');
+  bar.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 2, clientX: 4, clientY: 8 }));
+  const events = sent.filter(message => message.event === 'pointer_press');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].cid, 'bar');
+  assert.equal(events[0].payload.button, 3);
+  const menu = new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+  bar.dispatchEvent(menu);
+  assert.equal(menu.defaultPrevented, true);
+});
+
 test('nested pointer surfaces send one viewport event for the nearest enabled surface', t => {
   const { dom, receive, sent } = fixture();
   t.after(() => dom.window.close());
