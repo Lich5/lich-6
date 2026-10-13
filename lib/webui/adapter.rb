@@ -295,6 +295,36 @@ module Lich
         nil
       end
 
+      # Updates only an attached overlay child's pointer hit testing. Rejection
+      # or publication failure preserves its previous placement and identity.
+      # @param parent [Handle] overlay container
+      # @param child [Handle] attached layer
+      # @param value [Boolean] pointer pass-through flag
+      # @return [nil]
+      def set_overlay_pass_through(parent, child, value)
+        @mutex.synchronize do
+          parent_node = node!(parent)
+          child_node = node!(child)
+          unless parent_node.type == :overlay && child_node.parent.equal?(parent)
+            raise attributed_error('expected an attached overlay child', child, :pass_through)
+          end
+          previous = child_node.placement
+          candidate = child_node.dup
+          candidate.placement = previous.merge(pass_through: value).freeze
+          validate_placement!(parent_node, candidate, child)
+          return nil if previous == candidate.placement
+
+          child_node.placement = candidate.placement
+          begin
+            dirty!(root_for(parent_node))
+          rescue StandardError
+            child_node.placement = previous
+            raise
+          end
+        end
+        nil
+      end
+
       # Unparents a child without destroying its handle or descendants.
       # The former root is marked dirty for the next flush.
       # @return [nil]
@@ -308,6 +338,7 @@ module Lich
           parent_node.children.delete_at(index)
           child_node.parent = nil
           child_node.slot = nil
+          child_node.placement = child_node.placement.except(:pass_through).freeze if parent_node.type == :overlay
           assign_child_slots!(parent_node)
           dirty!(root_for(parent_node))
         end

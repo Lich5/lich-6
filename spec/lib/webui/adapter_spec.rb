@@ -19,8 +19,71 @@ RSpec.describe Lich::WebUI::Adapter do
 
   it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :set_overlay_pass_through
     )
+  end
+
+  it 'validates live overlay hit testing, preserves identity and rolls back failed publication' do
+    allow(service.runtime).to receive(:schedule_render)
+    root = adapter.create(:page, title: 'Overlay')
+    layers = adapter.create(:overlay, {})
+    input = adapter.create(:text_input, value: 'Retained', placement: { z: 2 })
+    binding = adapter.bind(input, :change, proc {})
+    adapter.attach(root, layers)
+    adapter.attach(layers, input)
+    adapter.send(:flush!)
+    nodes = adapter.instance_variable_get(:@nodes)
+    adapter.set_overlay_pass_through(layers, input, true)
+    expect(nodes.fetch(input).placement).to eq(z: 2, pass_through: true)
+    expect(nodes.fetch(input).props[:value]).to eq('Retained')
+    expect(nodes.fetch(input).bindings.values).to include(binding)
+    expect { adapter.set_overlay_pass_through(layers, input, 'true') }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { adapter.set_overlay_pass_through(root, input, false) }.to raise_error(Lich::WebUI::Error, /attached overlay child/)
+    adapter.instance_variable_set(:@publication_pending, false)
+    allow(service.runtime).to receive(:schedule_render).and_raise(Lich::WebUI::Error, 'owner stopped')
+    expect { adapter.set_overlay_pass_through(layers, input, false) }.to raise_error(Lich::WebUI::Error, 'owner stopped')
+    expect(nodes.fetch(input).placement).to eq(z: 2, pass_through: true)
+    allow(service.runtime).to receive(:schedule_render)
+    adapter.detach(layers, input)
+    expect(nodes.fetch(input).placement).to eq(z: 2)
+    expect { adapter.set_overlay_pass_through(layers, input, false) }.to raise_error(Lich::WebUI::Error, /attached overlay child/)
+  end
+
+  it 'accepts progress pointer events only when enabled and rejects unrelated event families' do
+    validator = Lich::WebUI::Validator.new
+    payload = { x: 12, y: 16, button: 3, time: 1, state: 0 }
+    context = { owner: 'fixture', page_id: 'page', cid: 'bar' }
+    expect(validator.validate_event!(:progress, :pointer_press, payload, props: { value: 0.5, pointer_events: true }, **context)).to eq(payload)
+    expect { validator.validate_event!(:progress, :pointer_press, payload, props: { value: 0.5 }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { adapter.bind(adapter.create(:progress, value: 0.5), :scroll, proc {}) }.to raise_error(Lich::WebUI::UnknownEventError)
+  end
+
+  it 'preserves separate viewer drafts through overlay hit-testing changes' do
+    allow(service.runtime).to receive(:schedule_render)
+    identity = Struct.new(:viewer_id).new(nil)
+    port = described_class.new(owner: owner, service: service, viewer: identity)
+    root = port.create(:page, title: 'Layer inputs')
+    layers = port.create(:overlay, {})
+    input = port.create(:text_input, value: 'Initial')
+    port.attach(root, layers)
+    port.attach(layers, input)
+    port.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    viewers = %w[first second].map do |id|
+      connection = double(id, viewer_id: id, alive?: true, send_text: true)
+      service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+      service.runtime.instance_variable_get(:@viewers).fetch(connection_id: id, address: service.registry.address_for(page)).viewer_id
+    end
+    identity.viewer_id = viewers.first
+    port.set(input, :value, 'Private draft')
+    port.set_overlay_pass_through(layers, input, true)
+    port.send(:flush!)
+    expect(port.get(input, :value)).to eq('Private draft')
+    identity.viewer_id = viewers.last
+    expect(port.get(input, :value)).to eq('Initial')
+    port.set_overlay_pass_through(layers, input, false)
+    port.send(:flush!)
+    expect(port.get(input, :value)).to eq('Initial')
   end
 
   it 'creates opaque handles and returns the frozen contract schema' do

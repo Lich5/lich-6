@@ -1,6 +1,14 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
-Current follow-on decision (2026-10-12): CSS fallback PRs #41 and #42 are merged.
+Current follow-on decision (2026-10-12): CSS fallback PRs #41 and #42, and
+HeaderBar/default tpick setup PR #43, are merged. The manatimer PR 2 branch starts
+from synchronized `main` / `origin/main` at `157c25890e755739e4a7febe5e3092c34f679c74`.
+The owner approved bounded overlay pass-through and progress pointer-event
+extensions (contract 2.19.0). Text visibility, alignment and decoration toggles
+are included; monitor geometry, CSS expansion and full manatimer setup are not.
+The owner also approved consistent core progress rendering: requested dimensions
+apply independently of CSS recognition, and recognized colors only override fill.
+This changes no CSS grammar and introduces no script-specific rendering branch.
 The owner expanded the HeaderBar PR to signed Grid origins and default tpick setup,
 including generic class-qualified label foreground cues. Explicitly approved shared
 extensions are atomic `Adapter#layout_grid` and empty notebooks (contract 2.18.0).
