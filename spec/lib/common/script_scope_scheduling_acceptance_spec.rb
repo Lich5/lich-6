@@ -7,7 +7,7 @@ require 'json'
 require 'digest'
 require 'timeout'
 
-RSpec.describe 'scheduled repository and sail2 source acceptance' do
+RSpec.describe 'scheduled repository, sail2 and gemstonev source acceptance' do
   let(:scope) { Lich::Common::ScriptScope }
   let(:gtk) { scope::Gtk }
   let(:glib) { scope::GLib }
@@ -108,6 +108,67 @@ RSpec.describe 'scheduled repository and sail2 source acceptance' do
     else
       sandbox.module_eval(text, 'sail2.lic', line)
     end
+  end
+
+  # Evaluate the complete unchanged difficulty method; capture only game traffic
+  # and the handoff to the out-of-scope main/game window.
+  def gemstonev
+    sandbox = Module.new
+    sandbox.const_set(:Gtk, gtk)
+    sandbox.const_set(:GLib, glib)
+    sandbox.instance_variable_set(:@windows, {})
+    sandbox.instance_variable_set(:@game_master, 'FixtureGM')
+    sandbox.instance_variable_set(:@required_player_version, 'fixture')
+    @commands, @main_calls = [], []
+    commands, main_calls = @commands, @main_calls
+    sandbox.define_singleton_method(:put) { |command| commands << command }
+    sandbox.define_singleton_method(:running?) { |_| false }
+    sandbox.define_singleton_method(:create_main_window) { main_calls << true; @windows['Main'] = :captured }
+    text, line = source('gemstonev')
+    sandbox.module_eval(text, 'gemstonev.lic', line)
+    gtk.queue { sandbox.create_difficulty_window }
+    wait_for_page
+    [sandbox, sandbox.instance_variable_get(:@windows).fetch('Difficulty')]
+  end
+
+  it 'accepts gemstonev difficulty setup and its unchanged repeating 50ms handoff callback' do
+    sandbox, window = gemstonev
+    buttons = window.children.first.children
+    expect(buttons.map(&:label)).to eq(%w[Easy Medium Hard])
+    expect(@logs.grep(/window_position/)).to contain_exactly(a_string_including('initial placement is controlled by the browser host'))
+    ticks = Queue.new
+    handle = service.runtime.scheduler.for_owner(owner)
+    allow(Lich::WebUI).to receive(:callback_scheduler).and_return(handle)
+    id = nil
+    allow(handle).to receive(:schedule).with(50).and_wrap_original do |original, interval, &work|
+      id = original.call(interval) { work.call.tap { |result| ticks << result } }
+    end
+    buttons.first.send(:emit_handlers, :activate)
+    expect(buttons).to all(satisfy { |button| !button.sensitive? })
+    expect(@commands).to eq(['whisper ooc FixtureGM Version: fixture New game: Easy'])
+    expect(2.times.map { ticks.pop(timeout: 2) }).to eq([true, true])
+    expect(@main_calls).to be_empty
+    service.runtime.dispatch(owner: owner) { sandbox.instance_variable_set(:@total_characters, 2) }
+    Timeout.timeout(2) { loop { break if ticks.pop(timeout: 2) == false } }
+    drain
+    expect(@main_calls).to eq([true])
+    expect(glib::Source.remove(id)).to be(false)
+    window.destroy
+  end
+
+  it 'validates gemstonev difficulty setup and scheduled handoff in the browser', :browser do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    sandbox, window = gemstonev
+    # A synthetic game response is already available; the original timer still
+    # performs the handoff. End the fixture when that captured handoff completes.
+    sandbox.instance_variable_set(:@total_characters, 2)
+    calls = @main_calls
+    sandbox.define_singleton_method(:create_main_window) { calls << true; @windows['Main'] = :captured; window.destroy }
+    WebUIBrowser.check(service: service, page: @page, scenario: 'shim-gemstonev-difficulty')
+    expect(@commands).to eq(['whisper ooc FixtureGM Version: fixture New game: Easy'])
+    expect(@main_calls).to eq([true])
+    expect(window).to be_destroyed
+    expect(@logs.grep(/callback failed/)).to be_empty
   end
 
   it 'preserves sail2 original startup failure when the deferred creation has not run' do

@@ -691,6 +691,8 @@ module Lich
             self
           end
 
+          alias set_position set_window_position
+
           # Requests integer desktop coordinates through the page position property.
           # @return [Window] self
           def move(x, y)

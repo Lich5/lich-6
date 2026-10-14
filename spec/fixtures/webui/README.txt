@@ -119,7 +119,8 @@ scheduling.json adds exact cached source blocks alongside the older fixtures bel
   c4a96840ea2a29a445fd797c7baec0b012b0dd12.
 - Mirror sail2 config branch, lines 789–875, revision
   2fa28f1e540e97c468af88bbc8c432d3cebf8755.
-The JSON records whole-file and block SHA256 hashes; sail2 retains CRLF bytes.
+- Mirror gemstonev difficulty-window method, lines 1754–1796, same mirror revision.
+The JSON records whole-file and block SHA256 hashes; mirror blocks retain CRLF bytes.
 RSpec checks block hashes before evaluating with original filenames/line numbers.
 No original source is modified. Repository receives synthetic listing rows and a
 captured Script.start. Its ten-second timer executes unchanged. Sail2's nil/Idle/
@@ -131,6 +132,10 @@ Chrome and native WebKit verify the selector disables/re-enables while retaining
 its value, captured Save succeeds, and the original Close callback hides/destroys.
 A separate generic fixture hides for eight seconds, then reuses the same window
 and input draft. Sail2's original startup failure remains an explicit negative case.
+Gemstonev runs its complete unchanged difficulty method. Its game command is
+captured; the 50ms timer repeats until synthetic game data arrives, then hands off
+once and stops. Main-window creation is captured, not accepted as a whole-script
+run. Browser/native checks close the fixture at that handoff.
 
 Unchanged repository and go2 setup fixtures
 

@@ -37,6 +37,16 @@ module Lich
           FILL = :fill
         end
 
+        # Bounded placement hint; the host retains control of initial placement.
+        module WindowPosition
+          CENTER = :center
+
+          # @raise [UnsupportedOperation] for position modes outside this facade
+          def self.const_missing(name)
+            Gtk.session.refuse(self, name)
+          end
+        end
+
         module WindowType
           TOPLEVEL = :toplevel
         end

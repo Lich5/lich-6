@@ -110,9 +110,11 @@ teardown and retained host handles. `script_scope_scheduling_acceptance_spec.rb`
 uses the pinned `scheduling.json` source blocks: repository's actual ten-second
 timer and sail2's original startup race. Positive sail2 setup/save uses an explicit
 test-only readiness sentinel; inherited sensitivity and the original hide/destroy
-Close callback are positive acceptance cases. Three Chrome scenarios run in the
+Close callback are positive acceptance cases. Four Chrome scenarios run in the
 existing browser CI job, including a separate retained-input hide/timed-show case.
-Native WebKit verifies the real owned window disappears and returns.
+Native WebKit verifies the real owned window disappears and returns. Gemstonev
+difficulty-window acceptance uses the unchanged source and captures its command
+and main-window handoff; it does not certify the main game window.
 No script download or settings-file write occurs; commands and saves are captured.
 `browser_integration_spec.rb` adds `native-progress-sizing`: plain and colored
 tracks at 18/24/36px, color removal without geometry changes, visible labels,

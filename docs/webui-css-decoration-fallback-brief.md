@@ -10,7 +10,10 @@ original startup race remains a negative case; test-only readiness repair permit
 setup/save/close acceptance. Contract 2.21.0 adds inherited layout sensitivity
 and window presentation.hidden; the original sail2 startup defect remains explicit. See the
 [tracker](webui-review-readiness.md#refreshed-gtk-compatibility-work-tracker)
-for validation and remaining scope. No native GTK or script/game logic changes.
+for validation and remaining scope. PR #55 follow-up adds the missing CENTER /
+set_position facade spellings and unchanged gemstonev difficulty-window/timer
+acceptance; the existing host-placement fallback remains. Lifecycle filtering now
+preserves contract notifications. No native GTK or script/game logic changes.
 
 Scope decision, 2026-10-13: `map` is already converted to
 native WebUI; its predecessor `xnarost` receives no compatibility expansion and

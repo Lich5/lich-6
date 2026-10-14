@@ -227,11 +227,18 @@ case remains; positive setup/save evidence explicitly substitutes a test-only
 `:pending` sentinel. Its setup, inherited sensitivity, save and original Close
 callback now pass. This does not repair the startup race or claim sailing-loop acceptance.
 
+Gemstonev's unchanged difficulty-window method is also covered: three buttons,
+50ms repeating wait, captured command and one main-window handoff. This does not
+execute the main game window or its game loop. `Gtk::WindowPosition::CENTER` and
+`Window#set_position` reuse `set_window_position(:center)`: a supported hint with
+an explicit host-placement notice, not a centering guarantee. Other modes refuse.
+
 ### Inherited sensitivity and retained window visibility (contract 2.21.0)
 
 Layout containers and pages accept `disabled`. Descendant controls inherit that
 state in the renderer; event intake refuses interactions through disabled ancestors.
-Lifecycle events remain accepted. Re-enabling a container preserves each child's
+Lifecycle events remain accepted in both renderer and runtime, including dismiss,
+focus, blur and pointer notifications. Re-enabling a container preserves each child's
 own setting and input values. Shim `sensitive?` reads the local setting;
 `is_sensitive?` reads effective sensitivity through its parents.
 

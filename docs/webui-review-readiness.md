@@ -4,7 +4,8 @@ Current baseline: 2026-10-14, PR 4 branch `feat/webui-owner-glib-scheduling`,
 started from synchronized `main` / `origin/main` at `5f2d0e86`
 (PRs #41, #42, #43, #48, documentation PR #50 and geometry/cursor PR #54 merged).
 The prior merge-status edits to this handoff and the fallback brief were preserved;
-PR 4 implementation and documentation remain unstaged. This record describes
+PR 4 is open as PR #55 at reviewed head `3f3f699e`; review follow-ups remain
+unstaged. This record describes
 the development tree, not an EO release. The original documentation reconciliation
 was reviewed on 2026-10-11 against PR #38 at
 `d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
@@ -174,7 +175,7 @@ starts from synchronized `main` after its predecessor merges.
 | 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Owner deferred** from PR 1. Generic decoration toggling is supplied by PR 2; transient/image behavior remains unstarted. Default `Show Images = No` setup is covered in PR 1. |
 | 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Merged**: [PR #48](https://github.com/Lich5/lich-6/pull/48), confirmed 2026-10-12; `d7726455`. PR 3 adds complete setup acceptance with saved-position fixture data. |
 | 3. Best-effort monitor geometry and named cursors | One shared host geometry request; bounded Display/Screen/Monitor projections for manatimer and gemstonev; host-owned placement and explicit sizing fallback; named cursor hints for gemstonev/highlight-manager. No pointer polling or device emulation. | **Merged**: [PR #54](https://github.com/Lich5/lich-6/pull/54), confirmed 2026-10-14; `5f2d0e86`. Acceptance and platform limits below. |
-| 4. Owner-bound GLib scheduling | Timeout.add/add_seconds, Idle.add and Source.remove through bounded shared scheduling and the existing owner dispatcher; repository v2.76 timer acceptance; sail2 source-failure and explicitly repaired setup/save/close acceptance; inherited container sensitivity and retained Window hide/show. | **Implemented and validated locally; ready for owner review**, not staged/committed/pushed. Owner approved bounded schedule/cancel, then sensitivity/window visibility expansion. Sail2 startup race remains explicit; no full-script compatibility claim. |
+| 4. Owner-bound GLib scheduling | Timeout.add/add_seconds, Idle.add and Source.remove through bounded shared scheduling and the existing owner dispatcher; repository v2.76 timer acceptance; sail2 source-failure and explicitly repaired setup/save/close acceptance; inherited container sensitivity and retained Window hide/show; bounded CENTER/set_position aliases and gemstonev difficulty/timer acceptance. | **Open as [PR #55](https://github.com/Lich5/lich-6/pull/55); review follow-ups implemented and validated locally**, not staged/committed/pushed. Owner approved bounded schedule/cancel, then sensitivity/window visibility expansion. Sail2 startup race remains explicit; no full-script compatibility claim. |
 | 5. Source acceptance refresh | Re-pin changed eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. Repository v2.76 scheduling acceptance moved into PR 4; older baseline fixtures remain. | **Not started; proposed** |
 | Separate script PR: sea-charts native WebUI conversion | Reuse native map's shared rendering/interaction primitives; preserve sailing/map/plugin logic. No shim Layout/pointer expansion. | **Proposed; not started**. Implementation repository and acceptance to be scoped separately. |
 
@@ -232,6 +233,59 @@ Logs: `/private/tmp/pr4-expansion-full.log`,
 `/private/tmp/pr4-expansion-webkit-sail2.log`,
 `/private/tmp/pr4-expansion-webkit-visibility.log`, `/private/tmp/pr4-native-build.log`.
 Native checks reused `/private/tmp/pr3-native-webkit.rb` with the actual WKWebView host.
+
+#### PR #55 review follow-up, 2026-10-14
+
+- Reviewed CodeRabbit's one finding at `3f3f699e`: the renderer dropped lifecycle
+  notifications for disabled/hidden controls while the runtime accepted them.
+  Added lifecycle exemptions with a contract-parity regression; existing geometry
+  notification exemption remains. Tests cover context-menu dismissal after disable
+  or hide, focus/blur/pointer notification delivery, and blocked ordinary interaction.
+- Added `Gtk::WindowPosition::CENTER` and `Window#set_position` as aliases of the
+  existing `:center` / `set_window_position` fallback. Other position modes remain
+  unsupported; host placement is not guaranteed. No shared-core extension.
+- Added exact cached gemstonev difficulty-window source (1754–1796), unchanged.
+  Tests cover three difficulty buttons, disabling them, captured game command,
+  repeating 50ms wait, one handoff when synthetic game data arrives, and retirement.
+  Browser acceptance captures the main-window handoff and closes the fixture;
+  main/game-window and whole-script compatibility remain unclaimed.
+- Validation: full RSpec **9,193 examples, zero failures, 28 explicit-browser
+  pending**, seed `25723`; focused **136 examples, zero failures, eight pending**,
+  seed `34517`; full RuboCop **1,327 files, zero offenses**; JavaScript **166 passed**.
+  Chrome **four examples, zero failures**, seed `54375`; native macOS WebKit
+  gemstonev difficulty selection/handoff **one example, zero failures**, seed `946`.
+  Full RSpec passed before a whitespace-only RuboCop alignment correction.
+- Prior PR #55 CI was green; CodeRabbit docstrings passed at 76.12% against 60%.
+  These follow-ups have local validation and await owner publication/review.
+  No additional shared-core extension or script/game logic change was required.
+  Existing work preserved; no staging, commits or pushes.
+
+Logs: `/private/tmp/pr55-review-focused.log`, `/private/tmp/pr55-review-full.log`,
+`/private/tmp/pr55-review-rubocop.log`, `/private/tmp/pr55-review-js.log`,
+`/private/tmp/pr55-review-chrome.log`, `/private/tmp/pr55-review-webkit.log`.
+
+<details>
+<summary>Exact PR #55 follow-up changed files</summary>
+
+```text
+docs/webui-css-decoration-fallback-brief.md
+docs/webui-integration.md
+docs/webui-review-readiness.md
+lib/common/script_scope/gtk/boot.rb
+lib/common/script_scope/gtk/widgets.rb
+lib/webui/assets/app.js
+spec/README.md
+spec/fixtures/webui/README.txt
+spec/fixtures/webui/scheduling.json
+spec/lib/common/script_scope_scheduling_acceptance_spec.rb
+spec/lib/common/script_scope_widgets_spec.rb
+spec/lib/webui/contract_foundation_spec.rb
+spec/lib/webui/runtime_spec.rb
+spec/webui/browser.spec.cjs
+spec/webui/webui_renderer_test.cjs
+```
+
+</details>
 
 <details>
 <summary>PR 4 exact changed-file inventory (including preserved documentation edits)</summary>

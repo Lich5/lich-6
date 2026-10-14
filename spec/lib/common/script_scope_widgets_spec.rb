@@ -305,6 +305,16 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(entry.is_sensitive?).to be(true)
   end
 
+  it 'accepts the CENTER constant and set_position spelling with the existing host-placement fallback' do
+    window = compatibility::Window.new
+    expect(window.set_position(compatibility::WindowPosition::CENTER)).to equal(window)
+    expect(window.set_window_position(:center)).to equal(window)
+    expect(Lich).to have_received(:log).with(/window_position.*initial placement is controlled by the browser host/).once
+    expect { window.set_position(:mouse) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { compatibility::WindowPosition::MOUSE }.to raise_error(compatibility::UnsupportedOperation)
+    expect(service.registry.pages_for(owner)).to be_empty
+  end
+
   it 'does not publish a never-shown hidden window or resurrect a destroyed window' do
     window = compatibility::Window.new
     window.hide

@@ -75,6 +75,28 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(received.pop(timeout: 2)).to be(true)
   end
 
+  it 'delivers lifecycle callbacks through disabled ancestors and a hidden page' do
+    received = Queue.new
+    callback = ->(event) { received << event.event }
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'lifecycle', title: 'Lifecycle',
+                                                   props: { presentation: { hidden: true }, disabled: true }) do
+      group(key: 'menu', menu: :context, on: { dismiss: callback }) {}
+      text_input(key: 'field', value: '', on: { focus: callback, change: callback })
+      textarea(key: 'notes', value: 'Retained', on: { blur: callback })
+      group(key: 'surface', pointer_events: true, on: { pointer_press: callback }) {}
+    end)
+    address, frame = attach(first_connection, page)
+    payloads = [[:dismiss, {}], [:focus, {}], [:blur, { value: 'Retained' }],
+                [:pointer_press, { x: 1, y: 2, button: 1, time: 0, state: 0 }]]
+    frame['tree']['children'].zip(payloads).each do |node, (event, payload)|
+      expect(runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                            cid: node['cid'], event: event.to_s, payload: payload)).to eq(:queued)
+      expect(received.pop(timeout: 2)).to eq(event)
+    end
+    expect(runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                          cid: frame['tree']['children'][1]['cid'], event: 'change', payload: { value: 'Forged' })).to eq(:refused)
+  end
+
   it 'acknowledges validated text input only to its originating viewer' do
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'search', title: 'Search') do
       text_input(key: 'query', value: '', change_mode: :input, on: { change: proc {} })
