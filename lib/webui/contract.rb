@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.19.0'
+      VERSION = '2.20.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -627,7 +627,16 @@ module Lich
         configure: event(record(
                            width: property(integer(min: 0, max: 65_536), required: true),
                            height: property(integer(min: 0, max: 65_536), required: true),
-                           position: property(array(integer(min: -65_536, max: 65_536), min: 2, max: 2), required: true)
+                           position: property(array(integer(min: -65_536, max: 65_536), min: 2, max: 2), required: true),
+                           monitors: property(record(
+                                                source: property(enum(:native, :browser, :unavailable), required: true),
+                                                screens: property(array(record(
+                                                                          x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
+                                                                          width: property(integer(min: 1, max: 65_536), required: true),
+                                                                          height: property(integer(min: 1, max: 65_536), required: true),
+                                                                          primary: property(BOOL, required: true), active: property(BOOL, required: true)
+                                                                        ), max: 32), required: true)
+                                              ))
                          )),
         close: event(record(reason: property(enum(:user, :owner, :timeout), required: true)), terminal: true, lifecycle: true),
         attach: event(nil, lifecycle: true),
@@ -642,6 +651,7 @@ module Lich
           schemas = {}
           TYPES.each do |type|
             base = deep_dup(BASE_SCHEMAS.fetch(type))
+            base[:properties][:cursor_hint] = property(enum(:default, :pointer, :cell, :copy))
             base[:events].merge!(deep_dup(PAGE_LIFECYCLE_EVENTS)) if type == :page
             base[:properties].merge!(TABLE_PROPERTIES) if type == :table
             base[:events].merge!(TABLE_EVENTS) if type == :table

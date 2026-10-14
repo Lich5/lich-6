@@ -1,8 +1,28 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
-Current follow-on decision (2026-10-12): CSS fallback PRs #41 and #42, and
-HeaderBar/default tpick setup PR #43, are merged. The manatimer PR 2 branch starts
-from synchronized `main` / `origin/main` at `157c25890e755739e4a7febe5e3092c34f679c74`.
+Scope decision, 2026-10-13: `map` is already converted to
+native WebUI; its predecessor `xnarost` receives no compatibility expansion and
+retains the standard unsupported-operation/migrate-to-WebUI message. `sea-charts`
+is a proposed native conversion, not a shim pointer/layout project. Priorities
+consider script lineage, EO ownership, usage/downloads and community activity
+alongside header dates; popularity has not been measured in this assessment.
+
+PR 3, approved and implemented locally: shared host-owned, best-effort monitor geometry for
+`manatimer`/`gemstonev`, plus generic named cursor hints for
+`gemstonev`/`highlight-manager`. Placement remains a host request, with explicit
+fallbacks; exact multi-monitor placement is not an acceptance requirement.
+Cursor names describe appearance only, with a browser-default fallback. No
+pointer polling, device emulation, Gtk::Layout expansion or script-specific
+behavior is included. The [bounded proposal and acceptance scope](webui-review-readiness.md#pr-3-proposal-geometry-and-named-cursors)
+records the approved scope, validation and remaining native-platform limitations.
+The owner explicitly approved the bounded geometry and named-cursor shared-core
+extensions. Branch `feat/webui-monitor-geometry-cursors` started from synchronized
+main at `585bb871`, preserving the prior documentation edits. Contract 2.20.0 adds
+monitor hints and named cursor presentation; no staging, commit or push was performed.
+
+Merged follow-on history (2026-10-12): CSS fallback PRs #41 and #42,
+HeaderBar/default tpick setup PR #43, and generic progress/overlay PR #48 are merged.
+`main` / `origin/main` were synchronized at `d7726455642267a4b97f425492e995dcd68ea2ad`.
 The owner approved bounded overlay pass-through and progress pointer-event
 extensions (contract 2.19.0). Text visibility, alignment and decoration toggles
 are included; monitor geometry, CSS expansion and full manatimer setup are not.
@@ -17,7 +37,7 @@ Optional image windows remain a separate follow-up by owner decision. The
 records acceptance and source limitations. These decisions supersede the older
 exclusions only for those bounded surfaces; the brief below remains provenance.
 
-Date: 2026-10-11. Updated 2026-10-12: **PR 1 merged as [#41](https://github.com/Lich5/lich-6/pull/41); fallback PR 2 ready for owner review locally**.
+Date: 2026-10-11. Updated 2026-10-12: **CSS fallback PRs [#41](https://github.com/Lich5/lich-6/pull/41) and [#42](https://github.com/Lich5/lich-6/pull/42) are merged**.
 The owner approved the two-PR sequence in the
 [current tracker](webui-review-readiness.md#css-decoration-work-tracker).
 PR 1 added progress-provider lifecycle support. PR 2's first local slice adds

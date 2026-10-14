@@ -20,8 +20,8 @@ Git blobs. Prism decodes selected strings; extraction never evaluates source Rub
 The corpus spec uses only this retained artifact and runs reviewed CSS-only
 excerpts from eleven sources, with explicit test widget/settings bindings. It
 does not execute game loops, downloads, persistence, or excluded Builder setup.
-The original tpick HeaderBar constructor now succeeds; manatimer Display remains
-a negative check. The CSS evidence remains separate from setup acceptance below.
+The original tpick HeaderBar constructor and manatimer Display chain now succeed.
+The CSS evidence remains separate from setup acceptance below.
 
 The Chrome progress harness loads the retained tpick global and label CSS, but
 does not render the original tpick setup. See `docs/webui-css-decoration-acceptance.md`
@@ -178,10 +178,21 @@ Manatimer progress/overlay fixture
 
 `manatimer.json` retains unchanged v0.1 blocks from mirror `lib/manatimer.lic` at
 `2fa28f1e540e97c468af88bbc8c432d3cebf8755`, with source and block SHA-256 hashes.
-Positive controls acceptance runs 50–75 and 80–96 separately, explicitly excluding
-monitor restoration 76–79. It also runs the original queued countdown 176–182
-and before_dying cleanup 101–116 against an isolated settings hash. The unmodified
-49–97 setup is a negative acceptance test: Gdk::Display still refuses at line 76.
+Focused controls tests run 50–75 and 80–96 separately. Full setup acceptance also
+runs unchanged 49–97, including monitor restoration 76–79. It runs the original
+queued countdown 176–182 and before_dying cleanup 101–116 against isolated settings
+with a saved position. Missing position and the ignored monitor origin remain
+source limitations, not shim repairs.
 No source rewriting, game loop, pulse catcher, real GTK or live settings writes.
 The browser adds harness buttons to drive original updates and end the fixture;
 right-click executes the original callback. This is not whole-script acceptance.
+
+Geometry/cursor fixture
+
+`geometry-cursors.json` retains unchanged gemstonev and highlight-manager excerpts
+from mirror revision `2fa28f1e540e97c468af88bbc8c432d3cebf8755`, with whole-source
+and block SHA-256 hashes. Gemstonev lines 37–39, 52–56 and 710–715 provide cursor
+names, primary geometry and cursor assignment; highlight-manager 4275–4316 provides
+the guarded hand-cursor helpers. Tests evaluate only these blocks against the shim,
+not full scripts or game state. See `script_scope_geometry_cursor_spec.rb` and
+`docs/webui-integration.md` for the accepted methods and fallback boundaries.

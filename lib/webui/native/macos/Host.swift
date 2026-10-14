@@ -1,6 +1,18 @@
 import AppKit
 import WebKit
 
+/// Shared snapshot for prelaunch discovery and authenticated in-window measurements.
+func monitorSnapshot(active: NSScreen? = NSScreen.main) -> [String: Any] {
+    let screens = NSScreen.screens
+    let top = screens.first?.frame.maxY ?? 0
+    return ["source": "native", "screens": screens.prefix(32).map { screen -> [String: Any] in
+        let rect = screen.frame
+        return ["x": Int(rect.minX.rounded()), "y": Int((top - rect.maxY).rounded()),
+                "width": Int(rect.width.rounded()), "height": Int(rect.height.rounded()),
+                "primary": screen === screens.first, "active": screen === active]
+    }]
+}
+
 /// One process owns one WebUI window; Ruby retains process and owner lifetime.
 /// Allows borderless windows to receive keyboard input like titled windows.
 final class WebWindow: NSWindow {
@@ -152,14 +164,24 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
     /// Invalid coordinates leave the window in place.
     func move(x: Double, y: Double) {
         guard coordinate(x) != nil, coordinate(y) != nil else { return }
-        window.setFrameTopLeftPoint(NSPoint(x: x, y: primaryTop - y))
+        let point = NSPoint(x: x, y: primaryTop - y)
+        let screen = NSScreen.screens.first {
+            x >= $0.frame.minX && x < $0.frame.maxX &&
+            y >= primaryTop - $0.frame.maxY && y < primaryTop - $0.frame.minY
+        } ?? window.screen ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { return }
+        // Best effort: keep the title edge visible without resizing oversized content.
+        let left = min(max(point.x, visible.minX), max(visible.minX, visible.maxX - window.frame.width))
+        let top = max(min(point.y, visible.maxY), min(visible.maxY, visible.minY + window.frame.height))
+        window.setFrameTopLeftPoint(NSPoint(x: left, y: top))
     }
     /// Encodes native outer bounds for the renderer's browser-compatible geometry API.
     /// - Returns: A bridge update script, or an empty string if encoding fails.
     func geometryScript() -> String {
         let frame = window.frame
-        let values = ["outerWidth": frame.width, "outerHeight": frame.height,
-                      "screenX": frame.minX, "screenY": primaryTop - frame.maxY]
+        let values: [String: Any] = ["outerWidth": frame.width, "outerHeight": frame.height,
+                      "screenX": frame.minX, "screenY": primaryTop - frame.maxY,
+                      "monitors": monitorSnapshot(active: window.screen)]
         guard let data = try? JSONSerialization.data(withJSONObject: values),
               let json = String(data: data, encoding: .utf8) else { return "" }
         return "window.lichNativeWindow?.update(\(json));"
@@ -230,6 +252,11 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
 struct WebUIHostMain {
     static func main() {
         let arguments = CommandLine.arguments
+        if arguments.count == 2 && arguments[1] == "--monitors" {
+            if let data = try? JSONSerialization.data(withJSONObject: monitorSnapshot()),
+               let json = String(data: data, encoding: .utf8) { print(json) }
+            return
+        }
         // The parent owns this private file until process exit; credentials never enter argv.
         guard arguments.count == 3,
               let launchURL = try? String(contentsOfFile: arguments[1], encoding: .utf8),

@@ -43,3 +43,12 @@ test('the injected bridge reports native geometry and forwards ordinary window o
     { action: 'resize', width: 700, height: 500 }, { action: 'move', x: -20, y: 90 }, { action: 'close' }
   ]);
 });
+
+test('native monitor snapshots reach the renderer through the existing geometry bridge', () => {
+  const window = { webkit: { messageHandlers: { lichWindow: { postMessage() {} } } }, dispatchEvent() {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../lib/webui/native/macos/window.js'), 'utf8'),
+    { window, Event: class {} });
+  const monitors = { source: 'native', screens: [{ x: -1280, y: -100, width: 1280, height: 800, primary: false, active: true }] };
+  window.lichNativeWindow.update({ outerWidth: 400, outerHeight: 200, screenX: -1000, screenY: 20, monitors });
+  assert.deepEqual(window.lichNativeWindow.monitors, monitors);
+});

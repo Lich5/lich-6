@@ -17,6 +17,13 @@ module Lich
       # set removes the property and revalidates defaults and dependent layout.
       UNSET = Object.new.freeze
 
+      # Requests host geometry through the shared service using this adapter's owner/viewer.
+      # @return [Hash] bounded geometry and explicit measurement/fallback provenance
+      def monitor_geometry(target: :active, point: nil)
+        viewer = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+        @service.monitor_geometry(owner: @owner, viewer: viewer, target: target, point: point)
+      end
+
       class Handle
         # Keeps diagnostic output opaque instead of exposing adapter internals.
         # @return [String]

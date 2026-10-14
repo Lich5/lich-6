@@ -4,7 +4,7 @@
   "path": "lib/manatimer.lic",
   "version": "0.1",
   "source_sha256": "ac33cc5b04bb6d4185063b552c1dcc8290b5cdfe752ba9ea36402f65a4f9bf2f",
-  "scope": "Unchanged source blocks. Partial controls acceptance excludes monitor restoration lines 76-79; whole setup remains a negative test. No game loop or pulse catcher is executed.",
+  "scope": "Unchanged source blocks. Complete setup includes monitor restoration lines 76-79 with fixture-supplied saved position; partial controls remain useful for focused tests. No game loop or pulse catcher is executed.",
   "blocks": {
     "defaults": {
       "line": 25,

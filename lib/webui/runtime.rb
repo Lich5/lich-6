@@ -117,6 +117,7 @@ module Lich
         @connections_mutex.synchronize { @connections.delete(connection.viewer_id) }
         owners = {}.compare_by_identity
         @viewers.transient_disconnect(connection.viewer_id).each do |attachment|
+          attachment.page.forget_monitors(attachment.viewer_id)
           enqueue_lifecycle(attachment, :detach)
           owners[attachment.page.owner] = true
         end
@@ -371,6 +372,7 @@ module Lich
         jobs << lifecycle_job(attachment, :detach)
         jobs.compact.each(&:call)
         @viewers.close(connection_id: connection.viewer_id, address: message[:page])
+        attachment.page.forget_monitors(attachment.viewer_id)
         @viewers_changed&.call(attachment.page.owner)
         :detached
       end
@@ -405,6 +407,9 @@ module Lich
         return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
 
         attachment.page.observe_window_geometry(payload) if component.type == :page && message[:event].to_sym == :configure
+        if component.type == :page && message[:event].to_sym == :configure && payload[:monitors]
+          attachment.page.observe_monitors(attachment.viewer_id, payload[:monitors])
+        end
         @viewers.update(attachment, component, message[:event].to_sym, payload, message[:request])
         event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
         context = EventContext.new(
