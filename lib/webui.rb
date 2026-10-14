@@ -113,6 +113,14 @@ module Lich
         proc { |&work| host.runtime.dispatch(owner: owner, &work) }
       end
 
+      # Captures bounded schedule/cancel operations on the current host and owner.
+      # Callbacks run on the same dispatcher as UI events; truthy results repeat.
+      # @param owner [Object] callback lifecycle identity
+      # @return [Scheduler::Handle] retained capability; never recreates a stopped host
+      def callback_scheduler(owner:)
+        service.runtime.scheduler.for_owner(owner)
+      end
+
       # Starts the shared loopback listener; repeated calls reuse it.
       # @return [Service] running host
       def start

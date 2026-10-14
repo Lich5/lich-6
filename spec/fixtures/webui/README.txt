@@ -112,6 +112,26 @@ for reusable behavior. Their settings and script-specific form code remain out
 of the shim. These tests do not execute game loops, certify all settings paths,
 or assert native desktop-window/pixel parity.
 
+Scheduling source acceptance (PR 4)
+
+scheduling.json adds exact cached source blocks alongside the older fixtures below:
+- EO repository v2.76 Setup, lines 890–1069, revision
+  c4a96840ea2a29a445fd797c7baec0b012b0dd12.
+- Mirror sail2 config branch, lines 789–875, revision
+  2fa28f1e540e97c468af88bbc8c432d3cebf8755.
+The JSON records whole-file and block SHA256 hashes; sail2 retains CRLF bytes.
+RSpec checks block hashes before evaluating with original filenames/line numbers.
+No original source is modified. Repository receives synthetic listing rows and a
+captured Script.start. Its ten-second timer executes unchanged. Sail2's nil/Idle/
+wait-until-nil startup race is an explicit negative test. Positive setup/save tests
+replace only its initial nil with :pending, visibly in the test harness. Persistence
+and game functions are captured; the sailing loop is outside the extracted block.
+The owner expanded PR 4 to inherited sensitivity and retained Window#hide/show.
+Chrome and native WebKit verify the selector disables/re-enables while retaining
+its value, captured Save succeeds, and the original Close callback hides/destroys.
+A separate generic fixture hides for eight seconds, then reuses the same window
+and input draft. Sail2's original startup failure remains an explicit negative case.
+
 Unchanged repository and go2 setup fixtures
 
 These retain the complete Setup classes from the same frozen EO source tree,

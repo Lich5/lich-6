@@ -7,11 +7,13 @@ RSpec.describe Lich::WebUI::WindowPresentation::Controller do
   let(:win32) do
     Class.new do
       attr_accessor :windows, :fail_position
-      attr_reader :positions, :alphas, :styles
+      attr_reader :positions, :alphas, :styles, :visibility
 
       def initialize
         @windows = [[0x1_0000_0050, 42], [90, 99]]
         @positions, @alphas, @styles = [], [], Hash.new(0x80)
+        @visibility = []
+        @hidden = {}
       end
 
       def EnumWindows(callback, _context)
@@ -20,7 +22,15 @@ RSpec.describe Lich::WebUI::WindowPresentation::Controller do
       end
 
       def IsWindow(hwnd) = windows.any? { |row| row.first == hwnd.to_i } ? 1 : 0
-      def IsWindowVisible(_hwnd) = 1
+      def IsWindowVisible(hwnd) = @hidden[hwnd.to_i] ? 0 : 1
+
+      def ShowWindow(hwnd, mode)
+        previous = IsWindowVisible(hwnd)
+        @hidden[hwnd.to_i] = mode.zero?
+        @visibility << [hwnd.to_i, mode]
+        previous
+      end
+
       def GetWindow(*) = Fiddle::Pointer.new(0)
 
       def GetWindowThreadProcessId(hwnd, buffer)
@@ -84,6 +94,20 @@ RSpec.describe Lich::WebUI::WindowPresentation::Controller do
     expect(win32.positions.last[1].to_i).to eq(Fiddle::Pointer.new(-2).to_i)
     expect(win32.alphas.last).to eq([hwnd, 255, 2])
     expect(win32.styles[hwnd]).to eq(0x80080)
+  end
+
+  it 'hides and re-shows only its retained owned handle without focus or rediscovery' do
+    controller.start(42)
+    workers.shift.call
+    expect(win32.visibility).to be_empty
+    controller.update(render(2, page: { hidden: true }))
+    controller.update(render(3, page: { hidden: true }))
+    controller.update(render(4, page: { hidden: false }))
+    expect(win32.visibility).to eq([[0x1_0000_0050, 0], [0x1_0000_0050, 4]])
+    controller.update(render(5, page: { hidden: true }))
+    win32.windows[0][1] = 99
+    controller.update(render(6))
+    expect(win32.visibility.size).to eq(3)
   end
 
   it 'uses the latest native/shim request during discovery and ignores delayed older renders' do

@@ -1411,3 +1411,35 @@ test('named cursor hints update and reset on the same page and child controls', 
   assert.equal(root.dataset.cursorHint, undefined);
   assert.equal(root.style.getPropertyValue('--webui-cursor-hint'), '');
 });
+
+test('nested container sensitivity and window visibility preserve authored settings and input drafts', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const { document, Event } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'controls' }] });
+  const render = (generation, disabled, hidden = false) => receive({ type: 'render', page: 'controls', generation,
+    bindings: { edit: ['change'], action: ['activate'] },
+    tree: { type: 'page', cid: 'root', props: { presentation: { hidden } }, children: [
+      { type: 'stack', cid: 'parent', props: { disabled }, children: [
+        { type: 'grid', cid: 'nested', props: { columns: 2 }, children: [
+          { type: 'text_input', cid: 'edit', props: { value: 'Initial' } },
+          { type: 'button', cid: 'action', props: { label: 'Action' } },
+          { type: 'button', cid: 'local', props: { label: 'Local disabled', disabled: true } }
+        ] }
+      ] }
+    ] } });
+  render(1, false);
+  document.querySelector('input').value = 'Retained draft';
+  render(2, true);
+  assert.equal(document.querySelector('input').disabled, true);
+  document.querySelector('[data-cid="action"]').dispatchEvent(new Event('click', { bubbles: true }));
+  assert.equal(sent.filter(message => message.event === 'activate').length, 0);
+  render(3, false, true);
+  assert.equal(document.querySelector('.webui-page').hidden, true);
+  render(4, false);
+  assert.equal(document.querySelector('.webui-page').hidden, false);
+  assert.equal(document.querySelector('input').value, 'Retained draft');
+  assert.equal(document.querySelector('input').disabled, false);
+  assert.equal(document.querySelector('[data-cid="local"]').disabled, true);
+  document.querySelector('[data-cid="action"]').click();
+  assert.equal(sent.filter(message => message.event === 'activate').length, 1);
+});

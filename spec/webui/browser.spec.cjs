@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -74,7 +74,39 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'shim-geometry-cursors') {
+  if (scenario === 'shim-repository-scheduling') {
+    await page.setViewportSize({ width: 1200, height: 650 });
+    await page.getByRole('cell', { name: 'alpha.lic', exact: true }).click();
+    const download = page.getByRole('button', { name: 'alpha.lic', exact: true });
+    await download.click();
+    await expect(download).toBeDisabled();
+    // An actual ten-second source runs; no test clock or source rewrite.
+    await expect(download).toBeEnabled({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+  } else if (scenario === 'shim-scheduled-visibility') {
+    await page.getByRole('textbox').fill('Retained draft');
+    await page.getByRole('button', { name: 'Hide for 8 seconds' }).click();
+    await expect(page.locator('.webui-page')).toBeHidden();
+    await expect(page.locator('.webui-page')).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByRole('textbox')).toHaveValue('Retained draft');
+    await page.getByRole('button', { name: 'Finish', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-sail2-scheduling') {
+    const flag = page.getByRole('checkbox', { name: 'Change ship flag when sailing' });
+    const color = page.getByRole('combobox');
+    await color.selectOption({ label: 'Black' });
+    await flag.uncheck();
+    await expect(flag).not.toBeChecked();
+    await expect(color).toBeDisabled();
+    await flag.check();
+    await expect(color).toBeEnabled();
+    await expect(color.locator('option:checked')).toHaveText('Black');
+    await flag.uncheck();
+    await expect(color).toBeDisabled();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-geometry-cursors') {
     for (const name of ['pointer', 'cell', 'copy']) {
       await page.getByRole('button', { name: name[0].toUpperCase() + name.slice(1), exact: true }).click();
       await expect(page.getByText(`Cursor: ${name}`, { exact: true })).toBeVisible();

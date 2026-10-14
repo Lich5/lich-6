@@ -3,6 +3,7 @@
 require_relative '../../script_death'
 require_relative '../../../webui'
 require_relative 'session'
+require_relative 'scheduling'
 require_relative 'widgets'
 require_relative 'adjustment'
 require_relative 'layout'

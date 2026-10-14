@@ -1,9 +1,10 @@
 # WebUI review readiness and handoff
 
-Current baseline: 2026-10-13, PR 3 branch `feat/webui-monitor-geometry-cursors`
-from synchronized `main` / `origin/main` at `585bb871` (PRs #41, #42, #43, #48
-and subsequent documentation PR #50 merged). Prior uncommitted documentation
-updates were preserved. This record describes
+Current baseline: 2026-10-14, PR 4 branch `feat/webui-owner-glib-scheduling`,
+started from synchronized `main` / `origin/main` at `5f2d0e86`
+(PRs #41, #42, #43, #48, documentation PR #50 and geometry/cursor PR #54 merged).
+The prior merge-status edits to this handoff and the fallback brief were preserved;
+PR 4 implementation and documentation remain unstaged. This record describes
 the development tree, not an EO release. The original documentation reconciliation
 was reviewed on 2026-10-11 against PR #38 at
 `d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
@@ -162,8 +163,9 @@ snapshots, not author release dates. HeaderBar appears in 12 scripts, 11 updated
 within the year. tpick v48 was last observed changing on October 6; manatimer
 v0.1 on June 22. Both still match their cached source versions.
 
-The first implementation slice and PR 2 below are merged; PR 3 is implemented
-locally and validated. Other rows remain proposals, including the owner-deferred image-window follow-up. Each future branch
+Implementation slices 1, 2 and 3 below are merged. PR 4 is implemented locally;
+validation is recorded below. Other rows remain proposals,
+including the owner-deferred image-window follow-up. Each future branch
 starts from synchronized `main` after its predecessor merges.
 
 | Proposed PR | Included features / methods / widgets | Status |
@@ -171,10 +173,105 @@ starts from synchronized `main` after its predecessor merges.
 | 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **Merged**: [PR #43](https://github.com/Lich5/lich-6/pull/43), confirmed 2026-10-12; `cd10f7b2`. Includes transactional adapter attachment and HeaderBar documentation follow-ups. |
 | 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Owner deferred** from PR 1. Generic decoration toggling is supplied by PR 2; transient/image behavior remains unstarted. Default `Show Images = No` setup is covered in PR 1. |
 | 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Merged**: [PR #48](https://github.com/Lich5/lich-6/pull/48), confirmed 2026-10-12; `d7726455`. PR 3 adds complete setup acceptance with saved-position fixture data. |
-| 3. Best-effort monitor geometry and named cursors | One shared host geometry request; bounded Display/Screen/Monitor projections for manatimer and gemstonev; host-owned placement and explicit sizing fallback; named cursor hints for gemstonev/highlight-manager. No pointer polling or device emulation. | **Implemented and validated locally; ready for owner review**, not staged/committed/pushed. Owner approved the bounded shared-core extensions; acceptance and platform limits below. |
-| 4. Owner-bound GLib scheduling | Observed Timeout/Idle/Source cancellation calls through the existing owner dispatcher; repository and sail2 acceptance. | **Not started; proposed** |
-| 5. Source acceptance refresh | Re-pin changed repository/eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. | **Not started; proposed** |
+| 3. Best-effort monitor geometry and named cursors | One shared host geometry request; bounded Display/Screen/Monitor projections for manatimer and gemstonev; host-owned placement and explicit sizing fallback; named cursor hints for gemstonev/highlight-manager. No pointer polling or device emulation. | **Merged**: [PR #54](https://github.com/Lich5/lich-6/pull/54), confirmed 2026-10-14; `5f2d0e86`. Acceptance and platform limits below. |
+| 4. Owner-bound GLib scheduling | Timeout.add/add_seconds, Idle.add and Source.remove through bounded shared scheduling and the existing owner dispatcher; repository v2.76 timer acceptance; sail2 source-failure and explicitly repaired setup/save/close acceptance; inherited container sensitivity and retained Window hide/show. | **Implemented and validated locally; ready for owner review**, not staged/committed/pushed. Owner approved bounded schedule/cancel, then sensitivity/window visibility expansion. Sail2 startup race remains explicit; no full-script compatibility claim. |
+| 5. Source acceptance refresh | Re-pin changed eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. Repository v2.76 scheduling acceptance moved into PR 4; older baseline fixtures remain. | **Not started; proposed** |
 | Separate script PR: sea-charts native WebUI conversion | Reuse native map's shared rendering/interaction primitives; preserve sailing/map/plugin logic. No shim Layout/pointer expansion. | **Proposed; not started**. Implementation repository and acceptance to be scoped separately. |
+
+#### PR 4 implementation and validation, 2026-10-14
+
+- Fetched origin, confirmed main/origin/main both `5f2d0e86` with zero divergence,
+  and created `feat/webui-owner-glib-scheduling`. Preserved both existing
+  documentation edits (backup `/private/tmp/pr4-preserved-docs.patch`).
+- Added `WebUI.callback_scheduler(owner:)` with retained schedule/cancel handles.
+  One default-thread-group timing worker enqueues on the existing owner dispatcher;
+  monotonic deadlines, per-owner/host limits, no overlap or missed-tick backlog,
+  and owner/service shutdown are covered. Retiring a completed tick cannot cancel
+  the next queued tick. Session cleanup cancels only its own handle's sources.
+- Added script-local GLib Timeout.add/add_seconds, Idle.add and Source.remove,
+  with script/viewer attribution, pause behavior and existing error/model boundaries.
+  No native GLib loading, priority/IO emulation, per-timer worker or script-specific
+  product branch was introduced. The owner then expanded PR 4 to generic inherited
+  sensitivity and retained window hide/show (contract 2.21.0). Renderer inheritance
+  and event intake enforce disabled ancestors without overwriting child settings.
+  Window visibility uses the shared presentation record: macOS NSWindow and owned
+  Windows HWND implementations, browser/Linux content-only fallback with notice.
+- Cached repository v2.76 Setup executes unchanged: captured Script.start,
+  timer replacement/cancellation, actual ten-second re-enable and cleanup pass.
+  Older repository fixture remains separately identified as historical acceptance.
+- Sail2's original nil/Idle/nil-wait startup race is preserved as a deterministic
+  negative case. The positive UI harness changes only the initial nil to :pending.
+  Creation, inherited sensitivity, captured save and original hide/destroy Close
+  pass. A separate generic fixture verifies timed hide/show retains the same page
+  handle and input draft. No sail2 source or sailing logic was repaired.
+- Full RSpec: **9,188 examples, zero failures, 27 explicit-browser pending**,
+  seed `21101`. Focused expansion: **172 examples, zero failures, six pending**,
+  seed `48484`; final Bigshot/runtime regression: **48 examples, zero failures**,
+  seed `21101`. The Bigshot test now publishes Custom Fog's enabled state before
+  sending its edit, matching the browser and preserving disabled-event refusal.
+- Full RuboCop: **1,327 files, no offenses**. JavaScript: **162 tests passed**.
+  Chrome: **three scheduling/source acceptance examples, zero failures**, seed `10833`;
+  corrected Bigshot controls/boons/profile regression: **one example, zero failures**,
+  seed `36137`.
+- Native macOS WebKit: repository **one example, zero failures**, seed `50025`;
+  expanded sail2 setup/save/close **one example, zero failures**, seed `36709`;
+  retained hide/timed-show/input **one example, zero failures**, seed `58280`.
+  The actual NSWindow disappeared and returned with its draft. The universal
+  arm64/x86_64 helper rebuilt successfully. Windows visibility has provider-test
+  coverage only; browser/Linux fallback hides content while browser chrome remains.
+- Browser CI includes all three new scenarios. `git diff --check` passes. No staging,
+  commits, pushes or dependency installation. Scope exceptions used: the owner's
+  bounded shared schedule/cancel approval and explicit expansion to inherited
+  sensitivity and top-level window visibility. Existing work remains preserved.
+
+Logs: `/private/tmp/pr4-expansion-full.log`,
+`/private/tmp/pr4-expansion-focused.log`, `/private/tmp/pr4-expansion-regression.log`,
+`/private/tmp/pr4-expansion-rubocop.log`, `/private/tmp/pr4-expansion-js.log`,
+`/private/tmp/pr4-expansion-chrome.log`, `/private/tmp/pr4-expansion-bigshot-chrome.log`,
+`/private/tmp/pr4-webkit-repository.log`,
+`/private/tmp/pr4-expansion-webkit-sail2.log`,
+`/private/tmp/pr4-expansion-webkit-visibility.log`, `/private/tmp/pr4-native-build.log`.
+Native checks reused `/private/tmp/pr3-native-webkit.rb` with the actual WKWebView host.
+
+<details>
+<summary>PR 4 exact changed-file inventory (including preserved documentation edits)</summary>
+
+```text
+.github/workflows/webui_tests.yaml
+docs/webui-css-decoration-fallback-brief.md
+docs/webui-integration.md
+docs/webui-review-readiness.md
+lib/common/script_scope/gtk/boot.rb
+lib/common/script_scope/gtk/scheduling.rb
+lib/common/script_scope/gtk/session.rb
+lib/common/script_scope/gtk/widgets.rb
+lib/webui.rb
+lib/webui/assets/app.js
+lib/webui/contract.rb
+lib/webui/native/macos/Host.swift
+lib/webui/runtime.rb
+lib/webui/scheduler.rb
+lib/webui/window_presentation.rb
+spec/README.md
+spec/fixtures/webui/README.txt
+spec/fixtures/webui/scheduling.json
+spec/lib/common/script_scope_builder_remaining_spec.rb
+spec/lib/common/script_scope_scheduling_acceptance_spec.rb
+spec/lib/common/script_scope_scheduling_spec.rb
+spec/lib/common/script_scope_widgets_spec.rb
+spec/lib/webui/adapter_factory_spec.rb
+spec/lib/webui/contract_foundation_spec.rb
+spec/lib/webui/contract_spec.rb
+spec/lib/webui/runtime_spec.rb
+spec/lib/webui/scheduler_spec.rb
+spec/lib/webui/server_spec.rb
+spec/lib/webui/window_presentation_spec.rb
+spec/webui/browser.spec.cjs
+spec/webui/webui_native_host_test.cjs
+spec/webui/webui_renderer_test.cjs
+```
+
+</details>
 
 Owner scope decisions, 2026-10-13: `map` modernizes `xnarost`, which modernizes
 `narost`. Native `map` is already converted (not a claim of EO publication).
@@ -299,6 +396,18 @@ The native-window harness is `/private/tmp/pr3-native-webkit.rb`; retained sourc
 evidence is `spec/fixtures/webui/geometry-cursors.json` and `manatimer.json`.
 No real GTK, script/game logic edits, staging, commits or pushes. Scope exceptions
 used: only the owner's approved bounded geometry and named-cursor extensions.
+
+PR #54 merge and synchronization, 2026-10-14: GitHub confirms merge at
+`2026-10-14T15:16:36Z`, merge commit `5f2d0e86c759572d424da2ed3093b22c2db998f3`.
+Fetched origin, switched from the clean feature branch to main, and fast-forwarded;
+`HEAD == main == origin/main`, zero ahead/behind. The feature branch is retained.
+CR's sole major finding was a false positive: `Screen#initialize` in `style.rb`
+already binds `Gtk.session`, and boot loads it before reopening the class in
+`display_geometry.rb`. Verification at PR head: 13 examples, zero failures,
+two browser-only pending, seed `8019`; docstring coverage passed at 94.87%.
+No product correction or remote reply was made. This sync changes only this
+handoff and the fallback brief; `git diff --check` is the documentation check.
+No tests rerun for the sync, no staging, commits or pushes.
 
 <details>
 <summary>PR 3 exact changed-file inventory (including preserved documentation edits)</summary>
@@ -592,10 +701,12 @@ Scope exceptions used: owner-approved atomic grid-layout and empty-notebook shar
 extensions, plus the explicitly authorized required-setting cue surface. Cached
 script evidence was read only; real GTK, non-GUI script logic and optional image
 windows remain outside this implementation. No staging, commit or push.
-Completed slice: PR 2, progress rendering/overlay semantics, merged as PR #48.
-PR 3 is now implemented and validated locally, as bounded above; owner review
-and publication remain pending. After its merge, next proposed slice is PR 4,
-owner-bound GLib scheduling. PR 1b optional image windows remains deferred.
+Completed slices: PR 2 progress rendering/overlay semantics merged as PR #48;
+PR 3 geometry/named cursors merged as PR #54. PR 4 owner-bound scheduling is
+implemented locally; see the current tracker and validation record. PR 5 source
+acceptance refresh remains proposed. Sail2 sensitivity/top-level hide were approved
+and included in PR 4; its original startup race remains. PR 1b optional image
+windows remains deferred.
 
 PR 2 first-slice inventory, 2026-10-12:
 

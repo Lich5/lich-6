@@ -45,6 +45,36 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  it 'refuses events through disabled ancestors or a hidden window and accepts them after restoration' do
+    received = Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'disabled', title: 'Disabled') do
+      stack(key: 'parent', disabled: true) do
+        button(key: 'go', label: 'Go', on: { activate: ->(_) { received << true } })
+      end
+    end)
+    address, frame = attach(first_connection, page)
+    parent = frame['tree']['children'].first
+    button = parent['children'].first
+    submit = lambda do
+      frame = first_connection.sent.reverse.find { |message| message['type'] == 'render' }
+      runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                     cid: button['cid'], event: 'activate', payload: {})
+    end
+    expect(submit.call).to eq(:refused)
+    expect(received).to be_empty
+    page.set(parent['cid'], :disabled, false)
+    runtime.refresh(page)
+    expect(submit.call).to eq(:queued)
+    expect(received.pop(timeout: 2)).to be(true)
+    page.set(page.last_render.tree.cid, :presentation, { hidden: true })
+    runtime.refresh(page)
+    expect(submit.call).to eq(:refused)
+    page.set(page.last_render.tree.cid, :presentation, { hidden: false })
+    runtime.refresh(page)
+    expect(submit.call).to eq(:queued)
+    expect(received.pop(timeout: 2)).to be(true)
+  end
+
   it 'acknowledges validated text input only to its originating viewer' do
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'search', title: 'Search') do
       text_input(key: 'query', value: '', change_mode: :input, on: { change: proc {} })
@@ -442,17 +472,18 @@ RSpec.describe Lich::WebUI::Runtime do
     allow(Lich::WebUI::NativeHost).to receive(:platform).and_return(nil)
     allow(Lich::WebUI::WindowPresentation).to receive(:support).and_return({})
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'presentation', title: 'Presentation') do
-      presentation(always_on_top: true, borderless: true, opacity: 0.8, scrollbars: false)
+      presentation(always_on_top: true, borderless: true, hidden: true, opacity: 0.8, scrollbars: false)
     end)
 
     attach(first_connection, page)
 
     expect(page.presentation_support).to eq(
-      always_on_top: false, borderless: false, opacity: true, scrollbars: true
+      always_on_top: false, borderless: false, hidden: false, opacity: true, scrollbars: true
     )
     expect(page.degradations).to contain_exactly(
       { facility: :presentation, property: :always_on_top, reason: :unsupported_by_browser_host },
-      { facility: :presentation, property: :borderless, reason: :unsupported_by_browser_host }
+      { facility: :presentation, property: :borderless, reason: :unsupported_by_browser_host },
+      { facility: :presentation, property: :hidden, reason: :unsupported_by_browser_host }
     )
   end
 

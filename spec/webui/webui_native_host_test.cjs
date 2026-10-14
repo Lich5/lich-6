@@ -17,7 +17,11 @@ test('native and shim presentation share the host; dialogs cannot change the par
   render(2, {}, { presentation: { always_on_top: false, borderless: true } });
   assert.equal(calls.at(-1).always_on_top, false);
   assert.equal(calls.at(-1).borderless, true);
-  render(3, {});
+  render(3, { presentation: { hidden: true } });
+  assert.equal(calls.at(-1).hidden, true);
+  render(4, { presentation: { hidden: false } });
+  assert.equal(calls.at(-1).hidden, false);
+  render(5, {});
   assert.equal(calls.at(-1).always_on_top, undefined); // absent resets native defaults
   const count = calls.length;
   f.receive({ type: 'render', page: 'dialog', generation: 1,
