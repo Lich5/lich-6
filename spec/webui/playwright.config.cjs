@@ -6,6 +6,10 @@ const { defineConfig } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: __dirname,
   testMatch: 'browser.spec.cjs',
+  // Parallel RSpec workers run Playwright concurrently, each writing its own
+  // test-results/<scenario>. Skip that tree while discovering tests (via
+  // spec/webui/.gitignore), or one run can scan a folder another just replaced.
+  respectGitIgnore: true,
   workers: 1,
   retries: 0,
   timeout: 30_000,
