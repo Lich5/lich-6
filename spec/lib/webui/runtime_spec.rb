@@ -78,13 +78,14 @@ RSpec.describe Lich::WebUI::Runtime do
   it 'delivers lifecycle callbacks through disabled ancestors and a hidden page' do
     received = Queue.new
     callback = ->(event) { received << event.event }
-    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'lifecycle', title: 'Lifecycle',
-                                                   props: { presentation: { hidden: true }, disabled: true }) do
+    page = Lich::WebUI::Page.new(owner: owner, id: 'lifecycle', title: 'Lifecycle',
+                                 props: { presentation: { hidden: true }, disabled: true }) do
       group(key: 'menu', menu: :context, on: { dismiss: callback }) {}
       text_input(key: 'field', value: '', on: { focus: callback, change: callback })
       textarea(key: 'notes', value: 'Retained', on: { blur: callback })
       group(key: 'surface', pointer_events: true, on: { pointer_press: callback }) {}
-    end)
+    end
+    registry.register(page)
     address, frame = attach(first_connection, page)
     payloads = [[:dismiss, {}], [:focus, {}], [:blur, { value: 'Retained' }],
                 [:pointer_press, { x: 1, y: 2, button: 1, time: 0, state: 0 }]]
