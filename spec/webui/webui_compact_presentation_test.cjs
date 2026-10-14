@@ -426,7 +426,7 @@ test('page geometry fits minimum content, reports changes and retains user size 
   f.receive(frame(2)); f.frame();
   assert.equal(f.resized.length, 1);
   const configs = f.sent.filter(message => message.event === 'configure');
-  assert.deepEqual(configs.at(-1).payload, { width: 400, height: 200, position: [-10, 0] });
+  assert.deepEqual(configs.at(-1).payload, { width: 400, height: 200, position: [-10, 0], monitors: { source: 'unavailable', screens: [] } });
   f.windowEvents.pagehide();
   assert.equal(f.sent.at(-1).type, 'detach');
 });
@@ -442,7 +442,7 @@ test('a rerender cannot expand a manually reduced window and restores negative d
   assert.deepEqual(moved, [[-900, 40]]);
   assert.equal(f.resized.length, 1);
   assert.deepEqual(f.sent.filter(x => x.event === 'configure').at(-1).payload,
-    { width: 200, height: 100, position: [0, 0] });
+    { width: 200, height: 100, position: [0, 0], monitors: { source: 'unavailable', screens: [] } });
 });
 
 test('compact columns keep their declared desktop layout and label links remain literal-safe', () => {

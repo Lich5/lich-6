@@ -12,7 +12,7 @@ boundaries. [Fixture provenance](../spec/fixtures/webui/README.txt) identifies
 the frozen script sources used for regression checks.
 
 The authoritative host/browser contract is
-[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.19.0**. It is an
+[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.20.0**. It is an
 internal compatibility version, not a Lich or script release number. Versioned
 feature notes below describe when capabilities were introduced, not a second
 current contract. Ruby validation and browser handling must agree on the same
@@ -116,12 +116,56 @@ map to the existing `presentation.borderless` request and preserve other present
 properties. Native WebKit applies it; ordinary browsers cannot remove OS chrome.
 The getter reports the requested state, not a claim of browser enforcement.
 
-The pinned manatimer fixture covers unchanged control, provider, countdown,
-right-click and cleanup code. The partial harness explicitly skips restoration
-lines 76–79. Unchanged full setup still refuses `Gdk::Display` at line 76; monitor
-geometry requires a separate host/core decision. Missing saved position and the
-source clamp's ignored monitor origin remain script defects. Red/green CSS pulse
-cues remain omitted; no CSS grammar, game logic, GLib scheduler or real GTK was added.
+The pinned manatimer fixture covers unchanged setup, provider, countdown,
+right-click and cleanup code, including restoration lines 76–79 with saved
+position supplied by the fixture. Missing saved position and the source clamp's
+ignored monitor origin remain script defects. Red/green CSS pulse cues remain
+omitted; no CSS grammar, game logic, GLib scheduler or real GTK was added.
+
+### Best-effort monitor geometry and named cursors (contract 2.20.0)
+
+`Service#monitor_geometry(owner:, viewer: nil, target: :active, point: nil)` and
+`Adapter#monitor_geometry(target: :active, point: nil)` share one selection rule.
+Targets are active, primary or point (a two-integer signed desktop coordinate).
+Results carry x/y/width/height, source (`native` or `browser`) and a fallback flag;
+unavailable results contain source `unavailable` and fallback true without a
+fabricated rectangle. A missing requested monitor falls back to active, primary,
+then the first available monitor. No pointer/device operations are exposed.
+
+Before a viewer is attributed, macOS queries the bundled AppKit helper, Windows
+queries Forms/Win32 foreground-window geometry through PowerShell, and Linux
+optionally queries XRandR. Missing/restricted providers return unavailable;
+helper output and lifetime are bounded. XRandR does not identify the active
+window, so active selection is explicitly a fallback. Authenticated configure
+events carry bounded per-viewer monitor hints: WebKit reports AppKit topology;
+ordinary browsers report their available current screen only. An explicit viewer
+never reads another viewer's data or falls back to the server's desktop. Hints
+are discarded on detach/disconnect and are not persisted as window settings.
+
+The shim projects only `Display.default.default_screen`, point selection and
+geometry lookup, and `Display.default.primary_monitor.geometry`. Rectangles and
+tokens are owner-bound. Unavailable geometry uses the already-declared nominal
+1024x768 initial sizing hint with one attributed notice. macOS clamps requested
+positions to an available visible screen; other hosts retain their existing
+best-effort placement. Exact multi-monitor placement is not guaranteed, and
+script-origin arithmetic is not rewritten.
+
+All shared components accept `cursor_hint: default|pointer|cell|copy`. Hints
+inherit within a widget subtree; a nested hint overrides its ancestor. The shim
+supports `Gdk::Cursor.new(name, display: ...)`, `new_from_name(display, name)`,
+`:hand2`/`CursorType::HAND2` aliases, and `widget.window.set_cursor`/`cursor=`.
+Nil removes a hint without replacing handles or input state. Unknown bounded
+names use default with one attributed notice; malformed arguments, foreign
+owners and retired widgets/sessions refuse. The window facade is cursor-only:
+native handles, seats/devices, pointer polling, grabs and warping still refuse.
+
+Acceptance covers full cached manatimer setup/update/cleanup and the exact
+gemstonev geometry/cursor and highlight-manager cursor-helper excerpts. It does
+not establish whole gemstonev/highlight-manager or live-game compatibility.
+Native WebKit and Chrome checks pass locally; Windows/Linux native behavior and
+physical multi-monitor arrangements remain unverified. Native map is already
+converted; xnarost gets no shim expansion, and sea-charts is a separate native
+conversion candidate.
 
 ### Script bindings and helpers
 

@@ -2,6 +2,7 @@
 
 require_relative 'tree_builder'
 require_relative 'theme'
+require_relative 'monitor_geometry'
 
 module Lich
   module WebUI
@@ -19,6 +20,27 @@ module Lich
       end
 
       attr_reader :owner, :id, :title, :lifecycle_bindings
+
+      # Stores only validated, bounded per-viewer monitor hints, separate from window state.
+      # @return [void]
+      def observe_monitors(viewer, snapshot)
+        @mutex.synchronize do
+          @monitor_snapshots ||= {}
+          @monitor_snapshots.shift if !@monitor_snapshots.key?(viewer) && @monitor_snapshots.size >= 64
+          @monitor_snapshots[viewer] = MonitorGeometry.normalize(snapshot)
+        end
+      end
+
+      # @return [Hash, nil] immutable snapshot for this viewer only
+      def monitor_snapshot(viewer)
+        @mutex.synchronize { @monitor_snapshots&.[](viewer) }
+      end
+
+      # Retires a viewer's disposable monitor hints on detach.
+      # @return [void]
+      def forget_monitors(viewer)
+        @mutex.synchronize { @monitor_snapshots&.delete(viewer) }
+      end
 
       # Defines an owner-scoped page without rendering, registering, or opening it.
       # @param owner [Object] server-side lifecycle identity
@@ -75,7 +97,7 @@ module Lich
       # @param value [Hash] width, height, and position from a configure event
       # @return [void]
       def observe_window_geometry(value)
-        @mutex.synchronize { @window_geometry = value.merge(position: value.fetch(:position).dup.freeze).freeze }
+        @mutex.synchronize { @window_geometry = value.except(:monitors).merge(position: value.fetch(:position).dup.freeze).freeze }
       end
 
       # Stages host-restored geometry for subsequent rendering.

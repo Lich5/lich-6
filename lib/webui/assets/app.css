@@ -428,3 +428,7 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 
 /* Hidden grid tabs retain grid measurement without becoming flex columns. */
 .webui-tabs[data-size-to-all="true"] > .tab-panel.webui-grid[hidden] { display: grid !important; visibility: hidden; pointer-events: none; }
+/* Named hints inherit through a widget subtree; nested hints override the variable. */
+[data-cursor-hint], [data-cursor-hint] * {
+  cursor: var(--webui-cursor-hint, default) !important;
+}

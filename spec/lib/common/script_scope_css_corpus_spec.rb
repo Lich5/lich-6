@@ -134,7 +134,9 @@ RSpec.describe 'source-derived CSS decoration acceptance' do
     source_binding.local_variable_get(:bar_style).call
     expect(bar.send(:component_props)[:value]).to eq(0.5)
     expect(bar.send(:component_props)).not_to have_key(:fill_color)
-    expect { run_excerpt(record, 76) }.to raise_error(gtk.const_get(:UnsupportedOperation), /operation=Display source=manatimer.lic:76/)
+    # Display is now supported; the original geometry excerpt still owns its position input.
+    allow(service).to receive(:monitor_geometry).and_return(x: 0, y: 0, width: 1280, height: 800, source: 'native', fallback: false)
+    expect { run_excerpt(record, 76, window_position: [20, 20]) }.not_to raise_error
   end
 
   %w[spellson staminabar2].each do |name|

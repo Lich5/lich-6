@@ -14,7 +14,11 @@ function fixture(target) {
   class Element {
     constructor(tag) {
       if (['button', 'input', 'select', 'textarea'].includes(tag)) this.disabled = false;
-      this.tagName = tag; this.children = []; this.dataset = {}; this.style = { setProperty(name, value) { this[name] = value; } };
+      this.tagName = tag; this.children = []; this.dataset = {}; this.style = {
+        setProperty(name, value) { this[name] = value; },
+        removeProperty(name) { const old = this[name] || ''; delete this[name]; return old; },
+        getPropertyValue(name) { return this[name] || ''; }
+      };
       this.classList = { add() {}, toggle() {} }; this.listeners = {}; this.isConnected = true; this.attributes = {};
       this.clientWidth = 340; this.clientHeight = 144; this.scrollWidth = 340; this.scrollHeight = 144;
     }

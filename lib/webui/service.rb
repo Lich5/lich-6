@@ -7,6 +7,7 @@ require_relative 'registry'
 require_relative 'runtime'
 require_relative 'server'
 require_relative 'window_geometry_store'
+require_relative 'monitor_geometry'
 
 module Lich
   module WebUI
@@ -15,6 +16,18 @@ module Lich
       ASSETS_DIR = File.expand_path('assets', __dir__).freeze
 
       attr_reader :registry, :runtime, :file_service, :server, :modals
+
+      # Resolves an owner's viewer measurement, or local discovery before attachment.
+      # Explicit viewers never fall back to another viewer or the server's desktop.
+      # @return [Hash] rectangle with source/fallback, or an unavailable result
+      def monitor_geometry(owner:, viewer: nil, target: :active, point: nil)
+        snapshot = if viewer
+                     registry.pages_for(owner).filter_map { |page| page.monitor_snapshot(viewer) }.first
+                   else
+                     MonitorGeometry.new.snapshot
+                   end
+        MonitorGeometry.select(snapshot, target: target, point: point)
+      end
 
       # Builds an inactive host with shared page, file, modal and window ownership.
       # @param registry [Registry] pages served by this host

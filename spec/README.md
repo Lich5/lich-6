@@ -97,8 +97,13 @@ unmatched screen rules remain inert, and local class names do not appear in the 
 pass-through lifetime, window decoration requests and unchanged source blocks.
 Its `shim-manatimer` Chrome scenario checks centered text, fraction updates and
 right-click routing through the layer; toggling pass-through off blocks the bar.
-It runs in the existing Chrome CI job. The whole source setup remains a negative
-Display test. See `fixtures/webui/manatimer.json` for the excluded monitor lines.
+It runs in the existing Chrome CI job, including unchanged complete setup through
+the Display chain with saved-position fixture data. `script_scope_geometry_cursor_spec.rb`
+covers owner/teardown refusals and pinned gemstonev/highlight-manager excerpts;
+its `shim-geometry-cursors` browser scenario checks inherited cursor modes/reset
+and submitting-viewer monitor measurements. `monitor_geometry_spec.rb` checks
+signed selection, explicit fallbacks, platform-provider parsing and viewer isolation.
+Platform-provider fixtures do not certify native Windows/Linux behavior.
 `browser_integration_spec.rb` adds `native-progress-sizing`: plain and colored
 tracks at 18/24/36px, color removal without geometry changes, visible labels,
 the 18px default and indeterminate/reduced-motion behavior. It uses the same
@@ -200,7 +205,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_geometry_cursor_spec.rb spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has

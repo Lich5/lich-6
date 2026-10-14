@@ -1,8 +1,9 @@
 # WebUI review readiness and handoff
 
-Current baseline: 2026-10-12, PR 2 branch `feat/webui-manatimer-progress-overlay`
-from synchronized `main` / `origin/main` at `157c25890e755739e4a7febe5e3092c34f679c74`
-(PRs #41, #42, #43 and subsequent main updates merged). This record describes
+Current baseline: 2026-10-13, PR 3 branch `feat/webui-monitor-geometry-cursors`
+from synchronized `main` / `origin/main` at `585bb871` (PRs #41, #42, #43, #48
+and subsequent documentation PR #50 merged). Prior uncommitted documentation
+updates were preserved. This record describes
 the development tree, not an EO release. The original documentation reconciliation
 was reviewed on 2026-10-11 against PR #38 at
 `d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
@@ -71,6 +72,7 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 | Progress provider lifecycle, optional-property reset and synchronized destruction | Merged | PR #41, `de876519` |
 | CSS decoration fallback, widget contexts, class/screen providers and corpus acceptance | Merged | PR #42, `bea51ac3` |
 | HeaderBar/titlebar, signed Grid origins/rollback, required label cues and default tpick setup | Merged | PR #43, `cd10f7b2` |
+| Generic progress rendering, progress text/pointer events, overlay pass-through and decoration requests | Merged | PR #48, `d7726455` |
 
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
@@ -145,7 +147,7 @@ two-PR plan. The next authorized branch is tracked below. The
 acceptance boundaries. The 8,192-character
 bound is retained: all 71 payloads from 33 pinned scripts fit, with a measured
 maximum of 6,230. Dynamic settings can still exceed it. The subsequent HeaderBar
-slice accepts tpick's headers; manatimer Display still refuses. Do not reopen excluded
+slice accepts tpick's headers; PR 3 now accepts manatimer Display. Do not reopen excluded
 Builder expansion or infer whole-script acceptance.
 
 ### Refreshed GTK compatibility work tracker
@@ -160,18 +162,195 @@ snapshots, not author release dates. HeaderBar appears in 12 scripts, 11 updated
 within the year. tpick v48 was last observed changing on October 6; manatimer
 v0.1 on June 22. Both still match their cached source versions.
 
-The first implementation slice below is merged. PR 2 is implemented locally;
-the other rows remain proposals, including the owner-deferred image-window follow-up. Each future branch
+The first implementation slice and PR 2 below are merged; PR 3 is implemented
+locally and validated. Other rows remain proposals, including the owner-deferred image-window follow-up. Each future branch
 starts from synchronized `main` after its predecessor merges.
 
 | Proposed PR | Included features / methods / widgets | Status |
 | --- | --- | --- |
 | 1. HeaderBar/titlebar and complete default tpick setup | HeaderBar/titlebar lifecycle; signed Grid origins and live rebasing; bounded class-qualified label foreground cues; Align constants and Label word wrapping; empty/live notebooks; Grid tab-panel layout. Original settings/profile/default/save and information/message/statistics/close flows. | **Merged**: [PR #43](https://github.com/Lich5/lich-6/pull/43), confirmed 2026-10-12; `cd10f7b2`. Includes transactional adapter attachment and HeaderBar documentation follow-ups. |
 | 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Owner deferred** from PR 1. Generic decoration toggling is supplied by PR 2; transient/image behavior remains unstarted. Default `Show Images = No` setup is covered in PR 1. |
-| 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Validated locally; ready for owner review** on `feat/webui-manatimer-progress-overlay`. Complete setup remains blocked by PR 3. |
-| 3. Display/monitor geometry | Host-owned monitor-at-point/geometry and bounded Gdk projection; actual multi-monitor coordinates and unavailable-host behavior. No fabricated monitor data. | **Not started; requires core design decision** |
+| 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Merged**: [PR #48](https://github.com/Lich5/lich-6/pull/48), confirmed 2026-10-12; `d7726455`. PR 3 adds complete setup acceptance with saved-position fixture data. |
+| 3. Best-effort monitor geometry and named cursors | One shared host geometry request; bounded Display/Screen/Monitor projections for manatimer and gemstonev; host-owned placement and explicit sizing fallback; named cursor hints for gemstonev/highlight-manager. No pointer polling or device emulation. | **Implemented and validated locally; ready for owner review**, not staged/committed/pushed. Owner approved the bounded shared-core extensions; acceptance and platform limits below. |
 | 4. Owner-bound GLib scheduling | Observed Timeout/Idle/Source cancellation calls through the existing owner dispatcher; repository and sail2 acceptance. | **Not started; proposed** |
 | 5. Source acceptance refresh | Re-pin changed repository/eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. | **Not started; proposed** |
+| Separate script PR: sea-charts native WebUI conversion | Reuse native map's shared rendering/interaction primitives; preserve sailing/map/plugin logic. No shim Layout/pointer expansion. | **Proposed; not started**. Implementation repository and acceptance to be scoped separately. |
+
+Owner scope decisions, 2026-10-13: `map` modernizes `xnarost`, which modernizes
+`narost`. Native `map` is already converted (not a claim of EO publication).
+`xnarost` receives no further shim work; unsupported GTK calls retain the standing
+migrate-to-WebUI refusal. `sea-charts` is a native conversion candidate. Header
+age alone does not determine priority: consider lineage, EO ownership, downloads
+and community activity. No popularity figures were obtained in this assessment.
+
+The original six distinct Display consumers reconcile as follows:
+
+| Category | Scripts | Remaining shim scope |
+| --- | --- | --- |
+| Monitor geometry (3) | map, manatimer, gemstonev | manatimer and gemstonev only |
+| Pointer queries (2) | xnarost, sea-charts | None; no polling-pointer compatibility project |
+| Cursor creation (1 additional, plus overlap) | highlight-manager; gemstonev also uses cursors | Generic named cursor appearance only |
+
+Cached-source runtime probes, 2026-10-13: GTK map stops at a menu `show` signal;
+sea-charts stops in queued setup at `size_allocate`. xnarost first fails in its
+own MapData lookup (`@@data` initialized, `@data` returned); its isolated GUI
+setup also refuses `size_allocate`. Independent probes confirm missing Layout,
+horizontal scroll/viewport measurements, image metadata and interaction APIs.
+Native map's browser-side dragging does not itself expose Ruby pointer polling.
+Thus pointer reuse alone would not make these GTK scripts work. Tests used
+isolated game/settings fixtures and no native GTK; they do not claim live-game
+acceptance. Temporary evidence: `/private/tmp/gtk-map-shim-probe_spec.rb`,
+`/private/tmp/gtk-map-shim-probe.log`, `/private/tmp/map-cohort-shim-probe_spec.rb`
+and `/private/tmp/map-cohort-shim-probe.log` (two cohort examples, zero failures
+in the final diagnostic run). Sources remain under
+`/private/tmp/webui-freshness-survey`, pinned to the survey revisions above.
+
+#### PR 3 proposal: geometry and named cursors
+
+Owner-approved bounded shared-core changes, implemented locally on 2026-10-13:
+
+- One owner/viewer-scoped `monitor_geometry` request, selecting the active host
+  screen by default, or requesting primary/point selection. The host supplies
+  a rectangle and availability/provenance; platform providers sit behind that
+  same contract. Use available macOS/Windows/Linux host facilities, without
+  exposing native handles or adding a shim service/dispatcher. Unsupported
+  selection falls back to the active/available screen with an explicit notice.
+  If no measurement is available, return unavailable; the shim may reuse its
+  existing declared nominal 1024x768 sizing hint, never label it a real monitor.
+- Project only the observed geometry chains: `Gdk::Display.default`,
+  `default_screen.get_monitor_at_point(x, y)`, `get_monitor_geometry(index)`,
+  `primary_monitor.geometry`, and rectangle x/y/width/height. Keep monitor tokens
+  owner-bound. Existing window move requests remain host-owned best effort,
+  with host clamping where supported and documented host-default placement
+  otherwise. Do not promise exact placement or change script calculations:
+  manatimer ignores monitor origins; gemstonev uses width/height for sizing.
+- A validated named cursor presentation property through core/adapter/renderer.
+  Bounded `Gdk::Cursor.new`/`new_from_name`, `:hand2`/`HAND2` aliases and
+  `set_cursor`/`cursor=` project to a widget/window-scoped browser hint. Support
+  `default`, `pointer`, `cell`, and `copy`; unavailable names/host rendering use
+  the documented default cursor. Any window facade exposed for this purpose
+  supports cursor assignment only, not native handles or device/pointer queries.
+  No custom cursor images, warping, pointer grabs or global cursor changes.
+
+Cursor evidence: gemstonev uses pointer normally, cell for execute mode and copy
+for ability targeting; labels also describe the modes. Its unguarded assignment
+must not interrupt game logic. highlight-manager requests a hand over clickable
+names, guards capability checks and rescues failures; lookup does not depend on
+cursor appearance. This supports a generic presentation mapping/fallback, not
+unconditional acceptance of other Gdk operations.
+
+Acceptance: unchanged cached manatimer setup through geometry, move, keep-above
+and subsequent progress updates; gemstonev's exact geometry/sizing and cursor
+call sites; highlight-manager's guarded cursor helper. Verify selector/fallback
+behavior, signed origins, owner/viewer isolation, teardown and unsupported-call
+refusals. Exercise real cursor appearance and geometry/placement in macOS WebKit;
+record Windows/Linux native validation separately from provider/unit tests.
+Whole gemstonev/highlight-manager compatibility is not claimed. Real GTK,
+non-GUI script logic, CSS grammar, map pointer polling and optional tpick image
+windows remain excluded. Reuse the existing owner dispatcher throughout.
+
+PR 3 implementation and validation, 2026-10-13:
+
+- Fetched origin; fast-forwarded main from `d7726455` to `585bb871` (documentation
+  PR #50), verified zero divergence, and created `feat/webui-monitor-geometry-cursors`.
+  Existing edits to this handoff and the fallback brief were preserved.
+- Contract 2.20.0 adds validated cursor hints and bounded monitor snapshots in
+  configure events. One core `monitor_geometry` request selects owner/viewer
+  measurements or pre-viewer host discovery. AppKit, Windows Forms/Win32 and
+  optional XRandR providers share validation, selectors and explicit fallback.
+  Viewer snapshots clear on detach/disconnect. Existing owner dispatch is reused.
+- Shim Display/Screen/Monitor/Rectangle and cursor-only window facades implement
+  the source call shapes. Named cursor aliases, inherited styling, nil reset,
+  cross-owner/teardown refusals and unsupported device APIs are covered. macOS
+  move requests clamp to an available screen's visible frame.
+- Full RSpec: **9,164 examples, zero failures, 24 browser-only pending**, seed
+  `18463`; changed Ruby files: **16 inspected, no RuboCop offenses**. JavaScript:
+  **161 tests passed**. Explicit Chrome selection: **13 examples, zero failures**.
+  The new browser case is included in the existing Chrome CI selection.
+- Native WebKit: both acceptance examples passed in the rebuilt universal host.
+  Cursor pointer/cell/copy/reset callbacks and native **2560x1440** measurement
+  round-tripped; full unchanged manatimer setup, `01:00`/50% update, right-click
+  borderless toggle and closure passed. Browser computed-style tests verify
+  cursor inheritance/reset. A further native run requested `[-65000, 65000]`,
+  verified the window remained visible and measured its clamped position as
+  `[0, 933]`. Build contains both arm64 and x86_64 architectures.
+- Windows/Linux provider fixtures pass, but native validation on those systems
+  and physical multi-monitor arrangements remain open. Signed topology and
+  fallback cases use deterministic fixtures. Missing manatimer saved position,
+  ignored monitor origins, CSS pulse colors and whole gemstonev/highlight-manager
+  behavior remain outside this acceptance.
+
+PR 3 review follow-up, 2026-10-14: both minor review items addressed locally.
+The cached monitor-token branch now uses block-local `next`, and monitor discovery
+explicitly requires JSON. The regression verifies 40 identical point requests
+reuse one token without exhausting the 32-point bound, while a different point
+gets a distinct token. Focused geometry/cursor specs: **10 examples, zero failures,
+one explicit-browser pending**, seed `1300`. RuboCop: **3 files inspected, no
+offenses**. Logs: `/private/tmp/pr3-review-focused.log` and
+`/private/tmp/pr3-review-rubocop.log`. Status remains ready for owner review;
+existing work preserved, no staging, commits or pushes.
+
+Temporary validation logs: `/private/tmp/pr3-full-final.log`,
+`/private/tmp/pr3-rubocop-final.log`, `/private/tmp/pr3-node-all.log`,
+`/private/tmp/pr3-chrome.log`, `/private/tmp/pr3-webkit-cursors.log`,
+`/private/tmp/pr3-webkit-manatimer.log`, `/private/tmp/pr3-webkit-clamp.log`,
+`/private/tmp/pr3-native-build.log`.
+The native-window harness is `/private/tmp/pr3-native-webkit.rb`; retained source
+evidence is `spec/fixtures/webui/geometry-cursors.json` and `manatimer.json`.
+No real GTK, script/game logic edits, staging, commits or pushes. Scope exceptions
+used: only the owner's approved bounded geometry and named-cursor extensions.
+
+<details>
+<summary>PR 3 exact changed-file inventory (including preserved documentation edits)</summary>
+
+```text
+.github/workflows/webui_tests.yaml
+docs/webui-css-decoration-acceptance.md
+docs/webui-css-decoration-fallback-brief.md
+docs/webui-integration.md
+docs/webui-review-readiness.md
+lib/common/script_scope/gtk/boot.rb
+lib/common/script_scope/gtk/display_geometry.rb
+lib/webui/adapter.rb
+lib/webui/assets/app.css
+lib/webui/assets/app.js
+lib/webui/contract.rb
+lib/webui/monitor_geometry.rb
+lib/webui/native/macos/Host.swift
+lib/webui/native/macos/window.js
+lib/webui/page.rb
+lib/webui/runtime.rb
+lib/webui/service.rb
+spec/README.md
+spec/fixtures/webui/README.txt
+spec/fixtures/webui/geometry-cursors.json
+spec/fixtures/webui/manatimer.json
+spec/lib/common/script_scope_css_corpus_spec.rb
+spec/lib/common/script_scope_geometry_cursor_spec.rb
+spec/lib/common/script_scope_manatimer_spec.rb
+spec/lib/webui/adapter_spec.rb
+spec/lib/webui/contract_foundation_spec.rb
+spec/lib/webui/contract_spec.rb
+spec/lib/webui/monitor_geometry_spec.rb
+spec/lib/webui/server_spec.rb
+spec/webui/browser.spec.cjs
+spec/webui/webui_compact_presentation_test.cjs
+spec/webui/webui_native_host_test.cjs
+spec/webui/webui_renderer_fixture.cjs
+spec/webui/webui_renderer_test.cjs
+```
+
+</details>
+
+PR #48 post-merge synchronization, 2026-10-12: GitHub confirms merge at
+`2026-10-13T03:21:30Z` as `d7726455642267a4b97f425492e995dcd68ea2ad`, from
+head `80ab3dfdca2ce3a2c30fd423f7e497e3a0804ce6`. The owner committed the CR
+documentation fix before merging; the feature working tree was clean. Fetched
+`origin`, switched to `main`, and fast-forwarded. Verified `main` and `origin/main`
+at the merge commit with zero ahead/behind commits. The feature branch is retained.
+Only these post-merge documentation updates remain uncommitted. No assistant
+staging, commit or push was performed. The subsequent PR 3 geometry/cursor
+assessment, later owner approval and local implementation are recorded above.
 
 PR 2 implementation, 2026-10-12: fetched origin, confirmed main at `157c2589`
 with zero ahead/behind commits, and created `feat/webui-manatimer-progress-overlay`.
@@ -195,7 +374,8 @@ branches, CSS grammar expansion or additional contract properties were added.
 `ac33cc5b04bb6d4185063b552c1dcc8290b5cdfe752ba9ea36402f65a4f9bf2f`.
 The partial harness runs controls (50–75), providers (80–96), countdown (176–182)
 and cleanup (101–116), using isolated settings and bounded queue waits. The full
-49–97 setup remains a negative test at `Gdk::Display`, line 76. Restoration
+At PR 2, 49–97 setup remained a negative test at `Gdk::Display`, line 76; PR 3
+supersedes that result with full setup acceptance above. Restoration
 76–79 is explicitly excluded from positive acceptance. No game loop or pulse
 catcher runs. Missing saved position and clamping that ignores monitor x/y are
 source limitations, not shim repairs. Red/green CSS remains omitted. Generic
@@ -261,8 +441,8 @@ spec/webui/webui_renderer_test.cjs
 Scope exceptions: the owner-approved overlay pass-through and progress
 pointer-event core extensions, and generic core progress rendering correction.
 Existing owner dispatch, non-GUI logic, CSS
-omission and real-GTK exclusion remain intact. No staging, commit or push;
-owner publication remains pending.
+omission and real-GTK exclusion remain intact. No assistant staging, commit or push.
+Owner publication subsequently completed in PR #48, as recorded above.
 
 PR #43 post-merge synchronization, 2026-10-12: GitHub confirms merge at
 `2026-10-12T16:43:09Z` as `cd10f7b29e9d9b5319702881f17eb9bcea18aecf`, from
@@ -412,10 +592,10 @@ Scope exceptions used: owner-approved atomic grid-layout and empty-notebook shar
 extensions, plus the explicitly authorized required-setting cue surface. Cached
 script evidence was read only; real GTK, non-GUI script logic and optional image
 windows remain outside this implementation. No staging, commit or push.
-Current slice: PR 2, Manatimer progress/overlay semantics, implemented locally above.
-Next proposed slice after its merge: PR 3, host-backed Display/monitor geometry.
-PR 1b optional image windows remains deferred; Display/monitor geometry stays a
-separate core decision and prerequisite for broader manatimer setup acceptance.
+Completed slice: PR 2, progress rendering/overlay semantics, merged as PR #48.
+PR 3 is now implemented and validated locally, as bounded above; owner review
+and publication remain pending. After its merge, next proposed slice is PR 4,
+owner-bound GLib scheduling. PR 1b optional image windows remains deferred.
 
 PR 2 first-slice inventory, 2026-10-12:
 

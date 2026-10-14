@@ -196,18 +196,27 @@ RSpec.describe 'manatimer progress and overlay acceptance' do
     expect(@diagnostics.grep(/operation=css_decoration/).size).to eq(1)
   end
 
-  it 'keeps the unchanged complete setup blocked at Display with original source attribution' do
+  it 'completes unchanged setup through measured monitor geometry and updates progress' do
+    allow(service).to receive(:monitor_geometry).and_return(x: -1280, y: 0, width: 1280, height: 800, source: 'native', fallback: false)
     original('defaults')
     original('locals')
     original('setup')
-    drain(check: false)
-    expect(@diagnostics.join("\n")).to match(/manatimer\.lic:76.*operation=Display/)
-    expect(source_binding.local_variable_get(:done)).to be_nil
+    drain
+    expect(source_binding.local_variable_get(:done)).to be true
+    expect(service).to have_received(:monitor_geometry).with(owner: owner, viewer: nil, target: :point, point: [20, 20])
+    progress = source_binding.local_variable_get(:bar)
+    progress.fraction = 0.5
+    expect(progress.fraction).to eq(0.5)
   end
 
   it 'exercises the source controls and right-click callback in the browser', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
-    widget = partial_controls
+    original('defaults')
+    original('locals')
+    original('setup')
+    drain
+    expect(source_binding.local_variable_get(:done)).to be true
+    widget = source_binding.local_variable_get(:window)
     progress = source_binding.local_variable_get(:bar)
     layer = source_binding.local_variable_get(:label)
     layers = source_binding.local_variable_get(:overlay)

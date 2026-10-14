@@ -1390,3 +1390,24 @@ test('Markdown anchor titles remain literal and cannot introduce HTML', t => {
   assert.equal(wrapper.querySelector('a').href, 'https://example.org/help');
   assert.equal(wrapper.querySelector('img'), null);
 });
+
+test('named cursor hints update and reset on the same page and child controls', t => {
+  const f = fixture();
+  t.after(() => f.dom.window.close());
+  f.receive({ type: 'hello', pages: [{ address: 'main', title: 'Cursor hints' }] });
+  const render = (generation, hint) => f.receive({ type: 'render', page: 'main', generation,
+    tree: { type: 'page', cid: 'page', props: { title: 'Cursor hints', ...(hint ? { cursor_hint: hint } : {}) }, children: [
+      { type: 'button', cid: 'page/b', props: { label: 'Nested', cursor_hint: 'pointer' }, children: [] }
+    ] } });
+  render(1, 'cell');
+  let root = f.dom.window.document.querySelector('[data-cid="page"]');
+  assert.equal(root.style.getPropertyValue('--webui-cursor-hint'), 'cell');
+  assert.equal(f.dom.window.document.querySelector('[data-cid="page/b"]').style.getPropertyValue('--webui-cursor-hint'), 'pointer');
+  render(2, 'copy');
+  root = f.dom.window.document.querySelector('[data-cid="page"]');
+  assert.equal(root.style.getPropertyValue('--webui-cursor-hint'), 'copy');
+  render(3, null);
+  root = f.dom.window.document.querySelector('[data-cid="page"]');
+  assert.equal(root.dataset.cursorHint, undefined);
+  assert.equal(root.style.getPropertyValue('--webui-cursor-hint'), '');
+});

@@ -96,7 +96,7 @@ the spec. It also replays all 81 observed widget/screen attachment signatures:
 | Source | Excerpt result | Non-CSS/acceptance boundary |
 | --- | --- | --- |
 | tpick | Global CSS/load/screen registration at 94–291, label-local CSS at 2557–2564 and required-setting class at 2939 continue. First omission is attributed to line 95. | The subsequent HeaderBar slice accepts the original constructor at 2084. Separate tpick welcome/header-method acceptance and expanded default settings/information acceptance are recorded in the handoff; CSS acceptance alone still does not establish complete setup. |
-| manatimer | Original 83–94 attaches before load and reloads through both original procs. Fraction survives, CSS fill is omitted. | Actual `Gdk::Display` at 76 still refuses and occurs before these CSS calls. |
+| manatimer | Original 83–94 attaches before load and reloads through both original procs. Fraction survives, CSS fill is omitted. | PR 3 now accepts the original Display chain at 76 and complete setup with saved-position fixture data. Missing saved position and ignored monitor origins remain source limitations. |
 | spellson / staminabar2 | Original load/attach excerpts preserve typed color and 24px height, including staminabar2's missing final semicolon. | Full running scripts not exercised. |
 | timers | Original generated progress CSS, positional load and attachment continue with fixed test settings. | Custom colors/heights are omitted; fraction is preserved. Full setup not exercised. |
 | as_audit | Original typography CSS attaches to supported Window/TextView objects. | Font/color decoration is omitted. TextView typed properties remain unchanged. |

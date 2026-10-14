@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -74,7 +74,19 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'native-progress-sizing') {
+  if (scenario === 'shim-geometry-cursors') {
+    for (const name of ['pointer', 'cell', 'copy']) {
+      await page.getByRole('button', { name: name[0].toUpperCase() + name.slice(1), exact: true }).click();
+      await expect(page.getByText(`Cursor: ${name}`, { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Measure screen', exact: true })).toHaveCSS('cursor', name);
+    }
+    await page.getByRole('button', { name: 'Reset cursor' }).click();
+    await expect(page.getByText('Cursor: inherited', { exact: true })).toBeVisible();
+    await expect(page.locator('.webui-page')).not.toHaveAttribute('data-cursor-hint');
+    await page.getByRole('button', { name: 'Measure screen' }).click();
+    await expect(page.getByText(/^Screen: \d+ x \d+ \(browser\)$/)).toBeVisible();
+    await page.getByRole('button', { name: 'Finish', exact: true }).click();
+  } else if (scenario === 'native-progress-sizing') {
     const control = key => page.locator(`[data-cid$="progress:${key}"]`);
     const sizes = async () => {
       for (const height of [18, 24, 36]) {
