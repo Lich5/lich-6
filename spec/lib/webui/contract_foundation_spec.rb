@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require 'json'
 require_relative '../../../lib/webui/contract'
 require_relative '../../../lib/webui/component'
 require_relative '../../../lib/webui/sensitive_value'
@@ -9,13 +10,22 @@ RSpec.describe 'WebUI contract foundation' do
   let(:contract) { Lich::WebUI::Contract }
 
   it 'publishes exactly the supported component vocabulary' do
-    expect(contract::VERSION).to eq('2.20.0')
+    expect(contract::VERSION).to eq('2.21.0')
     expect(contract::TYPES).to contain_exactly(
       :page, :group, :stack, :columns, :grid, :tabs, :expander, :split, :overlay, :scroll, :divider,
       :text, :markdown, :log, :progress, :image, :button, :toggle, :checkbox, :radio, :radio_option, :text_input,
       :password_input, :textarea, :number_input, :slider, :select, :table, :dialog, :composite
     )
     expect(contract.schemas.size).to eq(30)
+  end
+
+  it 'keeps renderer lifecycle exemptions aligned with every contract event' do
+    renderer = File.read(File.expand_path('../../../lib/webui/assets/app.js', __dir__))
+    names = JSON.parse(renderer.match(/const LIFECYCLE_EVENTS = new Set\((\[.*?\])\);/)[1])
+    events = contract.schemas.values.flat_map { |schema| schema[:events].to_a }
+    lifecycle = events.select { |_name, definition| definition[:lifecycle] }.map { |name, _| name.to_s }.uniq
+    expect(names).to match_array(lifecycle)
+    expect(events.reject { |_name, definition| definition[:lifecycle] }.map { |name, _| name.to_s } & names).to be_empty
   end
 
   it 'refuses unknown types and unsupported major versions' do

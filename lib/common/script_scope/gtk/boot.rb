@@ -3,6 +3,7 @@
 require_relative '../../script_death'
 require_relative '../../../webui'
 require_relative 'session'
+require_relative 'scheduling'
 require_relative 'widgets'
 require_relative 'adjustment'
 require_relative 'layout'
@@ -34,6 +35,16 @@ module Lich
           CENTER = :center
           const_set(:END, :end)
           FILL = :fill
+        end
+
+        # Bounded placement hint; the host retains control of initial placement.
+        module WindowPosition
+          CENTER = :center
+
+          # @raise [UnsupportedOperation] for position modes outside this facade
+          def self.const_missing(name)
+            Gtk.session.refuse(self, name)
+          end
         end
 
         module WindowType

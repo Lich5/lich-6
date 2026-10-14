@@ -104,6 +104,18 @@ its `shim-geometry-cursors` browser scenario checks inherited cursor modes/reset
 and submitting-viewer monitor measurements. `monitor_geometry_spec.rb` checks
 signed selection, explicit fallbacks, platform-provider parsing and viewer isolation.
 Platform-provider fixtures do not certify native Windows/Linux behavior.
+`scheduler_spec.rb` and `script_scope_scheduling_spec.rb` cover bounded scheduling,
+owner/viewer attribution, repeat/stop results, cancellation races, backpressure,
+teardown and retained host handles. `script_scope_scheduling_acceptance_spec.rb`
+uses the pinned `scheduling.json` source blocks: repository's actual ten-second
+timer and sail2's original startup race. Positive sail2 setup/save uses an explicit
+test-only readiness sentinel; inherited sensitivity and the original hide/destroy
+Close callback are positive acceptance cases. Four Chrome scenarios run in the
+existing browser CI job, including a separate retained-input hide/timed-show case.
+Native WebKit verifies the real owned window disappears and returns. Gemstonev
+difficulty-window acceptance uses the unchanged source and captures its command
+and main-window handoff; it does not certify the main game window.
+No script download or settings-file write occurs; commands and saves are captured.
 `browser_integration_spec.rb` adds `native-progress-sizing`: plain and colored
 tracks at 18/24/36px, color removal without geometry changes, visible labels,
 the 18px default and indeterminate/reduced-motion behavior. It uses the same
@@ -205,7 +217,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_geometry_cursor_spec.rb spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_scheduling_acceptance_spec.rb spec/lib/common/script_scope_geometry_cursor_spec.rb spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has

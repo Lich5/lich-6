@@ -9,7 +9,7 @@ module Lich
     module ScriptScope
       module Gtk
         # Marker for supported legacy containers. Iteration exposes a snapshot
-        # of actual children, so recursive sensitivity changes stay script-owned.
+        # of actual children; sensitivity is inherited through the shared component tree.
         module Container
           def each(&block) = children.each(&block)
         end
@@ -374,6 +374,10 @@ module Lich
           # @return [Boolean] true by default
           def sensitive? = @sensitive != false
 
+          # Reads effective sensitivity without overwriting a child's own setting.
+          # @return [Boolean] false when this widget or any ancestor is insensitive
+          def is_sensitive? = sensitive? && (!parent || parent.is_sensitive?)
+
           # Creates descendants before the root can publish, then binds supported events once.
           # @return [Lich::WebUI::Adapter::Handle] cached opaque control handle
           def materialize
@@ -422,11 +426,8 @@ module Lich
           end
 
           # Hides widget content without discarding its input or destroying its owner.
-          # Native window visibility needs a host operation, not a blank page.
           # @return [Widget] self
-          # @raise [UnsupportedOperation] for top-level windows
           def hide
-            session.refuse(self, :hide) if is_a?(Window)
             write(:hidden, true)
           end
 
@@ -690,6 +691,8 @@ module Lich
             self
           end
 
+          alias set_position set_window_position
+
           # Requests integer desktop coordinates through the page position property.
           # @return [Window] self
           def move(x, y)
@@ -800,8 +803,24 @@ module Lich
           # Publishes the window through its existing owner lifecycle.
           # @return [Window] self
           def show
-            materialize
-            @shown = true
+            session.synchronize do
+              session.refuse(self, :show) if destroyed?
+              write(:presentation, @props[:presentation].merge(hidden: false)) if @props.dig(:presentation, :hidden)
+              materialize
+              @shown = true
+            end
+            self
+          end
+
+          # Hides the owned host window without retiring the page or its inputs.
+          # Browser hosts hide page content and report the chrome limitation.
+          # @return [Window] self
+          def hide
+            session.synchronize do
+              session.refuse(self, :hide) if destroyed?
+              write(:presentation, (@props[:presentation] || {}).merge(hidden: true))
+              @shown = false
+            end
             self
           end
 

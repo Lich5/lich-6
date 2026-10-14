@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'dispatcher'
+require_relative 'scheduler'
 require_relative 'protocol'
 require_relative 'submission'
 require_relative 'viewer_store'
@@ -11,10 +12,12 @@ module Lich
   module WebUI
     # Server-routed page attachment, viewer state, submission, and callback runtime.
     class Runtime
+      attr_reader :scheduler
+
       LIFECYCLE_SNAPSHOT_KEY = :lich_webui_lifecycle_snapshot
       EventContext = Data.define(:viewer_id, :page, :component, :event, :payload, :submission)
       PRESENTATION_SUPPORT = {
-        always_on_top: false, borderless: false, opacity: true, scrollbars: true,
+        always_on_top: false, borderless: false, hidden: false, opacity: true, scrollbars: true,
       }.freeze
 
       # Connects page delivery and callback dispatch to optional host services.
@@ -40,6 +43,7 @@ module Lich
         @file_service = file_service
         @logger = logger || proc { |_level, _message| }
         @dispatcher = dispatcher || Dispatcher.new(logger: @logger)
+        @scheduler = Scheduler.new(dispatcher: @dispatcher, admission: @registry.method(:ensure_active!), logger: @logger)
         @connections = {}
         @connections_mutex = Mutex.new
         @refresh_mutex = Mutex.new
@@ -69,7 +73,7 @@ module Lich
       # @param _page [Page, nil] reserved for page-specific host selection
       # @return [Hash{Symbol => Boolean}] supported presentation properties
       def presentation_support(_page = nil)
-        support = NativeHost.platform ? PRESENTATION_SUPPORT.merge(always_on_top: true, borderless: true) : PRESENTATION_SUPPORT
+        support = NativeHost.platform ? PRESENTATION_SUPPORT.merge(always_on_top: true, borderless: true, hidden: true) : PRESENTATION_SUPPORT
         support.merge(WindowPresentation.support).freeze
       end
 
@@ -241,6 +245,7 @@ module Lich
       # @return [Array<Page>] removed pages
       def terminate_owner(owner)
         @registry.terminate_owner(owner)
+        @scheduler.cancel_owner(owner, terminal: true)
         cancel_renders(owner)
         pages = @registry.pages_for(owner)
         @dispatcher.shutdown_owner(owner)
@@ -303,6 +308,7 @@ module Lich
       # @return [void]
       def shutdown
         @registry.stop
+        @scheduler.shutdown
         @dispatcher.shutdown
         cancel_renders
       end
@@ -403,6 +409,13 @@ module Lich
           end
         end
 
+        event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
+        unless event_schema[:lifecycle]
+          presentation = (attachment.render.tree.props[:presentation] || {}).merge(attachment.render.facilities[:presentation] || {})
+          if presentation[:hidden] || interaction_disabled?(attachment.render.tree, component.cid)
+            raise Protocol::Refusal.new(:payload, 'component interaction is disabled or its window is hidden')
+          end
+        end
         snapshot = build_submission(attachment, component, message)
         return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
 
@@ -411,7 +424,6 @@ module Lich
           attachment.page.observe_monitors(attachment.viewer_id, payload[:monitors])
         end
         @viewers.update(attachment, component, message[:event].to_sym, payload, message[:request])
-        event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
         context = EventContext.new(
           attachment.viewer_id, attachment.page, component, message[:event].to_sym, payload, snapshot
         )
@@ -568,6 +580,22 @@ module Lich
             window_presentation: @window_host&.call(attachment.page)&.presentation_support || {}
           )
         )
+      end
+
+      # Resolves inherited sensitivity in the delivered tree without changing local properties.
+      # @param component [Component] current subtree
+      # @param cid [String] target identity
+      # @param inherited [Boolean] disabled state of ancestors
+      # @return [Boolean, nil] effective state, or nil when absent from this subtree
+      def interaction_disabled?(component, cid, inherited = false)
+        disabled = inherited || component.props[:disabled] == true
+        return disabled if component.cid == cid
+
+        component.children.each do |child|
+          result = interaction_disabled?(child, cid, disabled)
+          return result unless result.nil?
+        end
+        nil
       end
 
       # Resolves a component within the viewer's delivered tree, not an arbitrary newer render.

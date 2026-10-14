@@ -273,8 +273,57 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(entry.session.port.get(handle, :hidden)).to be(false)
     expect(entry.session.port.get(handle, :search)).to be(true)
     expect(entry.session.port.get(handle, :placeholder)).to eq('Find a name')
-    expect { window.hide }.to raise_error(compatibility::UnsupportedOperation, /operation=hide/)
+    page_handle = window.materialize
+    window.hide
+    expect(window).not_to be_visible
+    expect(window.session.port.get(page_handle, :presentation)).to include(hidden: true, always_on_top: true)
+    window.show
+    expect(window).to be_visible
+    expect(window.materialize).to equal(page_handle)
+    expect(entry.text).to eq('retained')
+    expect(window.session.port.get(page_handle, :presentation)).to include(hidden: false, always_on_top: true)
     expect(window).not_to be_destroyed
+  end
+
+  it 'inherits sensitivity without changing child settings and handles reparenting' do
+    first, second = compatibility::Box.new(:vertical), compatibility::Box.new(:vertical)
+    entry = compatibility::Entry.new
+    first.add(entry)
+    first.sensitive = false
+    expect(entry).to be_sensitive
+    expect(entry.is_sensitive?).to be(false)
+    first.sensitive = true
+    expect(entry.is_sensitive?).to be(true)
+    entry.sensitive = false
+    first.sensitive = false
+    first.sensitive = true
+    expect(entry.is_sensitive?).to be(false)
+    entry.sensitive = true
+    first.sensitive = false
+    first.remove(entry)
+    second.add(entry)
+    expect(entry.is_sensitive?).to be(true)
+  end
+
+  it 'accepts the CENTER constant and set_position spelling with the existing host-placement fallback' do
+    window = compatibility::Window.new
+    expect(window.set_position(compatibility::WindowPosition::CENTER)).to equal(window)
+    expect(window.set_window_position(:center)).to equal(window)
+    expect(Lich).to have_received(:log).with(/window_position.*initial placement is controlled by the browser host/).once
+    expect { window.set_position(:mouse) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { compatibility::WindowPosition::MOUSE }.to raise_error(compatibility::UnsupportedOperation)
+    expect(service.registry.pages_for(owner)).to be_empty
+  end
+
+  it 'does not publish a never-shown hidden window or resurrect a destroyed window' do
+    window = compatibility::Window.new
+    window.hide
+    expect(window).not_to be_visible
+    expect(service.registry.pages_for(owner)).to be_empty
+    window.show
+    expect(window).to be_visible
+    window.destroy
+    expect { window.show }.to raise_error(compatibility::UnsupportedOperation)
   end
 
   it 'disables and restores literal legacy tooltips without losing the registered text' do

@@ -412,6 +412,10 @@ RSpec.describe 'remaining Builder setup families' do
     connect
     custom = form['fog_return'].send(:component_props)[:options].find { |option| option[:label] == 'Custom' }
     event(form['fog_return'], 'change', { value: custom.fetch(:value) })
+    expect(form['custom_fog'].is_sensitive?).to be(true)
+    # Event admission uses delivered sensitivity; publish the callback's enable
+    # before sending an edit, just as a browser waits for its disabled field.
+    service.runtime.refresh(@page)
     controls = form.objects.select { |widget| widget.respond_to?(:builder_name) && form.class.get_setting(widget.builder_name.to_sym) }
     entries = controls.select { |widget| widget.instance_of?(gtk::Entry) && !widget.send(:component_props)[:read_only] }
     expect(entries.length).to be > 20

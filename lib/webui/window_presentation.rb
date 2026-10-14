@@ -16,7 +16,7 @@ module Lich
       SWP_FLAGS = 0x0001 | 0x0002 | 0x0010 # NOSIZE, NOMOVE, NOACTIVATE
       GWL_EXSTYLE = -20
       WS_EX_LAYERED = 0x00080000
-      SUPPORT = { always_on_top: true, opacity: true }.freeze
+      SUPPORT = { always_on_top: true, opacity: true, hidden: true }.freeze
       ABI = Fiddle::Function.const_defined?(:STDCALL) ? Fiddle::Function::STDCALL : Fiddle::Function::DEFAULT
 
       class << self
@@ -32,7 +32,7 @@ module Lich
             convention = ABI == Fiddle::Function::DEFAULT ? :cdecl : :stdcall
             [
               'int EnumWindows(void*, void*)', 'int IsWindow(void*)',
-              'int IsWindowVisible(void*)', 'void* GetWindow(void*, unsigned int)',
+              'int ShowWindow(void*, int)', 'int IsWindowVisible(void*)', 'void* GetWindow(void*, unsigned int)',
               'int GetWindowThreadProcessId(void*, void*)', 'int GetClassNameW(void*, void*, int)',
               'int SetWindowPos(void*, void*, int, int, int, int, unsigned int)',
               'long GetWindowLongW(void*, int)', 'long SetWindowLongW(void*, int, long)',
@@ -74,7 +74,7 @@ module Lich
           @win32, @thread_factory, @sleeper, @clock = win32, thread_factory, sleeper, clock
           @mutex = Mutex.new
           @closed = false
-          @desired = { always_on_top: false, opacity: 1.0 }
+          @desired = { always_on_top: false, opacity: 1.0, hidden: false }
           @generation = 0
         end
 
@@ -118,7 +118,8 @@ module Lich
 
             @generation = render.generation
             props = (render.tree.props[:presentation] || {}).merge(render.facilities[:presentation] || {})
-            @desired = { always_on_top: props.fetch(:always_on_top, false), opacity: props.fetch(:opacity, 1.0) }
+            @desired = { always_on_top: props.fetch(:always_on_top, false), opacity: props.fetch(:opacity, 1.0),
+                         hidden: props.fetch(:hidden, false) }
             apply if @hwnd
           end
         rescue StandardError => error
@@ -153,10 +154,11 @@ module Lich
         # Rejects stale, hidden, child-owned or unrelated application handles.
         # @param hwnd [Fiddle::Pointer, Integer] candidate native window handle
         # @param pid [Integer] retained browser process identity
+        # @param visible [Boolean] require visibility during discovery only
         # @api private
-        # @return [Boolean] visible, unowned top-level Chromium window for pid
-        def owned?(hwnd, pid)
-          return false if @win32.IsWindow(hwnd).zero? || @win32.IsWindowVisible(hwnd).zero?
+        # @return [Boolean] unowned top-level Chromium window for pid
+        def owned?(hwnd, pid, visible: true)
+          return false if @win32.IsWindow(hwnd).zero? || (visible && @win32.IsWindowVisible(hwnd).zero?)
           return false unless @win32.GetWindow(hwnd, 4).to_i.zero? # GW_OWNER
 
           owner = [0].pack('L') # DWORD is 32 bits even on Win64.
@@ -168,12 +170,12 @@ module Lich
           length.positive? && buffer[0, length * 2].force_encoding('UTF-16LE').encode('UTF-8') == 'Chrome_WidgetWin_1'
         end
 
-        # Applies changed topmost/alpha values without moving focus or window bounds.
+        # Applies changed topmost, alpha and visibility without taking focus.
         # The controller mutex must be held; PID ownership is rechecked before writing.
         # @api private
         # @return [void]
         def apply
-          return unless owned?(@hwnd, @pid)
+          return unless owned?(@hwnd, @pid, visible: false)
           return if @applied == @desired
 
           # HWND_TOPMOST is a pointer-sized -1, not a Windows 32-bit long.
@@ -190,6 +192,11 @@ module Lich
           end
           alpha = (@desired[:opacity] * 255).round.clamp(1, 255)
           check(@win32.SetLayeredWindowAttributes(@hwnd, 0, alpha, 2)) # LWA_ALPHA
+          if @desired[:hidden] != (@applied || {})[:hidden] && (@desired[:hidden] || @applied&.fetch(:hidden))
+            # ShowWindow returns previous visibility, not success. Retain this
+            # owned handle while hidden so a later render can reveal it again.
+            @win32.ShowWindow(@hwnd, @desired[:hidden] ? 0 : 4) # SW_HIDE / SW_SHOWNOACTIVATE
+          end
           @applied = @desired
         end
 

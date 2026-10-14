@@ -138,7 +138,10 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
             }
             window.contentMinSize = NSSize(width: dimension(value["min_width"]) ?? 1,
                                            height: dimension(value["min_height"]) ?? 1)
-            if !revealed {
+            if value["hidden"] as? Bool == true {
+                window.orderOut(nil)
+                revealed = false
+            } else if !revealed {
                 revealed = true
                 NSApplication.shared.unhideWithoutActivation()
                 window.orderFrontRegardless()

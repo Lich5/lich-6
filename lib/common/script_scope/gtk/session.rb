@@ -142,6 +142,42 @@ module Lich
             end
           end
 
+          # Captures script/viewer attribution before handing timing to the core.
+          # @return [Integer] cancellable source ID; false/nil or callback failure stops repetition
+          # @raise [UnsupportedOperation] for unsupported intervals, missing blocks or late registration
+          def schedule(receiver, operation, interval_ms, &block)
+            style_operation(receiver, operation) do
+              valid = block && interval_ms.is_a?(Integer) && interval_ms.between?(0, Lich::WebUI::Scheduler::MAX_INTERVAL_MS)
+              refuse(receiver, operation) unless valid && !stopping?
+              context = @callback_context
+              context = nil unless context&.first.equal?(Thread.current)
+              @scheduler ||= Lich::WebUI.callback_scheduler(owner: @owner)
+              @scheduler.schedule(interval_ms) do
+                run_queue_block do
+                  next if stopping?
+
+                  @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
+                  Script.current # Preserve Script pause behavior on the owner dispatcher.
+                  synchronize do
+                    with_callback_context(context&.[](1), context&.[](2)) { model_batch { block.call unless stopping? } }
+                  end
+                end
+              end
+            end
+          end
+
+          # Removes only an owner-authorized source; foreign IDs get the standing refusal.
+          # @return [Boolean] whether the source was still live
+          def remove_source(receiver, id)
+            style_operation(receiver, :remove) do
+              refuse(receiver, :remove) unless id.is_a?(Integer) && id.positive?
+              @scheduler ||= Lich::WebUI.callback_scheduler(owner: @owner)
+              @scheduler.cancel(id)
+            rescue Lich::WebUI::Error
+              refuse(receiver, :remove)
+            end
+          end
+
           # Retains a top-level window for owner-death cleanup.
           # @return [void]
           def register(window)
@@ -286,6 +322,7 @@ module Lich
           def close
             @closed = true
             synchronize do
+              @scheduler&.cancel_all
               @style_contexts&.keys&.each { |context| context.send(:close) }
               @screen_style_providers&.clear
               @windows.dup.each { |window| cleanup(window) { window.destroy } }

@@ -35,6 +35,14 @@ RSpec.describe 'core-owned adapter hosting' do
     expect(Lich::WebUI.instance_variable_get(:@service)).to equal(previous)
   end
 
+  it 'keeps a captured scheduler on its original host after shutdown' do
+    scheduler = Lich::WebUI.callback_scheduler(owner: Object.new)
+    previous = Lich::WebUI.service
+    previous.stop
+    expect { scheduler.schedule(0) {} }.to raise_error(Lich::WebUI::Error, /stopped/)
+    expect(Lich::WebUI.instance_variable_get(:@service)).to equal(previous)
+  end
+
   it 'refuses owner work when the existing dispatcher queue reaches its bound' do
     owner = Object.new
     queue = Lich::WebUI.callback_queue(owner: owner)

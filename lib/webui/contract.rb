@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.20.0'
+      VERSION = '2.21.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -127,7 +127,7 @@ module Lich
 
       # One shape for declarative facilities and imperative shim window state.
       PRESENTATION = record(
-        always_on_top: property(BOOL), borderless: property(BOOL),
+        always_on_top: property(BOOL), borderless: property(BOOL), hidden: property(BOOL),
         opacity: property(number(min: 0.1, max: 1.0)), scrollbars: property(BOOL)
       ).freeze
 
@@ -144,16 +144,16 @@ module Lich
       ).freeze
 
       ATTRIBUTE_APPLICABILITY = {
-        page: %i[key width height min_height],
+        page: %i[key disabled width height min_height],
         group: %i[key tooltip disabled hidden align margin width height min_height tone],
-        stack: %i[key hidden align margin width height],
-        columns: %i[key hidden align margin width height],
-        grid: %i[key hidden align margin width height],
+        stack: %i[key disabled hidden align margin width height],
+        columns: %i[key disabled hidden align margin width height],
+        grid: %i[key disabled hidden align margin width height],
         tabs: %i[key disabled hidden align margin width height],
         expander: %i[key tooltip disabled hidden align margin width height],
-        split: %i[key hidden align margin width height],
-        overlay: %i[key hidden align margin width height],
-        scroll: %i[key hidden align margin width height],
+        split: %i[key disabled hidden align margin width height],
+        overlay: %i[key disabled hidden align margin width height],
+        scroll: %i[key disabled hidden align margin width height],
         divider: %i[key hidden margin width tone],
         text: %i[key tooltip hidden align margin width height emphasis tone],
         markdown: %i[key hidden align margin width],

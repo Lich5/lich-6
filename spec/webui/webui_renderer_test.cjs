@@ -1411,3 +1411,82 @@ test('named cursor hints update and reset on the same page and child controls', 
   assert.equal(root.dataset.cursorHint, undefined);
   assert.equal(root.style.getPropertyValue('--webui-cursor-hint'), '');
 });
+
+test('nested container sensitivity and window visibility preserve authored settings and input drafts', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const { document, Event } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'controls' }] });
+  const render = (generation, disabled, hidden = false) => receive({ type: 'render', page: 'controls', generation,
+    bindings: { edit: ['change'], action: ['activate'] },
+    tree: { type: 'page', cid: 'root', props: { presentation: { hidden } }, children: [
+      { type: 'stack', cid: 'parent', props: { disabled }, children: [
+        { type: 'grid', cid: 'nested', props: { columns: 2 }, children: [
+          { type: 'text_input', cid: 'edit', props: { value: 'Initial' } },
+          { type: 'button', cid: 'action', props: { label: 'Action' } },
+          { type: 'button', cid: 'local', props: { label: 'Local disabled', disabled: true } }
+        ] }
+      ] }
+    ] } });
+  render(1, false);
+  document.querySelector('input').value = 'Retained draft';
+  render(2, true);
+  assert.equal(document.querySelector('input').disabled, true);
+  document.querySelector('[data-cid="action"]').dispatchEvent(new Event('click', { bubbles: true }));
+  assert.equal(sent.filter(message => message.event === 'activate').length, 0);
+  render(3, false, true);
+  assert.equal(document.querySelector('.webui-page').hidden, true);
+  render(4, false);
+  assert.equal(document.querySelector('.webui-page').hidden, false);
+  assert.equal(document.querySelector('input').value, 'Retained draft');
+  assert.equal(document.querySelector('input').disabled, false);
+  assert.equal(document.querySelector('[data-cid="local"]').disabled, true);
+  document.querySelector('[data-cid="action"]').click();
+  assert.equal(sent.filter(message => message.event === 'activate').length, 1);
+});
+
+for (const restriction of ['disabled', 'hidden']) {
+  test(`${restriction} controls retain lifecycle notifications while ordinary interactions stay blocked`, t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    const { document, Event, MouseEvent } = dom.window;
+    receive({ type: 'hello', pages: [{ address: 'lifecycle' }] });
+    receive({ type: 'render', page: 'lifecycle', generation: 1,
+      bindings: { field: ['focus', 'change'], notes: ['blur', 'change'], surface: ['pointer_press'], action: ['activate'] },
+      tree: { type: 'page', cid: 'root', props: { disabled: restriction === 'disabled',
+        presentation: { hidden: restriction === 'hidden' } }, children: [
+        { type: 'text_input', cid: 'field', props: { value: '', change_mode: 'input' } },
+        { type: 'textarea', cid: 'notes', props: { value: 'Retained' } },
+        { type: 'group', cid: 'surface', props: { pointer_events: true }, children: [] },
+        { type: 'button', cid: 'action', props: { label: 'Action' } }
+      ] } });
+    const field = document.querySelector('input'), notes = document.querySelector('textarea');
+    // Programmatic events exercise notification delivery even when browser input
+    // is suppressed by disabled/inert/hidden presentation.
+    field.dispatchEvent(new Event('focus'));
+    field.dispatchEvent(new Event('input'));
+    notes.dispatchEvent(new Event('blur'));
+    document.querySelector('[data-cid="surface"]').dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    document.querySelector('[data-cid="action"]').dispatchEvent(new Event('click'));
+    assert.deepEqual(sent.filter(message => message.type === 'event').map(message => message.event), ['focus', 'blur', 'pointer_press']);
+    assert.equal(sent.find(message => message.event === 'blur').payload.value, 'Retained');
+  });
+
+  test(`an open context menu still dismisses after becoming ${restriction}`, t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    const { document, MouseEvent } = dom.window;
+    receive({ type: 'hello', pages: [{ address: 'menu-lifecycle' }] });
+    const render = changed => receive({ type: 'render', page: 'menu-lifecycle', generation: changed ? 2 : 1,
+      bindings: { menu: ['dismiss'], action: ['activate'] },
+      tree: { type: 'page', cid: 'root', props: { presentation: { hidden: changed && restriction === 'hidden' } }, children: [
+        { type: 'group', cid: 'menu', props: { menu: 'context', key: 'actions', open: true,
+          disabled: changed && restriction === 'disabled' }, children: [
+          { type: 'button', cid: 'action', props: { label: 'Action' } }
+        ] }
+      ] } });
+    render(false);
+    render(true);
+    assert.equal(document.querySelector('.webui-context-menu').style.display, 'block');
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    assert.equal(document.querySelector('.webui-context-menu').style.display, 'none');
+    assert.deepEqual(sent.filter(message => message.type === 'event').map(message => message.event), ['dismiss']);
+  });
+}

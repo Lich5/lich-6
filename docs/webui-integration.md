@@ -12,7 +12,7 @@ boundaries. [Fixture provenance](../spec/fixtures/webui/README.txt) identifies
 the frozen script sources used for regression checks.
 
 The authoritative host/browser contract is
-[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.20.0**. It is an
+[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.21.0**. It is an
 internal compatibility version, not a Lich or script release number. Versioned
 feature notes below describe when capabilities were introduced, not a second
 current contract. Ruby validation and browser handling must agree on the same
@@ -187,6 +187,71 @@ alias, not permission to modify its ancestors or inject helpers into core object
 Destroy callbacks run independently. A script error in one handler is logged and
 does not skip later handlers or sibling-window cleanup. Fatal VM failures are not
 treated as recoverable callback errors. Repeated destruction remains idempotent.
+
+### Scheduled script work
+
+`GLib::Timeout.add(milliseconds)`, `Timeout.add_seconds(seconds)`, `Idle.add`
+and `Source.remove(id)` are bounded, script-local scheduling facades. They accept
+the cached positional interval/block (including `&Proc`) forms. They do not load
+native GLib, replace Ruby's `::Timeout`, or expose priorities, MainLoop, IO watches
+or other GLib APIs. Unknown constants/methods retain attributed refusal.
+
+Core consumers can capture `WebUI.callback_scheduler(owner:)`, whose handle exposes
+`schedule(interval_ms) { ... }`, `cancel(id)` and `cancel_all`. The handle retains
+the original host; it cannot resurrect a stopped service. `cancel_all` removes
+only registrations made through that handle. IDs are positive, monotonic and
+not reused within a host; canceling another owner's live ID is refused. Removing
+an unknown, finished or already canceled ID returns false.
+
+One lazy host timing worker uses monotonic deadlines and enqueues work on the
+existing owner dispatcher. It belongs to the default thread group, not the first
+registering script. Callbacks never run on that timing worker. Intervals are
+integers from zero through 4,294,967,295 milliseconds; seconds convert into that
+same bound. Zero-timeout and idle work defer with a 1ms fairness floor, without
+promising GLib idle priority or exact timing. Limits are 256 live sources per
+owner and 4,096 per host. Queue overflow retires the refused source with a diagnostic.
+
+Truthy callback results repeat; false/nil or callback failure retires the source.
+Rearming occurs after completion, so callbacks cannot overlap or accumulate
+missed ticks. Cancellation is rechecked before execution; running work may finish
+but cannot rearm. Owner/service shutdown closes admission and cancels sources.
+Shim callbacks preserve registration-time script/viewer context, Script pause
+behavior, model batching and the existing callback error boundary. Session cleanup
+cancels its own handle's sources without canceling separate native registrations.
+
+Cached repository v2.76 acceptance covers the unchanged ten-second download-button
+timer, cancellation/replacement and captured `Script.start`, without downloading.
+Sail2's original config branch has a startup race: it schedules window creation
+while the window is nil, then immediately waits for nil and exits. The negative
+case remains; positive setup/save evidence explicitly substitutes a test-only
+`:pending` sentinel. Its setup, inherited sensitivity, save and original Close
+callback now pass. This does not repair the startup race or claim sailing-loop acceptance.
+
+Gemstonev's unchanged difficulty-window method is also covered: three buttons,
+50ms repeating wait, captured command and one main-window handoff. This does not
+execute the main game window or its game loop. `Gtk::WindowPosition::CENTER` and
+`Window#set_position` reuse `set_window_position(:center)`: a supported hint with
+an explicit host-placement notice, not a centering guarantee. Other modes refuse.
+
+### Inherited sensitivity and retained window visibility (contract 2.21.0)
+
+Layout containers and pages accept `disabled`. Descendant controls inherit that
+state in the renderer; event intake refuses interactions through disabled ancestors.
+Lifecycle events remain accepted in both renderer and runtime, including dismiss,
+focus, blur and pointer notifications. Re-enabling a container preserves each child's
+own setting and input values. Shim `sensitive?` reads the local setting;
+`is_sensitive?` reads effective sensitivity through its parents.
+
+`presentation.hidden` is a boolean request through the existing shared presentation
+record. Shim `Window#hide` keeps the page, handles and inputs alive; `show` reveals
+the same window. Hiding before first show does not publish a page. Destroy remains
+terminal. macOS hides/reveals the owned NSWindow; Windows uses the retained,
+PID-checked Chromium HWND and ShowWindow without requesting focus. Normal renders
+do not repeatedly reveal a minimized window. Windows behavior has provider-test
+coverage; live native verification here is macOS only. Ordinary browser/Linux
+hosts hide page content and record a presentation degradation because browser
+chrome cannot be hidden. Hidden pages suppress user interactions but keep lifecycle
+and scheduled callbacks alive so scripts can show them again.
 
 ### Queued script work
 
