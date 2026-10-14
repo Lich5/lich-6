@@ -5,11 +5,10 @@ GTK compatibility layer. Both native and compatible GTK script interfaces use
 the same component contract, renderer, and window lifecycle. Core WebUI is
 independent of the compatibility layer and does not require the GTK gem.
 
-This guide describes the development tree after PR #38, at `d3e41e71`, rather
-than a released EO distribution. The [review-readiness record](webui-review-readiness.md)
-tracks merged work, acceptance limits, open items and proposed extraction
-boundaries. [Fixture provenance](../spec/fixtures/webui/README.txt) identifies
-the frozen script sources used for regression checks.
+This guide describes the lich-6 development tree through PR #55
+(`bfd4f3fd`, 2026-10-14), not a released EO distribution.
+[Fixture provenance](../spec/fixtures/webui/README.txt) identifies the frozen
+script sources, test-only repairs and acceptance limits used for regression checks.
 
 The authoritative host/browser contract is
 [`Contract::VERSION`](../lib/webui/contract.rb), currently **2.21.0**. It is an
@@ -750,6 +749,17 @@ space while a sibling footer remains outside the scroll. These mappings do not
 claim arbitrary GTK packing equivalence: unequal expand/fill packing remains a
 reported approximation, and legacy homogeneous Table rows retain browser heights.
 No form-specific dimensions or converted-script layout branches are installed.
+
+`ScrolledWindow#add_with_viewport(child)` composes an existing viewport around one
+live, unparented, same-script child; an existing Viewport is attached directly.
+The viewport requests available allocation through the existing expansion/fill
+properties, while explicit expansion flags still win. The browser retains the
+single scroll surface. Invalid nesting, occupied containers,
+foreign ownership and destroyed widgets refuse before mutation; attachment failure
+releases the temporary wrapper without destroying the caller's child.
+`Gtk::POLICY_AUTOMATIC` names the existing `:automatic` scrollbar policy. Policy
+requests retain the explicit browser-owned overflow fallback; no native adjustment
+or pointer APIs are implied.
 
 A sole table in a scroll container fills its allocated viewport through
 single-child vertical stack wrappers. Its existing border and drop surface cover

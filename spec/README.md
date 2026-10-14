@@ -4,6 +4,12 @@ This directory contains RSpec tests and JavaScript renderer tests for this
 lich-6 development tree. The [WebUI review record](../docs/webui-review-readiness.md)
 separates implementation, acceptance evidence and outstanding platform checks.
 
+The source-refresh acceptance spec covers pinned AbyssX and compass_and_wings setup
+flows. Builder specs retain both historical and refreshed eloot source failures,
+with explicitly repaired positive candidates; Bigshot's newer source has the same
+Setup bytes. See the [fixture record](fixtures/webui/README.txt) for provenance,
+external test boundaries and the compass startup-persistence distinction.
+
 ## Quick Start
 
 ```bash
@@ -217,7 +223,7 @@ through Bundler. Run the same browser selection locally from the repository root
 in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_scheduling_acceptance_spec.rb spec/lib/common/script_scope_geometry_cursor_spec.rb spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
+NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_source_refresh_spec.rb spec/lib/common/script_scope_scheduling_acceptance_spec.rb spec/lib/common/script_scope_geometry_cursor_spec.rb spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb --tag browser
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has

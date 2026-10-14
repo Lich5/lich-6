@@ -1,14 +1,11 @@
 # WebUI review readiness and handoff
 
-Current baseline: 2026-10-14, PR 4 branch `feat/webui-owner-glib-scheduling`,
-started from synchronized `main` / `origin/main` at `5f2d0e86`
-(PRs #41, #42, #43, #48, documentation PR #50 and geometry/cursor PR #54 merged).
-The prior merge-status edits to this handoff and the fallback brief were preserved;
-PR 4 is open as PR #55 at reviewed head `3f3f699e`; review follow-ups remain
-unstaged. This record describes
-the development tree, not an EO release. The original documentation reconciliation
-was reviewed on 2026-10-11 against PR #38 at
-`d3e41e71eb335acb80cdd599a3038026d5df5134`; its validation remains dated history.
+Development baseline: 2026-10-14, through [PR #55](https://github.com/Lich5/lich-6/pull/55),
+merged at `2026-10-14T21:27:23Z` as `bfd4f3fde46d50524e1b2bd618aca16de31894ef`.
+The final reviewed head was `03115933`; RSpec, isolated changed specs, RuboCop,
+Ruby syntax, JavaScript renderer and Chrome integration checks passed.
+This record describes the lich-6 development tree, not an EO release.
+Earlier implementation and validation entries below are dated history.
 
 ## Reading the evidence
 
@@ -75,13 +72,15 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 | CSS decoration fallback, widget contexts, class/screen providers and corpus acceptance | Merged | PR #42, `bea51ac3` |
 | HeaderBar/titlebar, signed Grid origins/rollback, required label cues and default tpick setup | Merged | PR #43, `cd10f7b2` |
 | Generic progress rendering, progress text/pointer events, overlay pass-through and decoration requests | Merged | PR #48, `d7726455` |
+| Best-effort monitor geometry and named cursors | Merged | PR #54, `5f2d0e86` |
+| Owner-bound GLib scheduling, inherited sensitivity, retained hide/show and CENTER aliases | Merged | PR #55, `bfd4f3fd` |
 
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
 outstanding. The latter preserves existing text and emits no change signal;
 standalone Entry limits remain supported.
 
-The current development baseline uses host/browser contract 2.19.0.
+The current development baseline uses host/browser contract 2.21.0.
 
 ## Builder setup acceptance
 
@@ -164,8 +163,8 @@ snapshots, not author release dates. HeaderBar appears in 12 scripts, 11 updated
 within the year. tpick v48 was last observed changing on October 6; manatimer
 v0.1 on June 22. Both still match their cached source versions.
 
-Implementation slices 1, 2 and 3 below are merged. PR 4 is implemented locally;
-validation is recorded below. Other rows remain proposals,
+Implementation slices 1–4 below are merged; validation is recorded below.
+Other rows remain proposals,
 including the owner-deferred image-window follow-up. Each future branch
 starts from synchronized `main` after its predecessor merges.
 
@@ -175,7 +174,7 @@ starts from synchronized `main` after its predecessor merges.
 | 1b. Optional tpick image windows | Borderless/transient windows, overlay label sizing/markup and image fallback/cleanup; reusable methods only. | **Owner deferred** from PR 1. Generic decoration toggling is supplied by PR 2; transient/image behavior remains unstarted. Default `Show Images = No` setup is covered in PR 1. |
 | 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Merged**: [PR #48](https://github.com/Lich5/lich-6/pull/48), confirmed 2026-10-12; `d7726455`. PR 3 adds complete setup acceptance with saved-position fixture data. |
 | 3. Best-effort monitor geometry and named cursors | One shared host geometry request; bounded Display/Screen/Monitor projections for manatimer and gemstonev; host-owned placement and explicit sizing fallback; named cursor hints for gemstonev/highlight-manager. No pointer polling or device emulation. | **Merged**: [PR #54](https://github.com/Lich5/lich-6/pull/54), confirmed 2026-10-14; `5f2d0e86`. Acceptance and platform limits below. |
-| 4. Owner-bound GLib scheduling | Timeout.add/add_seconds, Idle.add and Source.remove through bounded shared scheduling and the existing owner dispatcher; repository v2.76 timer acceptance; sail2 source-failure and explicitly repaired setup/save/close acceptance; inherited container sensitivity and retained Window hide/show; bounded CENTER/set_position aliases and gemstonev difficulty/timer acceptance. | **Open as [PR #55](https://github.com/Lich5/lich-6/pull/55); review follow-ups implemented and validated locally**, not staged/committed/pushed. Owner approved bounded schedule/cancel, then sensitivity/window visibility expansion. Sail2 startup race remains explicit; no full-script compatibility claim. |
+| 4. Owner-bound GLib scheduling | Timeout.add/add_seconds, Idle.add and Source.remove through bounded shared scheduling and the existing owner dispatcher; repository v2.76 timer acceptance; sail2 source-failure and explicitly repaired setup/save/close acceptance; inherited container sensitivity and retained Window hide/show; bounded CENTER/set_position aliases and gemstonev difficulty/timer acceptance. | **Merged**: [PR #55](https://github.com/Lich5/lich-6/pull/55), confirmed 2026-10-14; `bfd4f3fd`, including reviewed head `03115933`. Final CI passed. Sail2 startup race remains explicit; no full-script compatibility claim. |
 | 5. Source acceptance refresh | Re-pin changed eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. Repository v2.76 scheduling acceptance moved into PR 4; older baseline fixtures remain. | **Not started; proposed** |
 | Separate script PR: sea-charts native WebUI conversion | Reuse native map's shared rendering/interaction primitives; preserve sailing/map/plugin logic. No shim Layout/pointer expansion. | **Proposed; not started**. Implementation repository and acceptance to be scoped separately. |
 
@@ -256,13 +255,23 @@ Native checks reused `/private/tmp/pr3-native-webkit.rb` with the actual WKWebVi
   gemstonev difficulty selection/handoff **one example, zero failures**, seed `946`.
   Full RSpec passed before a whitespace-only RuboCop alignment correction.
 - Prior PR #55 CI was green; CodeRabbit docstrings passed at 76.12% against 60%.
-  These follow-ups have local validation and await owner publication/review.
+  These follow-ups were published at `696487f4`; the CI lint correction at
+  `03115933` passed the pinned CI checks and is included in merged PR #55.
   No additional shared-core extension or script/game logic change was required.
   Existing work preserved; no staging, commits or pushes.
 
 Logs: `/private/tmp/pr55-review-focused.log`, `/private/tmp/pr55-review-full.log`,
 `/private/tmp/pr55-review-rubocop.log`, `/private/tmp/pr55-review-js.log`,
 `/private/tmp/pr55-review-chrome.log`, `/private/tmp/pr55-review-webkit.log`.
+
+#### PR #55 CI lint correction, 2026-10-14
+
+RuboCop 1.86.1 in CI reported `Layout/BlockAlignment` in the nested page
+registration regression at `696487f4`; local RuboCop 1.88.2 had passed.
+Commit `03115933` separates page construction from registration without changing
+behavior. Local runtime specs passed (48 examples, seed `25337`) and uncached
+RuboCop passed (1,327 files). The [pinned CI RuboCop check](https://github.com/Lich5/lich-6/actions/runs/38635938360/job/116099003747)
+then passed. PR #55 includes this correction; no rerun remains pending.
 
 <details>
 <summary>Exact PR #55 follow-up changed files</summary>

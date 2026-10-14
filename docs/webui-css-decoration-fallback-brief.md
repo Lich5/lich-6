@@ -1,19 +1,18 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
-PR 4 update, 2026-10-14: owner approved bounded shared schedule/cancel support,
-then expanded the scope to inherited sensitivity and retained window hide/show.
-Branch `feat/webui-owner-glib-scheduling` starts from synchronized main `5f2d0e86`,
-preserving the prior handoff/brief edits. The local implementation adds script-owned
-GLib Timeout/Idle/Source facades on one core timing worker and the existing owner
-dispatcher. Repository v2.76 acceptance retains the real ten-second timer. Sail2's
-original startup race remains a negative case; test-only readiness repair permits
-setup/save/close acceptance. Contract 2.21.0 adds inherited layout sensitivity
-and window presentation.hidden; the original sail2 startup defect remains explicit. See the
-[tracker](webui-review-readiness.md#refreshed-gtk-compatibility-work-tracker)
-for validation and remaining scope. PR #55 follow-up adds the missing CENTER /
-set_position facade spellings and unchanged gemstonev difficulty-window/timer
-acceptance; the existing host-placement fallback remains. Lifecycle filtering now
-preserves contract notifications. No native GTK or script/game logic changes.
+PR 4 merged as [PR #55](https://github.com/Lich5/lich-6/pull/55) on 2026-10-14
+at `bfd4f3fd`, including final reviewed head `03115933` and passing CI.
+The implementation adds script-owned GLib Timeout/Idle/Source facades on one
+core timing worker and the existing owner dispatcher. Contract 2.21.0 includes
+inherited layout sensitivity and retained window hide/show. Repository v2.76
+acceptance retains the real ten-second timer. Sail2's original startup race
+remains a negative case; the separately labeled test-only repair permits
+setup/save/close acceptance. CENTER/set_position aliases and gemstonev's unchanged
+difficulty-window/timer flow are covered, with the existing placement fallback.
+Lifecycle notifications remain accepted through disabled/hidden controls.
+No native GTK or script/game logic changes are included. Implementation slices
+1–4 are merged; source acceptance refresh remains proposed and optional tpick
+image windows remain deferred. Earlier handoff entries below are historical.
 
 Scope decision, 2026-10-13: `map` is already converted to
 native WebUI; its predecessor `xnarost` receives no compatibility expansion and
