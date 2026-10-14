@@ -106,7 +106,7 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
 
   # The original setup class runs unchanged. Game catalogs and persistence are
   # isolated here; no callback or widget logic is replaced to make a test pass.
-  def original_e_setup(name, settings = {}, source_failure: false, corrected: false)
+  def original_e_setup(name, settings = {}, source_failure: false, corrected: false, refreshed: false)
     sandbox = Module.new
     sandbox.const_set(:Gtk, gtk)
     sandbox.const_set(:XMLData, double(game: 'GS'))
@@ -125,6 +125,11 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     source = File.read(path)
     if name == 'eloot'
       expect(Digest::SHA256.hexdigest(source)).to eq('629e8f9f1b845f5348068a5ba75c42bd74006d5c59e45bf218c6cc2d5d4a00e0')
+    end
+    if refreshed
+      entry = JSON.parse(File.read(File.expand_path('../../fixtures/webui/source-refresh.json', __dir__)))['scripts'].fetch(name)['blocks'].fetch('setup')
+      expect(Digest::SHA256.hexdigest(entry.fetch('source'))).to eq(entry.fetch('sha256'))
+      source = "module ELoot\nif defined?(Gtk)\n#{entry.fetch('source')}\nend\nend\n"
     end
     source = WebUIBuilderSourceRepairs.apply(name, source) if corrected
     sandbox.module_eval(source, path)
@@ -175,7 +180,7 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     else
       expect(failures).to eq([]), @setup_diagnostics.join("\n")
     end
-    expect(form.objects.length).to eq({ 'eloot' => 469, 'ebounty' => 435, 'eherbs' => 31, 'blackarts' => 216 }.fetch(name))
+    expect(form.objects.length).to eq({ 'eloot' => refreshed ? 471 : 469, 'ebounty' => 435, 'eherbs' => 31, 'blackarts' => 216 }.fetch(name))
     form
   end
 
@@ -215,6 +220,53 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
         expect(YAML.unsafe_load_file(File.join(@settings_directory, "#{name}.yaml"))).to eq(settings)
       end
     end
+  end
+
+  it 'retains the refreshed eloot original missing-label failure' do |example|
+    next if production_nil_example(example)
+
+    allow(owner).to receive(:kill)
+    form = original_e_setup('eloot', {}, source_failure: true, refreshed: true)
+    expect(form['main']).to be_destroyed
+    expect(owner).to have_received(:kill).with(async: true)
+  end
+
+  it 'loads and saves all seven refreshed eloot stance choices in the repaired candidate' do |example|
+    next if production_nil_example(example)
+
+    settings = { loot_stance: 'guarded' }
+    form = original_e_setup('eloot', settings, corrected: true, refreshed: true)
+    combo = form['loot_stance']
+    expect(combo.active_id).to eq('guarded')
+    choices = %w[none offensive advance forward neutral guarded defensive]
+    expect(combo.model.rows.length).to eq(choices.length)
+    choices.each do |choice|
+      combo.active_id = choice
+      drain_gtk
+      expect(settings[:loot_stance]).to eq(choice)
+    end
+    form.on_close_clicked
+    drain_gtk
+    expect(YAML.unsafe_load_file(File.join(@settings_directory, 'eloot.yaml'))[:loot_stance]).to eq('defensive')
+  end
+
+  it 'validates the refreshed eloot stance selector and save in the browser', browser: true do |example|
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    next if production_nil_example(example)
+
+    settings = {}
+    form = original_e_setup('eloot', settings, corrected: true, refreshed: true)
+    form['main'].show_all
+    drain_gtk
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    handle = form['loot_stance'].instance_variable_get(:@handle)
+    cid = form['loot_stance'].session.port.send(:node!, handle).cid
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-eloot-stance', controls: { stance: cid })
+    drain_gtk
+    expect(@setup_diagnostics.grep(/callback failed/)).to be_empty
+    expect(YAML.unsafe_load_file(File.join(@settings_directory, 'eloot.yaml'))[:loot_stance]).to eq('defensive')
+    expect(form['main']).to be_destroyed
   end
 
   it 'loads the explicitly corrected eloot candidate and preserves its Close/save callback' do |example|

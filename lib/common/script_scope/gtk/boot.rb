@@ -30,6 +30,9 @@ module Lich
       HAVE_GTK = true
 
       module Gtk
+        # Legacy spelling for the existing browser-owned automatic scroll policy.
+        POLICY_AUTOMATIC = :automatic
+
         module Align
           START = :start
           CENTER = :center

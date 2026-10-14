@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -74,7 +74,35 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'shim-gemstonev-difficulty') {
+  if (scenario === 'shim-abyssx') {
+    const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    await page.locator(`[data-cid="${controls.entry_lootsack}"] input`).fill('browser sack');
+    await page.locator(`[data-cid="${controls.entry_spell}"] input`).fill('901');
+    await page.getByRole('radio', { name: 'Spam spell', exact: true }).check();
+    await expect(page.getByRole('radio', { name: 'Use bigshot quick', exact: true })).not.toBeChecked();
+    await page.getByRole('button', { name: 'Save & Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-compass') {
+    const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const tattoo = page.locator(`[data-cid="${controls.tattoo}"] input`);
+    await tattoo.fill('tattoo;look');
+    const save = page.getByRole('button', { name: 'Save', exact: true });
+    await save.scrollIntoViewIfNeeded();
+    expect(await page.locator('.webui-scroll').evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await save.click();
+    await expect(page.getByText('Enter a tattoo name or one RUB command; no semicolons or extra lines.', { exact: true })).toBeVisible();
+    await tattoo.fill('my tattoo');
+    await save.click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-eloot-stance') {
+    const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    const stance = page.locator(`[data-cid="${controls.stance}"] select`);
+    await expect(stance.locator('option:checked')).toHaveText('No change');
+    await expect(stance.locator('option')).toHaveCount(8); // Includes the shim's empty selection.
+    await stance.selectOption({ label: 'Defensive' });
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'shim-gemstonev-difficulty') {
     for (const name of ['Easy', 'Medium', 'Hard']) {
       await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
     }

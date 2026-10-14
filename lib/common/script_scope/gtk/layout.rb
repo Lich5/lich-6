@@ -337,10 +337,56 @@ module Lich
             self
           end
 
+          # Wraps one non-scrollable child in the existing viewport projection.
+          # Existing viewports are attached directly. Failed attachment leaves the
+          # caller's child alive and unparented, retaining its handle and inputs.
+          # @param child [Widget] unparented, live widget belonging to this script
+          # @return [ScrolledWindow] self
+          # @raise [UnsupportedOperation] for invalid ownership, lifecycle or nesting
+          def add_with_viewport(child)
+            session.style_operation(self, :add_with_viewport) do
+              valid = !destroyed? && @children.empty? && child.is_a?(Widget) &&
+                      child.session.equal?(session) && !child.destroyed? && child.parent.nil?
+              session.refuse(self, :add_with_viewport) unless valid
+              ancestor = self
+              while ancestor
+                session.refuse(self, :add_with_viewport) if ancestor.equal?(child)
+                ancestor = ancestor.parent
+              end
+              next add(child) if child.is_a?(Viewport)
+
+              viewport = Viewport.new
+              begin
+                viewport.add(child)
+                add(viewport)
+              rescue StandardError
+                viewport.remove(child) if child.parent.equal?(viewport)
+                viewport.destroy
+                raise
+              end
+            end
+          end
+
+          # A viewport requests allocation for scrolling rather than expanding
+          # its host to the full content size. Explicit expansion flags still win.
+          # @api private
+          # @return [Boolean] allocation demand along the requested axis
+          def expands?(axis)
+            return super unless @children.first.is_a?(Viewport)
+
+            explicit = axis == :horizontal ? @hexpand : @vexpand
+            explicit.nil? ? true : explicit
+          end
+
           protected
 
           def component_type = :scroll
           def builtin_events = [:scrolled]
+
+          def layout_props
+            allocated = parent.is_a?(Window) || (parent.is_a?(Box) && parent.vertical?)
+            { fill: !!(allocated && @children.first.is_a?(Viewport) && expands?(:vertical)) }
+          end
 
           def bind_event(event)
             return super unless event == :scrolled

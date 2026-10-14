@@ -221,3 +221,36 @@ names, primary geometry and cursor assignment; highlight-manager 4275–4316 pro
 the guarded hand-cursor helpers. Tests evaluate only these blocks against the shim,
 not full scripts or game state. See `script_scope_geometry_cursor_spec.rb` and
 `docs/webui-integration.md` for the accepted methods and fallback boundaries.
+
+Pinned source refresh (2026-10-12 source revisions)
+
+`source-refresh.json` records whole-script hashes and exact, independently hashed
+source blocks. EO revision c4a96840ea2a29a445fd797c7baec0b012b0dd12 and mirror
+revision 2fa28f1e540e97c468af88bbc8c432d3cebf8755 are fixed provenance, not a
+claim that these are the latest upstream versions.
+
+- Bigshot v5.17.0 Setup, lines 955–2359, is byte-identical to bigshot_setup.lic's
+  original class (including CRLF). The manifest links the new whole-source hash
+  to the existing fixture; no duplicate Setup is needed. The original missing
+  boon_flee_from failure and separately corrected candidate remain unchanged.
+- eloot v2.13.0 Setup, lines 742–1948, replaces loot_defensive with loot_stance.
+  The refreshed original still fails on exclusions_label. Its separately labeled
+  positive candidate applies only the existing exact-match label-ID repair and
+  checks seven stance IDs, restored/default values, changes and saved settings.
+  The historical eloot fixture remains separate. Setup acceptance does not run
+  the outer profile migration or looting logic.
+- AbyssX v3.0 uses exact constants (32–36) and SetupGUI (56–195). Tests run the
+  original queue, fields, radio group, source coercions, save/cancel and nested
+  destroy callbacks. Only settings load/save, Vars and script-host wait/message
+  boundaries are isolated. The arena runner, entry fees and combat never run.
+- compass_and_wings retains constants (109–152) and settings/helpers/setup
+  (1015–1357). The header says 2.2.0 while VERSION says 1.6.11; neither is rewritten.
+  Original settings normalization, validation, scrolling, save, close/cancel and
+  before_dying behavior run against in-memory Settings and an isolated script host.
+  load_settings itself persists normalized initial settings; cancel avoids saving
+  later edits, not that initial source-defined write. No combat or game commands run.
+
+Ruby examples use the actual owner dispatcher. Browser examples use the same
+original sources and validate AbyssX saving, compass validation/scrolling/saving,
+and the explicitly repaired eloot stance selector. Source and callback diagnostics
+remain observable failures. These are setup-flow checks, not whole-gameplay claims.
