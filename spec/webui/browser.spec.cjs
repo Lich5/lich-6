@@ -119,9 +119,9 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.getByRole('button', { name: 'Close', exact: true }).click();
   } else if (scenario === 'shim-scheduled-visibility') {
     await page.getByRole('textbox').fill('Retained draft');
-    await page.getByRole('button', { name: 'Hide for 8 seconds' }).click();
+    await page.getByRole('button', { name: 'Hide for 2 seconds' }).click();
     await expect(page.locator('.webui-page')).toBeHidden();
-    await expect(page.locator('.webui-page')).toBeVisible({ timeout: 12_000 });
+    await expect(page.locator('.webui-page')).toBeVisible({ timeout: 6_000 });
     await expect(page.getByRole('textbox')).toHaveValue('Retained draft');
     await page.getByRole('button', { name: 'Finish', exact: true }).click();
     await expect(page.locator('.webui-page')).toHaveCount(0);
