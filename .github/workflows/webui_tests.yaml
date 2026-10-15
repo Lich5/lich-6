@@ -9,7 +9,8 @@
 #
 # The browser job is split into two shards (matrix), each running its spec
 # files with two parallel workers. A new browser spec file must be added to
-# one shard's file list; keep the shards' total browser time roughly equal.
+# one shard's file list (shard 1 fails if one is missing); keep the shards'
+# total browser time roughly equal.
 # ------------------------------------------------------------------------------
 name: WebUI Tests
 
@@ -97,6 +98,8 @@ jobs:
             files: >-
               spec/lib/common/script_scope_scheduling_acceptance_spec.rb
               spec/lib/common/script_scope_builder_remaining_spec.rb
+              spec/lib/common/script_scope_header_bar_spec.rb
+              spec/lib/common/script_scope_tpick_setup_spec.rb
           - shard: 2
             files: >-
               spec/lib/common/script_scope_builder_spec.rb
@@ -133,6 +136,20 @@ jobs:
           npx --no-install playwright install-deps chrome
           # The runner image ships Google Chrome; install it only if missing.
           google-chrome --version || npx --no-install playwright install chrome
+      - name: Check every browser spec file is in a shard
+        if: steps.classify.outputs.webui == 'true' && matrix.shard == 1
+        run: |
+          ruby -ryaml -e '
+            jobs = YAML.load_file(".github/workflows/webui_tests.yaml", aliases: true)["jobs"]
+            listed = jobs["browser"]["strategy"]["matrix"]["include"].flat_map { |s| s["files"].split }
+            specs = Dir["spec/**/*_spec.rb"]
+            browser = specs.select { |f| File.read(f).match?(/ENV\[.NATIVE_BROWSER.\]/) }
+            missing = (browser - listed).sort
+            stale = (listed - specs).sort
+            missing.each { |f| puts "::error file=#{f}::Has NATIVE_BROWSER examples but is in no browser shard; add it to one shard in webui_tests.yaml." }
+            stale.each { |f| puts "::error::#{f} is listed in a browser shard but does not exist." }
+            exit 1 unless missing.empty? && stale.empty?
+            puts "All #{browser.size} browser spec files are in a shard."'
       - name: Restore shard runtime log
         if: steps.classify.outputs.webui == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
