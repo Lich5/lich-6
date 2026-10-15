@@ -256,12 +256,12 @@ RSpec.describe Lich::Common::Frontend do
       expect(frontend::CLIENT_STRING).to include('/FE:WRAYTH')
     end
 
-    it 'includes version 1.0.1.28' do
-      expect(frontend::CLIENT_STRING).to include('/VERSION:1.0.1.28')
+    it 'includes version saga-0.10.4' do
+      expect(frontend::CLIENT_STRING).to include('/VERSION:saga-0.10.4')
     end
 
-    it 'uses WIN_UNKNOWN as platform' do
-      expect(frontend::CLIENT_STRING).to include('/P:WIN_UNKNOWN')
+    it 'uses SAGA as platform' do
+      expect(frontend::CLIENT_STRING).to include('/P:SAGA')
     end
 
     it 'requests XML protocol' do
@@ -269,8 +269,8 @@ RSpec.describe Lich::Common::Frontend do
     end
 
     it 'does not leak RUBY_PLATFORM' do
-      # Wrayth masquerades as a Windows client regardless of actual platform
-      expect(frontend::CLIENT_STRING).not_to include(RUBY_PLATFORM) unless RUBY_PLATFORM == 'WIN_UNKNOWN'
+      # The platform token is fixed (/P:SAGA) regardless of actual platform
+      expect(frontend::CLIENT_STRING).not_to include(RUBY_PLATFORM)
     end
   end
 
@@ -654,6 +654,50 @@ RSpec.describe Lich::Common::Frontend do
       expect(frontend.set_from_client(12_345)).to eq(12_345)
       expect(frontend.pid).to eq(12_345)
       expect(Lich).to have_received(:log).with('Frontend PID set from client: 12345')
+    end
+  end
+
+  # --- client_string ------------------------------------------
+
+  describe '.client_string' do
+    let(:default_string) { '/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML' }
+
+    it 'is byte-identical to CLIENT_STRING for a frontend without an override' do
+      expect(frontend.client_string(frontend: 'wrayth')).to eq(frontend::CLIENT_STRING)
+      expect(frontend.client_string(nil, frontend: 'wrayth').bytes).to eq(default_string.bytes)
+    end
+
+    it 'falls back to CLIENT_STRING for nil or unregistered frontends' do
+      expect(frontend.client_string(frontend: nil)).to eq(default_string)
+      expect(frontend.client_string(frontend: 'unknown')).to eq(default_string)
+    end
+
+    it 'replaces only the /VERSION: value when a version is given' do
+      expect(frontend.client_string('genie-5.1', frontend: 'wrayth')).to eq('/FE:WRAYTH /VERSION:genie-5.1 /P:SAGA /XML')
+    end
+
+    it 'identifies Saga with /P:SAGA and saga-unknown when no version is given' do
+      expect(frontend.client_string(frontend: 'saga')).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+    end
+
+    it 'puts the given version into the Saga string' do
+      expect(frontend.client_string('saga-0.10.2', frontend: 'saga')).to eq('/FE:WRAYTH /VERSION:saga-0.10.2 /P:SAGA /XML')
+    end
+
+    it 'defaults frontend to the current client' do
+      allow(frontend).to receive(:client).and_return('saga')
+      expect(frontend.client_string).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+    end
+
+    it 'leaves the CLIENT_STRING constant and Saga metadata unchanged' do
+      frontend.client_string('saga-0.10.2', frontend: 'wrayth')
+      frontend.client_string('saga-0.10.2', frontend: 'saga')
+      expect(frontend::CLIENT_STRING).to eq(default_string)
+      expect(frontend.metadata_for('saga', :client_string)).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+    end
+
+    it 'treats the version literally (no regex backreference expansion)' do
+      expect(frontend.client_string('1\\0', frontend: 'wrayth')).to eq('/FE:WRAYTH /VERSION:1\\0 /P:SAGA /XML')
     end
   end
 

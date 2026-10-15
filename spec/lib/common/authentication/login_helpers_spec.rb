@@ -43,6 +43,7 @@ module GameConfig
 end unless defined?(GameConfig)
 
 require_relative '../../../../lib/common/authentication/login_helpers'
+require_relative '../../../../lib/main/help_text'
 
 RSpec.describe Lich::Common::Authentication::LoginHelpers do
   describe 'constants' do
@@ -467,12 +468,55 @@ RSpec.describe Lich::Common::Authentication::LoginHelpers do
       expect(described_class.resolve_instance(['--login', 'Tsetem', '--dark-mode=true'])).to eq(:__unset)
     end
 
+    it 'ignores --fe-version when resolving instance' do
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--fe-version=saga-0.10.2'])).to eq(:__unset)
+      expect(described_class.resolve_instance(['--GS3', '--fe-version=saga-0.10.2'])).to eq('GS3')
+    end
+
     it 'ignores the public headless alias when resolving instance' do
       expect(described_class.resolve_instance(['--login', 'Tsetem', '--headless'])).to eq(:__unset)
     end
 
+    it 'ignores runtime transport, bind, and debug options when resolving instance' do
+      %w[--auth-provider=web --bind-address=lan --game-transport=direct --host=example.com:4900
+         --pipe --no-wine --no-gtk --debug].each do |arg|
+        expect(described_class.resolve_instance(['--login', 'Tsetem', arg])).to eq(:__unset), arg
+      end
+      expect(described_class.resolve_instance(['--GS3', '--bind-address=lan'])).to eq('GS3')
+    end
+
     it 'ignores optional path modifiers used by persistent launcher child sessions' do
       expect(described_class.resolve_instance(['--home=/tmp/lich', '--data=/tmp/data'])).to eq(:__unset)
+    end
+
+    it 'ignores every -dir path option alongside --login' do
+      %w[--script-dir=/x --data-dir=/x --temp-dir=/x --map-dir=/x --log-dir=/x
+         --backup-dir=/x --lib-dir=/x --active-session-dir=/x].each do |arg|
+        expect(described_class.resolve_instance(['--login', 'Tsetem', arg])).to eq(:__unset), arg
+      end
+    end
+
+    # Derived from the rendered --help text so a newly documented option that is
+    # missing from the ignore lists fails here instead of in a user's --login.
+    it 'accepts every documented option alongside --login' do
+      not_login_options = %w[
+        --help --version --active-sessions --session-info
+        --add-account --add-character --refresh-characters --convert-entries
+        --change-account-password --change-master-password --recover-master-password
+        --change-encryption-mode --game-code --master-password
+        --test --platinum
+      ]
+      help = ([nil] + Lich::Main::HelpText::HELP_TOPICS).map { |topic| Lich::Main::HelpText.render(topic) }.join("\n")
+      # Keep a trailing '=' so --opt=VALUE options are checked in that form:
+      # NON_INSTANCE_OPTION_KEYS matches the key before '=', NON_INSTANCE_FLAGS
+      # matches only the whole arg.
+      options = help.scan(/--[a-z][a-z0-9-]*=?/).uniq.reject { |opt| not_login_options.include?(opt.chomp('=')) }
+
+      expect(options).to include('--login', '--pipe', '--log-dir=')
+      options.each do |opt|
+        arg = opt.end_with?('=') ? "#{opt}x" : opt
+        expect(described_class.resolve_instance(['--login', 'Tsetem', arg])).not_to be_nil, arg
+      end
     end
 
     it 'ignores long-form path modifiers used by legacy CLI options' do
@@ -592,9 +636,25 @@ RSpec.describe Lich::Common::Authentication::LoginHelpers do
       ).to eq('genie')
     end
 
+    it 'is not affected by --fe-version' do
+      argv = ['--saga', '--without-frontend', '--detachable-client=8000', '--fe-version=saga-0.10.2']
+      expect(described_class.resolve_headless_frontend(argv, detachable_client: true)).to eq('saga')
+      expect(described_class.resolve_frontend_arg(['--frontend=genie', '--fe-version=genie-5.1'])).to eq('genie')
+    end
+
     it 'identifies Saga regardless of the detachable port' do
       expect(described_class.resolve_headless_frontend(['--saga'], detachable_client: true)).to eq('saga')
       expect(described_class.resolve_headless_frontend(['--saga'], detachable_client: false)).to eq('saga')
+    end
+
+    # handle_detachable_client compares these results to 'saga' and 'genie'.
+    it 'resolves the --frontend= forms of Saga and Genie, case-insensitively' do
+      %w[--frontend=saga --frontend=SAGA].each do |arg|
+        expect(described_class.resolve_headless_frontend([arg], detachable_client: true)).to eq('saga'), arg
+      end
+      %w[--frontend=genie --frontend=Genie --genie].each do |arg|
+        expect(described_class.resolve_headless_frontend([arg], detachable_client: true)).to eq('genie'), arg
+      end
     end
 
     it 'assumes Profanity for a detachable client with no frontend flag' do

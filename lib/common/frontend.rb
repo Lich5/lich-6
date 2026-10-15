@@ -511,8 +511,8 @@ module Lich
                                      .dig(:metadata, :launch_plans, :linux, :environment)
 
       # --- Client String -----------------------------------------
-      # Default client string (Wrayth identity) sent during handshake
-      CLIENT_STRING = "/FE:WRAYTH /VERSION:1.0.1.28 /P:WIN_UNKNOWN /XML"
+      # Default client string (Saga identity) sent during handshake
+      CLIENT_STRING = "/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML"
 
       # --- Backward-Compatible Constants -------------------------
       # These frozen arrays preserve the built-in capability membership exposed
@@ -593,6 +593,16 @@ module Lich
       # Setter for the current frontend identity
       def self.client=(value)
         $frontend = value
+      end
+
+      # Handshake client string for a frontend: its registry :client_string,
+      # else CLIENT_STRING, with the /VERSION: value replaced by version
+      # (--fe-version) when one is given.
+      def self.client_string(version = nil, frontend: client)
+        base = metadata_for(frontend, :client_string) || CLIENT_STRING
+        return base if version.nil?
+
+        base.sub(%r{/VERSION:\S+}) { "/VERSION:#{version}" }
       end
 
       # Send version string, ready signals, and setup commands to the game server.
