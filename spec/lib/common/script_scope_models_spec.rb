@@ -216,6 +216,19 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect { panel.set_position(:top) }.to raise_error(gtk::UnsupportedOperation)
   end
 
+  it 'keeps popover placement off ordinary container properties before and after materialization' do
+    [false, true].each do |live|
+      box = gtk::Box.new(:vertical, 0)
+      panel = gtk::Popover.new
+      box.add(panel)
+      box.materialize if live
+      expect { panel.set_position(:left) }.not_to raise_error
+      expect(panel.position).to eq(:left)
+      expect(box.instance_variable_get(:@props)).not_to have_key(:menu_position)
+      expect { box.materialize }.not_to raise_error
+    end
+  end
+
   it 'refuses foreign or multiply owned palette content and unsupported icon requests' do
     button = gtk::MenuButton.new
     other = gtk::MenuButton.new

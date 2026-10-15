@@ -8,7 +8,6 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 // do not capture websocket frames, so without this a lost event (for example a
 // Close that never reaches the server) leaves no evidence in CI.
 const wire = [];
-let dragRenderBatchFinished = false;
 const wireStart = Date.now();
 function record(direction, data) {
   const raw = String(data).slice(0, 200);
@@ -37,13 +36,7 @@ test.afterEach(async ({}, testInfo) => {
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('websocket', socket => {
     socket.on('framesent', frame => record('->', frame.payload));
-    socket.on('framereceived', frame => {
-      record('<-', frame.payload);
-      if (scenario === 'shim-ewaggle') {
-        const message = JSON.parse(String(frame.payload));
-        if (message.type === 'render' && message.tree?.props.title === 'EWaggle drag fixture complete') dragRenderBatchFinished = true;
-      }
-    });
+    socket.on('framereceived', frame => record('<-', frame.payload));
     socket.on('close', () => record('--', 'socket closed'));
   });
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
@@ -67,6 +60,21 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   if (scenario === 'shim-ewaggle') {
     // Capture the actual native drag source, not a locator resolved before a redraw.
     await page.addInitScript(() => {
+      // Observe reassembled messages; Playwright's frame events can contain only
+      // part of a valid JSON message when the transport fragments large renders.
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', event => {
+            let message;
+            try { message = JSON.parse(event.data); } catch { return; }
+            if (message?.type === 'render' && message.tree?.props?.title === 'EWaggle drag fixture complete') {
+              window.fixtureDragRenderBatchFinished = true;
+            }
+          });
+        }
+      };
       document.addEventListener('dragstart', event => {
         window.fixtureDragSource = event.target;
       }, true);
@@ -678,7 +686,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 15, sourceBox.y + sourceBox.height / 2, { steps: 5 });
     // Wait for the finite server-render batch while still holding the native
     // gesture. Finish churn before dropping, preserving the one-stale-retry contract.
-    await expect.poll(() => dragRenderBatchFinished).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.fixtureDragRenderBatchFinished === true)).toBe(true);
     expect(await page.evaluate(() => window.fixtureDragSource?.isConnected), 'the third drag source must survive background renders').toBe(true);
     const targetBox = await visibleBox(destination);
     await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height - 20, { steps: 5 });

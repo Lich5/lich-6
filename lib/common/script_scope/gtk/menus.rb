@@ -16,6 +16,9 @@ module Lich
         class Popover < Widget
           attr_reader :relative_to, :position
 
+          # Creates an unparented panel with an optional same-owner MenuButton anchor.
+          # @param relative_to [MenuButton, nil] only the anchored button may claim this panel
+          # @raise [UnsupportedOperation] for a foreign, destroyed or unsupported anchor
           def initialize(relative_to = nil)
             super()
             session.refuse(self, :new) unless relative_to.nil? ||
@@ -24,16 +27,23 @@ module Lich
             @position = :bottom
           end
 
+          # Retains panel placement and updates an owning menu button when attached.
+          # @param value [Symbol] :top, :bottom, :left or :right
+          # @return [Popover] self
+          # @raise [UnsupportedOperation] for invalid placement, teardown or foreign ownership
           def set_position(value)
             session.style_operation(self, :set_position) do
               session.refuse(self, :set_position) if destroyed? || !%i[top bottom left right].include?(value)
-              parent.send(:write, :menu_position, value) if parent
+              parent.send(:write, :menu_position, value) if parent.is_a?(MenuButton)
               @position = value
             end
             self
           end
           alias position= set_position
 
+          # Adds one same-owner content widget through the shared parenting checks.
+          # @return [Popover] self
+          # @raise [UnsupportedOperation] when adding a second distinct child
           def add(child)
             session.refuse(self, :add) unless children.empty? || children.include?(child)
             super
@@ -41,19 +51,25 @@ module Lich
 
           protected
 
+          # @return [Symbol] inline contents rather than another native window
           def component_type = :stack
+          # @return [Hash] zero-gap contents inside the owning button's panel
           def component_props = super.merge(gap: 0)
         end
 
         class MenuButton < Widget
           attr_reader :popover
 
+          # Creates a palette trigger; content is supplied before materialization.
           def initialize
             super
             @props[:label] = 'Palette'
           end
 
           # Keep the icon in the normal ownership tree, before the panel contents.
+          # @param image [Image] live, unparented icon from this script session
+          # @return [MenuButton] self
+          # @raise [UnsupportedOperation] for replacement, late attachment or foreign ownership
           def set_image(image)
             session.style_operation(self, :set_image) do
               session.refuse(self, :set_image) if destroyed? || @handle || !image.is_a?(Image) ||
@@ -64,11 +80,18 @@ module Lich
             self
           end
 
+          # Accepts the supported always-visible icon policy without changing ownership.
+          # @param value [true] other visibility policies are unsupported
+          # @return [MenuButton] self
           def set_always_show_image(value)
             session.refuse(self, :set_always_show_image) unless value == true
             self
           end
 
+          # Claims one panel before publication, preserving its requested placement.
+          # @param value [Popover] live unparented panel with a matching or omitted anchor
+          # @return [MenuButton] self
+          # @raise [UnsupportedOperation] for replacement, late attachment or foreign ownership
           def set_popover(value)
             session.style_operation(self, :set_popover) do
               valid = value.is_a?(Popover) && value.session.equal?(session) && !value.destroyed? &&
@@ -84,7 +107,9 @@ module Lich
 
           protected
 
+          # @return [Symbol] shared menu-capable renderer container
           def component_type = :group
+          # @return [Hash] popover presentation and whether the first child is an icon
           def component_props = super.merge(menu: :popover, menu_icon: !!@image)
         end
 

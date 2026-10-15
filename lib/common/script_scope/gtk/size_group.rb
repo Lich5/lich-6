@@ -75,6 +75,8 @@ module Lich
 
           private
 
+          # Refuses membership spanning multiple windows before publishing group identity.
+          # @raise [UnsupportedOperation] when live members belong to distinct windows
           def validate_roots(widget)
             roots = (@widgets + [widget]).reject(&:destroyed?).map(&:toplevel).grep(Window).uniq
             session.refuse(self, :add_widget) if roots.size > 1
@@ -83,6 +85,8 @@ module Lich
 
         # Shadow membership reaches every component type, including controls with custom props.
         module WidthGroupWidget
+          # Validates group projection before delegating to the widget's materializer.
+          # @return [Lich::WebUI::Adapter::Handle] existing or newly created control handle
           def materialize
             @width_groups&.each { |group| group.validate_projection(self) }
             super
@@ -90,6 +94,9 @@ module Lich
 
           protected
 
+          # Publishes the new group list before accepting shadow membership.
+          # @param group [SizeGroup] validated same-session sizing group
+          # @raise [UnsupportedOperation] when this widget would exceed eight groups
           def attach_width_group(group)
             groups = (@width_groups || []) + [group]
             session.refuse(self, :size_group) if groups.size > 8
@@ -97,6 +104,8 @@ module Lich
             @width_groups = groups
           end
 
+          # Removes one group's measurement contribution while retaining other memberships.
+          # @param group [SizeGroup] group being removed
           def detach_width_group(group)
             groups = (@width_groups || []) - [group]
             write(:width_groups, groups.map(&:key))

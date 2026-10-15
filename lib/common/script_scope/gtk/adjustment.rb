@@ -54,6 +54,9 @@ module Lich
             change_bound(:lower, number)
           end
 
+          # Changes the upper bound and clamps the value before delivering change signals.
+          # @param number [Numeric] finite upper bound no smaller than lower
+          # @return [Adjustment] self
           def upper=(number)
             change_bound(:upper, number)
           end
@@ -93,6 +96,11 @@ module Lich
 
           private
 
+          # Applies widget bounds before committing shadow state and ordered notifications.
+          # @param bound [Symbol] :lower or :upper
+          # @param number [Numeric] finite bound preserving lower <= upper
+          # @return [Adjustment] self
+          # @raise [UnsupportedOperation] for invalid bounds or foreign/retired ownership
           def change_bound(bound, number)
             session.style_operation(self, "#{bound}=") do
               session.refuse(self, "#{bound}=") unless finite_number?(number)

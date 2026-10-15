@@ -1584,14 +1584,14 @@ test('palette popovers open locally, retain a callback render, and dismiss with 
   t.after(() => { a.dom.window.close(); b.dom.window.close(); });
   const tree = { type: 'page', cid: 'root', props: {}, children: [{ type: 'group', cid: 'palette', props: {
     menu: 'popover', menu_position: 'top', menu_icon: true, label: 'Palette'
-  }, children: [{ type: 'text', cid: 'icon', props: { content: '🎨' } }, { type: 'stack', cid: 'panel', props: {}, children: [
+  }, children: [{ type: 'text', cid: 'icon', props: { content: '\u{1f3a8}' } }, { type: 'stack', cid: 'panel', props: {}, children: [
     { type: 'button', cid: 'choice', props: { label: 'Dark' } }
   ] }] }] };
   const draw = (f, generation) => f.receive({ type: 'render', page: 'palettes', generation, tree, bindings: { choice: ['activate'] } });
   for (const f of [a, b]) { f.receive({ type: 'hello', pages: [{ address: 'palettes' }] }); draw(f, 1); }
   const { document, KeyboardEvent, Event } = a.dom.window;
   let trigger = document.querySelector('.submenu-trigger');
-  assert.equal(trigger.textContent, '🎨');
+  assert.equal(trigger.textContent, '\u{1f3a8}');
   trigger.getBoundingClientRect = () => ({ left: 30, right: 60, top: 90, bottom: 110 });
   document.querySelector('.submenu-items').getBoundingClientRect = () => ({ width: 100, height: 50 });
   trigger.click();
@@ -1612,6 +1612,36 @@ test('palette popovers open locally, retain a callback render, and dismiss with 
   assert.equal(a.sent.filter(message => message.event === 'activate').length, 1, 'open/close never synthesizes script actions');
 });
 
+for (const gesture of ['click', 'ArrowRight']) {
+  test(`closing a palette through sibling ${gesture} does not reopen it on render`, t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    const tree = { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'group', cid: 'palette', props: { menu: 'popover', label: 'Palette' }, children: [
+        { type: 'text', cid: 'color', props: { content: 'Color' } }
+      ] },
+      { type: 'group', cid: 'branch', props: { menu: 'submenu', label: 'Branch' }, children: [
+        { type: 'button', cid: 'action', props: { label: 'Action' } }
+      ] }
+    ] };
+    receive({ type: 'hello', pages: [{ address: 'palettes' }] });
+    const draw = generation => receive({ type: 'render', page: 'palettes', generation, tree, bindings: {} });
+    const palette = () => dom.window.document.querySelector('[data-cid="palette"] > button');
+    draw(1);
+    palette().click();
+    const sibling = dom.window.document.querySelector('[data-cid="branch"] > button');
+    // Neither keyboard activation nor a programmatic click fires pointerdown.
+    if (gesture === 'click') sibling.click();
+    else sibling.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: gesture, bubbles: true }));
+    assert.equal(palette().getAttribute('aria-expanded'), 'false');
+    draw(2);
+    assert.equal(palette().getAttribute('aria-expanded'), 'false', 'a closed palette must stay closed after redraw');
+    palette().click();
+    draw(3);
+    assert.equal(palette().getAttribute('aria-expanded'), 'true', 'an explicitly reopened palette remains open');
+    assert.equal(sent.filter(message => message.type === 'event').length, 0);
+  });
+}
+
 test('flow grids fit natural child widths below their maximum and preserve insertion order', async t => {
   const { dom, receive } = fixture(); t.after(() => dom.window.close());
   receive({ type: 'hello', pages: [{ address: 'flow' }] });
@@ -1622,7 +1652,13 @@ test('flow grids fit natural child widths below their maximum and preserve inser
   const grid = dom.window.document.querySelector('.webui-grid');
   let available = 230;
   Object.defineProperty(grid, 'clientWidth', { get: () => available });
-  [...grid.children].forEach(child => { child.getBoundingClientRect = () => ({ width: 100, height: 20 }); });
+  [...grid.children].forEach(child => {
+    child.style.width = '45px';
+    child.getBoundingClientRect = () => {
+      assert.ok([...grid.children].every(cell => cell.style.width === 'max-content'), 'batch all width writes before reading layout');
+      return { width: 100, height: 20 };
+    };
+  });
   await new Promise(resolve => dom.window.setTimeout(resolve, 25));
   assert.equal(grid.style.gridTemplateColumns, 'repeat(2, max-content)');
   assert.deepEqual([...grid.children].map(child => child.textContent), ['A', 'B', 'C', 'D']);
@@ -1632,6 +1668,7 @@ test('flow grids fit natural child widths below their maximum and preserve inser
   available = 40; dom.window.dispatchEvent(new dom.window.Event('resize'));
   assert.equal(grid.style.gridTemplateColumns, 'repeat(1, max-content)', 'one oversized child stays scrollable');
   assert.equal(grid.style.columnGap, '10px');
+  assert.ok([...grid.children].every(cell => cell.style.width === '45px'), 'restore authored widths after measuring');
 });
 
 for (const alignment of ['start', 'center', 'end', 'stretch']) {

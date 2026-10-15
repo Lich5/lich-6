@@ -53,11 +53,19 @@ module Lich
           TARGET_SAME_APP = TargetFlags::SAME_APP
           DEST_DEFAULT_ALL = :all
 
+          # Delegates legacy module syntax to the owned TreeView source validator.
+          # @param widget [TreeView] source view
+          # @return [Object] result of TreeView#drag_source_set
+          # @raise [UnsupportedOperation] for an unsupported source widget or protocol
           def self.source_set(widget, mask, targets, action)
             Gtk.session.refuse(self, :source_set) unless widget.is_a?(TreeView)
             widget.drag_source_set(mask, targets, action)
           end
 
+          # Delegates legacy module syntax to the owned TreeView destination validator.
+          # @param widget [TreeView] destination view
+          # @return [Object] result of TreeView#drag_dest_set
+          # @raise [UnsupportedOperation] for an unsupported destination widget or protocol
           def self.dest_set(widget, defaults, targets, action)
             Gtk.session.refuse(self, :dest_set) unless widget.is_a?(TreeView)
             widget.drag_dest_set(defaults, targets, action)
@@ -74,6 +82,11 @@ module Lich
             end
           end
 
+          # Enables legacy same-application text MOVE drops before materialization.
+          # @param defaults [Symbol] :all
+          # @param targets [Array<Array>] one STRING or text/plain target with SAME_APP and info 0
+          # @param action [Symbol] :move
+          # @raise [UnsupportedOperation] for invalid protocol, selection mode or widget lifecycle
           def drag_dest_set(defaults, targets, action)
             session.style_operation(self, :drag_dest_set) do
               session.refuse(self, :drag_dest_set) unless !destroyed? && defaults == :all
@@ -133,6 +146,10 @@ module Lich
 
           private
 
+          # Normalizes the single supported legacy tuple to the shared STRING target.
+          # @param targets [Array<Array>] one text target restricted to this application
+          # @return [Array<TargetEntry>] validated same-session target
+          # @raise [UnsupportedOperation] for unsupported names, flags or info values
           def legacy_transfer_targets(targets)
             valid = targets.is_a?(Array) && targets.size == 1 && targets.first.is_a?(Array) &&
                     targets.first.size == 3 && %w[text/plain STRING].include?(targets.first[0]) &&

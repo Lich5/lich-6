@@ -577,10 +577,14 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     # the third native drag. Keep original list/save callbacks unchanged.
     churn = Thread.new do
       saw_two = false
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
       loop do
         count = form['cast_list_store'].size
         saw_two ||= count == 2
         break if saw_two && count == 1
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+          raise Timeout::Error, "EWaggle render churn did not observe the return transfer (saw_two=#{saw_two}, rows=#{count})"
+        end
         sleep 0.005
       end
       100.times do |index|
@@ -589,6 +593,8 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
         sleep 0.01
       end
     end
+    # Join propagates the diagnostic after browser cleanup; avoid duplicate thread output.
+    churn.report_on_exception = false
     begin
       WebUIBrowser.check(service: service, page: page, scenario: 'shim-ewaggle')
     ensure
