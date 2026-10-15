@@ -4,6 +4,11 @@
 owner's `947a9fdcca7ba879ff3d18309d97e4827d8585c6` commit. No product behavior or
 input limit changed in this final evidence slice.
 
+This is dated CSS-only evidence. Subsequent setup and source-refresh acceptance
+through merged PR #56 is summarized in
+[script acceptance status](webui-integration.md#script-acceptance-status).
+The measurements below have not been rescanned or restamped as new source data.
+
 ## Scope and measurement decision
 
 The [cached audit](webui-css-decoration-audit.json) supplies the cohort, revisions
@@ -42,7 +47,8 @@ Each row reports the largest retained payload. “Sample” denotes at least one
 nonliteral input, with all substitutions retained. “Native reference” means the
 original GTK source of an already converted candidate, not a new conversion.
 Every payload in every row was passed through the actual shim loader. Only
-spellson and staminabar2 retain recognized progress styling; other CSS is omitted
+spellson and staminabar2 retain recognized progress styling; the later tpick label
+foreground-cue extension is shown in its row. Other CSS is omitted
 with one notice per owner/session. Loaded source CSS is not retained or forwarded.
 
 **No whole original setup or game loop was executed or rendered for these rows.**

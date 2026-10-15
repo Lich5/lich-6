@@ -243,7 +243,7 @@ directly through Close without preceding change events. It checks the original
 settings-file callback, independently of browser timing. Related cases verify
 that already accepted changes are not repeated and reconciliation is viewer-local.
 
-Ordinary `rspec` keeps the seventeen browser cases pending, so local Ruby testing does
+Ordinary `rspec` leaves explicitly gated browser cases pending, so local Ruby testing does
 not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
 These checks cover browser rendering and transport; they do not establish native
 app-window focus, always-on-top, OS geometry or process-cleanup acceptance.

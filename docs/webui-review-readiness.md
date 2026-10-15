@@ -1,11 +1,15 @@
 # WebUI review readiness and handoff
 
-Development baseline: 2026-10-14, through [PR #55](https://github.com/Lich5/lich-6/pull/55),
-merged at `2026-10-14T21:27:23Z` as `bfd4f3fde46d50524e1b2bd618aca16de31894ef`.
-The final reviewed head was `03115933`; RSpec, isolated changed specs, RuboCop,
+Development baseline: 2026-10-14, through [PR #56](https://github.com/Lich5/lich-6/pull/56),
+merged at `2026-10-14T22:20:02Z` as `100e7b7bd41a7a075edcc2d59a397be4399fb28d`.
+The final reviewed head was `6409360d`; RSpec, isolated changed specs, RuboCop,
 Ruby syntax, JavaScript renderer and Chrome integration checks passed.
 This record describes the lich-6 development tree, not an EO release.
 Earlier implementation and validation entries below are dated history.
+The current [script acceptance summary](webui-integration.md#script-acceptance-status)
+distinguishes original successes, source failures, repaired test candidates and
+native conversion references. New coordination/backlog notes are maintained
+privately outside this repository; historical tracking below is not expanded.
 
 ## Reading the evidence
 
@@ -74,6 +78,7 @@ These are development-history bundles, not a proposed one-for-one EO PR train.
 | Generic progress rendering, progress text/pointer events, overlay pass-through and decoration requests | Merged | PR #48, `d7726455` |
 | Best-effort monitor geometry and named cursors | Merged | PR #54, `5f2d0e86` |
 | Owner-bound GLib scheduling, inherited sensitivity, retained hide/show and CENTER aliases | Merged | PR #55, `bfd4f3fd` |
+| Source acceptance refresh and generic viewport scrolling | Merged | PR #56, `100e7b7b` |
 
 PR #38 includes the bounded wait for Bigshot's nested profile callbacks and the
 refusal of both character-limit setters on internal combo entries. Neither is
@@ -97,10 +102,10 @@ with browser actions in [`browser.spec.cjs`](../spec/webui/browser.spec.cjs).
 | ebounty | Positive setup acceptance | List callbacks need the existing production NilClass extension; isolated subprocess coverage |
 | eherbs | Positive setup acceptance | Original availability, settings and close behavior |
 | BlackArts | Positive setup acceptance | List callbacks need the existing production NilClass extension; isolated subprocess coverage |
-| eloot | Expected hard stop: missing `exclusions_label` | Candidate names the existing XML label; original callbacks then receive Ruby/Chrome acceptance coverage |
+| eloot | Historical and refreshed v2.13.0 sources hard stop: missing `exclusions_label` | Test-only label repair; original callbacks and refreshed seven-choice stance load/change/save covered, including Chrome/macOS WebKit |
 | repository | Positive setup acceptance | Synthetic listings; download command captured without network execution |
 | go2 | Positive setup acceptance | GS and DR layouts; travel/persistence destinations isolated |
-| bigshot | Expected hard stop: missing `boon_flee_from` | Candidate removes obsolete tooltip lookup and repairs legacy boon migration; profile/control/save callbacks covered |
+| bigshot | Expected hard stop: missing `boon_flee_from`; v5.17.0 Setup bytes unchanged | Candidate removes obsolete tooltip lookup and repairs legacy boon migration; profile/control/save callbacks covered; separate visual preview is not original-source acceptance |
 | huntplan | Positive setup acceptance | Original input limit, invalid-slot response and Save & Exit |
 | **Total: 10 fixtures** | **8 positive originals; 2 expected source failures** | **2 separately repaired positive candidates; no production source repair in the shim** |
 
@@ -109,6 +114,12 @@ or Bigshot's original-source failure, nor certify full gameplay, every profile,
 pixel parity, or every OS host. An author-updated script needs a new provenance
 check and acceptance run; the test-only repair must not be silently treated as
 the released script.
+
+PR #56 additionally supplies original abyssx and compass_and_wings setup
+acceptance through Ruby, Chrome and macOS WebKit, with external game/settings
+boundaries isolated. They are separate from the ten Builder fixtures above.
+Source revision/hash metadata and cancellation/persistence limits remain in the
+[fixture record](../spec/fixtures/webui/README.txt).
 
 ## Open work and exclusions
 
@@ -163,7 +174,7 @@ snapshots, not author release dates. HeaderBar appears in 12 scripts, 11 updated
 within the year. tpick v48 was last observed changing on October 6; manatimer
 v0.1 on June 22. Both still match their cached source versions.
 
-Implementation slices 1–4 below are merged; validation is recorded below.
+Implementation slices 1–5 below are merged; validation is recorded below.
 Other rows remain proposals,
 including the owner-deferred image-window follow-up. Each future branch
 starts from synchronized `main` after its predecessor merges.
@@ -175,7 +186,7 @@ starts from synchronized `main` after its predecessor merges.
 | 2. Progress rendering and manatimer overlay semantics | Consistent core progress appearance and dimensions independent of CSS recognition; progress fraction/text visibility; aligned overlay layers and live pass-through; progress pointer events and Event mask alias; decoration toggle via existing presentation. No CSS grammar expansion. | **Merged**: [PR #48](https://github.com/Lich5/lich-6/pull/48), confirmed 2026-10-12; `d7726455`. PR 3 adds complete setup acceptance with saved-position fixture data. |
 | 3. Best-effort monitor geometry and named cursors | One shared host geometry request; bounded Display/Screen/Monitor projections for manatimer and gemstonev; host-owned placement and explicit sizing fallback; named cursor hints for gemstonev/highlight-manager. No pointer polling or device emulation. | **Merged**: [PR #54](https://github.com/Lich5/lich-6/pull/54), confirmed 2026-10-14; `5f2d0e86`. Acceptance and platform limits below. |
 | 4. Owner-bound GLib scheduling | Timeout.add/add_seconds, Idle.add and Source.remove through bounded shared scheduling and the existing owner dispatcher; repository v2.76 timer acceptance; sail2 source-failure and explicitly repaired setup/save/close acceptance; inherited container sensitivity and retained Window hide/show; bounded CENTER/set_position aliases and gemstonev difficulty/timer acceptance. | **Merged**: [PR #55](https://github.com/Lich5/lich-6/pull/55), confirmed 2026-10-14; `bfd4f3fd`, including reviewed head `03115933`. Final CI passed. Sail2 startup race remains explicit; no full-script compatibility claim. |
-| 5. Source acceptance refresh | Re-pin changed eloot/Bigshot sources; preserve original source failures; bounded abyssx/compass_and_wings checks. Repository v2.76 scheduling acceptance moved into PR 4; older baseline fixtures remain. | **Not started; proposed** |
+| 5. Source acceptance refresh | Refreshed eloot stance and unchanged Bigshot Setup provenance; preserved original failures; original abyssx/compass_and_wings setup checks; generic POLICY_AUTOMATIC and add_with_viewport using existing allocation. | **Merged**: [PR #56](https://github.com/Lich5/lich-6/pull/56), 2026-10-14; `100e7b7b`, reviewed head `6409360d`. Final CI passed. Setup coverage does not certify gameplay or author adoption of test-only repairs. |
 | Separate script PR: sea-charts native WebUI conversion | Reuse native map's shared rendering/interaction primitives; preserve sailing/map/plugin logic. No shim Layout/pointer expansion. | **Proposed; not started**. Implementation repository and acceptance to be scoped separately. |
 
 #### PR 4 implementation and validation, 2026-10-14
@@ -765,9 +776,9 @@ extensions, plus the explicitly authorized required-setting cue surface. Cached
 script evidence was read only; real GTK, non-GUI script logic and optional image
 windows remain outside this implementation. No staging, commit or push.
 Completed slices: PR 2 progress rendering/overlay semantics merged as PR #48;
-PR 3 geometry/named cursors merged as PR #54. PR 4 owner-bound scheduling is
-implemented locally; see the current tracker and validation record. PR 5 source
-acceptance refresh remains proposed. Sail2 sensitivity/top-level hide were approved
+PR 3 geometry/named cursors merged as PR #54. PR 4 owner-bound scheduling merged
+as PR #55, and PR 5 source acceptance refresh merged as PR #56.
+Sail2 sensitivity/top-level hide were approved
 and included in PR 4; its original startup race remains. PR 1b optional image
 windows remains deferred.
 
@@ -952,7 +963,7 @@ the dated product validation was not rerun for these status-only edits.
 | --- | --- |
 | Alias detached-thread ownership repair | Approved as separate work after PR #38; not implemented in this branch. Preserve the owner requirement and address the script's ownership/lifetime. |
 | Saved-character edit duplicates | Documentation audit found that `Catalog#update_character` does not perform the duplicate-destination check used by `add_character`. The guide now states the limitation. No behavior change adopted or implemented in this documentation pass. |
-| eloot and Bigshot author repairs | Await source updates; retain original negative tests and separately labeled corrected candidates. |
+| Original source repairs | eloot missing exclusions_label; Bigshot obsolete boon_flee_from lookup/legacy migration; sail2 startup race; tpick spell-less Monk/Paladin missing Spells grid; manatimer missing saved-position/ignored-origin assumptions. Preserve original failures and explicitly bounded/repaired positive fixtures; no upstream repair is asserted. |
 | Windows/Linux native-window acceptance | Still open for actual focus, topmost/opacity where supported, geometry and process cleanup; Linux Chrome transport tests do not certify these. |
 | macOS distribution | Signed/notarized helper packaging, older supported macOS and physical Intel acceptance remain release work. Local helper builds are not distribution certification. |
 | Arbitrary GTK CSS and internal combo-entry character limits | PR #42 merged: bounded omission, widget/screen/class bookkeeping, cached-cohort measurements and source-derived acceptance. Full CSS translation, whole-script acceptance and combo-entry character-limit expansion remain excluded. |

@@ -135,6 +135,23 @@ RSpec.describe Lich::WebUI::Validator do
       .to include(digits: 2)
   end
 
+  it 'allows a fixed number input but rejects reversed bounds, other values and fixed sliders' do
+    props = validator.validate_component!(:number_input, { value: 0, min: 0, max: 0, step: 1 }, **context)
+    expect(validator.validate_event!(:number_input, :change, { value: 0 }, props: props, **context)).to eq(value: 0)
+    expect { validator.validate_event!(:number_input, :change, { value: 1 }, props: props, **context) }.to raise_error(Lich::WebUI::Error)
+    expect { validator.validate_component!(:number_input, { value: 0, min: 1, max: 0 }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_component!(:slider, { value: 0, min: 0, max: 0 }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'bounds page-local width group identifiers without admitting selectors or duplicates' do
+    expect(validator.validate_component!(:checkbox, { label: 'Check', checked: false, width_groups: ['one', 'two'] }, **context))
+      .to include(width_groups: %w[one two])
+    [%w[one one], ['#selector'], Array.new(9) { |i| "group-#{i}" }].each do |groups|
+      expect { validator.validate_component!(:text, { content: 'Text', width_groups: groups }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    expect { validator.validate_component!(:page, { title: 'Page', width_groups: ['one'] }, **context) }.to raise_error(Lich::WebUI::UnknownPropertyError)
+  end
+
   it 'attributes unknown properties to owner, page, cid, and field' do
     expect { validator.validate_component!(:button, { label: 'Go', css: 'color:red' }, **context) }
       .to raise_error(Lich::WebUI::UnknownPropertyError, /owner=spec-owner page=spec-page cid=test:component field=css/)
@@ -237,5 +254,15 @@ RSpec.describe Lich::WebUI::Validator do
         **context
       )
     end.to raise_error(Lich::WebUI::SchemaViolationError, /default_button is required/)
+  end
+  it 'accepts typed cell fills and refuses CSS or invalid background masks' do
+    props = { columns: [{ key: 'name', label: 'Name', background: { r: 255, g: 255, b: 255, a: 1 } }],
+              rows: [{ key: 'row', cells: { name: 'Literal' }, background_disabled: ['name'] }] }
+    expect(validator.validate_component!(:table, props, **context)[:columns][0][:background][:r]).to eq(255)
+    expect { validator.validate_component!(:table, props.merge(columns: [{ key: 'name', label: 'Name', background: 'white' }]), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    [['missing'], ['name', 'name']].each do |mask|
+      expect { validator.validate_component!(:table, props.merge(rows: [{ key: 'row', cells: { name: 'Literal' }, background_disabled: mask }]), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    expect(validator.validate_component!(:toggle, { checked: false, appearance: :switch }, **context)[:appearance]).to eq('switch')
   end
 end

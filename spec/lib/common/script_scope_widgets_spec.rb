@@ -478,13 +478,58 @@ RSpec.describe 'bounded script compatibility pilot' do
       expect(containers.last.props[:cols]).to eq(2) if name == :HBox
     end
 
-    it "refuses unsupported #{name} homogeneity before creating a page" do
-      [true, nil, 0, 'false'].each do |homogeneous|
+    it "refuses nonboolean #{name} homogeneity before creating a page" do
+      [nil, 0, 'false'].each do |homogeneous|
         expect { compatibility.const_get(name).new(homogeneous, 5) }
           .to raise_error(compatibility::UnsupportedOperation, /class=.*#{name}.*operation=new/)
       end
       expect(service.registry.pages_for(owner)).to be_empty
     end
+
+    it "renders equal-sized legacy #{name} children and preserves packing order" do
+      window = compatibility::Window.new
+      box = compatibility.const_get(name).new(true, 5)
+      box.pack_start(compatibility::Label.new('First'), false, false, 0)
+      box.pack_end(compatibility::Label.new('Last'), true, true, 0)
+      window.add(box)
+      window.show_all
+      page = nil
+      Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+      grid = page.last_render.tree.each.find { |node| node.type == :grid }
+      expect(grid.props[:gap]).to eq(5)
+      expect(grid.children.map { |node| node.props[:content] }).to eq(%w[First Last])
+      expect(grid.props[:cols]).to eq(name == :HBox ? 2 : 1)
+      expect(grid.props[name == :HBox ? :homogeneous : :equal_rows]).to be(true)
+      box.pack_start(compatibility::Label.new('Middle'), false, false, 0)
+      Timeout.timeout(2) { sleep 0.001 until page.last_render.tree.each.find { |node| node.type == :grid }.children.size == 3 }
+      expect(box.children.map(&:text)).to eq(%w[First Middle Last])
+    end
+  end
+
+  it 'accepts bounded window and notebook hints without changing ownership or content' do
+    window = compatibility::Window.new('Hints')
+    gdk = scope.const_get(:Gdk)
+    expect(window.set_type_hint(gdk::WindowTypeHint::UTILITY)).to equal(window)
+    window.set_resizable(false)
+    window.set_resizable(true)
+    notebook = compatibility::Notebook.new
+    expect(notebook.set_scrollable(true).set_tab_border(3)).to equal(notebook)
+    scroller = compatibility::ScrolledWindow.new
+    expect(scroller.set_policy(compatibility::POLICY_NEVER, compatibility::PolicyType::ALWAYS)).to equal(scroller)
+    notebook.append_page(compatibility::Label.new('Content'), compatibility::Label.new('Page'))
+    window.add(notebook)
+    window.show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    expect(page.last_render.tree.each.find { |node| node.type == :tabs }.props[:names]).to eq(['Page'])
+    expect(page.owner).to equal(owner)
+    expect { window.set_type_hint(:dock) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { window.set_resizable(nil) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { notebook.set_scrollable('yes') }.to raise_error(compatibility::UnsupportedOperation)
+    [-1, 65_536, 1.5, '3'].each do |value|
+      expect { notebook.set_tab_border(value) }.to raise_error(compatibility::UnsupportedOperation)
+    end
+    expect(Lich).to have_received(:log).with(/window resizing is controlled/).once
   end
 
   it 'renders armor chart markup as plain text and refuses executable or unknown tags' do
@@ -897,7 +942,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     window.show_all
     port = window.session.port
     expect(port.get(grid.materialize, :homogeneous)).to be(false)
-    entry.set_hexpand(true)
+    entry.hexpand = true
     expect(port.get(grid.materialize, :expand_columns)).to eq([1, 2])
     expect(port.get(box.materialize, :expand_columns)).to eq([1])
     box.reorder_child(grid, 1)
@@ -940,7 +985,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     box = compatibility::Box.new(:vertical)
     tabs = compatibility::Notebook.new
     tabs.append_page(compatibility::Label.new('Body'), compatibility::Label.new('General'))
-    tabs.set_vexpand(true)
+    tabs.vexpand = true
     box.add(tabs)
     window.add(box)
     window.show_all
@@ -1258,5 +1303,27 @@ RSpec.describe 'bounded script compatibility pilot' do
       expect(image.pixbuf).to be_nil
       expect([check.active?, radio_first.active?, radio_second.active?]).to eq([true, false, true])
     end
+  end
+  it 'preserves independent scroll height requests while updating and resetting minimum content height' do
+    scroll = compatibility::ScrolledWindow.new
+    scroll.height_request = 75
+    expect(scroll.min_content_height).to eq(-1)
+    scroll.set_min_content_height(535)
+    window = compatibility::Window.new('Minimum viewport')
+    window.add(scroll)
+    window.show_all
+    handle = scroll.materialize
+    port = scroll.session.port
+    expect([port.get(handle, :height), port.get(handle, :min_height)]).to eq([75, 535])
+    scroll.min_content_height = 265
+    expect([port.get(handle, :height), port.get(handle, :min_height)]).to eq([75, 265])
+    [-2, 65_537, 1.5, '300', nil].each do |value|
+      expect { scroll.set_min_content_height(value) }.to raise_error(compatibility::UnsupportedOperation)
+    end
+    expect(scroll.min_content_height).to eq(265)
+    scroll.set_min_content_height(-1)
+    expect([scroll.min_content_height, port.get(handle, :min_height)]).to eq([-1, 0])
+    scroll.destroy
+    expect { scroll.set_min_content_height(10) }.to raise_error(compatibility::UnsupportedOperation)
   end
 end

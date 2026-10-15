@@ -1,5 +1,15 @@
 # Engineering brief: explicit GTK CSS decoration fallback
 
+PR 5 merged as [PR #56](https://github.com/Lich5/lich-6/pull/56) on 2026-10-14
+at `100e7b7b`, including reviewed head `6409360d` and passing CI. It adds generic
+automatic-policy/viewport composition and source-derived abyssx and
+compass_and_wings setup acceptance. Refreshed eloot stance acceptance remains an
+explicitly repaired test candidate; its original missing label still fails.
+Bigshot v5.17.0 Setup bytes are unchanged and its original source failures remain.
+These are cached-source setup checks, not new conversions or gameplay acceptance.
+The [script status summary](webui-integration.md#script-acceptance-status) records
+the current boundaries; the original survey and measurements below remain dated.
+
 PR 4 merged as [PR #55](https://github.com/Lich5/lich-6/pull/55) on 2026-10-14
 at `bfd4f3fd`, including final reviewed head `03115933` and passing CI.
 The implementation adds script-owned GLib Timeout/Idle/Source facades on one
@@ -11,7 +21,7 @@ setup/save/close acceptance. CENTER/set_position aliases and gemstonev's unchang
 difficulty-window/timer flow are covered, with the existing placement fallback.
 Lifecycle notifications remain accepted through disabled/hidden controls.
 No native GTK or script/game logic changes are included. Implementation slices
-1–4 are merged; source acceptance refresh remains proposed and optional tpick
+1–5 are merged; source acceptance refresh is included and optional tpick
 image windows remain deferred. Earlier handoff entries below are historical.
 
 Scope decision, 2026-10-13: `map` is already converted to
@@ -44,7 +54,8 @@ HeaderBar/default tpick setup PR #43, and generic progress/overlay PR #48 are me
 `main` / `origin/main` were synchronized at `d7726455642267a4b97f425492e995dcd68ea2ad`.
 The owner approved bounded overlay pass-through and progress pointer-event
 extensions (contract 2.19.0). Text visibility, alignment and decoration toggles
-are included; monitor geometry, CSS expansion and full manatimer setup are not.
+were included in PR #48; monitor geometry and saved-position manatimer setup
+followed in PR #54. Arbitrary CSS expansion remains excluded.
 The owner also approved consistent core progress rendering: requested dimensions
 apply independently of CSS recognition, and recognized colors only override fill.
 This changes no CSS grammar and introduces no script-specific rendering branch.
@@ -237,7 +248,7 @@ repositories/revisions. The brief must remain useful without `/private/tmp`.
 | Group | Members and result |
 | --- | --- |
 | 13 Builder scripts | `BlackArts`, `bigshot`, `ebounty`, `ecleanse`, `eherbs`, `eloot`, `ewaggle`, `go2`, `repository`, `huntplan`, `slootbeta`, `stormsync`, `bigshit2`. Only `stormsync` has stylesheet-provider demand. Its exclusion from further Builder expansion remains in force. |
-| 15 converted candidates | `BlackArts`, `bardwag`, `bigshot`, `calibrate_creaturebar`, `creaturebar`, `ebounty`, `ecleanse`, `eherbs`, `eloot`, `ewaggle`, `go2`, `jinx`, `map`, `repository`, `soundfx`. Only the original creaturebar/calibrator pair uses CSS providers; none of these native candidates does. |
+| 15 retained native conversion candidates (not fifteen certified scripts) | `BlackArts`, `bardwag`, `bigshot`, `calibrate_creaturebar`, `creaturebar`, `ebounty`, `ecleanse`, `eherbs`, `eloot`, `ewaggle`, `go2`, `jinx`, `map`, `repository`, `soundfx`. Only the original creaturebar/calibrator pair uses CSS providers; none of these native candidates does. Existence in the cached reference inventory does not establish runtime acceptance or upstream publication. |
 | 12 random non-overlapping GTK scripts | `osacrewv2`, `sloot`, `song-manager`, `panelcontrol`, `Live_Market`, `old-service-cost`, `gemguard`, `osacrew_avalon_wizard`, `armor`, `fletching`, `isigils`, `loot-be-gone`. `panelcontrol` uses CSS; old-service-cost and osacrew_avalon_wizard have separate direct-color API gaps. |
 | Eight additional CSS examples | `spellson`, `staminabar2`, `timers`, `manatimer`, `grids`, `as_audit`, `grinsawl`, `Combatical`. These test progress variants, text, lifecycle, class changes, drag/drop decoration and broader stylesheets. |
 | Focal case | `tpick`, in addition to the groups above. |

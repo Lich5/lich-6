@@ -37,6 +37,14 @@ function fixture(target) {
       }
       return null;
     }
+    // Width-group layout uses this selector after each render; other DOM layout
+    // checks use jsdom rather than this dependency-free fixture's synthetic geometry.
+    querySelectorAll(selector) {
+      return this.children.flatMap(child => [
+        ...(selector === '[data-width-groups]' && child.dataset.widthGroups ? [child] : []),
+        ...(child.querySelectorAll?.(selector) || [])
+      ]);
+    }
     setAttribute(name, value) { this.attributes[name] = value; }
     setPointerCapture() {}
     getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight }; }

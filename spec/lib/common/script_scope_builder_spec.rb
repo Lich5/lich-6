@@ -573,7 +573,34 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     runner = Thread.new { form.start }
     page = nil
     Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
-    WebUIBrowser.check(service: service, page: page, scenario: 'shim-ewaggle')
+    # After the return transfer, simulate incremental/background renders during
+    # the third native drag. Keep original list/save callbacks unchanged.
+    churn = Thread.new do
+      saw_two = false
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+      loop do
+        count = form['cast_list_store'].size
+        saw_two ||= count == 2
+        break if saw_two && count == 1
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+          raise Timeout::Error, "EWaggle render churn did not observe the return transfer (saw_two=#{saw_two}, rows=#{count})"
+        end
+        sleep 0.005
+      end
+      100.times do |index|
+        title = index == 99 ? 'EWaggle drag fixture complete' : "EWaggle drag fixture #{index}"
+        gtk.queue { form['main'].title = title unless form['main'].destroyed? }
+        sleep 0.01
+      end
+    end
+    # Join propagates the diagnostic after browser cleanup; avoid duplicate thread output.
+    churn.report_on_exception = false
+    begin
+      WebUIBrowser.check(service: service, page: page, scenario: 'shim-ewaggle')
+    ensure
+      churn.kill
+      churn.join
+    end
     drain_gtk
     runner.join(2)
     saved = YAML.unsafe_load_file(File.join(@settings_directory, 'ewaggle.yaml'))

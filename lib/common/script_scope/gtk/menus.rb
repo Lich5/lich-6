@@ -4,8 +4,123 @@ module Lich
   module Common
     module ScriptScope
       module Gtk
+        module PositionType
+          TOP = :top
+          BOTTOM = :bottom
+          LEFT = :left
+          RIGHT = :right
+        end
+
+        # Arbitrary same-owner widgets in a button-anchored browser panel.
+        # Visibility is local to the viewer; this never creates an OS window.
+        class Popover < Widget
+          attr_reader :relative_to, :position
+
+          # Creates an unparented panel with an optional same-owner MenuButton anchor.
+          # @param relative_to [MenuButton, nil] only the anchored button may claim this panel
+          # @raise [UnsupportedOperation] for a foreign, destroyed or unsupported anchor
+          def initialize(relative_to = nil)
+            super()
+            session.refuse(self, :new) unless relative_to.nil? ||
+                                              (relative_to.is_a?(MenuButton) && relative_to.session.equal?(session) && !relative_to.destroyed?)
+            @relative_to = relative_to
+            @position = :bottom
+          end
+
+          # Retains panel placement and updates an owning menu button when attached.
+          # @param value [Symbol] :top, :bottom, :left or :right
+          # @return [Popover] self
+          # @raise [UnsupportedOperation] for invalid placement, teardown or foreign ownership
+          def set_position(value)
+            session.style_operation(self, :set_position) do
+              session.refuse(self, :set_position) if destroyed? || !%i[top bottom left right].include?(value)
+              parent.send(:write, :menu_position, value) if parent.is_a?(MenuButton)
+              @position = value
+            end
+            self
+          end
+          alias position= set_position
+
+          # Adds one same-owner content widget through the shared parenting checks.
+          # @return [Popover] self
+          # @raise [UnsupportedOperation] when adding a second distinct child
+          def add(child)
+            session.refuse(self, :add) unless children.empty? || children.include?(child)
+            super
+          end
+
+          protected
+
+          # @return [Symbol] inline contents rather than another native window
+          def component_type = :stack
+          # @return [Hash] zero-gap contents inside the owning button's panel
+          def component_props = super.merge(gap: 0)
+        end
+
+        class MenuButton < Widget
+          attr_reader :popover
+
+          # Creates a palette trigger; content is supplied before materialization.
+          def initialize
+            super
+            @props[:label] = 'Palette'
+          end
+
+          # Keep the icon in the normal ownership tree, before the panel contents.
+          # @param image [Image] live, unparented icon from this script session
+          # @return [MenuButton] self
+          # @raise [UnsupportedOperation] for replacement, late attachment or foreign ownership
+          def set_image(image)
+            session.style_operation(self, :set_image) do
+              session.refuse(self, :set_image) if destroyed? || @handle || !image.is_a?(Image) ||
+                                                  !image.session.equal?(session) || image.destroyed? || image.parent || @image
+              insert_child(image, 0)
+              @image = image
+            end
+            self
+          end
+
+          # Accepts the supported always-visible icon policy without changing ownership.
+          # @param value [true] other visibility policies are unsupported
+          # @return [MenuButton] self
+          def set_always_show_image(value)
+            session.refuse(self, :set_always_show_image) unless value == true
+            self
+          end
+
+          # Claims one panel before publication, preserving its requested placement.
+          # @param value [Popover] live unparented panel with a matching or omitted anchor
+          # @return [MenuButton] self
+          # @raise [UnsupportedOperation] for replacement, late attachment or foreign ownership
+          def set_popover(value)
+            session.style_operation(self, :set_popover) do
+              valid = value.is_a?(Popover) && value.session.equal?(session) && !value.destroyed? &&
+                      !value.parent && (value.relative_to.nil? || value.relative_to.equal?(self))
+              session.refuse(self, :set_popover) if destroyed? || @handle || @popover || !valid
+              add(value)
+              @popover = value
+              write(:menu_position, value.position)
+            end
+            self
+          end
+          alias popover= set_popover
+
+          protected
+
+          # @return [Symbol] shared menu-capable renderer container
+          def component_type = :group
+          # @return [Hash] popover presentation and whether the first child is an icon
+          def component_props = super.merge(menu: :popover, menu_icon: !!@image)
+        end
+
         # Bounded viewport coordinates from one authenticated pointer callback.
-        PointerEvent = Data.define(:x, :y, :button, :time, :state)
+        PointerEvent = Data.define(:x, :y, :button, :time, :state, :click_count) do
+          def initialize(x:, y:, button:, time:, state:, click_count: 1)
+            super
+          end
+
+          def event_type = click_count == 2 ? :button2_press : :button_press
+        end
 
         # Literal menu labels. Mnemonic-bearing labels require keyboard support
         # beyond this adapter; they are refused rather than silently stripped.
@@ -254,6 +369,7 @@ module Lich
         # Legacy constant spelling; this does not expose native GDK event objects.
         module Event
           BUTTON_PRESS_MASK = EventMask::BUTTON_PRESS_MASK
+          BUTTON2_PRESS = :button2_press
         end
       end
     end

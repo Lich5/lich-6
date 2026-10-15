@@ -1490,3 +1490,250 @@ for (const restriction of ['disabled', 'hidden']) {
     assert.deepEqual(sent.filter(message => message.type === 'event').map(message => message.event), ['dismiss']);
   });
 }
+
+
+test('scroll allocation retains a requested viewport minimum in fixed and expanding layouts', () => {
+  const { dom, page } = fixture();
+  for (const fill of [false, true]) {
+    const element = dom.window.LichWebUI.render(page, {
+      type: 'scroll', cid: 'minimum', props: { height: 75, min_height: 535, fill }, children: []
+    });
+    assert.equal(element.style.minHeight, '535px');
+    assert.equal(element.style.height, fill ? '0px' : '75px');
+  }
+  const reset = dom.window.LichWebUI.render(page, {
+    type: 'scroll', cid: 'reset', props: { min_height: 0, fill: true }, children: []
+  });
+  assert.equal(reset.style.minHeight, '0px');
+  dom.window.close();
+});
+
+
+test('same-page text row drags send identities only and ignore foreign or cancelled drops', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'spells' }] });
+  receive({ type: 'render', page: 'spells', generation: 1, bindings: { target: ['row_drop'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [
+      { type: 'table', cid: 'source', props: { transfer_group: 'gtk-string-move', columns: [{ key: 'name', label: 'Spell' }],
+        rows: [{ key: '102', cells: { name: 'Spirit Barrier' } }] } },
+      { type: 'table', cid: 'target', props: { transfer_group: 'gtk-string-move', columns: [{ key: 'other', label: 'Cast' }], rows: [] } }
+    ] }
+  });
+  const row = dom.window.document.querySelector('[data-cid="source"] tbody tr');
+  const target = dom.window.document.querySelector('[data-cid="target"]');
+  const data = new Map();
+  const transfer = { setData: (key, value) => data.set(key, value), getData: key => data.get(key) || '' };
+  function event(type, element) {
+    const e = new dom.window.Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'dataTransfer', { value: transfer });
+    element.dispatchEvent(e);
+  }
+  event('dragstart', row);
+  assert.equal(transfer.effectAllowed, 'move');
+  assert.deepEqual(JSON.parse(data.get('application/x-lich-row')), { page: 'spells', group: 'gtk-string-move', source: 'source', row: '102' });
+  event('dragend', row);
+  assert.equal(sent.filter(message => message.event === 'row_drop').length, 0);
+  const original = data.get('application/x-lich-row');
+  data.set('application/x-lich-row', JSON.stringify({ page: 'foreign', group: 'gtk-string-move', source: 'source', row: '102' }));
+  event('drop', target);
+  assert.equal(sent.filter(message => message.event === 'row_drop').length, 0);
+  data.set('application/x-lich-row', original);
+  event('drop', target);
+  assert.deepEqual(sent.filter(message => message.event === 'row_drop').map(message => message.payload), [{ source: 'source', row: '102' }]);
+});
+
+test('table pointer notifications distinguish normal presses and double presses', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'pointer-table' }] });
+  receive({ type: 'render', page: 'pointer-table', generation: 1, bindings: { table: ['pointer_press'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'table', cid: 'table', props: {
+      pointer_events: true, columns: [{ key: 'name', label: 'Spell' }], rows: [{ key: '102', cells: { name: 'Barrier' } }]
+    } }]
+  } });
+  const cell = dom.window.document.querySelector('tbody td');
+  for (const type of ['pointerdown', 'dblclick']) {
+    cell.dispatchEvent(new dom.window.MouseEvent(type, { bubbles: true, button: 0 }));
+  }
+  assert.deepEqual(sent.filter(message => message.event === 'pointer_press').map(message => message.payload.click_count), [1, 2]);
+});
+
+test('table pointer callbacks cannot replace a row while its drag gesture is active', async t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'drag-held' }] });
+  function render(generation, name) {
+    receive({ type: 'render', page: 'drag-held', generation, bindings: { table: ['pointer_press'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [{ type: 'table', cid: 'table', props: {
+        transfer_group: 'gtk-string-move', pointer_events: true, columns: [{ key: 'name', label: 'Spell' }],
+        rows: [{ key: '102', cells: { name } }]
+      } }]
+    } });
+  }
+  render(1, 'Barrier');
+  const row = dom.window.document.querySelector('tbody tr');
+  row.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  render(2, 'Updated');
+  assert.equal(row.isConnected, true, 'the drag source survives callback renders');
+  row.dispatchEvent(new dom.window.Event('dragend', { bubbles: true }));
+  await new Promise(resolve => dom.window.setTimeout(resolve, 5));
+  assert.equal(row.isConnected, false);
+  assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'Updated');
+});
+
+test('palette popovers open locally, retain a callback render, and dismiss with Escape or outside press', t => {
+  const a = fixture(), b = fixture();
+  t.after(() => { a.dom.window.close(); b.dom.window.close(); });
+  const tree = { type: 'page', cid: 'root', props: {}, children: [{ type: 'group', cid: 'palette', props: {
+    menu: 'popover', menu_position: 'top', menu_icon: true, label: 'Palette'
+  }, children: [{ type: 'text', cid: 'icon', props: { content: '\u{1f3a8}' } }, { type: 'stack', cid: 'panel', props: {}, children: [
+    { type: 'button', cid: 'choice', props: { label: 'Dark' } }
+  ] }] }] };
+  const draw = (f, generation) => f.receive({ type: 'render', page: 'palettes', generation, tree, bindings: { choice: ['activate'] } });
+  for (const f of [a, b]) { f.receive({ type: 'hello', pages: [{ address: 'palettes' }] }); draw(f, 1); }
+  const { document, KeyboardEvent, Event } = a.dom.window;
+  let trigger = document.querySelector('.submenu-trigger');
+  assert.equal(trigger.textContent, '\u{1f3a8}');
+  trigger.getBoundingClientRect = () => ({ left: 30, right: 60, top: 90, bottom: 110 });
+  document.querySelector('.submenu-items').getBoundingClientRect = () => ({ width: 100, height: 50 });
+  trigger.click();
+  assert.equal(document.querySelector('.submenu-items').style.top, '40px');
+  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(b.dom.window.document.querySelector('.submenu-trigger').getAttribute('aria-expanded'), 'false');
+  document.querySelector('[data-cid="choice"]').click();
+  assert.equal(a.sent.filter(message => message.event === 'activate').length, 1);
+  draw(a, 2);
+  trigger = document.querySelector('.submenu-trigger');
+  assert.equal(trigger.getAttribute('aria-expanded'), 'true', 'callback rerender retains this viewer panel');
+  trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, trigger);
+  trigger.click();
+  document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(a.sent.filter(message => message.event === 'activate').length, 1, 'open/close never synthesizes script actions');
+});
+
+for (const gesture of ['click', 'ArrowRight']) {
+  test(`closing a palette through sibling ${gesture} does not reopen it on render`, t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    const tree = { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'group', cid: 'palette', props: { menu: 'popover', label: 'Palette' }, children: [
+        { type: 'text', cid: 'color', props: { content: 'Color' } }
+      ] },
+      { type: 'group', cid: 'branch', props: { menu: 'submenu', label: 'Branch' }, children: [
+        { type: 'button', cid: 'action', props: { label: 'Action' } }
+      ] }
+    ] };
+    receive({ type: 'hello', pages: [{ address: 'palettes' }] });
+    const draw = generation => receive({ type: 'render', page: 'palettes', generation, tree, bindings: {} });
+    const palette = () => dom.window.document.querySelector('[data-cid="palette"] > button');
+    draw(1);
+    palette().click();
+    const sibling = dom.window.document.querySelector('[data-cid="branch"] > button');
+    // Neither keyboard activation nor a programmatic click fires pointerdown.
+    if (gesture === 'click') sibling.click();
+    else sibling.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: gesture, bubbles: true }));
+    assert.equal(palette().getAttribute('aria-expanded'), 'false');
+    draw(2);
+    assert.equal(palette().getAttribute('aria-expanded'), 'false', 'a closed palette must stay closed after redraw');
+    palette().click();
+    draw(3);
+    assert.equal(palette().getAttribute('aria-expanded'), 'true', 'an explicitly reopened palette remains open');
+    assert.equal(sent.filter(message => message.type === 'event').length, 0);
+  });
+}
+
+test('flow grids fit natural child widths below their maximum and preserve insertion order', async t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'flow' }] });
+  receive({ type: 'render', page: 'flow', generation: 1, tree: { type: 'page', cid: 'root', props: {}, children: [
+    { type: 'grid', cid: 'flow-grid', props: { flow: true, cols: 3, homogeneous: false, gap: 0, column_gap: 10 }, children:
+      ['A', 'B', 'C', 'D'].map((content, i) => ({ type: 'text', cid: `c${i}`, props: { content } })) }
+  ] } });
+  const grid = dom.window.document.querySelector('.webui-grid');
+  let available = 230;
+  Object.defineProperty(grid, 'clientWidth', { get: () => available });
+  [...grid.children].forEach(child => {
+    child.style.width = '45px';
+    child.getBoundingClientRect = () => {
+      assert.ok([...grid.children].every(cell => cell.style.width === 'max-content'), 'batch all width writes before reading layout');
+      return { width: 100, height: 20 };
+    };
+  });
+  await new Promise(resolve => dom.window.setTimeout(resolve, 25));
+  assert.equal(grid.style.gridTemplateColumns, 'repeat(2, max-content)');
+  assert.deepEqual([...grid.children].map(child => child.textContent), ['A', 'B', 'C', 'D']);
+  assert.equal(grid.children[0].style.gridRow, '', 'automatic flow does not retain explicit row spans');
+  available = 500; dom.window.dispatchEvent(new dom.window.Event('resize'));
+  assert.equal(grid.style.gridTemplateColumns, 'repeat(3, max-content)', 'maximum remains authoritative');
+  available = 40; dom.window.dispatchEvent(new dom.window.Event('resize'));
+  assert.equal(grid.style.gridTemplateColumns, 'repeat(1, max-content)', 'one oversized child stays scrollable');
+  assert.equal(grid.style.columnGap, '10px');
+  assert.ok([...grid.children].every(cell => cell.style.width === '45px'), 'restore authored widths after measuring');
+});
+
+for (const alignment of ['start', 'center', 'end', 'stretch']) {
+  test(`single-child scroller allocates ${alignment} on the vertical grid axis`, t => {
+    const { dom, receive } = fixture(); t.after(() => dom.window.close());
+    receive({ type: 'hello', pages: [{ address: 'alignment' }] });
+    const draw = (generation, vertical) => receive({ type: 'render', page: 'alignment', generation, tree: {
+      type: 'page', cid: 'root', props: {}, children: [{ type: 'scroll', cid: 'viewport', props: { fill: true }, children: [
+        { type: 'stack', cid: 'content', props: { fill: true, vertical_align: vertical }, children: [
+          { type: 'text', cid: 'row', props: { content: 'Content remains reachable' } }
+        ] }
+      ] }]
+    } });
+    draw(1, alignment);
+    let viewport = dom.window.document.querySelector('[data-cid="viewport"]');
+    let content = dom.window.document.querySelector('[data-cid="content"]');
+    assert.equal(viewport.style.display, 'grid');
+    assert.equal(viewport.style.gridTemplateRows, 'minmax(min-content, 1fr)', 'overflow grows the row rather than centering above its scroll origin');
+    assert.equal(viewport.style.gridTemplateColumns, 'minmax(0, 1fr)');
+    assert.equal(content.style.alignSelf, alignment);
+    assert.equal(content.style.height, 'auto', 'a filling stack must not collapse to zero in the grid');
+    draw(2, undefined);
+    viewport = dom.window.document.querySelector('[data-cid="viewport"]');
+    content = dom.window.document.querySelector('[data-cid="content"]');
+    assert.equal(viewport.style.display, '', 'live reset restores the ordinary scroller');
+    assert.equal(content.style.alignSelf, '');
+    assert.equal(content.style.height, '0px');
+  });
+}
+
+for (const completion of ['dragend', 'drop', 'blur']) {
+  test(`native row drag survives pointercancel until ${completion}`, async t => {
+    const { dom, receive } = fixture(); t.after(() => dom.window.close());
+    receive({ type: 'hello', pages: [{ address: 'models' }] });
+    modelTable(receive, 1, { transfer_group: 'spells', rows: [{ key: 'barrier', cells: { name: 'Spirit Barrier' } }] });
+    const row = dom.window.document.querySelector('tbody tr');
+    row.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    const drag = new dom.window.Event('dragstart', { bubbles: true });
+    drag.dataTransfer = { setData() {} };
+    row.dispatchEvent(drag);
+    // Chrome hands the pointer to HTML drag-and-drop by cancelling its pointer stream.
+    row.dispatchEvent(new dom.window.Event('pointercancel', { bubbles: true }));
+    modelTable(receive, 2, { transfer_group: 'spells', rows: [{ key: 'barrier', cells: { name: 'Updated' } }] });
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+    assert.equal(row.isConnected, true, 'a native drag still owns this exact DOM source');
+    (completion === 'blur' ? dom.window : row).dispatchEvent(new dom.window.Event(completion, { bubbles: true }));
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+    assert.equal(row.isConnected, false);
+    assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'Updated');
+  });
+}
+
+test('a delayed release from the previous gesture cannot clear a new pointer hold', async t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  modelTable(receive, 1, { rows: [{ key: 'a', cells: { name: 'Before' } }] });
+  const row = dom.window.document.querySelector('tbody tr');
+  row.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+  row.dispatchEvent(new dom.window.Event('pointerup', { bubbles: true }));
+  row.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+  modelTable(receive, 2, { rows: [{ key: 'a', cells: { name: 'After' } }] });
+  await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  assert.equal(row.isConnected, true);
+  row.dispatchEvent(new dom.window.Event('pointerup', { bubbles: true }));
+  await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  assert.equal(row.isConnected, false);
+  assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'After');
+});

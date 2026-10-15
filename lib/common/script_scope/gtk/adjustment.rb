@@ -48,6 +48,21 @@ module Lich
           end
           alias value= set_value
 
+          # Updates an ordered finite range and clamps its value, including a single-value range.
+          # @return [Adjustment] self
+          def lower=(number)
+            change_bound(:lower, number)
+          end
+
+          # Changes the upper bound and clamps the value before delivering change signals.
+          # @param number [Numeric] finite upper bound no smaller than lower
+          # @return [Adjustment] self
+          def upper=(number)
+            change_bound(:upper, number)
+          end
+          alias set_lower lower=
+          alias set_upper upper=
+
           # Connects ordered scalar value or parameter-change handlers.
           # @return [Integer] connection count for this signal
           def signal_connect(name, &block)
@@ -80,6 +95,29 @@ module Lich
           end
 
           private
+
+          # Applies widget bounds before committing shadow state and ordered notifications.
+          # @param bound [Symbol] :lower or :upper
+          # @param number [Numeric] finite bound preserving lower <= upper
+          # @return [Adjustment] self
+          # @raise [UnsupportedOperation] for invalid bounds or foreign/retired ownership
+          def change_bound(bound, number)
+            session.style_operation(self, "#{bound}=") do
+              session.refuse(self, "#{bound}=") unless finite_number?(number)
+              minimum = bound == :lower ? number : @lower
+              maximum = bound == :upper ? number : @upper
+              session.refuse(self, "#{bound}=") unless minimum <= maximum
+              return self if [minimum, maximum] == [@lower, @upper]
+
+              previous = value
+              target = previous.clamp(minimum, [minimum, maximum - page_size].max)
+              @widget&.send(:apply_adjustment_bounds, minimum, maximum, target)
+              @lower, @upper, @value = minimum, maximum, target
+              @signals['changed'].dup.each { |handler| handler.call(self) }
+              notify_value_changed if previous != target
+            end
+            self
+          end
 
           def finite_number?(number)
             number.is_a?(Numeric) && number.real? && number.finite?

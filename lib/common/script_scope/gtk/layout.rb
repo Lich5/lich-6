@@ -6,6 +6,8 @@ module Lich
       module Gtk
         module PolicyType
           AUTOMATIC = :automatic
+          ALWAYS = :always
+          NEVER = :never
         end
 
         module AttachOptions
@@ -91,6 +93,86 @@ module Lich
               (first...(first + placement.fetch(:span, 1))).to_a
             end
             { expand_columns: columns.uniq.sort }
+          end
+        end
+
+        # Nonselecting flow layout uses the existing grid ownership and bounds.
+        # The browser reduces the requested column maximum to fit available width.
+        class FlowBox < Table
+          # Creates a nonselecting flow with a seven-column maximum and natural cell sizes.
+          def initialize
+            super(1, 7, false)
+            @props[:flow] = true
+          end
+
+          # Accepts only :none; selectable flow children are outside this adapter.
+          # @param value [Symbol] :none
+          # @raise [UnsupportedOperation] for other modes or a destroyed flow
+          def selection_mode=(value)
+            session.style_operation(self, :selection_mode=) do
+              session.refuse(self, :selection_mode=) if destroyed? || value != :none
+              @selection_mode = value
+            end
+          end
+
+          # @return [Symbol] :none, including before any explicit assignment
+          def selection_mode = @selection_mode || :none
+
+          # @return [Integer] authored column maximum; the browser may fit fewer columns
+          def max_children_per_line = read(:cols)
+
+          # Updates both the published column maximum and shadow table dimensions.
+          # @param value [Integer] maximum columns, from 1 through 24
+          # @raise [UnsupportedOperation] for an invalid maximum or a destroyed flow
+          def max_children_per_line=(value)
+            session.style_operation(self, :max_children_per_line=) do
+              session.refuse(self, :max_children_per_line=) if destroyed? || !value.is_a?(Integer) || !value.between?(1, 24)
+              write(:cols, value)
+              @columns = value
+            end
+          end
+          alias set_max_children_per_line max_children_per_line=
+
+          # Applies equal-width columns and equal-height rows together.
+          # @param value [Boolean] whether flow cells share equal dimensions
+          # @raise [UnsupportedOperation] for nonboolean input or a destroyed flow
+          def homogeneous=(value)
+            session.style_operation(self, :homogeneous=) do
+              session.refuse(self, :homogeneous=) if destroyed? || ![true, false].include?(value)
+              write(:homogeneous, value)
+              write(:equal_rows, value)
+            end
+          end
+
+          # Sets the vertical gap without changing the horizontal gap.
+          # @param value [Integer] CSS pixels, from 0 through 64
+          def row_spacing=(value)
+            flow_spacing(:row_gap, value)
+          end
+
+          # Sets the horizontal gap used when fitting columns to available width.
+          # @param value [Integer] CSS pixels, from 0 through 64
+          def column_spacing=(value)
+            flow_spacing(:column_gap, value)
+          end
+          alias set_row_spacing row_spacing=
+          alias set_column_spacing column_spacing=
+
+          # Explicit cell placement and selection are outside nonselecting flow layout.
+          # @raise [UnsupportedOperation] explicit table coordinates are unsupported
+          def attach(*) = session.refuse(self, :attach)
+          # @raise [UnsupportedOperation] use max_children_per_line instead of fixed dimensions
+          def resize(*) = session.refuse(self, :resize)
+
+          private
+
+          # Validates an owned spacing update before writing shared renderer properties.
+          # @raise [UnsupportedOperation] outside the supported 0..64 pixel range
+          def flow_spacing(property, value)
+            session.style_operation(self, property) do
+              session.refuse(self, property) if destroyed? || !value.is_a?(Integer) || !value.between?(0, 64)
+              write(property, value)
+            end
           end
         end
 
@@ -326,6 +408,23 @@ module Lich
           def initialize
             super
             @vadjustment = ScrollAdjustment.new(self)
+          end
+
+          # Requests a minimum viewport height independently of an explicit height request.
+          # GTK's -1 reset becomes an unconstrained zero browser minimum.
+          def set_min_content_height(value)
+            session.style_operation(self, :set_min_content_height) do
+              valid = value.is_a?(Integer) && value.between?(-1, Lich::WebUI::Contract::BOUNDS[:geometry].end)
+              session.refuse(self, :set_min_content_height) if destroyed? || !valid
+              write(:min_height, [value, 0].max)
+              @min_content_height = value
+            end
+            self
+          end
+          alias min_content_height= set_min_content_height
+
+          def min_content_height
+            session.style_operation(self, :min_content_height) { @min_content_height || -1 }
           end
 
           # Accepts known GTK policy tokens while reporting browser-owned overflow behavior.

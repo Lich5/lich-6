@@ -1,10 +1,13 @@
 WebUI setup fixture provenance and acceptance boundaries
 
 This record describes frozen fixtures, not the latest upstream script versions.
-There are ten script fixtures: eight unchanged positive setup candidates and
+The original Builder cohort contains ten script fixtures: eight unchanged positive setup candidates and
 two unchanged negative candidates (eloot and Bigshot), also exercised with
 explicit test-only source repairs. These ten fixtures are not a total-corpus
-compatibility count. See docs/webui-review-readiness.md for the current handoff.
+compatibility count or the full current fixture inventory. Separate fixtures below
+cover tpick, manatimer, repository v2.76, sail2, gemstonev/highlight-manager and the
+source refresh (abyssx, compass_and_wings, newer eloot and Bigshot provenance).
+See docs/webui-integration.md#script-acceptance-status for consolidated status.
 
 CSS decoration cohort (separate from the ten setup fixtures)
 
@@ -222,7 +225,7 @@ the guarded hand-cursor helpers. Tests evaluate only these blocks against the sh
 not full scripts or game state. See `script_scope_geometry_cursor_spec.rb` and
 `docs/webui-integration.md` for the accepted methods and fallback boundaries.
 
-Pinned source refresh (2026-10-12 source revisions)
+Pinned source refresh (2026-10-12 source revisions; merged in PR #56)
 
 `source-refresh.json` records whole-script hashes and exact, independently hashed
 source blocks. EO revision c4a96840ea2a29a445fd797c7baec0b012b0dd12 and mirror
@@ -254,3 +257,7 @@ Ruby examples use the actual owner dispatcher. Browser examples use the same
 original sources and validate AbyssX saving, compass validation/scrolling/saving,
 and the explicitly repaired eloot stance selector. Source and callback diagnostics
 remain observable failures. These are setup-flow checks, not whole-gameplay claims.
+Those three browser flows also passed actual macOS WebKit checks; native cancel
+was not separately exercised in that pass. Ruby covers cancellation and cleanup.
+The separate GTK/shim/native Bigshot preview used repaired setup candidates for
+GTK and shim; visual similarity does not convert the original failure into a pass.

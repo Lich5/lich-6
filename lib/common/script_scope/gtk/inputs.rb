@@ -112,7 +112,7 @@ module Lich
           def buffer = @buffer ||= Buffer.new(self)
 
           # Accepts (min, max, step) or (Adjustment, climb_rate = 0, digits = 0).
-          # Scalar adjustments require a positive step, nonempty range, and zero page size.
+          # Scalar adjustments require a positive step, ordered bounds, and zero page size.
           # @raise [UnsupportedOperation] for unsupported parameter values or shared adjustments
           def initialize(*args)
             super()
@@ -131,7 +131,7 @@ module Lich
               fraction = mantissa.split('.').last.sub(/0+\z/, '').length
               precision = [[fraction - exponent.to_i, 0].max, 20].min
             end
-            valid = @adjustment.session.equal?(session) && @adjustment.upper > @adjustment.lower
+            valid = @adjustment.session.equal?(session) && @adjustment.upper >= @adjustment.lower
             valid &&= @adjustment.step_increment.positive? && @adjustment.page_size.zero?
             valid &&= climb.is_a?(Numeric) && climb.real? && climb.finite? && climb >= 0
             valid &&= precision.is_a?(Integer) && precision.between?(0, 20)
@@ -220,6 +220,20 @@ module Lich
 
           def apply_adjustment_value(number)
             write(:value, number)
+          end
+
+          # Expand first, clamp, then narrow. Every intermediate adapter state remains valid.
+          def apply_adjustment_bounds(minimum, maximum, number)
+            session.refuse(self, :range) if destroyed?
+            if @handle
+              write(:min, minimum) if minimum < @props[:min]
+              write(:max, maximum) if maximum > @props[:max]
+              write(:value, number)
+              write(:min, minimum) unless @props[:min] == minimum
+              write(:max, maximum) unless @props[:max] == maximum
+            else
+              @props.merge!(min: minimum, max: maximum, value: number)
+            end
           end
 
           def bind_event(event)

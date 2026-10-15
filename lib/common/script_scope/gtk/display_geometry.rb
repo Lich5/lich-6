@@ -60,6 +60,12 @@ module Lich
         class Screen
           include DisplayValue
 
+          # @return [Integer] primary display width, with the declared nominal fallback
+          def width = owned(:width) { rectangle(target: :primary).width }
+
+          # @return [Integer] primary display height, with the declared nominal fallback
+          def height = owned(:height) { rectangle(target: :primary).height }
+
           # Returns a stable bounded token for this requested point, never an OS handle.
           # @return [Integer] token accepted only by this screen's geometry lookup
           def get_monitor_at_point(x, y)
@@ -178,6 +184,23 @@ module Lich
       end
 
       module Gtk
+        class Window
+          # Returns an owner-bound dimension facade, without creating a native display handle.
+          # @return [Gdk::Screen] screen whose dimensions follow shared monitor discovery
+          def screen
+            session.style_operation(self, :screen) do
+              session.refuse(self, :screen) if destroyed?
+              @screen ||= Gdk::Screen.new
+            end
+          end
+
+          # @return [Array<Integer>] live dimensions or requested dimensions before publication
+          def size
+            dimensions = allocation
+            [dimensions.width, dimensions.height]
+          end
+        end
+
         class Widget
           # Returns only cursor presentation capability, not native handles or pointer queries.
           # @return [Gdk::CursorWindow] same-widget facade

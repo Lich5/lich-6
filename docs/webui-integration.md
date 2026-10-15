@@ -5,8 +5,8 @@ GTK compatibility layer. Both native and compatible GTK script interfaces use
 the same component contract, renderer, and window lifecycle. Core WebUI is
 independent of the compatibility layer and does not require the GTK gem.
 
-This guide describes the lich-6 development tree through PR #55
-(`bfd4f3fd`, 2026-10-14), not a released EO distribution.
+This guide describes the lich-6 development tree through PR #56
+(`100e7b7b`, 2026-10-14), not a released EO distribution.
 [Fixture provenance](../spec/fixtures/webui/README.txt) identifies the frozen
 script sources, test-only repairs and acceptance limits used for regression checks.
 
@@ -16,6 +16,38 @@ internal compatibility version, not a Lich or script release number. Versioned
 feature notes below describe when capabilities were introduced, not a second
 current contract. Ruby validation and browser handling must agree on the same
 capabilities.
+
+## Script acceptance status
+
+Status below describes pinned source excerpts tested through the shim, not entire
+scripts running in a game. A native conversion is a separate script implementation;
+neither its existence nor a successful preview establishes upstream publication.
+The source refresh uses the October 12 cached revisions, not newly fetched script
+sources. Exact revisions, hashes and test boundaries are in the
+[fixture record](../spec/fixtures/webui/README.txt).
+
+| Script(s) | Established coverage | Remaining boundary or fix |
+| --- | --- | --- |
+| ecleanse, ewaggle, ebounty, eherbs, BlackArts, go2, huntplan | Original setup controls/callbacks and save/close acceptance; go2 covers GS and DR | Game services/persistence isolated; ebounty and BlackArts list handlers retain production NilClass dependency |
+| repository | Original earlier setup plus v2.76 download-button/ten-second timer flow | Script.start/download is captured; no real download performed |
+| abyssx | Original setup defaults/saved values, radio exclusivity, coercions, save/cancel/close; Chrome and macOS WebKit save | Arena/combat runner untested |
+| compass_and_wings | Original setup/helpers, validation, scrolling, normalization, save/cancel and cleanup; Chrome and macOS WebKit | Opening already persists normalized settings in source; cancel avoids later edits only. Header 2.2.0 and runtime VERSION 1.6.11 disagree. Gameplay untested |
+| eloot | Original historical and v2.13.0 sources refuse missing exclusions_label; repaired candidates cover callbacks, lists and refreshed seven-choice stance save, including browsers | Author/source repair still needed for original shim initialization; positive fixtures are explicitly test-only |
+| Bigshot | v5.17.0 Setup matches retained fixture bytes; repaired candidate covers settings, boons, profile operations and save/close | Original missing boon_flee_from tooltip and legacy all:flee migration defects remain; native conversion is a separate reference |
+| tpick | Original default settings for Rogue/Warrior/Bard/Wizard and information/profile/save flows; required cues; Chrome/macOS WebKit | Spell-less Monk/Paladin missing Spells grid remains a source defect; optional Show Images windows are deferred |
+| manatimer | Original setup with saved position, monitor request, progress/overlay/countdown update, right-click and cleanup; Chrome/macOS WebKit | Missing saved position and ignored monitor origin remain source limitations; full pulse/game loop untested |
+| sail2 | Original startup race retained as a negative test; explicitly repaired readiness sentinel permits setup/save/hide/close acceptance | Source startup fix still needed; sailing loop untested |
+| gemstonev | Unchanged difficulty window/timer/command handoff plus monitor/cursor excerpts | Main-window creation and game command captured; main/game loop not certified |
+| highlight-manager | Guarded cursor helper excerpts | Full setup/game behavior untested |
+| spellson, staminabar2 and other CSS-cohort scripts | Bounded CSS/progress or selected call-chain evidence | CSS success alone is not complete script acceptance; see the dated [CSS evidence](webui-css-decoration-acceptance.md) |
+
+Retained native conversion candidates comprise BlackArts, bardwag, bigshot,
+calibrate_creaturebar, creaturebar, ebounty, ecleanse, eherbs, eloot, ewaggle, go2,
+jinx, map, repository and soundfx. This is the cached reference inventory, not a
+claim that all fifteen passed runtime acceptance or shipped upstream. Native map
+already exists; xnarost receives no further shim expansion. sea-charts remains a
+proposed native conversion. stormsync/bigshit2 expansion is excluded; slootbeta
+and remaining corpus families have no blanket compatibility certification.
 
 ## Rendering and event flow
 
@@ -553,7 +585,7 @@ a partially initialized setup must not remain running without its close handlers
 The retained original `eloot` setup requests `exclusions_label`, which its XML does not
 declare. The shim therefore refuses that lookup during tooltip initialization.
 The source repair is to name the existing Exclusions label `exclusions_label`;
-the converted native WebUI version is also an available migration path. Production GTK can continue past this
+the retained native WebUI conversion is a migration candidate, not proof of a released fix. Production GTK can continue past this
 defect because of Lich's nil suppression, but the tooltip is never assigned.
 The retained WebUI conversion builds the exclusions group directly and removes
 the bad lookup; it also omits this help text, despite retaining the `(?)` caption.
@@ -574,12 +606,16 @@ corrected candidates. Exact, test-only substitutions in
 checks; an unexpected source shape fails rather than silently changing a repair.
 Corrected eloot covers all twelve list add/delete handlers, scalar settings,
 tipping-preview dispatch, dependencies, Close/save and destroy without save.
+The refreshed v2.13.0 candidate additionally covers all seven loot_stance choices
+and stance persistence; its original missing-label failure is still tested.
 Corrected Bigshot covers scalar fields, text-area focus-out, boon choices and
 legacy migration, profile load/new/overwrite/cancel/update, Close persistence and
 destroy without save. Each has an independent Chrome interaction case.
 Game catalogs, tip calculation/terminal formatting and persistence destinations
-are isolated harness dependencies. These are setup/UI checks, not gameplay or
-native desktop-window certification. The retained originals remain blocked;
+are isolated harness dependencies. Refreshed eloot also has macOS WebKit setup/save
+acceptance. Bigshot's three-way GTK/shim/native preview is a visual comparison,
+not full functional or platform certification. These are setup/UI checks, not
+gameplay certification. The retained originals remain blocked;
 accepting a future author repair requires checking that new source separately.
 
 The explicit class/property mappings live in
