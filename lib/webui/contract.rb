@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.21.0'
+      VERSION = '2.26.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -153,7 +153,7 @@ module Lich
         expander: %i[key tooltip disabled hidden align margin width height],
         split: %i[key disabled hidden align margin width height],
         overlay: %i[key disabled hidden align margin width height],
-        scroll: %i[key disabled hidden align margin width height],
+        scroll: %i[key disabled hidden align margin width height min_height],
         divider: %i[key hidden margin width tone],
         text: %i[key tooltip hidden align margin width height emphasis tone],
         markdown: %i[key hidden align margin width],
@@ -218,7 +218,8 @@ module Lich
         group: {
           # Omission means no label widget; an empty string retains the blank label requisition.
           properties: { label: property(SHORT), collapsible: property(BOOL, default: false),
-                        menu: property(enum(:context, :submenu)),
+                        menu: property(enum(:context, :submenu, :popover)),
+                        menu_position: property(enum(:top, :bottom, :left, :right)), menu_icon: property(BOOL),
                         open: property(BOOL, scope: :viewer),
                         popup_position: property(array(GEOMETRY, min: 2, max: 2), scope: :viewer), constrain_width: property(BOOL, default: false) },
           children: :many, events: {}, value: nil,
@@ -238,6 +239,7 @@ module Lich
         },
         grid: {
           properties: {
+            flow: property(BOOL),
             cols: property(integer(min: 1, max: 24), required: true),
             homogeneous: property(BOOL, default: true), equal_rows: property(BOOL, default: false),
             expand_columns: property(array(integer(min: 1, max: 24), max: 24)),
@@ -330,7 +332,7 @@ module Lich
         },
         toggle: {
           properties: { label: property(SHORT), checked: property(BOOL, required: true, scope: :viewer),
-                        appearance: property(enum(:checkbox, :button, :menu), default: :checkbox) },
+                        appearance: property(enum(:checkbox, :button, :menu, :switch), default: :checkbox) },
           children: :none, events: { change: event(record(value: property(BOOL, required: true))), activate: event(nil, terminal: true) }, value: BOOL,
         },
         checkbox: {
@@ -437,11 +439,19 @@ module Lich
         composite: { properties: {}, children: :none, events: {}, value: nil, special: :composite },
       }.freeze
 
+      RGBA = record(
+        r: property(integer(min: 0, max: 255), required: true),
+        g: property(integer(min: 0, max: 255), required: true),
+        b: property(integer(min: 0, max: 255), required: true),
+        a: property(number(min: 0.0, max: 1.0), required: true)
+      ).freeze
+
       TABLE_COLUMN = record(
         key: property(IDENT, required: true), label: property(SHORT, required: true),
         align: property(enum(:start, :center, :end), default: 'start'), width: property(GEOMETRY),
         sortable: property(BOOL, default: false), resizable: property(BOOL, default: false),
         editor: property(scalar(:editor), default: nil),
+        background: property(RGBA),
         color_preview: property(record(width: property(integer(min: 1, max: 128), required: true),
                                        height: property(integer(min: 1, max: 128), required: true)))
       ).freeze
@@ -450,7 +460,8 @@ module Lich
         expanded: property(BOOL, default: false, scope: :viewer),
         cells: property(scalar(:cell_map), required: true),
         # Preserve numeric ordering when the visible cells include formatting.
-        sort_cells: property(scalar(:cell_map))
+        sort_cells: property(scalar(:cell_map)),
+        background_disabled: property(array(IDENT, max: BOUNDS[:table_columns]))
       ).freeze
 
       TABLE_PROPERTIES = {
@@ -500,12 +511,6 @@ module Lich
                            )),
       }.freeze
 
-      RGBA = record(
-        r: property(integer(min: 0, max: 255), required: true),
-        g: property(integer(min: 0, max: 255), required: true),
-        b: property(integer(min: 0, max: 255), required: true),
-        a: property(number(min: 0.0, max: 1.0), required: true)
-      ).freeze
       # Native typography uses literal text and the existing bounded color
       # shape. This does not admit Pango markup or add GTK style translation.
       TEXT_STYLE_PROPERTIES = {
@@ -618,7 +623,8 @@ module Lich
                               x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
                               button: property(integer(min: 1, max: 3), required: true),
                               time: property(integer(min: 0), required: true),
-                              state: property(integer(min: 0, max: 13), required: true)
+                              state: property(integer(min: 0, max: 13), required: true),
+                              click_count: property(integer(min: 1, max: 2))
                             ), lifecycle: true).freeze
 
       PAGE_LIFECYCLE_EVENTS = {
@@ -660,7 +666,7 @@ module Lich
 
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
             end
-            if %i[page text image group progress].include?(type)
+            if %i[page text image group progress table].include?(type)
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
             end
@@ -706,6 +712,8 @@ module Lich
             base[:properties][:fill_color] = property(RGBA) if type == :progress
             base[:events].merge!(COMPOSITE_EVENTS) if type == :composite
             base[:properties].merge!(deep_dup(ACCESSIBILITY_SCHEMAS))
+            # Page-local opaque groups equalize widget width requests across separate rows.
+            base[:properties][:width_groups] = property(array(IDENT, max: 8)) unless type == :page
             if type == :password_input
               base[:properties][:sensitive][:forced] = true
               base[:properties][:sensitive][:default] = true

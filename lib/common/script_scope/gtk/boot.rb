@@ -5,6 +5,7 @@ require_relative '../../../webui'
 require_relative 'session'
 require_relative 'scheduling'
 require_relative 'widgets'
+require_relative 'size_group'
 require_relative 'adjustment'
 require_relative 'layout'
 require_relative 'models'
@@ -32,6 +33,8 @@ module Lich
       module Gtk
         # Legacy spelling for the existing browser-owned automatic scroll policy.
         POLICY_AUTOMATIC = :automatic
+        POLICY_ALWAYS = :always
+        POLICY_NEVER = :never
 
         module Align
           START = :start

@@ -453,9 +453,69 @@ RSpec.describe 'progress provider lifecycle' do
   end
 
   it 'keeps unsupported widgets and unrelated style operations as explicit hard stops' do
-    expect { gtk.const_get(:FlowBox) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { gtk.const_get(:Layout) }.to raise_error(gtk.const_get(:UnsupportedOperation))
     label = gtk.const_get(:Label).new('Unchanged')
     expect { label.style_context.get_property('color') }.to raise_error(gtk.const_get(:UnsupportedOperation))
     expect { gtk.const_get(:StyleContext).reset_widgets }.to raise_error(gtk.const_get(:UnsupportedOperation))
+  end
+
+  it 'projects numeric RGBA onto label text before and after publication without changing content' do
+    gdk = scope.const_get(:Gdk)
+    label = gtk::Label.new('Original')
+    color = gdk::RGBA.new(0.5, 0, 1, 0.25)
+    expect(color.to_h).to eq(r: 128, g: 0, b: 255, a: 0.25)
+    expect(color.to_h).to be_frozen
+    expect(label.override_color(gtk::StateFlags::NORMAL, color)).to equal(label)
+    label.set_xalign(0)
+    label.set_yalign(0)
+    entry = gtk::Entry.new
+    entry.width_chars = 12
+    expect(entry.send(:component_props)[:min_width_chars]).to eq(12)
+    expect { entry.width_chars = 0 }.to raise_error(gtk::UnsupportedOperation)
+    label.label = 'Updated'
+    window = gtk::Window.new
+    window.add(label)
+    window.show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    text = page.last_render.tree.each.find { |node| node.type == :text }
+    expect(text.props).to include(content: 'Updated', foreground: color.to_h, align: 'start', content_vertical_align: 'start')
+    label.override_color(:normal, gdk::RGBA.new(0, 1, 0, 1))
+    expect(label.session.port.get(label.materialize, :foreground)).to eq(r: 0, g: 255, b: 0, a: 1.0)
+    expect(label.label).to eq('Updated')
+  end
+
+  it 'preserves a matching CSS label cue until its provider is removed' do
+    label = gtk::Label.new('Color precedence')
+    label.style_context.add_class('required')
+    provider.load(data: 'label.required { color: blue; }')
+    label.style_context.add_provider(provider)
+    window = gtk::Window.new
+    window.add(label)
+    window.show_all
+    label.override_color(:normal, scope.const_get(:Gdk)::RGBA.new(1, 0, 0, 1))
+    expect(label.session.port.get(label.materialize, :foreground)).to eq(blue)
+    label.style_context.remove_provider(provider)
+    expect(label.session.port.get(label.materialize, :foreground)).to eq(r: 255, g: 0, b: 0, a: 1.0)
+  end
+
+  it 'reports theme-owned control colors once and refuses invalid or foreign color operations' do
+    color = scope.const_get(:Gdk)::RGBA.new(1, 0, 0, 1)
+    button = gtk::CheckButton.new('Theme caption')
+    2.times { button.override_color(:normal, color) }
+    expect(button.label).to eq('Theme caption')
+    expect(Lich).to have_received(:log).with(/control caption colors follow the WebUI theme/).once
+    label = gtk::Label.new('Bounded')
+    expect { label.override_color(:active, color) }.to raise_error(gtk::UnsupportedOperation)
+    expect { label.override_color(:normal, 'red') }.to raise_error(gtk::UnsupportedOperation)
+    [Float::NAN, Float::INFINITY, -0.1, 1.1, '1', Complex(0, 1)].each do |value|
+      expect { scope.const_get(:Gdk)::RGBA.new(value, 0, 0, 1) }.to raise_error(gtk::UnsupportedOperation)
+    end
+    other = Struct.new(:name).new('other.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(other)
+    expect { label.override_color(:normal, color) }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    label.destroy
+    expect { label.override_color(:normal, color) }.to raise_error(gtk::UnsupportedOperation)
   end
 end

@@ -297,6 +297,9 @@ module Lich
 
       def validate_component_invariants!(type, props, context)
         validate_sensitive!(type, props, context)
+        if props[:width_groups] && props[:width_groups].uniq.size != props[:width_groups].size
+          violation!('width_groups must be unique', context, :width_groups)
+        end
         case type
         when :columns then validate_columns!(props, context)
         when :grid then validate_grid!(props, context)
@@ -304,7 +307,7 @@ module Lich
         when :progress then validate_progress!(props, context)
         when :radio then validate_options!(props, :selected, context)
         when :select then validate_options!(props, :value, context)
-        when :number_input, :slider then validate_numeric_input!(props, context)
+        when :number_input, :slider then validate_numeric_input!(props, context, fixed: type == :number_input)
         when :log then validate_log!(props, context)
         when :table then validate_table!(props, context)
         when :dialog then validate_dialog!(props, context)
@@ -373,8 +376,9 @@ module Lich
         violation!('option values must be unique', context, path) unless values.uniq.length == values.length
       end
 
-      def validate_numeric_input!(props, context)
-        violation!('min must be less than max', context, :min) unless props[:min] < props[:max]
+      def validate_numeric_input!(props, context, fixed: false)
+        ordered = fixed ? props[:min] <= props[:max] : props[:min] < props[:max]
+        violation!(fixed ? 'min must not exceed max' : 'min must be less than max', context, :min) unless ordered
         violation!('step must be positive', context, :step) unless props[:step].positive?
         unless props[:value].between?(props[:min], props[:max])
           violation!('value must be within min and max', context, :value)
@@ -412,6 +416,10 @@ module Lich
             violation!('parent must name a row in the same table', context, "rows[#{index}].parent")
           end
           unknown_cells = row[:cells].keys - column_keys
+          disabled_backgrounds = row[:background_disabled] || []
+          unless (disabled_backgrounds - column_keys).empty? && disabled_backgrounds.uniq.size == disabled_backgrounds.size
+            violation!('background_disabled must name unique displayed columns', context, "rows[#{index}].background_disabled")
+          end
           unless unknown_cells.empty?
             violation!("cell names unknown column #{unknown_cells.first}", context, "rows[#{index}].cells")
           end

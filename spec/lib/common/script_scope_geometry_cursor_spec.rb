@@ -90,6 +90,27 @@ RSpec.describe 'bounded display geometry and cursor compatibility' do
     expect { gdk::Display.default.default_seat }.to raise_error(gtk::UnsupportedOperation)
   end
 
+  it 'supplies measured screen dimensions and requested window size before publication' do
+    window = gtk::Window.new('Planner')
+    window.resize(600, 400)
+    expect(window.size).to eq([600, 400])
+    expect(window.screen.width).to eq(1280)
+    expect(window.screen.height).to eq(800)
+    expect(window.screen).to equal(window.screen)
+    expect(service.registry.pages_for(owner)).to be_empty
+    allow(service).to receive(:monitor_geometry).and_return(source: 'unavailable', fallback: true)
+    expect([window.screen.width, window.screen.height]).to eq([1024, 768])
+    expect(@logs.grep(/nominal 1024x768/).length).to eq(1)
+    screen = window.screen
+    @other = Struct.new(:name).new('other.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(@other)
+    expect { window.screen }.to raise_error(gtk::UnsupportedOperation)
+    expect { screen.width }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    window.destroy
+    expect { window.screen }.to raise_error(gtk::UnsupportedOperation)
+  end
+
   it 'refuses cross-owner and destroyed cursor/window/display use' do
     cursor = gdk::Cursor.new('copy')
     display = gdk::Display.default

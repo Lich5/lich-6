@@ -16,10 +16,13 @@ module Lich
           DESCENDING = :descending
         end
 
+        # Legacy spelling uses the same validated model sorting implementation.
+        SORT_ASCENDING = SortType::ASCENDING
+
         # Literal scalar cell presentation. Editing proposes a value; only script callbacks
         # may commit it to the model. Rich attributes and arbitrary data functions are refused.
         class CellRendererText < ModelObject
-          attr_reader :editable, :align
+          attr_reader :editable, :align, :background_color
 
           def initialize
             super
@@ -36,6 +39,19 @@ module Lich
           end
           alias set_editable editable=
           def editable? = editable
+
+          # Literal cell fill is a typed color, never a CSS string or selector.
+          # Nil clears the fill so the table theme is visible again.
+          def background=(value)
+            session.style_operation(self, :background=) do
+              valid = value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? && value.length <= 64
+              color = Color.parse(value) if valid
+              session.refuse(self, :background=) unless value.nil? || color
+              @background_color = color
+              @columns.each(&:changed!)
+            end
+          end
+          alias set_background background=
 
           # Maps cell alignment fractions to the existing column alignment tokens.
           # @param value [Numeric] 0..1; intermediate fractions use center
@@ -216,17 +232,21 @@ module Lich
             self
           end
 
-          # Maps one literal value attribute to its model column.
+          # Maps a literal value plus an optional boolean background-enable column.
           # @param renderer [CellRendererText] this column's renderer
           # @param attributes [Hash] one text/active binding
           # @return [TreeViewColumn] self
           def set_attributes(renderer, attributes)
             view&.check_column_structure!
             normalized = attributes.transform_keys(&:to_s)
-            valid = renderer.equal?(@renderer) && normalized.keys == [renderer.value_attribute]
+            valid = renderer.equal?(@renderer) && (normalized.keys - [renderer.value_attribute, 'background_set']).empty?
             column = normalized[renderer.value_attribute]
             session.refuse(self, :set_attributes) unless valid && column.is_a?(Integer) && column >= 0
+            background_column = normalized['background_set']
+            valid_background = background_column.nil? || (background_column.is_a?(Integer) && background_column.between?(0, Lich::WebUI::Contract::BOUNDS[:table_columns] - 1))
+            session.refuse(self, :set_attributes) unless valid_background
             @value_column = column
+            @background_set_column = background_column
             changed!
             self
           end
@@ -312,6 +332,23 @@ module Lich
           def release = renderer&.unwatch(self)
           def changed! = view&.columns_changed!
 
+          # Warn on an invalid optional GTK binding while retaining the literal fill.
+          def validate_background_binding(model)
+            @background_boolean_model = nil
+            return unless @background_set_column
+
+            if model.column_types[@background_set_column] == TrueClass
+              @background_boolean_model = model
+            elsif @background_warning_for != [model, @background_set_column]
+              session.source_warning(self, :background_set, "ignored invalid background_set model column #{@background_set_column}; expected boolean; literal renderer background retained")
+              @background_warning_for = [model, @background_set_column]
+            end
+          end
+
+          def background_enabled?(iter)
+            !@background_boolean_model.equal?(iter.model) || iter[@background_set_column] == true
+          end
+
           # Projects the supported renderer properties into the shared table schema.
           # @return [Hash] shared column schema
           # @api private
@@ -322,6 +359,7 @@ module Lich
             result[:align] = renderer.align if renderer.align
             result[:width] = @width if @width
             result[:editor] = renderer.editor if renderer.editor
+            result[:background] = renderer.background_color if renderer.background_color
             result
           end
         end
@@ -776,6 +814,7 @@ module Lich
               type = candidate.get_column_type(column.value_column)
               session.refuse(self, :cell_type) if column.renderer.is_a?(CellRendererToggle) && type != TrueClass
               candidate.get_column_type(column.sort_column_id) if column.sort_column_id
+              column.validate_background_binding(candidate)
             end
           end
 
@@ -790,6 +829,8 @@ module Lich
                 [column.key, value.nil? ? '' : value]
               end
               row = { key: iter.key, cells: cells }
+              disabled = visible_columns.reject { |column| column.background_enabled?(iter) }.map(&:key)
+              row[:background_disabled] = disabled unless disabled.empty?
               parent = model.iter_parent(iter)
               row[:parent] = parent.key if parent
               row

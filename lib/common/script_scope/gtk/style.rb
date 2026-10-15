@@ -4,6 +4,14 @@ module Lich
   module Common
     module ScriptScope
       module Gtk
+        # Only the normal-state foreground override is projected by this facade.
+        module StateFlags
+          NORMAL = :normal
+
+          # @raise [UnsupportedOperation] for unimplemented native state combinations
+          def self.const_missing(name) = Gtk.session.refuse(self, name)
+        end
+
         module StyleProvider
           PRIORITY_APPLICATION = 600
           PRIORITY_USER = 800
@@ -300,6 +308,7 @@ module Lich
         # No browser CSS parsing, URLs, functions, or arbitrary style strings.
         module Color
           NAMES = {
+            'white' => 'ffffff', 'black' => '000000',
             'violet' => 'ee82ee', 'orchid' => 'da70d6', 'powderblue' => 'b0e0e6',
             'skyblue' => '87ceeb', 'greenyellow' => 'adff2f', 'hotpink' => 'ff69b4',
             'deepskyblue' => '00bfff', 'gold' => 'ffd700', 'burlywood' => 'deb887',
@@ -323,14 +332,26 @@ module Lich
       end
 
       module Gdk
+        # Utility windows remain ordinary owned WebUI pages; native classification is host-controlled.
+        module WindowTypeHint
+          UTILITY = :utility
+
+          # @raise [Gtk::UnsupportedOperation] for unimplemented native window classes
+          def self.const_missing(name) = Gtk.session.refuse(self, name)
+        end
+
         # Colour values are validated locally and never interpreted as CSS.
         class RGBA
-          # Validates four finite unit-interval channels for the accepted background-color call.
-          # The object is a compatibility token; it does not retain arbitrary native color state.
+          # Validates four finite unit-interval channels for bounded color overrides.
+          # The immutable record contains no native color state or source CSS.
           # @raise [UnsupportedOperation] for invalid channels
           def initialize(*channels)
-            Gtk.session.refuse(self, :new) unless channels.length == 4 && channels.all? { |channel| channel.is_a?(Numeric) && channel.finite? && channel.between?(0, 1) }
+            Gtk.session.refuse(self, :new) unless channels.length == 4 && channels.all? { |channel| channel.is_a?(Numeric) && channel.real? && channel.finite? && channel.between?(0, 1) }
+            @rgba = %i[r g b a].zip(channels.each_with_index.map { |channel, i| i == 3 ? channel.to_f : (channel * 255).round }).to_h.freeze
           end
+
+          # @return [Hash] immutable numeric RGBA record, never source CSS
+          def to_h = @rgba
 
           # Accepts the measured red/green compatibility names only.
           # @return [RGBA]
@@ -342,12 +363,11 @@ module Lich
           end
         end
 
-        # Screen dimensions are a declared degradation: this nominal work area
-        # supplies initial size hints only; the browser host controls placement.
+        # Owner-bound screen facade; display_geometry supplies measured dimension hints.
         class Screen
           attr_reader :session
 
-          # Captures the owner of this nominal screen token, without querying an OS display.
+          # Captures the owner without querying an OS display until dimensions are read.
           def initialize
             @session = Gtk.session
           end
@@ -355,27 +375,6 @@ module Lich
           # Returns an owner-bound token; geometry is not read by CSS attachment.
           # @return [Screen] initial-size hint provider
           def self.default = new
-
-          # Supplies a nominal initial width, not a measurement of the user's display.
-          # @return [Integer] 1024
-          def width
-            dimension(:width, 1024)
-          end
-
-          # Supplies a nominal initial height, not a measurement of the user's display.
-          # @return [Integer] 768
-          def height
-            dimension(:height, 768)
-          end
-
-          private
-
-          def dimension(operation, value)
-            session.style_operation(self, operation) do
-              session.degrade(:screen_geometry, 'nominal initial size; browser host owns screen geometry', receiver: self)
-              value
-            end
-          end
         end
 
         # Refuses GDK facilities outside the bounded compatibility constants.

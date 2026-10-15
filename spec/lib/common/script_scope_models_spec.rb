@@ -71,6 +71,194 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(barrier.pop(timeout: 5)).to be(true)
   end
 
+  it 'accepts natural top-aligned content in a vertical box and aligned flow inside a scroller' do
+    outer = gtk::Box.new(:vertical, 0)
+    heading = gtk::Box.new(:vertical, 0)
+    heading.set_vexpand(false)
+    heading.valign = :start
+    heading.add(gtk::Label.new('Heading'))
+    scroller = gtk::ScrolledWindow.new
+    scroller.set_vexpand(true)
+    flow = gtk::FlowBox.new
+    flow.set_vexpand(true)
+    flow.valign = :start
+    flow.add(gtk::Label.new('North'))
+    scroller.add(flow)
+    outer.pack_start(heading, expand: false, fill: true, padding: 0)
+    outer.pack_start(scroller, expand: true, fill: true, padding: 0)
+    _window, page = show(outer)
+    viewer = connect(page, 'vertical-parents')
+    grid = nodes(viewer).find { |node| node['props']['flow'] }
+    expect(grid['props']['vertical_align']).to eq('start')
+    expect { heading.valign = :center }.to raise_error(gtk::UnsupportedOperation)
+    expect(heading.instance_variable_get(:@props)[:vertical_align]).to eq(:start)
+    flow.valign = :center
+    wait_for { nodes(viewer).any? { |node| node['props']['flow'] && node['props']['vertical_align'] == 'center' } }
+    flow.valign = :end
+    wait_for { nodes(viewer).any? { |node| node['props']['flow'] && node['props']['vertical_align'] == 'end' } }
+    flow.valign = :fill
+    wait_for { nodes(viewer).any? { |node| node['props']['flow'] && node['props']['vertical_align'] == 'stretch' } }
+  end
+
+  it 'continues to refuse unsupported expanding vertical-box allocation and ambiguous scroller siblings' do
+    outer = gtk::Box.new(:vertical, 0)
+    expanding = gtk::Box.new(:vertical, 0)
+    expanding.set_vexpand(true)
+    outer.add(expanding)
+    expect { expanding.valign = :start }.to raise_error(gtk::UnsupportedOperation)
+    scroller = gtk::ScrolledWindow.new
+    a, b = gtk::Label.new('First'), gtk::Label.new('Second')
+    scroller.add(a)
+    scroller.add(b)
+    expect { a.valign = :center }.to raise_error(gtk::UnsupportedOperation)
+    expect(a.instance_variable_get(:@props)).not_to have_key(:vertical_align)
+  end
+
+  it 'delivers immutable configure data after geometry observation and suppresses duplicate measurements' do
+    window, page = show(gtk::Label.new('Geometry'))
+    viewer = connect(page, 'geometry-events')
+    seen = []
+    id = window.signal_connect('configure-event') do |widget, event|
+      seen << [widget.size, widget.position, event.width, event.height, event.x, event.y, event.frozen?]
+      false
+    end
+    geometry = { width: 410, height: 230, position: [-20, 35] }
+    send_event(page, viewer, :page, 'configure', geometry)
+    wait_for { seen.length == 1 }
+    expect(seen.last).to eq([[410, 230], [-20, 35], 410, 230, -20, 35, true])
+    send_event(page, viewer, :page, 'configure', geometry)
+    drain_models
+    expect(seen.length).to eq(1)
+    send_event(page, viewer, :page, 'configure', geometry.merge(width: -1))
+    drain_models
+    expect(seen.length).to eq(1)
+    window.signal_handler_disconnect(id)
+    send_event(page, viewer, :page, 'configure', geometry.merge(width: 420))
+    drain_models
+    expect(window.size).to eq([420, 230])
+    expect(seen.length).to eq(1)
+  end
+
+  it 'uses distinct stable IDs across signal families and removes only the requested destroy handler' do
+    window = gtk::Window.new
+    calls = []
+    first = window.signal_connect('destroy') { calls << :removed }
+    close = window.signal_connect('delete-event') { calls << :close; true }
+    configure = window.signal_connect('configure_event') { calls << :configure }
+    last = window.signal_connect('destroy') { calls << :retained }
+    other = gtk::Window.new
+    other_id = other.signal_connect('destroy') { calls << :other }
+    expect([first, close, configure, last, other_id].uniq.length).to eq(5)
+    expect { gtk::Button.new('Other facade').signal_handler_disconnect(first) }.to raise_error(gtk::UnsupportedOperation)
+    expect { window.signal_handler_disconnect(other_id) }.to raise_error(gtk::UnsupportedOperation)
+    window.signal_handler_disconnect(first)
+    expect { window.signal_handler_disconnect(first) }.to raise_error(gtk::UnsupportedOperation)
+    replacement = window.signal_connect('destroy') { calls << :new }
+    expect(replacement).not_to eq(first)
+    window.destroy
+    expect(calls).to eq([:retained, :new])
+    expect { window.signal_connect('destroy') {} }.to raise_error(gtk::UnsupportedOperation)
+    expect { window.signal_handler_disconnect(last) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'honors disconnection during emission and registers new handlers for the next emission' do
+    window, page = show(gtk::Label.new('Ordering'))
+    viewer = connect(page, 'geometry-order')
+    calls = []
+    second = nil
+    added = false
+    window.signal_connect('configure_event') do
+      calls << :first
+      unless added
+        window.signal_handler_disconnect(second)
+        window.signal_connect('configure_event') { calls << :later }
+        added = true
+      end
+      false
+    end
+    second = window.signal_connect('configure_event') { calls << :removed }
+    send_event(page, viewer, :page, 'configure', { width: 100, height: 50, position: [0, 0] })
+    wait_for { calls.length == 1 }
+    expect(calls).to eq([:first])
+    send_event(page, viewer, :page, 'configure', { width: 110, height: 50, position: [0, 0] })
+    wait_for { calls.length == 3 }
+    expect(calls).to eq([:first, :first, :later])
+    foreign = Struct.new(:name).new('foreign-signals')
+    allow(Lich::Common::Script).to receive(:current).and_return(foreign)
+    expect { window.signal_handler_disconnect(second) }.to raise_error(gtk::UnsupportedOperation)
+  ensure
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+  end
+
+  it 'owns an icon and positioned palette panel without publishing its choices as a second window' do
+    button = gtk::MenuButton.new
+    image = gtk::Image.new(icon_name: 'preferences-desktop-color-symbolic', icon_size: gtk::IconSize::SMALL_TOOLBAR)
+    button.set_image(image)
+    panel = gtk::Popover.new(button)
+    panel.set_position(gtk::PositionType::TOP)
+    choices = gtk::Box.new(:vertical, 0)
+    choices.add(gtk::ToggleButton.new(label: 'Dark'))
+    panel.add(choices)
+    button.set_popover(panel)
+    window, page = show(button)
+    viewer = connect(page, 'palette')
+    tree = nodes(viewer)
+    expect(tree.find { |node| node['props']['menu'] == 'popover' }['props']).to include('menu_icon' => true, 'menu_position' => 'top')
+    expect(tree.count { |node| node['type'] == 'page' }).to eq(1)
+    expect(image.parent).to equal(button)
+    expect(panel.parent).to equal(button)
+    panel.set_position(:left)
+    wait_for { nodes(viewer).any? { |node| node['props']['menu_position'] == 'left' } }
+    expect { panel.set_position(:floating) }.to raise_error(gtk::UnsupportedOperation)
+    expect(panel.position).to eq(:left)
+    window.destroy
+    expect([button, image, panel, choices].all?(&:destroyed?)).to be(true)
+    expect { panel.set_position(:top) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'refuses foreign or multiply owned palette content and unsupported icon requests' do
+    button = gtk::MenuButton.new
+    other = gtk::MenuButton.new
+    panel = gtk::Popover.new(button)
+    expect { other.set_popover(panel) }.to raise_error(gtk::UnsupportedOperation)
+    panel.add(gtk::Label.new('One'))
+    expect { panel.add(gtk::Label.new('Two')) }.to raise_error(gtk::UnsupportedOperation)
+    expect { gtk::Image.new(icon_name: 'arbitrary-path', icon_size: :small_toolbar) }.to raise_error(gtk::UnsupportedOperation)
+    foreign = Struct.new(:name).new('foreign')
+    allow(Lich::Common::Script).to receive(:current).and_return(foreign)
+    expect { button.set_popover(panel) }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    expect(panel.parent).to be_nil
+  ensure
+    Lich::Common::ScriptDeath.run(foreign) if foreign
+  end
+
+  it 'reflows nonselecting children after live column changes, removal and reattachment' do
+    flow = gtk::FlowBox.new
+    flow.selection_mode = :none
+    flow.max_children_per_line = 3
+    flow.row_spacing = 4
+    flow.column_spacing = 6
+    flow.homogeneous = true
+    labels = 5.times.map { |i| gtk::Label.new("Cell #{i}") }
+    labels.each { |label| flow.add(label) }
+    _window, page = show(flow)
+    viewer = connect(page, 'flow')
+    expect(nodes(viewer).find { |node| node['type'] == 'grid' }['props']).to include('flow' => true, 'cols' => 3, 'row_gap' => 4, 'column_gap' => 6, 'equal_rows' => true)
+    flow.max_children_per_line = 2
+    flow.homogeneous = false
+    flow.remove(labels[1])
+    flow.add(labels[1])
+    wait_for { nodes(viewer).find { |node| node['type'] == 'grid' }['children'].last['props']['content'] == 'Cell 1' }
+    expect(nodes(viewer).find { |node| node['type'] == 'grid' }['props']).to include('cols' => 2, 'homogeneous' => false, 'equal_rows' => false)
+    [0, 25, '2'].each { |value| expect { flow.max_children_per_line = value }.to raise_error(gtk::UnsupportedOperation) }
+    expect { flow.row_spacing = -1 }.to raise_error(gtk::UnsupportedOperation)
+    expect { flow.selection_mode = :multiple }.to raise_error(gtk::UnsupportedOperation)
+    expect(flow.max_children_per_line).to eq(2)
+    flow.destroy
+    expect { flow.max_children_per_line = 1 }.to raise_error(gtk::UnsupportedOperation)
+  end
+
   it 'publishes a bulk callback once while keeping model reads and sorted paths current' do
     model = gtk::ListStore.new(String, Integer)
     view = table(model)
@@ -248,7 +436,7 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(absent[0]).to be_nil
     expect(nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'].first['cells'].values).to eq(['', false])
     expect(nodes(viewer).find { |node| node['type'] == 'select' }['props']['options'].map { |option| option['label'] }).to eq(['', '', '', 'Alpha'])
-    model.set_sort_column_id(0, :ascending)
+    model.set_sort_column_id(0, gtk::SORT_ASCENDING)
     expect(model.rows.map { |iter| iter[0] }).to eq([nil, '', 'Alpha'])
     model.set_sort_column_id(0, :descending)
     expect(model.rows.map { |iter| iter[0] }).to eq(['Alpha', nil, ''])
@@ -827,5 +1015,162 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(combo.active_text).to eq('Seven')
     expect(combo.active_iter[0]).to eq(7)
     expect { show(combo) }.not_to raise_error
+  end
+  it 'projects literal cell backgrounds live and clears them without changing model data' do
+    model = gtk::ListStore.new(String)
+    model.append[0] = 'Original'
+    renderer = gtk::CellRendererText.new
+    renderer.background = 'white'
+    view = gtk::TreeView.new(model)
+    column = gtk::TreeViewColumn.new('Name', renderer, text: 0)
+    view.append_column(column)
+    _window, page = show(view)
+    viewer = connect(page, 'cell-colors')
+    expect(column.definition[:background]).to eq(r: 255, g: 255, b: 255, a: 1.0)
+    renderer.set_property('background', '#112233')
+    wait_for { nodes(viewer).find { |node| node['type'] == 'table' }['props']['columns'][0]['background'] == { 'r' => 17, 'g' => 34, 'b' => 51, 'a' => 1.0 } }
+    renderer.background = nil
+    wait_for { !nodes(viewer).find { |node| node['type'] == 'table' }['props']['columns'][0].key?('background') }
+    expect(model.iter_first[0]).to eq('Original')
+    expect { renderer.background = 'url(https://invalid.example/)' }.to raise_error(gtk::UnsupportedOperation)
+    expect(renderer.background_color).to be_nil
+    allow(Lich::Common::Script).to receive(:current).and_return(Struct.new(:name).new('foreign'))
+    expect { renderer.background = 'white' }.to raise_error(gtk::UnsupportedOperation)
+  ensure
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+  end
+
+  it 'delivers Switch active notifications with current viewer state and ordered programmatic changes' do
+    switch = gtk::Switch.new
+    notifications = []
+    switch.signal_connect('notify::active') { |source, property| notifications << [source.active?, property.name] }
+    switch.set_active(true)
+    switch.active = true
+    expect(notifications).to eq([[true, 'active']])
+    expect { switch.active = 1 }.to raise_error(gtk::UnsupportedOperation)
+    expect { switch.signal_connect('state-set') {} }.to raise_error(gtk::UnsupportedOperation)
+    _window, page = show(switch)
+    viewer = connect(page, 'switch')
+    expect(nodes(viewer).find { |node| node['type'] == 'toggle' }['props']).to include('appearance' => 'switch', 'checked' => true)
+    send_event(page, viewer, :toggle, 'change', { value: false })
+    wait_for { notifications.length == 2 }
+    expect(notifications.last).to eq([false, 'active'])
+    switch.active = true
+    expect(notifications.last).to eq([true, 'active'])
+    expect(switch.active?).to be(true)
+  end
+
+  it 'honors boolean background bindings and warns once for invalid optional source bindings' do
+    model = gtk::ListStore.new(String, TrueClass)
+    row = model.append
+    row[0], row[1] = 'Bound', false
+    renderer = gtk::CellRendererText.new
+    renderer.background = 'white'
+    column = gtk::TreeViewColumn.new('Name', renderer, text: 0, background_set: 1)
+    view = gtk::TreeView.new(model)
+    view.append_column(column)
+    _window, page = show(view)
+    viewer = connect(page, 'background-binding')
+    definition = -> { nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'][0] }
+    expect(definition.call['background_disabled']).to eq([column.key])
+    row[1] = true
+    drain_models
+    wait_for { !definition.call.key?('background_disabled') }
+    invalid = gtk::TreeViewColumn.new('Bad binding', renderer, text: 0, background_set: 2)
+    invalid_view = gtk::TreeView.new(model)
+    invalid_view.append_column(invalid)
+    2.times { invalid_view.columns_changed! }
+    expect(invalid.background_enabled?(row)).to be(true)
+    expect(Lich).to have_received(:log).with(/background_set.*expected boolean/).once
+    expect { gtk::TreeViewColumn.new('CSS', renderer, text: 0, background: 1) }.to raise_error(gtk::UnsupportedOperation)
+    expect { gtk::TreeViewColumn.new('Huge index', renderer, text: 0, background_set: 2**80) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  %i[instance module].each do |spelling|
+    it "routes #{spelling} legacy text drags through source-owned callbacks once" do
+      original = gtk::ListStore.new(String, String)
+      moved = original.append
+      moved[0], moved[1] = '102', 'Spirit Barrier'
+      destination = gtk::ListStore.new(String, String)
+      source, target = [original, destination].map { |model| table(model) }
+      [source, target].each do |view|
+        if spelling == :instance
+          view.drag_source_set(:button1_mask, [['text/plain', :same_app, 0]], :move)
+          view.drag_dest_set(:all, [['text/plain', :same_app, 0]], :move)
+        else
+          gdk = scope.const_get(:Gdk)
+          gtk::Drag.source_set(view, gdk::Window::BUTTON1_MASK, [['text/plain', gtk::Drag::TARGET_SAME_APP, 0]], gdk::DragContext::ACTION_MOVE)
+          gtk::Drag.dest_set(view, gtk::Drag::DEST_DEFAULT_ALL, [['text/plain', gtk::Drag::TARGET_SAME_APP, 0]], gdk::DragContext::ACTION_MOVE)
+        end
+      end
+      calls = []
+      source.signal_connect('drag-data-get') do |view, _context, data|
+        calls << :get
+        data.text = view.selection.selected[0]
+      end
+      target.signal_connect('drag-data-received') do |_view, _context, _x, _y, data|
+        calls << [:received, data.text]
+        original.each do |_model, _path, row|
+          next unless row[0] == data.text
+          fresh = destination.append
+          fresh[0], fresh[1] = row[0], row[1]
+          original.remove(row)
+          break
+        end
+      end
+      box = gtk::HBox.new
+      box.add(source); box.add(target)
+      _window, page = show(box)
+      viewer = connect(page, "drop-#{spelling}")
+      tables = nodes(viewer).select { |node| node['type'] == 'table' }
+      from = tables.find { |node| node['props']['rows'].any? }
+      to = tables.find { |node| node != from }
+      row_key = from['props']['rows'][0]['key']
+      deliver = lambda do
+        render = viewer.messages.reverse.find { |message| message['type'] == 'render' }
+        service.runtime.handle(viewer, type: 'event', page: service.registry.address_for(page), generation: render['generation'],
+                               cid: to['cid'], event: 'row_drop', payload: { source: from['cid'], row: row_key })
+        drain_models
+      end
+      expect(calls).to be_empty
+      deliver.call
+      expect(calls).to eq([:get, [:received, '102']])
+      expect(original.size).to eq(0)
+      expect(destination.rows.map { |row| [row[0], row[1]] }).to eq([['102', 'Spirit Barrier']])
+      wait_for { nodes(viewer).find { |node| node['cid'] == from['cid'] }['props']['rows'].empty? }
+      deliver.call
+      expect(calls).to eq([:get, [:received, '102']])
+      expect(viewer.messages.any? { |message| message['type'] == 'refusal' }).to be(true)
+    end
+  end
+
+  it 'refuses foreign or unsafe legacy transfer registrations and bounds SelectionData writes' do
+    view = table(gtk::ListStore.new(String))
+    targets = [['text/plain', :same_app, 0]]
+    expect { view.drag_source_set(:button3_mask, targets, :move) }.to raise_error(gtk::UnsupportedOperation)
+    expect { view.drag_source_set(:button1_mask, [['text/uri-list', :same_app, 0]], :move) }.to raise_error(gtk::UnsupportedOperation)
+    expect { view.drag_source_set(:button1_mask, [['text/plain', :other_app, 0]], :move) }.to raise_error(gtk::UnsupportedOperation)
+    expect { view.drag_source_set(:button1_mask, targets, :copy) }.to raise_error(gtk::UnsupportedOperation)
+    expect { view.drag_dest_set(:motion, targets, :move) }.to raise_error(gtk::UnsupportedOperation)
+    data = gtk::SelectionData.new
+    text = +'102'
+    data.text = text
+    text.replace('changed')
+    expect(data.text).to eq('102')
+    expect(data.text).to be_frozen
+    expect { data.text = 'x' * 8193 }.to raise_error(gtk::UnsupportedOperation)
+    expect { data.text = [255].pack('C').force_encoding('UTF-8') }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(Struct.new(:name).new('foreign'))
+    expect { view.drag_source_set(:button1_mask, targets, :move) }.to raise_error(gtk::UnsupportedOperation)
+    expect { data.text = '101' }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    view.destroy
+    expect { view.drag_dest_set(:all, targets, :move) }.to raise_error(gtk::UnsupportedOperation)
+    event = gtk::PointerEvent.new(x: 0, y: 0, button: 1, time: 0, state: 0)
+    expect(event.event_type).to eq(:button_press)
+    double_press = gtk::PointerEvent.new(x: 0, y: 0, button: 1, time: 1, state: 0, click_count: 2)
+    expect(double_press.event_type).to eq(scope.const_get(:Gdk)::Event::BUTTON2_PRESS)
+  ensure
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
   end
 end

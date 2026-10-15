@@ -78,13 +78,26 @@ module Lich
         end
 
         # An empty image is legitimate state; clearing removes the source request.
+        module IconSize
+          SMALL_TOOLBAR = :small_toolbar
+        end
+
         class Image < Widget
           # Creates an empty image or one source; conflicting source forms refuse.
           # @param source [String, FileImage, nil] legacy positional file or display value
           # @param file [String, nil] file resolved through the authenticated file service
           # @param pixbuf [FileImage, nil] immutable same-session display value
-          def initialize(source = nil, file: nil, pixbuf: nil)
+          def initialize(source = nil, file: nil, pixbuf: nil, icon_name: nil, icon_size: nil)
             super()
+            if icon_name
+              session.refuse(self, :icon_name) unless icon_name == 'preferences-desktop-color-symbolic' &&
+                                                      icon_size == IconSize::SMALL_TOOLBAR && [source, file, pixbuf].all?(&:nil?)
+              @symbolic_icon = true
+              @props.merge!(content: 'Palette', wrap: false, a11y_label: 'Palette')
+              session.degrade(:palette_icon, 'symbolic palette icon uses an ASCII Palette caption')
+              return
+            end
+            session.refuse(self, :icon_size) unless icon_size.nil?
             session.refuse(self, :new) if [source, file, pixbuf].compact.length > 1
             @props[:src] = ''
             source ||= file || pixbuf
@@ -130,7 +143,7 @@ module Lich
           protected
 
           # @return [Symbol] existing file-backed image component
-          def component_type = :image
+          def component_type = @symbolic_icon ? :text : :image
         end
       end
 

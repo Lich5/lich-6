@@ -19,6 +19,16 @@ module Lich
         # the browser surface while leaving Ruby metadata readable, as MyFletch
         # reads and normalizes its entries after destroying the setup window.
         class Widget
+          SIGNAL_ID_MUTEX = Mutex.new
+          private_constant :SIGNAL_ID_MUTEX
+
+          # IDs are unique across widgets; a foreign widget's ID cannot remove
+          # a coincidentally numbered local connection. They never cross the wire.
+          def self.next_signal_id
+            SIGNAL_ID_MUTEX.synchronize { @signal_sequence = (@signal_sequence || 0) + 1 }
+          end
+          private_class_method :next_signal_id
+
           attr_reader :session, :parent
           attr_writer :placement
 
@@ -28,6 +38,7 @@ module Lich
             @props = {}
             @children = []
             @signals = {}
+            @signal_connections = {}
             @committed = {}
             @handle = nil
             @destroyed = false
@@ -142,27 +153,55 @@ module Lich
           private :insert_child
 
           # Maps accepted legacy signals to core events; destroy handlers accumulate separately.
-          # @return [Integer] compatibility connection count
+          # @return [Integer] stable connection ID, shared across this widget's signal families
           # @raise [UnsupportedOperation] for an unmapped signal
           def signal_connect(name, &block)
             raise ArgumentError, 'signal handler is required' unless block
 
-            name = name.to_s.tr('-', '_')
-            if name == 'destroy'
-              (@destroy_handlers ||= []) << block
-              return @destroy_handlers.length
+            session.style_operation(self, :signal_connect) do
+              session.refuse(self, :signal_connect) if destroyed?
+              name = name.to_s.tr('-', '_')
+              event = if name == 'destroy'
+                        :destroy
+                      elsif name == 'button_press_event'
+                        session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(:pointer_press)
+                        write(:pointer_events, true)
+                        :pointer_press
+                      else
+                        signal_map.transform_keys { |key| key.tr('-', '_') }[name] || session.refuse(self, "signal:#{name}")
+                      end
+              id = Widget.send(:next_signal_id)
+              # The guard also suppresses a disconnected handler already present
+              # in an emission snapshot, without disturbing other listeners.
+              handler = proc { |*args| block.call(*args) if @signal_connections.key?(id) }
+              if event == :destroy
+                (@destroy_handlers ||= []) << handler
+              else
+                (@signals[event] ||= []) << [name, handler]
+                bind_event(event) if @handle
+              end
+              @signal_connections[id] = [event, handler]
+              id
             end
-            event = if name == 'button_press_event'
-                      session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(:pointer_press)
-                      write(:pointer_events, true)
-                      :pointer_press
-                    else
-                      signal_map.transform_keys { |key| key.tr('-', '_') }[name] || session.refuse(self, "signal:#{name}")
-                    end
-            (@signals[event] ||= []) << [name, block]
-            bind_event(event) if @handle
-            @signals.values.sum(&:length)
           end
+
+          # Removes exactly one local connection, retaining the internal lifecycle
+          # binding (including geometry observation). Unknown/reused IDs refuse.
+          # @return [Widget] self
+          def disconnect_signal_handler(id)
+            session.style_operation(self, :signal_handler_disconnect) do
+              connection = @signal_connections[id] if id.is_a?(Integer)
+              session.refuse(self, :signal_handler_disconnect) if (destroyed? && !@emitting_destroy) || !connection
+              event, handler = @signal_connections.delete(id)
+              if event == :destroy
+                @destroy_handlers.delete(handler)
+              else
+                @signals.fetch(event).delete_if { |_name, callback| callback.equal?(handler) }
+              end
+            end
+            self
+          end
+          private :disconnect_signal_handler
 
           # Enables only the pointer-press mask on contracted pointer surfaces.
           # Other native event families are not implied by menu support.
@@ -217,6 +256,24 @@ module Lich
             self
           end
 
+          # Labels project bounded foreground colors; control captions remain theme-owned.
+          # @return [Widget] self
+          # @raise [UnsupportedOperation] for unknown states, colors, widgets or owner/lifetime misuse
+          def override_color(state, colour)
+            session.style_operation(self, :override_color) do
+              session.refuse(self, :override_color) if destroyed? || state != StateFlags::NORMAL || !colour.is_a?(Gdk::RGBA)
+              if is_a?(Label) && !@link_markup
+                write(:foreground, @label_color || colour.to_h)
+                @props[:foreground] = colour.to_h
+              elsif is_a?(Button) || is_a?(ToggleButton) || is_a?(Entry)
+                session.degrade(:control_foreground, 'control caption colors follow the WebUI theme', receiver: self)
+              else
+                session.refuse(self, :override_color)
+              end
+            end
+            self
+          end
+
           # Retains explicit expansion; otherwise containers inherit descendant demand.
           # Horizontal grids use existing expanding tracks and vertical stacks use fill.
           # @return [Widget] self
@@ -228,6 +285,7 @@ module Lich
             end
             self
           end
+          alias hexpand= set_hexpand
 
           # Requests available height through the same bounded layout propagation.
           # @return [Widget] self
@@ -239,6 +297,7 @@ module Lich
             end
             self
           end
+          alias vexpand= set_vexpand
 
           # @api private
           # @return [Boolean] explicit or descendant expansion along the given axis
@@ -309,7 +368,9 @@ module Lich
           # @param value [Symbol] :fill, :start, :center or :end
           def valign=(value)
             session.refuse(self, :valign=) unless %i[fill start center end].include?(value)
-            write(:vertical_align, value == :fill ? :stretch : value)
+            alignment = value == :fill ? :stretch : value
+            validate_vertical_parent(alignment) if parent
+            write(:vertical_align, alignment)
             refresh_layout!
           end
           alias set_valign valign=
@@ -464,7 +525,15 @@ module Lich
             @destroyed = true
             @style_context&.send(:close)
             @children.dup.each(&:mark_destroyed)
-            @destroy_handlers&.each { |handler| session.cleanup(self) { handler.call(self) } }
+            begin
+              @emitting_destroy = true
+              @destroy_handlers&.dup&.each { |handler| session.cleanup(self) { handler.call(self) } }
+            ensure
+              @emitting_destroy = false
+              @signal_connections.clear
+              @signals.clear
+              @destroy_handlers&.clear
+            end
           end
 
           # Drafts stay in the core viewer store. Only a terminal action copies
@@ -487,15 +556,19 @@ module Lich
             refresh_layout!
           end
 
-          # Vertical allocation is supported in grids, overlays and single-child frames.
-          # Refuse other parents instead of accidentally treating a flex cross axis
-          # as vertical. Builder attaches parents before this validation runs.
+          # Do not mistake a vertical flex container's horizontal cross axis for
+          # vertical allocation. Only natural-height start alignment is supported
+          # there; single-child scrollers own a separate grid allocation.
           def component_props
-            if @props.key?(:vertical_align) && parent && !parent.is_a?(Table) && !parent.is_a?(Frame) && !parent.is_a?(Overlay) &&
-               !(parent.is_a?(Box) && !parent.vertical?)
-              session.refuse(self, :valign_parent)
-            end
+            validate_vertical_parent(@props[:vertical_align]) if @props.key?(:vertical_align) && parent
             @props.merge(layout_props)
+          end
+
+          def validate_vertical_parent(alignment)
+            supported = parent.is_a?(Table) || parent.is_a?(Frame) || parent.is_a?(Overlay) ||
+                        (parent.is_a?(ScrolledWindow) && parent.children.length == 1) ||
+                        (parent.is_a?(Box) && (!parent.vertical? || (alignment == :start && !expands?(:vertical))))
+            session.refuse(self, :valign_parent) unless supported
           end
 
           def layout_props = {}
@@ -737,6 +810,16 @@ module Lich
             session.refuse(self, :resizable=) unless value == true || value == false
             session.degrade(:resizable, 'window resizing is controlled by the browser host')
           end
+          alias set_resizable resizable=
+
+          # Utility classification does not change focus, ownership or native window lifetime.
+          # @return [Window] self
+          def set_type_hint(value)
+            session.refuse(self, :set_type_hint) unless value == Gdk::WindowTypeHint::UTILITY
+            session.degrade(:window_type_hint, 'utility window classification is controlled by the browser host')
+            self
+          end
+          alias type_hint= set_type_hint
 
           # Reports the host-owned window-icon limitation without loading native image objects.
           # @return [Window] self
@@ -827,6 +910,12 @@ module Lich
           # @return [Boolean] whether this window has been published and remains live
           def visible? = !destroyed? && @shown == true
 
+          # Removes a standard window signal, including destroy, without retiring
+          # its core geometry/close observers. Other facade signal families retain
+          # their existing capability boundaries.
+          # @return [Window] self
+          def signal_handler_disconnect(id) = disconnect_signal_handler(id)
+
           protected
 
           def component_type = :page
@@ -844,7 +933,7 @@ module Lich
             props
           end
 
-          def signal_map = { 'delete_event' => :close }
+          def signal_map = { 'delete_event' => :close, 'configure_event' => :configure }
           def builtin_events = %i[close configure]
 
           # Preserve the latest validated browser measurements for the original
@@ -853,10 +942,23 @@ module Lich
             return super unless event == :configure
 
             session.port.bind(@handle, :configure, proc do |context|
-              session.callback(context, widget: self) { @observed_geometry = context.payload.dup }
+              session.callback(context, widget: self) do
+                previous = @observed_geometry
+                @observed_geometry = context.payload.merge(position: context.payload.fetch(:position).dup.freeze).freeze
+                geometry = @observed_geometry.values_at(:width, :height, :position)
+                next if previous && previous.values_at(:width, :height, :position) == geometry
+
+                event = ConfigureEvent.new(width: geometry[0], height: geometry[1], x: geometry[2][0], y: geometry[2][1])
+                @signals.fetch(:configure, []).dup.each do |_name, handler|
+                  break if destroyed? || handler.call(self, event) == true
+                end
+              end
             end)
           end
         end
+
+        # Immutable notification data from the existing validated viewer geometry.
+        ConfigureEvent = Data.define(:width, :height, :x, :y)
 
         class Box < Widget
           include Container
@@ -930,13 +1032,15 @@ module Lich
             self
           end
 
-          def component_type = @orientation == :vertical ? :stack : :grid
+          def component_type = vertical? && !@homogeneous ? :stack : :grid
 
           # Natural tracks keep long captions from spilling into equal-width peers.
           # Expanded children share surplus width; their own alignment still applies.
           def layout_props
             return {} unless %i[stack grid].include?(component_type)
             if vertical?
+              return { cols: 1, equal_rows: true } if @homogeneous
+
               allocated = parent.is_a?(Window) || (parent.is_a?(Box) && parent.vertical?)
               { fill: !!(allocated && expands?(:vertical)) }
             else
@@ -944,32 +1048,34 @@ module Lich
                 child = @children[index]
                 child.expands?(:horizontal) || @packing.dig(child, :expand) == true
               end.map { |index| index + 1 }
-              { cols: [@children.length, 1].max, homogeneous: false, expand_columns: expanding }
+              { cols: [@children.length, 1].max, homogeneous: @homogeneous == true, expand_columns: expanding }
             end
           end
         end
 
         # Legacy horizontal constructor using the existing Box packing contract.
         class HBox < Box
-          # Creates a horizontal group without requesting equal child sizes.
-          # @param homogeneous [Boolean] must be false; equal sizing is unsupported
+          # Creates a horizontal group with optional equal-width tracks.
+          # @param homogeneous [Boolean] whether children share equal widths
           # @param spacing [Integer] gap between children in shared layout units
-          # @raise [UnsupportedOperation] when homogeneous is not false
+          # @raise [UnsupportedOperation] when homogeneous is not boolean
           def initialize(homogeneous = false, spacing = 0)
             super(:horizontal, spacing)
-            session.refuse(self, :new) unless homogeneous.equal?(false)
+            session.refuse(self, :new) unless [true, false].include?(homogeneous)
+            @homogeneous = homogeneous
           end
         end
 
         # Legacy vertical constructor using the existing Box packing contract.
         class VBox < Box
-          # Creates a vertical group without requesting equal child sizes.
-          # @param homogeneous [Boolean] must be false; equal sizing is unsupported
+          # Creates a vertical group with optional equal-height grid rows.
+          # @param homogeneous [Boolean] whether children share equal heights
           # @param spacing [Integer] gap between children in shared layout units
-          # @raise [UnsupportedOperation] when homogeneous is not false
+          # @raise [UnsupportedOperation] when homogeneous is not boolean
           def initialize(homogeneous = false, spacing = 0)
             super(:vertical, spacing)
-            session.refuse(self, :new) unless homogeneous.equal?(false)
+            session.refuse(self, :new) unless [true, false].include?(homogeneous)
+            @homogeneous = homogeneous
           end
         end
 
@@ -1074,6 +1180,24 @@ module Lich
           end
           alias show_border= set_show_border
 
+          # Browser tabs remain reachable through their host's overflow behavior.
+          # @return [Notebook] self
+          def set_scrollable(value)
+            session.refuse(self, :set_scrollable) unless [true, false].include?(value)
+            session.degrade(:notebook_scrollable, 'tab overflow follows the browser layout')
+            self
+          end
+          alias scrollable= set_scrollable
+
+          # Legacy tab padding is theme-owned and does not alter page content margins.
+          # @return [Notebook] self
+          def set_tab_border(value)
+            session.refuse(self, :set_tab_border) unless value.is_a?(Integer) && value.between?(0, 65_535)
+            session.degrade(:notebook_tab_border, 'tab padding follows the browser theme')
+            self
+          end
+          alias tab_border= set_tab_border
+
           # Hides only page selectors; the selected page and notebook sizing remain.
           # @param value [Boolean] whether the browser exposes tab buttons
           def show_tabs=(value)
@@ -1151,6 +1275,8 @@ module Lich
             end
           end
           alias set_text text=
+          alias label= text=
+          alias label text
 
           # Maps unit-interval fractions to start/center/end content alignment.
           # Independent setters preserve the other axis regardless of XML order.
@@ -1167,12 +1293,14 @@ module Lich
             session.refuse(self, :xalign=) unless value.is_a?(Numeric) && value.between?(0, 1)
             write(:align, value.zero? ? :start : (value == 1 ? :end : :center))
           end
+          alias set_xalign xalign=
 
           # @param value [Numeric] vertical content alignment, 0..1
           def yalign=(value)
             session.refuse(self, :yalign=) unless !@link_markup && value.is_a?(Numeric) && value.between?(0, 1)
             write(:content_vertical_align, value.zero? ? :start : (value == 1 ? :end : :center))
           end
+          alias set_yalign yalign=
 
           # Quarter-turns retain literal text and participate in natural sizing.
           # Arbitrary angles and linked Markdown labels remain unsupported.
@@ -1401,6 +1529,8 @@ module Lich
             write(:min_width_chars, count)
           end
 
+          alias width_chars= set_width_chars
+
           # Caps the entry's natural character width through the existing core
           # metric. This is presentation sizing, not a limit on entered text.
           # @param count [Integer] 1..1024; reset requests remain unsupported
@@ -1486,6 +1616,41 @@ module Lich
           def component_props = super.merge(appearance: :button)
           def input_property = :checked
           def signal_map = { 'toggled' => :change, 'clicked' => :change }
+        end
+
+        # Immediate boolean switch; active notifications observe the new value.
+        class Switch < ToggleButton
+          ActiveProperty = Data.define(:name)
+          ACTIVE_PROPERTY = ActiveProperty.new('active').freeze
+
+          def initialize
+            super('')
+          end
+
+          def set_active(value)
+            session.style_operation(self, :active=) do
+              session.refuse(self, :active=) if destroyed? || ![true, false].include?(value)
+              changed = active? != value
+              write(:checked, value)
+              emit_handlers(:change) if changed
+            end
+            self
+          end
+          alias active= set_active
+
+          protected
+
+          def component_props = super.merge(appearance: :switch)
+          def signal_map = { 'notify::active' => :change }
+
+          def emit_handlers(event, signal: nil)
+            return super unless event == :change
+
+            # Active is an immediate property notification, rather than a deferred form draft.
+            @committed[:checked] = read(:checked)
+            @signals.fetch(event, []).dup.each { |_name, handler| handler.call(self, ACTIVE_PROPERTY) }
+            nil
+          end
         end
 
         # Checkbox presentation shares the toggle value and programmatic signal semantics.

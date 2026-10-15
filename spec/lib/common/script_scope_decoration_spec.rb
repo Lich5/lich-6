@@ -187,6 +187,7 @@ RSpec.describe 'owner-scoped CSS decoration bookkeeping' do
   end
 
   it 'consolidates CSS notices and reports geometry only when dimensions are read' do
+    allow(service).to receive(:monitor_geometry).and_return(source: 'unavailable', fallback: true)
     context = label.style_context
     context.instance_eval("add_class('required-setting')", 'decoration.lic', 71)
     context.add_provider(provider)
