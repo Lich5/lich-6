@@ -664,8 +664,15 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(empty.locator('tbody tr')).toHaveCount(1);
     // Hold the third native gesture across background server renders. Chrome
     // emits pointercancel on handoff to HTML drag-and-drop; that is not dragend.
-    const sourceBox = await empty.locator('tbody tr').boundingBox();
-    const targetBox = await destination.boundingBox();
+    const visibleBox = async locator => {
+      let box;
+      await expect.poll(async () => {
+        box = await locator.boundingBox();
+        return !!box && box.width > 0 && box.height > 0;
+      }, { message: 'drag geometry must be visible after background redraws' }).toBe(true);
+      return box;
+    };
+    const sourceBox = await visibleBox(empty.locator('tbody tr'));
     await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
     await page.mouse.down();
     await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 15, sourceBox.y + sourceBox.height / 2, { steps: 5 });
@@ -673,6 +680,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     // gesture. Finish churn before dropping, preserving the one-stale-retry contract.
     await expect.poll(() => dragRenderBatchFinished).toBe(true);
     expect(await page.evaluate(() => window.fixtureDragSource?.isConnected), 'the third drag source must survive background renders').toBe(true);
+    const targetBox = await visibleBox(destination);
     await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height - 20, { steps: 5 });
     await page.mouse.up();
     await expect(destination.locator('tbody tr')).toHaveCount(2);
