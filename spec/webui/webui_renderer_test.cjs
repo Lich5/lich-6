@@ -1661,3 +1661,42 @@ for (const alignment of ['start', 'center', 'end', 'stretch']) {
     assert.equal(content.style.height, '0px');
   });
 }
+
+for (const completion of ['dragend', 'drop', 'blur']) {
+  test(`native row drag survives pointercancel until ${completion}`, async t => {
+    const { dom, receive } = fixture(); t.after(() => dom.window.close());
+    receive({ type: 'hello', pages: [{ address: 'models' }] });
+    modelTable(receive, 1, { transfer_group: 'spells', rows: [{ key: 'barrier', cells: { name: 'Spirit Barrier' } }] });
+    const row = dom.window.document.querySelector('tbody tr');
+    row.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    const drag = new dom.window.Event('dragstart', { bubbles: true });
+    drag.dataTransfer = { setData() {} };
+    row.dispatchEvent(drag);
+    // Chrome hands the pointer to HTML drag-and-drop by cancelling its pointer stream.
+    row.dispatchEvent(new dom.window.Event('pointercancel', { bubbles: true }));
+    modelTable(receive, 2, { transfer_group: 'spells', rows: [{ key: 'barrier', cells: { name: 'Updated' } }] });
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+    assert.equal(row.isConnected, true, 'a native drag still owns this exact DOM source');
+    (completion === 'blur' ? dom.window : row).dispatchEvent(new dom.window.Event(completion, { bubbles: true }));
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+    assert.equal(row.isConnected, false);
+    assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'Updated');
+  });
+}
+
+test('a delayed release from the previous gesture cannot clear a new pointer hold', async t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'models' }] });
+  modelTable(receive, 1, { rows: [{ key: 'a', cells: { name: 'Before' } }] });
+  const row = dom.window.document.querySelector('tbody tr');
+  row.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+  row.dispatchEvent(new dom.window.Event('pointerup', { bubbles: true }));
+  row.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+  modelTable(receive, 2, { rows: [{ key: 'a', cells: { name: 'After' } }] });
+  await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  assert.equal(row.isConnected, true);
+  row.dispatchEvent(new dom.window.Event('pointerup', { bubbles: true }));
+  await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  assert.equal(row.isConnected, false);
+  assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'After');
+});

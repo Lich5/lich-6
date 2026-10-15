@@ -8,6 +8,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 // do not capture websocket frames, so without this a lost event (for example a
 // Close that never reaches the server) leaves no evidence in CI.
 const wire = [];
+let dragRenderBatchFinished = false;
 const wireStart = Date.now();
 function record(direction, data) {
   const raw = String(data).slice(0, 200);
@@ -36,7 +37,13 @@ test.afterEach(async ({}, testInfo) => {
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('websocket', socket => {
     socket.on('framesent', frame => record('->', frame.payload));
-    socket.on('framereceived', frame => record('<-', frame.payload));
+    socket.on('framereceived', frame => {
+      record('<-', frame.payload);
+      if (scenario === 'shim-ewaggle') {
+        const message = JSON.parse(String(frame.payload));
+        if (message.type === 'render' && message.tree?.props.title === 'EWaggle drag fixture complete') dragRenderBatchFinished = true;
+      }
+    });
     socket.on('close', () => record('--', 'socket closed'));
   });
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
@@ -55,6 +62,14 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.addInitScript(() => {
       window.fixturePresentation = {};
       window.lichNativeWindow = { present: props => { window.fixturePresentation = props; } };
+    });
+  }
+  if (scenario === 'shim-ewaggle') {
+    // Capture the actual native drag source, not a locator resolved before a redraw.
+    await page.addInitScript(() => {
+      document.addEventListener('dragstart', event => {
+        window.fixtureDragSource = event.target;
+      }, true);
     });
   }
   await page.goto(target);
@@ -647,7 +662,19 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await destination.locator('tbody tr').filter({ hasText: 'Spirit Barrier' }).dragTo(empty,
       { targetPosition: await blankArea(empty) });
     await expect(empty.locator('tbody tr')).toHaveCount(1);
-    await empty.locator('tbody tr').dragTo(destination, { targetPosition: await blankArea(destination) });
+    // Hold the third native gesture across background server renders. Chrome
+    // emits pointercancel on handoff to HTML drag-and-drop; that is not dragend.
+    const sourceBox = await empty.locator('tbody tr').boundingBox();
+    const targetBox = await destination.boundingBox();
+    await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 15, sourceBox.y + sourceBox.height / 2, { steps: 5 });
+    // Wait for the finite server-render batch while still holding the native
+    // gesture. Finish churn before dropping, preserving the one-stale-retry contract.
+    await expect.poll(() => dragRenderBatchFinished).toBe(true);
+    expect(await page.evaluate(() => window.fixtureDragSource?.isConnected), 'the third drag source must survive background renders').toBe(true);
+    await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height - 20, { steps: 5 });
+    await page.mouse.up();
     await expect(destination.locator('tbody tr')).toHaveCount(2);
     const barrier = destination.locator('tbody tr').filter({ hasText: 'Spirit Barrier' });
     await barrier.dragTo(destination);
