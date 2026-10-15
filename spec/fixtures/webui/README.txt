@@ -130,7 +130,7 @@ and game functions are captured; the sailing loop is outside the extracted block
 The owner expanded PR 4 to inherited sensitivity and retained Window#hide/show.
 Chrome and native WebKit verify the selector disables/re-enables while retaining
 its value, captured Save succeeds, and the original Close callback hides/destroys.
-A separate generic fixture hides for eight seconds, then reuses the same window
+A separate generic fixture hides for two seconds, then reuses the same window
 and input draft. Sail2's original startup failure remains an explicit negative case.
 Gemstonev runs its complete unchanged difficulty method. Its game command is
 captured; the 50ms timer repeats until synthetic game data arrives, then hands off

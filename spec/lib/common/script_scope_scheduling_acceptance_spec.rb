@@ -252,12 +252,12 @@ RSpec.describe 'scheduled repository, sail2 and gemstonev source acceptance' do
     box = gtk::Box.new(:vertical)
     entry = gtk::Entry.new
     entry.text = 'Initial'
-    hide = gtk::Button.new(label: 'Hide for 8 seconds')
+    hide = gtk::Button.new(label: 'Hide for 2 seconds')
     finish = gtk::Button.new(label: 'Finish')
     restored, saved = [], []
     hide.signal_connect('clicked') do
       window.hide
-      glib::Timeout.add_seconds(8) do
+      glib::Timeout.add_seconds(2) do
         window.show
         restored << window.materialize
         false
