@@ -53,8 +53,44 @@ module Lich
         @destroyed = {}.compare_by_identity
         @bindings = {}
         @viewer_values = {}
+        @focus_requests = {}.compare_by_identity
+        @focus_sequence = 0
         @dirty_roots = {}.compare_by_identity
         @mutex = Monitor.new
+      end
+
+      # Retains a revisioned focus request for a focusable descendant of one owned page.
+      # @return [nil]
+      # @raise [Error] for foreign, detached, non-focusable or retired targets
+      def focus(root_handle, target_handle)
+        @mutex.synchronize do
+          root, target = node!(root_handle), node!(target_handle)
+          valid = root.type == :page && root_for(target).equal?(root) && TreeBuilder::FOCUSABLE_TYPES.include?(target.type)
+          raise attributed_error('focus requires a focusable page descendant', target_handle, :focus) unless valid
+          raise attributed_error('focus revision exhausted', root_handle, :focus) if @focus_sequence >= 2_147_483_647
+
+          @focus_requests[root] = [target_handle, @focus_sequence += 1]
+          dirty!(root)
+        end
+        nil
+      end
+
+      # Repositions an existing child atomically under its parent's placement contract.
+      # @return [nil]
+      # @raise [Error] without changing placement on invalid input or parentage
+      def place(parent_handle, child_handle, placement)
+        @mutex.synchronize do
+          parent, child = node!(parent_handle), node!(child_handle)
+          raise attributed_error('placement requires an attached child', child_handle, :placement) unless child.parent.equal?(parent_handle)
+          raise ArgumentError, 'placement must be a Hash' unless placement.is_a?(Hash)
+
+          candidate = child.dup
+          candidate.placement = symbolize(placement).freeze
+          validate_placement!(parent, candidate, child_handle)
+          child.placement = candidate.placement
+          dirty!(root_for(parent))
+        end
+        nil
       end
 
       # Validates a component and allocates an opaque handle without opening a window.
@@ -233,7 +269,7 @@ module Lich
       # @param child [Handle] child to attach
       # @param index [Integer, nil] insertion position; nil appends
       # @return [nil]
-      def attach(parent, child, index = nil)
+      def attach(parent, child, index = nil, placement: nil)
         @mutex.synchronize do
           parent_node = node!(parent)
           child_node = node!(child)
@@ -246,8 +282,19 @@ module Lich
             raise attributed_error('child index is out of range', parent, :index)
           end
           validate_child_capacity!(parent, parent_node)
-          validate_placement!(parent_node, child_node, child)
+          child_rule = Contract.schema(parent_node.type)[:children]
+          if child_rule.is_a?(Hash) && child_rule[:types] && !child_rule[:types].include?(child_node.type)
+            raise attributed_error('child type is not permitted', child)
+          end
+          previous = child_node.placement
+          candidate = child_node.dup
+          unless placement.nil? || placement.is_a?(Hash)
+            raise attributed_error('placement must be a Hash', child, :placement)
+          end
+          candidate.placement = symbolize(placement).freeze if placement
+          validate_placement!(parent_node, candidate, child)
           parent_node.children.insert(position, child)
+          child_node.placement = candidate.placement
           child_node.parent = parent
           begin
             assign_child_slots!(parent_node)
@@ -255,6 +302,7 @@ module Lich
           rescue StandardError
             parent_node.children.delete(child)
             child_node.parent = nil
+            child_node.placement = previous
             child_node.slot = nil
             assign_child_slots!(parent_node)
             raise
@@ -519,6 +567,14 @@ module Lich
         snapshot = @mutex.synchronize { snapshot_children(node) }
         scope = input_cids(snapshot, "page:#{adapter_page_id(node)}")
         render_snapshot(builder, snapshot, scope)
+        @mutex.synchronize do
+          handle, revision = @focus_requests[node]
+          target = @nodes[handle]
+          if target && target.cid && root_for(target).equal?(node)
+            builder.focus(target.cid)
+            builder.focus_revision(revision)
+          end
+        end
       end
 
       # Captures ordered properties, bindings, slots, and descendants under the adapter monitor.
@@ -593,6 +649,12 @@ module Lich
         end
         if parent.type == :grid && child.placement.fetch(:column, 1) + child.placement.fetch(:span, 1) - 1 > parent.props[:cols]
           raise attributed_error('child placement exceeds grid columns', handle, :span)
+        end
+        if parent.type == :grid && child.placement.fetch(:row, 1) + child.placement.fetch(:row_span, 1) - 1 > Contract::BOUNDS[:children]
+          raise attributed_error('child placement exceeds grid rows', handle, :row_span)
+        end
+        if parent.type == :overlay && !parent.props[:positioned] && (child.placement.keys & %i[x y]).any?
+          raise attributed_error('coordinates require a positioned overlay', handle, :placement)
         end
       end
 
@@ -679,6 +741,7 @@ module Lich
       # @return [void]
       def destroy_node!(handle)
         node = @nodes.delete(handle)
+        @focus_requests.delete_if { |root, (target, _revision)| root.equal?(node) || target.equal?(handle) }
         node.children.each { |child| destroy_node!(child) }
         node.bindings.each_value { |binding_id| @bindings.delete(binding_id) }
         @viewer_values.delete_if { |(_viewer, candidate, _property), _value| candidate.equal?(handle) }

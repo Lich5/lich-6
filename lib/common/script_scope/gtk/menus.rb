@@ -365,6 +365,10 @@ module Lich
           BUTTON_PRESS_MASK = 1 << 8
         end
         BUTTON_PRESS_MASK = EventMask::BUTTON_PRESS_MASK
+        BUTTON_PRIMARY = 1
+        module WindowState
+          ICONIFIED = 1 << 1
+        end
 
         # Legacy constant spelling; this does not expose native GDK event objects.
         module Event

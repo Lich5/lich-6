@@ -17,7 +17,7 @@ RSpec.describe 'bounded native typography' do
   end
 
   it 'rejects unbounded sizes, malformed colors, markup and CSS without clamping' do
-    [5, 49, Float::INFINITY, '12px'].each do |size|
+    [5, 97, Float::INFINITY, '12px'].each do |size|
       expect { validator.validate_component!(:text, { content: 'x', font_size: size }, **context) }
         .to raise_error(Lich::WebUI::SchemaViolationError)
     end
@@ -31,8 +31,9 @@ RSpec.describe 'bounded native typography' do
     end
   end
 
-  it 'keeps typography out of input controls and retains the component vocabulary' do
-    expect { validator.validate_component!(:text_input, { label: 'Name', font_size: 12 }, **context) }
+  it 'shares bounded fonts with entries while keeping text colors out and retaining the vocabulary' do
+    expect(validator.validate_component!(:text_input, { value: '', font_size: 12 }, **context)).to include(font_size: 12)
+    expect { validator.validate_component!(:text_input, { value: '', foreground: color }, **context) }
       .to raise_error(Lich::WebUI::UnknownPropertyError)
     expect(Lich::WebUI::Contract::TYPES.size).to eq(30)
   end

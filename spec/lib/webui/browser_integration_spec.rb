@@ -7,6 +7,53 @@ require_relative '../../support/webui_browser'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'WebUI browser bootstrap', browser: true do
+  it 'measures Fixed children, delivers EventBox clicks and applies focus requests once' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    scope = Lich::Common::ScriptScope
+    scope.activate!
+    owner = Struct.new(:name).new('fixed-events-focus.lic')
+    service = Lich::WebUI::Service.new
+    stub_const('Lich::Common::Script', Class.new { def self.current; end })
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
+    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
+    allow(Lich).to receive(:log)
+    gtk = scope.const_get(:Gtk, false)
+    window, fixed = gtk::Window.new, gtk::Fixed.new
+    first, second = gtk::Entry.new, gtk::Entry.new
+    first.placeholder_text = 'First field'
+    second.placeholder_text = 'Second field'
+    surface = gtk::EventBox.new
+    label = gtk::Label.new('Pointer surface')
+    status = gtk::Label.new('Waiting for edit')
+    second.signal_connect('changed') { status.text = 'Edited second' }
+    surface.add(label)
+    clicks, saved = [], nil
+    surface.signal_connect('button_press_event') do |_widget, event|
+      clicks << event.button
+      label.text = "Pointer #{event.button}"
+      fixed.move(surface, 350, 40)
+    end
+    refocus, finish = gtk::Button.new('Refocus'), gtk::Button.new('Finish')
+    refocus.signal_connect('clicked') { window.set_focus(first) }
+    finish.signal_connect('clicked') { saved = second.text; window.destroy }
+    [[first, 0, 0], [second, 0, 60], [surface, 300, 0], [refocus, 0, 120], [finish, 150, 120], [status, 0, 180]].each do |child, x, y|
+      fixed.put(child, x, y)
+    end
+    window.add(fixed)
+    window.set_focus(first)
+    window.show_all
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-fixed-events-focus')
+    expect(clicks).to eq([1])
+    expect(saved).to eq('Changed second')
+  ensure
+    Lich::Common::ScriptDeath.run(owner) if owner
+    service&.stop
+  end
+
   it 'keeps progress dimensions and labels stable when color overrides change' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 

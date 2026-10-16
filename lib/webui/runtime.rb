@@ -17,7 +17,7 @@ module Lich
       LIFECYCLE_SNAPSHOT_KEY = :lich_webui_lifecycle_snapshot
       EventContext = Data.define(:viewer_id, :page, :component, :event, :payload, :submission)
       PRESENTATION_SUPPORT = {
-        always_on_top: false, borderless: false, hidden: false, opacity: true, scrollbars: true,
+        always_on_top: false, borderless: false, hidden: false, minimized: false, minimized_revision: false, opacity: true, scrollbars: true,
       }.freeze
 
       # Connects page delivery and callback dispatch to optional host services.
@@ -73,7 +73,7 @@ module Lich
       # @param _page [Page, nil] reserved for page-specific host selection
       # @return [Hash{Symbol => Boolean}] supported presentation properties
       def presentation_support(_page = nil)
-        support = NativeHost.platform ? PRESENTATION_SUPPORT.merge(always_on_top: true, borderless: true, hidden: true) : PRESENTATION_SUPPORT
+        support = NativeHost.platform ? PRESENTATION_SUPPORT.merge(always_on_top: true, borderless: true, hidden: true, minimized: true, minimized_revision: true) : PRESENTATION_SUPPORT
         support.merge(WindowPresentation.support).freeze
       end
 

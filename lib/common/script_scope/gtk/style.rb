@@ -353,11 +353,15 @@ module Lich
           # @return [Hash] immutable numeric RGBA record, never source CSS
           def to_h = @rgba
 
-          # Accepts the measured red/green compatibility names only.
+          # Accepts measured red/green names and bounded six-/twelve-digit RGB literals.
           # @return [RGBA]
           # @raise [UnsupportedOperation] for other values
           def self.parse(value)
             channels = { 'green' => [0, 1, 0, 1], 'red' => [1, 0, 0, 1] }[value]
+            if value.is_a?(String) && value.match?(/\A#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{12})\z/)
+              color = Gtk.const_get(:Color, false).parse(value)
+              channels = %i[r g b].map { |key| color[key] / 255.0 } + [color[:a]]
+            end
             Gtk.session.refuse(self, :parse) unless channels
             new(*channels)
           end
@@ -388,18 +392,30 @@ module Lich
       # They do not load Pango or expose arbitrary browser CSS.
       module Pango
         class FontDescription
-          attr_reader :weight
+          attr_reader :weight, :properties
 
-          # Creates the supported font-weight token, initially normal.
-          def initialize
+          # Parses generic families and bounded point sizes without loading Pango.
+          # @param description [String, nil] e.g. Monospace 10; nil keeps theme typography
+          # @raise [Gtk::UnsupportedOperation] for descriptions outside this subset
+          def initialize(description = nil)
             @weight = :normal
+            @properties = {}.freeze
+            return if description.nil?
+
+            match = description.is_a?(String) && description.length <= 512 && description.match(/\A(Monospace|Sans|Serif) ([0-9]+(?:\.[0-9]+)?)\z/i)
+            Gtk.session.refuse(self, :new) unless match && match[2].to_f.between?(6, 48)
+            family = { 'monospace' => 'monospace', 'sans' => 'sans-serif', 'serif' => 'serif' }.fetch(match[1].downcase)
+            @properties = { font_family: family, font_size: match[2].to_f, font_unit: :pt }.freeze
           end
 
-          # Accepts a bounded nonempty description without parsing font family or size.
-          # @return [FontDescription] normal-weight token
+          # Parses generic-family/size strings; other bounded names retain theme typography.
+          # @return [FontDescription] parsed typography or normal-weight theme token
           # @raise [Gtk::UnsupportedOperation] for an invalid description
           def self.from_string(value)
             Gtk.session.refuse(self, :from_string) unless value.is_a?(String) && value.length.between?(1, 512)
+            return new(value) if value.match?(/\A(?:Monospace|Sans|Serif) [0-9]+(?:\.[0-9]+)?\z/i)
+
+            Gtk.session.degrade(:font_face, 'unparsed font family and size follow browser theme')
             new
           end
 
@@ -408,7 +424,7 @@ module Lich
             @weight = value
           end
 
-          # Refuses font operations outside the supported weight token.
+          # Refuses font operations outside the supported typography token.
           # @raise [Gtk::UnsupportedOperation] always
           def method_missing(name, *, **, &)
             Gtk.session.refuse(self, name)

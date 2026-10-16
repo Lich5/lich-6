@@ -95,6 +95,17 @@ module Lich
             super
           end
 
+          # Applies bounded generic-family typography to text and ordinary controls.
+          # @param font [Pango::FontDescription] parsed family/size plus normal/bold weight
+          # @return [Widget] self
+          # @raise [UnsupportedOperation] for widgets without a text-style contract
+          def override_font(font)
+            valid = font.is_a?(Pango::FontDescription) && %i[text button text_input].include?(component_type)
+            session.refuse(self, :override_font) unless valid
+            font.properties.each { |property, value| write(property, value) }
+            write(:emphasis, font.weight == :bold ? :strong : :normal)
+          end
+
           # Returns the widget-local decoration facade without exposing DOM styling.
           # @return [StyleContext]
           def style_context
@@ -127,7 +138,7 @@ module Lich
             self
           end
 
-          def insert_child(child, index)
+          def insert_child(child, index, placement: nil)
             session.refuse(self, :add) unless child.is_a?(Widget)
             session.refuse(self, :add) unless child.session.equal?(session)
             ancestor = self
@@ -143,7 +154,13 @@ module Lich
               return self
             end
             session.refuse(self, :add) if child.parent
-            session.port.attach(@handle, child.materialize, index) if @handle
+            if @handle
+              if placement
+                session.port.attach(@handle, child.materialize, index, placement: placement)
+              else
+                session.port.attach(@handle, child.materialize, index)
+              end
+            end
             child.parent = self
             @children.insert(index, child)
             session.refresh_label_styles
@@ -664,6 +681,26 @@ module Lich
             session.register(self)
           end
 
+          # Requests focus for a live same-owner descendant through the core facility.
+          # Before show, the request is retained until the page and its inputs exist.
+          # @return [Window] self
+          # @raise [UnsupportedOperation] for foreign, detached or retired targets
+          def set_focus(widget)
+            valid = !destroyed? && widget.is_a?(Widget) && widget.session.equal?(session) && !widget.destroyed?
+            valid &&= Lich::WebUI::TreeBuilder::FOCUSABLE_TYPES.include?(widget.send(:component_type))
+            ancestor = widget if valid
+            ancestor = ancestor.parent while ancestor && !ancestor.equal?(self)
+            session.refuse(self, :set_focus) unless valid && ancestor.equal?(self)
+            session.synchronize do
+              if @handle
+                session.port.focus(@handle, widget.materialize)
+              else
+                @initial_focus = widget
+              end
+            end
+            self
+          end
+
           # Updates the requested page/window title through the adapter.
           # @return [Window] self
           def title=(value)
@@ -890,6 +927,10 @@ module Lich
               session.refuse(self, :show) if destroyed?
               write(:presentation, @props[:presentation].merge(hidden: false)) if @props.dig(:presentation, :hidden)
               materialize
+              if @initial_focus
+                target, @initial_focus = @initial_focus, nil
+                set_focus(target)
+              end
               @shown = true
             end
             self
@@ -906,6 +947,30 @@ module Lich
             end
             self
           end
+
+          # Requests real native minimization without retiring the page.
+          # @return [Window] self
+          def iconify
+            request_minimized(true)
+          end
+
+          # Restores the owned native window through its presentation channel.
+          # @return [Window] self
+          def deiconify
+            request_minimized(false)
+          end
+
+          # A new request can repeat a value after the user changed the actual native state.
+          def request_minimized(value)
+            session.synchronize do
+              revision = (@minimize_revision || 0) + 1
+              session.refuse(self, :iconify) if revision > 2_147_483_647
+              write(:presentation, (@props[:presentation] || {}).merge(minimized: value, minimized_revision: revision))
+              @minimize_revision = revision
+            end
+            self
+          end
+          private :request_minimized
 
           # @return [Boolean] whether this window has been published and remains live
           def visible? = !destroyed? && @shown == true
@@ -933,12 +998,28 @@ module Lich
             props
           end
 
-          def signal_map = { 'delete_event' => :close, 'configure_event' => :configure }
-          def builtin_events = %i[close configure]
+          def signal_map = { 'delete_event' => :close, 'configure_event' => :configure, 'window_state_event' => :window_state }
+          def builtin_events = %i[close configure window_state]
 
           # Preserve the latest validated browser measurements for the original
           # script's allocation/position reads, including its exit cleanup.
           def bind_event(event)
+            if event == :window_state
+              return session.port.bind(@handle, event, proc do |context|
+                session.callback(context, widget: self) do
+                  minimized = context.payload.fetch(:minimized)
+                  previous = @observed_minimized || false
+                  @observed_minimized = minimized
+                  next if previous == minimized
+
+                  state = WindowStateEvent.new(new_window_state: minimized ? Gdk::WindowState::ICONIFIED : 0,
+                                               changed_mask: Gdk::WindowState::ICONIFIED)
+                  @signals.fetch(:window_state, []).dup.each do |_name, handler|
+                    break if destroyed? || handler.call(self, state) == true
+                  end
+                end
+              end)
+            end
             return super unless event == :configure
 
             session.port.bind(@handle, :configure, proc do |context|
@@ -959,6 +1040,7 @@ module Lich
 
         # Immutable notification data from the existing validated viewer geometry.
         ConfigureEvent = Data.define(:width, :height, :x, :y)
+        WindowStateEvent = Data.define(:new_window_state, :changed_mask)
 
         class Box < Widget
           include Container
@@ -1082,11 +1164,14 @@ module Lich
         class Alignment < Widget
           include Container
 
-          # Maps a bounded horizontal fraction to start/center/end in a stack wrapper.
-          # All four legacy arguments are validated; arbitrary GTK allocation is not reproduced.
+          # Matches GTK's finite-value clamping before projecting horizontal alignment.
+          # Vertical fractions/scaling remain layout hints, not a full GTK allocator.
+          # @raise [UnsupportedOperation] for non-real or nonfinite numeric inputs
           def initialize(xalign, yalign, xscale, yscale)
             super()
-            session.refuse(self, :new) unless [xalign, yalign, xscale, yscale].all? { |value| value.is_a?(Numeric) && value.between?(0, 1) }
+            values = [xalign, yalign, xscale, yscale]
+            session.refuse(self, :new) unless values.all? { |value| value.is_a?(Numeric) && value.real? && value.finite? }
+            xalign = values.map { |value| value.clamp(0, 1) }.first
             @props[:align] = xalign == 1 ? :end : (xalign.zero? ? :start : :center)
           end
 
@@ -1325,11 +1410,34 @@ module Lich
           # @raise [UnsupportedOperation] for unsupported tags
           def set_markup(value)
             return set_link_markup(value) if value.include?('<a ') || @link_markup
+            if (italic = value.match(/\A<i>([^<>]*)<\/i>\z/m))
+              text = italic[1].dup.force_encoding(Encoding::UTF_8)
+              session.refuse(self, :set_markup) unless text.valid_encoding?
+              write(:font_style, :italic)
+              write(:emphasis, :normal)
+              return write(:content, CGI.unescapeHTML(text))
+            end
+            if (sized_span = value.match(/\A<span size=(['"])([0-9]{1,6})\1>([^<>]*)<\/span>\z/m))
+              points = sized_span[2].to_i / 1024.0
+              session.refuse(self, :set_markup) unless points.between?(6, 96)
+              text = sized_span[3].dup.force_encoding(Encoding::UTF_8)
+              session.refuse(self, :set_markup) unless text.valid_encoding?
+              write(:font_size, points)
+              write(:font_unit, :pt)
+              write(:font_style, :normal)
+              return write(:content, CGI.unescapeHTML(text))
+            end
+            if (font_span = value.match(/\A\s*<span font_family="(monospace|sans-serif|serif)">([^<>]*)<\/span>\s*\z/m))
+              write(:font_family, font_span[1])
+              write(:font_style, :normal)
+              return write(:content, CGI.unescapeHTML(font_span[2]))
+            end
             # Boon's measured blue bold tip maps to literal text and the native
             # bounded color record. Source markup never reaches the browser.
             if (tip = value.match(/\A<span color="blue" weight="bold">([^<>]*)<\/span>\z/m))
               write(:foreground, Color.parse('blue'))
               write(:emphasis, :strong)
+              write(:font_style, :normal)
               return write(:content, CGI.unescapeHTML(tip[1]))
             end
             # Other measured headings use only b/big wrappers. Unknown markup
@@ -1341,8 +1449,10 @@ module Lich
             session.refuse(self, :set_markup) if tags.any? { |tag| !%w[<b> <big> </b> </big> </span>].include?(tag) && !span.match?(tag) }
             session.degrade(:markup_style, 'chart colours and font faces follow browser theme; chart text is retained') if tags.any? { |tag| tag.start_with?('<span') }
             write(:emphasis, value.include?('<b>') ? :strong : :normal)
+            write(:font_style, :normal)
             write(:content, CGI.unescapeHTML(value.gsub(/<[^>]*>/, '')))
           end
+          alias markup= set_markup
 
           # Builder markup uses the same bounded formatter as direct Label calls.
           # @param value [Boolean] enable markup before materialization
@@ -1397,6 +1507,17 @@ module Lich
             set_wrap(value == :word)
           end
           alias wrap_mode= set_wrap_mode
+          alias set_line_wrap_mode set_wrap_mode
+          alias line_wrap_mode= set_wrap_mode
+
+          # Bounds visible wrapped lines; -1 retains the full label text.
+          # @param value [Integer] -1 or 1..1024 visible lines
+          # @return [Label] self
+          def lines=(value)
+            session.refuse(self, :lines=) unless value.is_a?(Integer) && (value == -1 || value.between?(1, 1024))
+            write(:line_limit, value)
+          end
+          alias set_lines lines=
 
           # Justifies lines inside the label's text block, independently of
           # widget placement and xalign. A single line does not move the label.
@@ -1553,13 +1674,13 @@ module Lich
             session.refuse(self, :editable=) if @handle
             @editable = !!value
           end
+          alias set_editable editable=
 
-          # Maps only the accepted font-weight token to text emphasis.
+          # Controls the entry's visible border without affecting editability or focus.
+          # @param value [Boolean] whether to draw the standard entry frame
           # @return [Entry] self
-          def override_font(font)
-            session.refuse(self, :override_font) unless font.is_a?(Pango::FontDescription)
-            write(:emphasis, font.weight == :bold ? :strong : :normal)
-          end
+          def set_has_frame(value) = write(:has_frame, value)
+          alias has_frame= set_has_frame
 
           protected
 
@@ -1694,6 +1815,24 @@ module Lich
         end
 
         class Button < Widget
+          # Retains a single plain Label as real typed content, including live updates.
+          # @return [Button] self
+          # @raise [UnsupportedOperation] for other child types or occupied/retired buttons
+          def add(child)
+            session.synchronize do
+              valid = !destroyed? && @children.empty? && child.is_a?(Label) &&
+                      !child.destroyed? && child.send(:component_type) == :text
+              session.refuse(self, :add) unless valid
+              super
+            end
+          end
+
+          # Serializes child removal with single-child admission.
+          # @return [Button] self
+          def remove(child)
+            session.synchronize { super }
+          end
+
           # GTK requests are minima. Keep action text free to grow with the
           # browser font and padding instead of clipping it to a fixed box.
           def set_width_request(value)
@@ -1718,6 +1857,7 @@ module Lich
           # Stock-button IDs are unsupported; no native GTK stock catalog is loaded.
           def initialize(text = nil, label: text, use_underline: true, stock_id: nil)
             super()
+            label = '' if label.nil?
             session.refuse(self, :new) unless label.is_a?(String) && stock_id.nil?
             @props[:label] = use_underline ? label.delete('_') : label
           end

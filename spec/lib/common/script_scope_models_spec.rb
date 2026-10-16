@@ -71,6 +71,418 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(barrier.pop(timeout: 5)).to be(true)
   end
 
+  it 'maps hexadecimal RGBA and italic markup into bounded literal presentation' do
+    rgba = scope.const_get(:Gdk)::RGBA
+    expect(rgba.parse('#d3d3d3').to_h).to eq(r: 211, g: 211, b: 211, a: 1.0)
+    expect(rgba.parse('#FFFF00008080').to_h).to eq(r: 255, g: 0, b: 128, a: 1.0)
+    expect(rgba.parse('green').to_h).to eq(r: 0, g: 255, b: 0, a: 1.0)
+    ['#abc', '#gg0000', '#000000ff', 'url(x)', nil].each do |color|
+      expect { rgba.parse(color) }.to raise_error(gtk::UnsupportedOperation)
+    end
+    label = gtk::Label.new
+    label.set_markup("<i>Explorer &amp; team\nDetails</i>".b)
+    _window, page = show(label)
+    connection = connect(page, 'italic')
+    props = nodes(connection).find { |node| node['type'] == 'text' }['props']
+    expect(props).to include('font_style' => 'italic', 'content' => "Explorer & team\nDetails")
+    ['<i onclick="x">bad</i>', '<i><b>nested</b></i>', '<i>unclosed'].each do |markup|
+      expect { label.set_markup(markup) }.to raise_error(gtk::UnsupportedOperation)
+    end
+    label.set_markup('Plain')
+    wait_for do
+      props = nodes(connection).find { |node| node['type'] == 'text' }['props']
+      props['font_style'] == 'normal' && props['content'] == 'Plain'
+    end
+  end
+
+  it 'normalizes uppercase scroll policy symbols and refuses unsupported tokens' do
+    scroller = gtk::ScrolledWindow.new
+    expect(scroller.set_policy(:AUTOMATIC, :ALWAYS)).to equal(scroller)
+    expect(scroller.set_policy(:NEVER, :automatic)).to equal(scroller)
+    ['AUTOMATIC', :sometimes, nil].each do |token|
+      expect { scroller.set_policy(token, :ALWAYS) }.to raise_error(gtk::UnsupportedOperation)
+    end
+  end
+
+  it 'renders bounded Pango-sized dice glyphs from binary source strings as literal Unicode' do
+    label = gtk::Label.new
+    label.set_markup("<span size='72000'>&#x25FB;</span>".b)
+    _window, page = show(label)
+    props = nodes(connect(page, 'dice')).find { |node| node['type'] == 'text' }['props']
+    expect(props).to include('font_size' => 70.3125, 'font_unit' => 'pt', 'content' => [0x25fb].pack('U'))
+    label.set_markup('<span size="72000">&#x2680;</span>'.b)
+    expect(label.text).to eq([0x2680].pack('U'))
+    ['1024', '98305'].each do |size|
+      expect { label.set_markup("<span size='#{size}'>dice</span>") }.to raise_error(gtk::UnsupportedOperation)
+    end
+    expect { label.set_markup("<span size='72000'><b>dice</b></span>") }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'links native window minimization without recursive duplicate state callbacks' do
+    first, second = gtk::Window.new, gtk::Window.new
+    first.add(gtk::Label.new('First'))
+    second.add(gtk::Label.new('Second'))
+    observed = Queue.new
+    [first, second].each do |window|
+      window.signal_connect('window_state_event') do |_widget, event|
+        observed << [event.new_window_state, event.changed_mask]
+        [first, second].each do |target|
+          event.new_window_state & scope.const_get(:Gdk)::WindowState::ICONIFIED != 0 ? target.iconify : target.deiconify
+        end
+      end
+      window.show_all
+    end
+    page = nil
+    wait_for { (page = service.registry.pages_for(owner).first)&.last_render }
+    viewer = connect(page, 'window-state')
+    send_event(page, viewer, :page, :window_state, { minimized: true })
+    expect(observed.pop(timeout: 3)).to eq([2, 2])
+    wait_for { service.registry.pages_for(owner).all? { |entry| entry.last_render&.tree&.props&.dig(:presentation, :minimized) == true } }
+    send_event(page, viewer, :page, :window_state, { minimized: true })
+    drain_models
+    expect(observed).to be_empty
+    send_event(page, viewer, :page, :window_state, { minimized: false })
+    expect(observed.pop(timeout: 3)).to eq([0, 2])
+    wait_for { service.registry.pages_for(owner).all? { |entry| entry.last_render.tree.props.dig(:presentation, :minimized) == false } }
+    revision = first.instance_variable_get(:@props).dig(:presentation, :minimized_revision)
+    first.deiconify
+    expect(first.instance_variable_get(:@props).dig(:presentation, :minimized_revision)).to eq(revision + 1)
+  end
+
+  it 'looks up original Grid cells across spans, rebasing and removal' do
+    grid = gtk::Grid.new
+    first, second = gtk::Label.new('First'), gtk::Label.new('Second')
+    grid.attach(first, 2, 3, 2, 2)
+    grid.attach(second, -2, -1, 1, 1)
+    expect(grid.get_child_at(3, 4)).to equal(first)
+    expect(grid.get_child_at(-2, -1)).to equal(second)
+    expect(grid.get_child_at(4, 4)).to be_nil
+    expect(grid.get_child_at(0, 0)).to be_nil
+    grid.remove(second)
+    expect(grid.get_child_at(-2, -1)).to be_nil
+    expect(grid.get_child_at(2, 3)).to equal(first)
+    first.destroy
+    expect(grid.get_child_at(2, 3)).to be_nil
+    expect { grid.get_child_at(0.5, 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect { grid.get_child_at(65_537, 0) }.to raise_error(gtk::UnsupportedOperation)
+    grid.destroy
+    expect { grid.get_child_at(0, 0) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'renders a Button Label child and retains live text, style and replacement' do
+    button, label = gtk::Button.new, gtk::Label.new('Die')
+    label.set_markup('<i>Die</i>')
+    button.add(label)
+    expect { button.add(gtk::Label.new('Second')) }.to raise_error(gtk::UnsupportedOperation)
+    _window, page = show(button)
+    viewer = connect(page, 'button-label')
+    child = nodes(viewer).find { |node| node['type'] == 'button' }['children'].first
+    expect(child['type']).to eq('text')
+    expect(child['props']).to include('content' => 'Die', 'font_style' => 'italic')
+    label.set_text('Six')
+    wait_for { nodes(viewer).any? { |node| node.dig('props', 'content') == 'Six' } }
+    button.remove(label)
+    expect(label.parent).to be_nil
+    button.add(gtk::Label.new('Replacement'))
+    wait_for { nodes(viewer).any? { |node| node.dig('props', 'content') == 'Replacement' } }
+    expect { gtk::Button.new.add(gtk::Entry.new) }.to raise_error(gtk::UnsupportedOperation)
+    foreign = gtk::Label.new('Foreign')
+    other = Struct.new(:name).new('foreign.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(other)
+    other_button = gtk::Button.new
+    expect { other_button.add(foreign) }.to raise_error(gtk::UnsupportedOperation)
+    Lich::Common::ScriptDeath.run(other)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+  end
+
+  it 'dispatches Button pointer metadata separately from ordinary activation' do
+    expect(gtk::Button.new.label).to eq('')
+    button = gtk::Button.new('Customize')
+    events = Queue.new
+    button.signal_connect('button-press-event') { |widget, event| events << [widget, event.button, event.x, event.y]; false }
+    button.signal_connect('clicked') { events << :clicked }
+    _window, page = show(button)
+    viewer = connect(page, 'button-pointer')
+    send_event(page, viewer, :button, :pointer_press, { x: 12, y: 34, button: 3, state: 0, time: 10, click_count: 1 })
+    expect(events.pop(timeout: 2)).to eq([button, 3, 12, 34])
+    send_event(page, viewer, :button, :activate, {})
+    expect(events.pop(timeout: 2)).to eq(:clicked)
+  end
+
+  it 'positions and moves Fixed children transactionally and retains the EventBox pointer path' do
+    fixed = gtk::Fixed.new
+    surface = gtk::EventBox.new
+    label = gtk::Label.new('Click to toggle')
+    surface.add(label)
+    expect { surface.add(gtk::Label.new('Second child')) }.to raise_error(gtk::UnsupportedOperation)
+    clicks = Queue.new
+    surface.signal_connect('button_press_event') { |_box, event| clicks << [event.button, event.x, event.y] }
+    fixed.put(surface, 120, 40)
+    _window, page = show(fixed)
+    viewer = connect(page, 'fixed-events')
+    placed = nodes(viewer).find { |node| node['type'] == 'stack' && node['props']['pointer_events'] }
+    expect(placed['placement']).to include('x' => 120, 'y' => 40)
+    send_event(page, viewer, :stack, :pointer_press, { x: 121, y: 42, button: 1, state: 0, time: 10, click_count: 1 })
+    expect(clicks.pop(timeout: 2)).to eq([scope.const_get(:Gdk)::BUTTON_PRIMARY, 121, 42])
+    fixed.move(surface, -5, 60)
+    wait_for { page.last_render.tree.children.first.children.first.placement[:x] == -5 }
+    drain_models
+    expect(surface.instance_variable_get(:@placement)).to eq(x: -5, y: 60)
+    expect { fixed.move(surface, 65_537, 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect(surface.instance_variable_get(:@placement)).to eq(x: -5, y: 60)
+    unattached = gtk::Label.new('Unattached')
+    expect { fixed.put(unattached, 0.5, 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect(unattached.parent).to be_nil
+    expect { fixed.move(unattached, 0, 0) }.to raise_error(gtk::UnsupportedOperation)
+    fixed.remove(surface)
+    fixed.put(surface, 30, 70)
+    wait_for { page.last_render.tree.children.first.children.first.placement[:x] == 30 }
+  end
+
+  it 'serializes concurrent EventBox additions so only one child is attached' do
+    surface = gtk::EventBox.new
+    first, second = gtk::Label.new('First'), gtk::Label.new('Second')
+    entered, release, probed = Queue.new, Queue.new, Queue.new
+    allow(surface).to receive(:insert_child).and_wrap_original do |original, *args|
+      if Thread.current[:event_box_race] == :first
+        entered << true
+        release.pop
+      end
+      original.call(*args)
+    end
+    inserter = Thread.new do
+      Thread.current[:event_box_race] = :first
+      surface.add(first)
+    end
+    expect(entered.pop(timeout: 3)).to be(true)
+    contender = Thread.new do
+      monitor = surface.session.instance_variable_get(:@mutex)
+      acquired = monitor.try_enter
+      # An unlocked guard allows the second insertion to finish before the first.
+      # A locked guard makes the contender wait until the first insertion ends.
+      probed << false unless acquired
+      begin
+        surface.add(second)
+      rescue StandardError => error
+        error
+      ensure
+        if acquired
+          monitor.exit
+          probed << true
+        end
+      end
+    end
+    acquired = probed.pop(timeout: 3)
+    release << true
+    expect(inserter.join(3)).not_to be_nil
+    expect(contender.join(3)).not_to be_nil
+    expect(inserter.value).to equal(surface)
+    expect(contender.value).to be_a(gtk::UnsupportedOperation)
+    expect(acquired).to be(false)
+    expect(surface.children).to eq([first])
+    expect(first.parent).to equal(surface)
+    expect(second.parent).to be_nil
+  ensure
+    release&.push(true)
+    [inserter, contender].each { |thread| thread&.join(3) || thread&.kill }
+  end
+
+  %i[child layout].each do |target|
+    it "refuses Fixed put after concurrent #{target} destruction" do
+      fixed, child = gtk::Fixed.new, gtk::Label.new('Unattached')
+      entered, release = Queue.new, Queue.new
+      paused = false
+      allow(fixed.session).to receive(:synchronize).and_wrap_original do |original, &block|
+        if Thread.current[:fixed_race] == :put && !paused
+          paused = true
+          entered << true
+          release.pop
+        end
+        original.call(&block)
+      end
+      inserter = Thread.new do
+        Thread.current[:fixed_race] = :put
+        fixed.put(child, 10, 20)
+      rescue StandardError => error
+        error
+      end
+      expect(entered.pop(timeout: 3)).to be(true)
+      (target == :child ? child : fixed).destroy
+      release << true
+      expect(inserter.value).to be_a(gtk::UnsupportedOperation)
+      expect(child.parent).to be_nil
+      expect(fixed.children).to be_empty
+      expect(child.instance_variable_get(:@placement)).to be_nil
+    ensure
+      release&.push(true)
+      inserter&.join(3) || inserter&.kill
+    end
+  end
+
+  it 'rechecks the Fixed move guard after a concurrent removal' do
+    fixed, child = gtk::Fixed.new, gtk::Label.new('Movable')
+    fixed.put(child, 10, 20)
+    show(fixed)
+    entered, release = Queue.new, Queue.new
+    paused = false
+    allow(fixed.session).to receive(:synchronize).and_wrap_original do |original, &block|
+      if Thread.current[:fixed_race] == :move && !paused
+        paused = true
+        entered << true
+        release.pop
+      end
+      original.call(&block)
+    end
+    mover = Thread.new do
+      Thread.current[:fixed_race] = :move
+      fixed.move(child, 30, 40)
+    rescue StandardError => error
+      error
+    end
+    expect(entered.pop(timeout: 3)).to be(true)
+    fixed.remove(child)
+    release << true
+    expect(mover.value).to be_a(gtk::UnsupportedOperation)
+    expect(child.parent).to be_nil
+    expect(child.instance_variable_get(:@placement)).to eq(x: 10, y: 20)
+  ensure
+    release&.push(true)
+    mover&.join(3) || mover&.kill
+  end
+
+  it 'blocks concurrent session work throughout Fixed removal' do
+    fixed, child = gtk::Fixed.new, gtk::Label.new('Movable')
+    fixed.put(child, 10, 20)
+    show(fixed)
+    entered, release = Queue.new, Queue.new
+    allow(fixed.session.port).to receive(:detach).and_wrap_original do |original, *args|
+      entered << true
+      release.pop
+      original.call(*args)
+    end
+    remover = Thread.new { fixed.remove(child) }
+    expect(entered.pop(timeout: 3)).to be(true)
+    probe = Thread.new do
+      monitor = fixed.session.instance_variable_get(:@mutex)
+      acquired = monitor.try_enter
+      monitor.exit if acquired
+      acquired
+    end
+    expect(probe.value).to be(false)
+    expect(child.parent).to equal(fixed)
+    release << true
+    expect(remover.value).to equal(fixed)
+    expect(child.parent).to be_nil
+    expect { fixed.move(child, 30, 40) }.to raise_error(gtk::UnsupportedOperation)
+    expect(child.instance_variable_get(:@placement)).to eq(x: 10, y: 20)
+  ensure
+    release&.push(true)
+    [probe, remover].each { |thread| thread&.join(3) || thread&.kill }
+  end
+
+  it 'retains focus before show and validates live window focus targets' do
+    window = gtk::Window.new
+    first, second = gtk::Entry.new, gtk::Entry.new
+    window.add(first)
+    window.add(second)
+    window.set_focus(first)
+    window.show_all
+    page = nil
+    wait_for { (page = service.registry.pages_for(owner).first)&.last_render&.facilities&.key?(:focus) }
+    initial = page.last_render.facilities
+    expect(initial[:focus]).to eq(page.last_render.tree.children.first.cid)
+    expect(initial[:focus]).to include('text_input:')
+    window.set_focus(second)
+    wait_for { page.last_render.facilities[:focus_revision] > initial[:focus_revision] }
+    expect(page.last_render.facilities[:focus]).not_to eq(initial[:focus])
+    expect { window.set_focus(gtk::Entry.new) }.to raise_error(gtk::UnsupportedOperation)
+    expect { window.set_focus(gtk::Label.new('Not focusable')) }.to raise_error(gtk::UnsupportedOperation)
+    second.destroy
+    drain_models
+    expect { window.set_focus(second) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'projects parsed generic fonts onto labels, buttons and entries' do
+    font = scope.const_get(:Pango)::FontDescription.new('Monospace 10')
+    font.weight = :bold
+    label = gtk::Label.new('Score')
+    label.set_line_wrap_mode(:word)
+    label.lines = -1
+    label.markup = '<span font_family="monospace">Score &amp; deeds</span>'
+    button = gtk::Button.new('Roll')
+    entry = gtk::Entry.new
+    entry.set_editable(false)
+    entry.set_has_frame(false)
+    [label, button, entry].each { |widget| widget.override_font(font) }
+    _window, page = show(label, button, entry)
+    viewer = connect(page, 'fonts')
+    controls = nodes(viewer).select { |node| %w[text button text_input].include?(node['type']) }
+    expect(controls.length).to eq(3)
+    controls.each do |node|
+      expect(node['props']).to include('font_family' => 'monospace', 'font_size' => 10, 'font_unit' => 'pt', 'emphasis' => 'strong')
+    end
+    expect(controls.find { |node| node['type'] == 'text' }['props']['wrap']).to be(true)
+    expect(controls.find { |node| node['type'] == 'text' }['props']['line_limit']).to eq(-1)
+    expect(controls.find { |node| node['type'] == 'text' }['props']['content']).to eq('Score & deeds')
+    expect(controls.find { |node| node['type'] == 'text_input' }['props']['read_only']).to be(true)
+    expect(controls.find { |node| node['type'] == 'text_input' }['props']['has_frame']).to be(false)
+    expect { entry.set_editable(true) }.to raise_error(gtk::UnsupportedOperation)
+    expect { label.set_line_wrap_mode(:unsupported) }.to raise_error(gtk::UnsupportedOperation)
+    ['Monospace 5', 'Monospace 49', 'Monospace 10; color:red', 10].each do |description|
+      expect { scope.const_get(:Pango)::FontDescription.new(description) }.to raise_error(gtk::UnsupportedOperation)
+    end
+  end
+
+  it 'leaves empty and out-of-model combo selections unset without inventing rows' do
+    combo = gtk::ComboBoxText.new
+    combo.active = 0
+    expect(combo.active).to eq(-1)
+    expect(combo.active_text).to be_nil
+    expect(combo.model.size).to eq(0)
+    combo.append_text('Only row')
+    combo.active = 0
+    expect(combo.active_text).to eq('Only row')
+    changes = []
+    combo.signal_connect('changed') { changes << combo.active }
+    combo.active = 2
+    expect(combo.active_text).to be_nil
+    expect(changes).to eq([-1])
+    expect { combo.active = -2 }.to raise_error(gtk::UnsupportedOperation)
+    expect { combo.active = 2**80 }.to raise_error(gtk::UnsupportedOperation)
+    _window, page = show(combo)
+    expect(nodes(connect(page, 'empty-combo')).find { |node| node['type'] == 'select' }['props']['value']).to eq('none')
+  end
+
+  it 'publishes tall Table and Grid spans while bounding their final row' do
+    table = gtk::Table.new(10, 2)
+    alignment = gtk::Alignment.new(1, 40, 0, 0)
+    alignment.add(gtk::Label.new('Instructions'))
+    table.attach(alignment, 1, 2, 8, 100)
+    grid = gtk::Grid.new
+    grid.attach(gtk::Label.new('Full row range'), 0, 0, 1, 1024)
+    _window, page = show(table, grid)
+    viewer = connect(page, 'tall-spans')
+    placed = nodes(viewer).find { |node| node.dig('placement', 'row_span') == 92 }
+    expect(placed['placement']).to include('row' => 9, 'row_span' => 92)
+    expect(placed['props']['align']).to eq('end')
+    expect(nodes(viewer).any? { |node| node.dig('placement', 'row_span') == 1024 }).to be(true)
+    child = gtk::Label.new('Outside bound')
+    expect { table.attach(child, 0, 1, 1000, 1025) }.to raise_error(gtk::UnsupportedOperation)
+    expect(child.parent).to be_nil
+    expect(table.n_rows).to eq(100)
+    expect { grid.attach(child, 0, 1024, 1, 1) }.to raise_error(gtk::UnsupportedOperation)
+    expect(child.parent).to be_nil
+  end
+
+  it 'clamps finite Alignment inputs and refuses nonfinite or nonnumeric values' do
+    expect(gtk::Alignment.new(-2, 40, -1, 3).send(:component_props)[:align]).to eq(:start)
+    expect(gtk::Alignment.new(2, 0, 0, 0).send(:component_props)[:align]).to eq(:end)
+    expect(gtk::Alignment.new(0.5, 0, 0, 0).send(:component_props)[:align]).to eq(:center)
+    [Float::NAN, Float::INFINITY, Complex(1, 2), '0'].each do |value|
+      expect { gtk::Alignment.new(0, value, 0, 0) }.to raise_error(gtk::UnsupportedOperation)
+    end
+  end
+
   it 'accepts natural top-aligned content in a vertical box and aligned flow inside a scroller' do
     outer = gtk::Box.new(:vertical, 0)
     heading = gtk::Box.new(:vertical, 0)

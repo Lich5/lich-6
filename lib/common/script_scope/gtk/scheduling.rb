@@ -14,6 +14,26 @@ module Lich
         end
         extend Boundary
 
+        # Owner-bound constructor for scripts that allocate a loop before building UI.
+        # The core dispatcher owns execution; nested GLib loops remain unsupported.
+        class MainLoop
+          # Captures the existing script session without creating a native loop.
+          def initialize
+            @session = Gtk.session
+            @session.style_operation(self, :new) { nil }
+          end
+
+          # @raise [Gtk::UnsupportedOperation] nested dispatch is unsupported
+          def run
+            @session.style_operation(self, :run) { @session.refuse(self, :run) }
+          end
+
+          # @raise [Gtk::UnsupportedOperation] no native loop exists to stop
+          def quit
+            @session.style_operation(self, :quit) { @session.refuse(self, :quit) }
+          end
+        end
+
         module Timeout
           extend Boundary
 

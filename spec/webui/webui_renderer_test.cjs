@@ -24,6 +24,116 @@ function fixture() {
     receive: message => listeners.message({ data: JSON.stringify(message) }) };
 }
 
+test('native minimize measurements are deduplicated and listeners retire on close', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const bridge = { minimized: false, present() {} };
+  dom.window.lichNativeWindow = bridge;
+  receive({ type: 'hello', pages: [{ address: 'state' }] });
+  receive({ type: 'render', page: 'state', generation: 1, bindings: { root: ['window_state'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'text', cid: 'die', props: { content: '\u2680', font_size: 70.3125, font_unit: 'pt' } }]
+  } });
+  assert.equal(dom.window.document.querySelector('[data-cid="die"]').style.fontSize, '70.3125pt');
+  for (const minimized of [true, true, false]) {
+    bridge.minimized = minimized;
+    dom.window.dispatchEvent(new dom.window.Event('lich-window-state'));
+  }
+  assert.deepEqual(sent.filter(message => message.event === 'window_state').map(message => message.payload.minimized), [false, true, false]);
+  receive({ type: 'page_closed', page: 'state' });
+  const count = sent.length;
+  bridge.minimized = true;
+  dom.window.dispatchEvent(new dom.window.Event('lich-window-state'));
+  assert.equal(sent.length, count);
+});
+
+test('positioned children measure natural bounds and stack pointer surfaces retain events', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const frames = [];
+  dom.window.requestAnimationFrame = callback => frames.push(callback);
+  receive({ type: 'hello', pages: [{ address: 'fixed' }] });
+  receive({ type: 'render', page: 'fixed', generation: 1, bindings: { surface: ['pointer_press'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'overlay', cid: 'fixed', props: { positioned: true }, children: [
+      { type: 'stack', cid: 'surface', placement: { x: 120, y: 40 }, props: { pointer_events: true, orientation: 'vertical', gap: 0 }, children: [
+        { type: 'text', cid: 'label', props: { content: 'Click' } }
+      ] }
+    ] }]
+  } });
+  const surface = dom.window.document.querySelector('[data-cid="surface"]');
+  const fixed = dom.window.document.querySelector('[data-cid="fixed"]');
+  Object.defineProperties(surface, { offsetWidth: { value: 80 }, offsetHeight: { value: 20 } });
+  frames.splice(0).forEach(callback => callback());
+  assert.equal(surface.style.position, 'absolute');
+  assert.equal(surface.style.left, '120px');
+  assert.equal(fixed.style.minWidth, '200px');
+  assert.equal(fixed.style.minHeight, '60px');
+  surface.firstChild.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 121, clientY: 42 }));
+  const events = sent.filter(message => message.event === 'pointer_press');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].cid, 'surface');
+  assert.equal(events[0].payload.button, 1);
+});
+
+test('revisioned focus survives initial publication and does not steal focus on refresh', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  dom.window.CSS = { escape: value => value };
+  receive({ type: 'hello', pages: [{ address: 'focus' }] });
+  const render = (generation, revision) => receive({ type: 'render', page: 'focus', generation,
+    facilities: { focus: 'first', focus_revision: revision }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'text_input', cid: 'first', props: { value: 'First' } },
+        { type: 'text_input', cid: 'second', props: { value: 'Second' } }
+      ]
+    } });
+  const input = cid => dom.window.document.querySelector(`[data-cid="${cid}"] input`);
+  render(1, 1);
+  assert.equal(dom.window.document.activeElement, input('first'));
+  input('second').focus();
+  render(2, 1);
+  assert.equal(dom.window.document.activeElement, input('second'));
+  render(3, 2);
+  assert.equal(dom.window.document.activeElement, input('first'));
+});
+
+test('bounded font properties style actual button and entry controls', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'fonts' }] });
+  receive({ type: 'render', page: 'fonts', generation: 1, tree: {
+    type: 'page', cid: 'root', props: {}, children: [
+      { type: 'button', cid: 'button', props: { label: 'Roll', font_family: 'monospace', font_size: 10, font_unit: 'pt' } },
+      { type: 'text_input', cid: 'entry', props: { value: 'Score', read_only: true, has_frame: false, font_family: 'serif', font_size: 12, font_unit: 'pt' } },
+      { type: 'text', cid: 'limited', props: { content: 'Several\nlines\nof text', line_limit: 2 } }
+    ]
+  } });
+  const button = dom.window.document.querySelector('button[data-cid="button"]');
+  const entry = dom.window.document.querySelector('[data-cid="entry"] input');
+  assert.equal(button.style.fontFamily, 'monospace');
+  assert.equal(button.style.fontSize, '10pt');
+  assert.equal(entry.style.fontFamily, 'serif');
+  assert.equal(entry.style.fontSize, '12pt');
+  assert.equal(entry.readOnly, true);
+  assert.equal(entry.style.borderStyle, 'none');
+  const limited = dom.window.document.querySelector('[data-cid="limited"]');
+  assert.equal(limited.style.webkitLineClamp, '2');
+  assert.equal(limited.style.overflow, 'hidden');
+  assert.equal(limited.textContent, 'Several\nlines\nof text');
+});
+
+test('sparse instruction cells retain tall grid spans and horizontal Alignment placement', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'tall-grid' }] });
+  receive({ type: 'render', page: 'tall-grid', generation: 1, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'grid', cid: 'grid', props: { cols: 2 }, children: [{
+      type: 'stack', cid: 'instructions', props: { align: 'end' }, placement: { column: 2, row: 9, span: 1, row_span: 92 }, children: [
+        { type: 'text', cid: 'text', props: { content: 'Instructions remain reachable' } }
+      ]
+    }] }]
+  } });
+  const cell = dom.window.document.querySelector('[data-cid="instructions"]');
+  assert.equal(cell.style.gridRow, '9 / span 92');
+  assert.equal(cell.style.gridColumn, '2 / span 1');
+  assert.equal(cell.style.justifySelf, 'end');
+  assert.equal(cell.textContent, 'Instructions remain reachable');
+});
+
 // Model paths are positional; browser state must instead retain stable row/column IDs.
 function modelTable(receive, generation, props) {
   receive({ type: 'render', page: 'models', generation,
@@ -1229,6 +1339,52 @@ test('overlay alignment and pass-through are layer-local and disappear after a l
   render(2, false);
   label = dom.window.document.querySelector('[data-cid="label"]');
   assert.equal(label.dataset.overlayPassThrough, undefined);
+});
+
+test('button text children retain literal styling, live updates and one activation', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'dice' }] });
+  const render = (generation, content, children = true) => receive({ type: 'render', page: 'dice', generation,
+    bindings: { die: ['activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'button', cid: 'die', props: { label: 'Fallback' }, children: children ? [
+        { type: 'text', cid: 'face', slot: 'content', props: { content, font_style: 'italic' } }
+      ] : [] }
+    ] } });
+  render(1, '<six>');
+  let button = dom.window.document.querySelector('button');
+  assert.equal(button.textContent, '<six>');
+  assert.equal(button.querySelector('[data-cid="face"]').style.fontStyle, 'italic');
+  assert.equal(button.querySelector('six'), null);
+  button.querySelector('[data-cid="face"]').click();
+  assert.equal(sent.filter(message => message.event === 'activate').length, 1);
+  render(2, 'Five');
+  assert.equal(dom.window.document.querySelector('button').textContent, 'Five');
+  render(3, '', false);
+  assert.equal(dom.window.document.querySelector('button').textContent, 'Fallback');
+});
+
+test('button pointer presses retain activation and ignore disabled presses', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'buttons' }] });
+  const render = (generation, disabled) => receive({ type: 'render', page: 'buttons', generation,
+    bindings: { action: ['pointer_press', 'activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'button', cid: 'action', props: { pointer_events: true, label: 'Customize', disabled } }
+    ] } });
+  render(1, false);
+  let button = dom.window.document.querySelector('button');
+  button.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 2, clientX: 4, clientY: 8 }));
+  const press = sent.filter(message => message.event === 'pointer_press');
+  assert.equal(press.length, 1);
+  assert.equal(press[0].payload.button, 3);
+  assert.equal(press[0].payload.x, 4);
+  button.click();
+  assert.equal(sent.filter(message => message.event === 'activate').length, 1);
+  render(2, true);
+  button = dom.window.document.querySelector('button');
+  button.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  button.click();
+  assert.equal(sent.filter(message => message.event === 'pointer_press').length, 1);
+  assert.equal(sent.filter(message => message.event === 'activate').length, 1);
 });
 
 test('progress pointer presses reuse the bounded event payload and suppress the browser menu', t => {

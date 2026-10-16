@@ -71,6 +71,24 @@ module Lich
         @sessions = {}.compare_by_identity
         @mutex = Mutex.new
 
+        # Checks the advertised compatibility version without loading native GTK.
+        # @param required_major [Integer] required unsigned major version
+        # @param required_minor [Integer] required unsigned minor version
+        # @param required_micro [Integer] required unsigned micro version
+        # @return [nil, String] nil if compatible, otherwise a mismatch diagnostic
+        # @raise [ArgumentError] for components outside the unsigned GTK range
+        def self.check_version(required_major, required_minor, required_micro)
+          required = [required_major, required_minor, required_micro]
+          unless required.all? { |part| part.is_a?(Integer) && part.between?(0, 0xffff_ffff) }
+            raise ArgumentError, 'GTK version components must be unsigned 32-bit integers'
+          end
+
+          available = Version::STRING.split('.').map(&:to_i)
+          return nil if required_major == Version::MAJOR && (required <=> available) <= 0
+
+          "GTK compatibility version #{Version::STRING} is incompatible with required #{required.join('.')}"
+        end
+
         # Finds or creates the running Script's identity-owned compatibility session.
         # Retains callback attribution on the current thread without loading native GTK.
         # @return [Session]

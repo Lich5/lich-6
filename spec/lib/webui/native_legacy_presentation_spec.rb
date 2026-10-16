@@ -150,6 +150,55 @@ RSpec.describe 'native legacy presentation values' do
     expect { builder.select(options: [], editable: true, control_width_chars: 0) }.to raise_error(Lich::WebUI::SchemaViolationError)
   end
 
+  it 'requires positioned overlays for coordinates and a target for focus revisions' do
+    builder.overlay(positioned: true) { text(content: 'Positioned', placement: { x: -5, y: 60 }) }
+    input = builder.text_input(value: '')
+    builder.focus(input.cid)
+    builder.focus_revision(1)
+    expect { builder.build }.not_to raise_error
+    invalid = Lich::WebUI::TreeBuilder.new(owner: :fixture, page_id: 'invalid', title: 'Invalid')
+    invalid.overlay { text(content: 'Unpositioned', placement: { x: 10 }) }
+    expect { invalid.build }.to raise_error(Lich::WebUI::SchemaViolationError, /positioned/)
+    missing = Lich::WebUI::TreeBuilder.new(owner: :fixture, page_id: 'missing', title: 'Missing')
+    missing.focus_revision(1)
+    expect { missing.build }.to raise_error(Lich::WebUI::SchemaViolationError, /requires a focus target/)
+  end
+
+  it 'accepts one typed text Button child and rejects interactive or duplicate content' do
+    builder.button(label: '') { text(slot: 'content', content: 'Die') }
+    expect { builder.build }.not_to raise_error
+    interactive = Lich::WebUI::TreeBuilder.new(owner: :fixture, page_id: 'input', title: 'Invalid')
+    interactive.button(label: '') { text_input(slot: 'content', value: '') }
+    expect { interactive.build }.to raise_error(Lich::WebUI::SchemaViolationError, /child type/)
+    duplicate = Lich::WebUI::TreeBuilder.new(owner: :fixture, page_id: 'duplicate', title: 'Invalid')
+    duplicate.button(label: '') do
+      text(slot: 'content', content: 'First')
+      text(slot: 'content', content: 'Second')
+    end
+    expect { duplicate.build }.to raise_error(Lich::WebUI::SchemaViolationError, /unique/)
+  end
+
+  it 'validates typography on native buttons and entry frames alongside label line limits' do
+    builder.button(label: 'Roll', font_family: 'monospace', font_size: 10)
+    builder.text_input(value: '', has_frame: false, font_family: 'serif', font_size: 12)
+    builder.text(content: 'Instructions', line_limit: -1)
+    expect { builder.build }.not_to raise_error
+    expect { builder.button(label: 'Invalid', font_size: 97) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { builder.text_input(value: '', has_frame: 'false') }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { builder.text(content: 'Invalid', line_limit: 0) }.to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'bounds native grid row spans including their starting row' do
+    builder.grid(cols: 2) do
+      text(content: 'Instructions', placement: { column: 2, row: 9, row_span: 92 })
+      text(content: 'Last row', placement: { row: 1024 })
+    end
+    expect { builder.build }.not_to raise_error
+    other = Lich::WebUI::TreeBuilder.new(owner: :fixture, page_id: 'overflow', title: 'Overflow')
+    other.grid(cols: 2) { text(content: 'Overflow', placement: { row: 1024, row_span: 2 }) }
+    expect { other.build }.to raise_error(Lich::WebUI::SchemaViolationError, /exceeds grid rows/)
+  end
+
   it 'requires explicit bounded placement for spread grid row sizing' do
     builder.grid(cols: 2, row_sizing: :spread) do
       text(content: 'First', placement: { column: 1, row: 1 })
