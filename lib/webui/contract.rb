@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.32.0'
+      VERSION = '2.33.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -278,7 +278,7 @@ module Lich
           events: { move: event(record(position: property(integer(min: 0, max: 100), required: true))) }, value: nil,
         },
         overlay: {
-          properties: { positioned: property(BOOL, default: false) }, children: :many,
+          properties: { positioned: property(BOOL, default: false), clip_children: property(BOOL, default: false) }, children: :many,
           child_properties: { z: property(integer(min: 0, max: 99)), pass_through: property(BOOL),
                               x: property(GEOMETRY), y: property(GEOMETRY) }, events: {}, value: nil,
         },

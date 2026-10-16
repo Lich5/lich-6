@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -175,6 +175,31 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.getByRole('button', { name: 'Measure screen' }).click();
     await expect(page.getByText(/^Screen: \d+ x \d+ \(browser\)$/)).toBeVisible();
     await page.getByRole('button', { name: 'Finish', exact: true }).click();
+  } else if (scenario === 'native-bmp') {
+    const image = page.getByRole('img', { name: 'BMP fixture', exact: true });
+    await expect.poll(() => image.evaluate(el => el.naturalWidth)).toBe(2);
+    expect(await image.evaluate(el => el.naturalHeight)).toBe(1);
+    const response = await page.request.get(await image.evaluate(el => el.src));
+    expect(response.status()).toBe(200);
+    expect(response.headers()['content-type']).toBe('image/bmp');
+    expect((await response.body()).subarray(0, 2).toString()).toBe('BM');
+  } else if (scenario === 'shim-layout') {
+    const hidden = page.getByRole('button', { name: 'Offscreen', exact: true });
+    const canvas = page.locator('.webui-overlay');
+    await expect(canvas).toHaveCSS('overflow', 'hidden');
+    await expect.poll(async () => canvas.evaluate(el => el.offsetHeight)).toBeGreaterThan(80);
+    const clipped = await hidden.evaluate(el => {
+      const box = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return !hit || hit.closest('button') !== el;
+    });
+    expect(clipped).toBe(true);
+    await page.getByRole('button', { name: 'Move into canvas', exact: true }).click();
+    await expect(hidden).toHaveCSS('left', '100px');
+    expect(await hidden.evaluate(el => {
+      const box = el.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button') === el;
+    })).toBe(true);
   } else if (scenario === 'shim-fixed-events-focus') {
     const first = page.getByPlaceholder('First field'), second = page.getByPlaceholder('Second field');
     await expect(first).toBeFocused();

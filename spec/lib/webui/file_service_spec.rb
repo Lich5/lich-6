@@ -12,12 +12,14 @@ RSpec.describe Lich::WebUI::FileService do
     Dir.mktmpdir('webui-app') do |application_root|
       Dir.mktmpdir('webui-outside') do |outside_root|
         File.binwrite(File.join(application_root, 'inside.png'), 'png')
+        File.binwrite(File.join(application_root, 'inside.BMP'), 'bmp')
         File.binwrite(File.join(application_root, 'inside.txt'), 'text')
         File.binwrite(File.join(outside_root, 'outside.png'), 'outside')
         File.symlink(File.join(outside_root, 'outside.png'), File.join(application_root, 'escape.png'))
         service = described_class.new(application_roots: [application_root])
 
         expect(service.register('images', application_root, owner: owner)).to eq('/files/images/')
+        expect(service.resolve('images', 'inside.BMP')[1]).to eq('image/bmp')
         expect(service.resolve('images', 'inside.png')&.first).to eq(File.realpath(File.join(application_root, 'inside.png')))
         expect(service.resolve_url('/files/images/inside.png')&.first).to eq(File.realpath(File.join(application_root, 'inside.png')))
         File.binwrite(File.join(application_root, 'plus+name.png'), 'plus')

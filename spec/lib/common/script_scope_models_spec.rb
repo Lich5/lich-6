@@ -149,6 +149,27 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(first.instance_variable_get(:@props).dig(:presentation, :minimized_revision)).to eq(revision + 1)
   end
 
+  it 'positions Layout children on a clipped canvas and retains transactional moves' do
+    layout = gtk::Layout.new(nil, nil)
+    child = gtk::Label.new('Canvas child')
+    layout.put(child, -50, -50)
+    _window, page = show(layout)
+    viewer = connect(page, 'layout')
+    canvas = nodes(viewer).find { |node| node['type'] == 'overlay' }
+    expect(canvas['props']).to include('positioned' => true, 'clip_children' => true)
+    expect(canvas['children'].first['placement']).to include('x' => -50, 'y' => -50)
+    layout.move(child, 80, 45)
+    wait_for { nodes(viewer).find { |node| node['type'] == 'overlay' }['children'].first['placement']['x'] == 80 }
+    expect { layout.move(child, 65_537, 0) }.to raise_error(gtk::UnsupportedOperation)
+    layout.remove(child)
+    expect(child.parent).to be_nil
+    expect { layout.move(child, 0, 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect { gtk::Layout.new(gtk::Adjustment.new, nil) }.to raise_error(gtk::UnsupportedOperation)
+    expect { layout.set_size(200, 300) }.to raise_error(gtk::UnsupportedOperation)
+    layout.destroy
+    expect { layout.put(child, 0, 0) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
   it 'looks up original Grid cells across spans, rebasing and removal' do
     grid = gtk::Grid.new
     first, second = gtk::Label.new('First'), gtk::Label.new('Second')

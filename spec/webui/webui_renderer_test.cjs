@@ -45,6 +45,24 @@ test('native minimize measurements are deduplicated and listeners retire on clos
   assert.equal(sent.length, count);
 });
 
+test('positioned canvases clip negative children without changing Fixed defaults', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'layout' }] });
+  const render = (generation, clip) => receive({ type: 'render', page: 'layout', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'overlay', cid: 'canvas', props: { positioned: true, clip_children: clip }, children: [
+        { type: 'text', cid: 'child', placement: { x: -50, y: -50 }, props: { content: 'Hidden by canvas' } }
+      ] }
+    ] } });
+  render(1, true);
+  let canvas = dom.window.document.querySelector('[data-cid="canvas"]');
+  assert.equal(canvas.style.overflow, 'hidden');
+  assert.equal(canvas.firstElementChild.style.left, '-50px');
+  render(2, false);
+  canvas = dom.window.document.querySelector('[data-cid="canvas"]');
+  assert.equal(canvas.style.overflow, '');
+});
+
 test('positioned children measure natural bounds and stack pointer surfaces retain events', t => {
   const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
   const frames = [];

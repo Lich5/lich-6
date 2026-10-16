@@ -453,7 +453,7 @@ RSpec.describe 'progress provider lifecycle' do
   end
 
   it 'keeps unsupported widgets and unrelated style operations as explicit hard stops' do
-    expect { gtk.const_get(:Layout) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+    expect { gtk.const_get(:DrawingArea) }.to raise_error(gtk.const_get(:UnsupportedOperation))
     label = gtk.const_get(:Label).new('Unchanged')
     expect { label.style_context.get_property('color') }.to raise_error(gtk.const_get(:UnsupportedOperation))
     expect { gtk.const_get(:StyleContext).reset_widgets }.to raise_error(gtk.const_get(:UnsupportedOperation))

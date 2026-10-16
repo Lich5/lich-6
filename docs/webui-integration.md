@@ -1251,3 +1251,23 @@ requires comparison with the original GTK interface. Native geometry, focus,
 restoration and independent-window cleanup require actual OS-window checks.
 Mocks, jsdom, responsive viewports and browser-tab closure do not establish those
 native behaviors. Game-connected behavior requires validation in a game session.
+
+
+### Positioned Layout subset
+
+`Gtk::Layout.new` (or `new(nil, nil)`) reuses Fixed's bounded `put`, `move`,
+child ownership and natural extents, with child painting clipped to the canvas.
+It accepts negative child coordinates, including offscreen status icons.
+Native virtual-size, drawing-window and scroll-adjustment APIs remain refused;
+scrolling is provided by browser containers rather than a native GLib/GTK loop.
+This subset does not implement `Layout#set_size` or adjustment synchronization.
+
+### True-color BMP images
+
+The shared image-size reader accepts uncompressed 24/32-bit `BI_RGB` BMP files
+with a 40-byte `BITMAPINFOHEADER`, one plane, and valid DWORD-padded pixel extents.
+Top-down heights are normalized; existing dimension bounds still apply. Palette,
+compressed, bitfield and other DIB header variants remain refused. Headers are
+read within the existing 1 MiB limit; pixel decoding stays in the browser.
+Allowlisted `.bmp` routes use `image/bmp` with the existing authentication,
+containment, owner-lifetime and revocation rules.
