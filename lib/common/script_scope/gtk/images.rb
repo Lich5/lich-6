@@ -8,6 +8,28 @@ module Lich
         class FileImage
           attr_reader :session, :source, :width, :height
 
+          # Only format identity is exposed; no native decoder/format object is loaded.
+          Format = Data.define(:name)
+
+          # Resolves and authorizes the file before reading any image bytes.
+          # @param path [String] local filename subject to the existing file-root policy
+          # @return [Array<Format, Integer, Integer>] format name descriptor, width, height
+          # @raise [UnsupportedOperation] for invalid arguments or filesystem resolution
+          # @raise [Lich::WebUI::Error] for refused roots
+          # @raise [ArgumentError] for unsupported, truncated, or oversized headers
+          def self.get_file_info(path)
+            session = Gtk.session
+            session.refuse(self, :get_file_info) unless path.is_a?(String)
+            begin
+              real = File.realpath(path)
+            rescue SystemCallError
+              session.refuse(self, :file)
+            end
+            session.image_source(real)
+            info = Lich::WebUI::ImageSize.info(real)
+            [Format.new(name: info.format), info.width, info.height].freeze
+          end
+
           # Reads supported image headers after the existing file-root policy accepts them.
           # Width/height specify display bounds; aspect ratio is preserved by default.
           # @param path [String, nil] legacy positional filename
@@ -45,13 +67,12 @@ module Lich
 
           # Returns a new display-size value. Browser interpolation is explicit;
           # this operation never creates resampled pixels or a writable image.
-          # @param width [Integer] requested display width, 1 through 65,536
-          # @param height [Integer] requested display height, 1 through 65,536
+          # @param width [Integer, Float] display width, 1..65,536; fractions truncate
+          # @param height [Integer, Float] display height, 1..65,536; fractions truncate
           # @param interpolation [Symbol] only :bilinear is accepted as a browser hint
           # @return [FileImage]
           def scale_simple(width, height, interpolation = :bilinear)
-            dimension!(width)
-            dimension!(height)
+            width, height = [width, height].map { |value| scale_dimension(value) }
             session.refuse(self, :scale_simple) unless interpolation == :bilinear
             scaled = dup
             scaled.instance_variable_set(:@width, width)
@@ -70,6 +91,13 @@ module Lich
 
           private
 
+          # Matches native integer display dimensions without admitting NaN or coercions.
+          def scale_dimension(value)
+            valid = value.is_a?(Integer) || (value.is_a?(Float) && value.finite?)
+            session.refuse(self, :dimensions) unless valid && value.between?(1, 65_536)
+            value.to_i
+          end
+
           # Enforces the shared image-size bound before retaining a display dimension.
           # @raise [UnsupportedOperation] for noninteger, zero or excessive dimensions
           def dimension!(value)
@@ -80,9 +108,12 @@ module Lich
         # An empty image is legitimate state; clearing removes the source request.
         module IconSize
           SMALL_TOOLBAR = :small_toolbar
+          BUTTON = :button
         end
 
         class Image < Widget
+          attr_reader :directional_caption
+
           # Creates an empty image or one source; conflicting source forms refuse.
           # @param source [String, FileImage, nil] legacy positional file or display value
           # @param file [String, nil] file resolved through the authenticated file service
@@ -90,11 +121,18 @@ module Lich
           def initialize(source = nil, file: nil, pixbuf: nil, icon_name: nil, icon_size: nil)
             super()
             if icon_name
-              session.refuse(self, :icon_name) unless icon_name == 'preferences-desktop-color-symbolic' &&
-                                                      icon_size == IconSize::SMALL_TOOLBAR && [source, file, pixbuf].all?(&:nil?)
+              direction = { 'go-up' => 'Up', 'go-down' => 'Down' }[icon_name]
+              palette = icon_name == 'preferences-desktop-color-symbolic' && icon_size == IconSize::SMALL_TOOLBAR
+              session.refuse(self, :icon_name) unless (palette || (direction && icon_size == IconSize::BUTTON)) && [source, file, pixbuf].all?(&:nil?)
               @symbolic_icon = true
-              @props.merge!(content: 'Palette', wrap: false, a11y_label: 'Palette')
-              session.degrade(:palette_icon, 'symbolic palette icon uses an ASCII Palette caption')
+              @directional_caption = direction&.freeze
+              caption = direction || 'Palette'
+              @props.merge!(content: caption, wrap: false, a11y_label: caption)
+              if direction
+                session.degrade(:direction_icon, 'directional symbolic icons use literal Up/Down captions')
+              else
+                session.degrade(:palette_icon, 'symbolic palette icon uses an ASCII Palette caption')
+              end
               return
             end
             session.refuse(self, :icon_size) unless icon_size.nil?

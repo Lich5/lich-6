@@ -28,6 +28,20 @@ module Lich
           end
           alias set_text text=
 
+          # This Entry shares its owning combo's single input and tooltip.
+          def tooltip_text = @combo.tooltip_text
+          alias get_tooltip_text tooltip_text
+
+          # Applies the internal entry request to the existing shared input width.
+          # @param value [Integer] pixel width, 1..1024; reset requests remain unsupported
+          # @return [Entry] self
+          def set_width_request(value)
+            session.refuse(self, :width_request=) unless value.is_a?(Integer) && value.between?(1, 1024)
+            @combo.send(:write, :control_width, value)
+            self
+          end
+          alias width_request= set_width_request
+
           # The owning select has no character-limit contract. Refuse before
           # Entry's setter changes child state or clears the combo's text.
           # @raise [UnsupportedOperation] internal entry limits are unsupported
@@ -71,9 +85,14 @@ module Lich
           # Character sizing, placeholder and tooltip belong to the combo's input.
           # Other entry writes still require an explicit shared-control mapping.
           def write(property, value)
-            session.refuse(self, property) unless %i[min_width_chars max_width_chars placeholder tooltip].include?(property)
-            @combo.send(:write, property, value)
+            session.refuse(self, property) unless %i[min_width_chars max_width_chars placeholder tooltip margin].include?(property)
+            @combo.send(:write, property == :margin ? :control_margin : property, value)
+            self
           end
+
+          # Internal entry spacing belongs to the input, independently of combo margins.
+          def margin_value = @combo.send(:read, :control_margin)
+          private :margin_value
         end
 
         # A flat model-backed select. Wire IDs name rows, so duplicate labels remain distinct.
@@ -195,13 +214,28 @@ module Lich
           def active = model.rows.index(active_iter) || -1
           def active_text = has_entry? ? entry_text : active_iter&.[](@label_column)
 
+          # Selects the first matching text row through the normal changed path.
+          # This bounded convenience API never appends options or invents free text.
+          # @param text [String] existing label in a single-String-column model
+          # @return [ComboBox] self
+          def set_active_text(text)
+            session.refuse(self, :active_text=) unless text.is_a?(String) && text.length <= Lich::WebUI::Contract::BOUNDS[:short_text]
+            session.synchronize do
+              text_model!
+              row = model.rows.find { |candidate| candidate[@label_column] == text }
+              session.refuse(self, :active_text=) unless row
+              set_choice(row.key)
+            end
+          end
+          alias active_text= set_active_text
+
           # Named text items retain their script ID separately from stable wire row IDs.
-          # @param id [String] unique nonempty script identifier
+          # @param id [String] unique script identifier, including an empty placeholder ID
           # @param text [String] literal display label
           # @return [ComboBox] self
           def append(id, text)
             text_model!
-            session.refuse(self, :append) unless id.is_a?(String) && !id.empty? && id.length <= 8192
+            session.refuse(self, :append) unless id.is_a?(String) && id.length <= 8192
             text = String(text)
             session.refuse(self, :append) if text.length > Lich::WebUI::Contract::BOUNDS[:short_text]
             session.synchronize do

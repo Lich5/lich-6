@@ -3,6 +3,7 @@
 require 'cgi'
 require 'rexml/document'
 require 'uri'
+require_relative 'label_markup'
 
 module Lich
   module Common
@@ -264,6 +265,11 @@ module Lich
           end
           alias tooltip_text= set_tooltip_text
 
+          # Reads retained literal tooltip metadata, including an unset nil value.
+          # @return [String, nil] current tooltip text
+          def tooltip_text = read(:tooltip)
+          alias get_tooltip_text tooltip_text
+
           # Accepts the measured normal-state token while retaining browser-theme backgrounds.
           # @return [Widget] self
           # @raise [UnsupportedOperation] for other state/color objects
@@ -343,34 +349,47 @@ module Lich
             end
           end
 
+          # Replaces all edges through the existing bounded margin contract.
+          # @param value [Integer] margin in pixels, 0..512
+          # @return [Widget] self
+          def set_margin(value)
+            session.refuse(self, :margin=) unless value.is_a?(Integer) && value.between?(0, 512)
+            write(:margin, value)
+          end
+          alias margin= set_margin
+
           # Updates the left entry of the widget's explicit per-side margin.
           # @return [Widget] self
           def set_margin_left(value)
             set_margin_edge(:left, value)
           end
+          alias margin_left= set_margin_left
 
           # Updates the right entry of the widget's explicit per-side margin.
           # @return [Widget] self
           def set_margin_right(value)
             set_margin_edge(:right, value)
           end
+          alias margin_right= set_margin_right
 
           # Updates one vertical edge without changing the other explicit margins.
           # @param value [Integer] margin in pixels, validated by the shared contract
           def set_margin_top(value)
             set_margin_edge(:top, value)
           end
+          alias margin_top= set_margin_top
 
           # @param value [Integer] bottom margin in pixels
           def set_margin_bottom(value)
             set_margin_edge(:bottom, value)
           end
+          alias margin_bottom= set_margin_bottom
 
           # A scalar margin applies to every edge; changing one preserves the other three.
           # Builder and direct GTK calls share this normalization and contract validation.
           # @api private
           def set_margin_edge(side, value)
-            current = @props[:margin]
+            current = margin_value
             margins = case current
                       when Hash then current
                       when Numeric then %i[top right bottom left].to_h { |key| [key, current] }
@@ -379,6 +398,10 @@ module Lich
             write(:margin, margins.merge(side => value))
           end
           private :set_margin_edge
+
+          # Internal entry facades override the source without changing edge normalization.
+          def margin_value = @props[:margin]
+          private :margin_value
 
           # Aligns the widget in its allocated grid cell or enclosing frame.
           # Content alignment (Label#yalign=) is a separate request.
@@ -392,11 +415,11 @@ module Lich
           end
           alias set_valign valign=
 
-          # Applies horizontal start/center/end alignment.
+          # Maps GTK horizontal fill onto the existing grid stretch allocation.
           # @return [Widget] self
           def halign=(value)
-            session.refuse(self, :halign=) unless %i[start center end].include?(value)
-            write(:align, value)
+            session.refuse(self, :halign=) unless %i[fill start center end].include?(value)
+            write(:align, value == :fill ? :stretch : value)
           end
           alias set_halign halign=
 
@@ -419,6 +442,8 @@ module Lich
 
           alias set_margin_start set_margin_left
           alias set_margin_end set_margin_right
+          alias margin_start= set_margin_start
+          alias margin_end= set_margin_end
 
           # Decodes text entities but refuses tags instead of forwarding markup to the browser.
           # @raise [UnsupportedOperation] when tags are present
@@ -672,9 +697,10 @@ module Lich
           Allocation = Data.define(:width, :height)
 
           # Creates a compact window inheriting the application's GTK preference.
-          # @param kind [Symbol, String] :toplevel or the window title
+          # @param kind [Symbol, String] :toplevel, legacy :TOPLEVEL, or the window title
           def initialize(kind = :toplevel)
             super()
+            kind = :toplevel if kind == :TOPLEVEL
             session.refuse(self, :new) unless kind == :toplevel || kind.is_a?(String)
             @props[:title] = kind.is_a?(String) ? kind : ''
             @props.merge!(bare: true, density: :compact)
@@ -1139,6 +1165,45 @@ module Lich
           end
         end
 
+        # Measured horizontal action rows use natural tracks aligned to the end.
+        # Other GTK ButtonBox layouts remain explicit unsupported operations.
+        class ButtonBox < Box
+          def initialize(orientation = :horizontal)
+            super(orientation)
+            session.refuse(self, :new) if vertical?
+            @props[:align] = :end
+          end
+
+          def layout = read(:align)
+
+          # @param value [Symbol] the measured :end layout
+          # @return [ButtonBox] self
+          def set_layout(value)
+            session.refuse(self, :layout=) unless value == :end
+            write(:align, value)
+          end
+          alias layout= set_layout
+
+          def spacing = read(:gap)
+
+          # @param value [Integer] inter-button gap in pixels, 0..64
+          # @return [ButtonBox] self
+          def set_spacing(value)
+            session.refuse(self, :spacing=) unless value.is_a?(Integer) && value.between?(0, 64)
+            write(:gap, value)
+          end
+          alias spacing= set_spacing
+
+          # Use Box's live grid growth before admitting another button.
+          def add(child)
+            pack_start(child, expand: false, fill: false)
+          end
+
+          protected
+
+          def layout_props = super.merge(expand_columns: [])
+        end
+
         # Legacy horizontal constructor using the existing Box packing contract.
         class HBox < Box
           # Creates a horizontal group with optional equal-width tracks.
@@ -1211,13 +1276,27 @@ module Lich
           # @param label [String, nil] frame label; an empty string creates a blank label
           def initialize(label = nil)
             super()
-            @props[:label] = label unless label.nil?
+            set_label(label) unless label.nil?
           end
+
+          # @return [String, nil] caption, preserving absent and explicitly empty labels
+          def label = read(:label)
+
+          # Changes only the shared group caption, preserving children and their identities.
+          # @param value [String] literal caption, at most 512 characters
+          # @return [Frame] self
+          def set_label(value)
+            valid = value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? &&
+                    value.length <= Lich::WebUI::Contract::BOUNDS[:short_text]
+            session.refuse(self, :label=) unless valid
+            write(:label, value)
+          end
+          alias label= set_label
 
           # Copies the supplied label's text into the shared group label.
           # @return [Frame] self
           def set_label_widget(label)
-            write(:label, label.text)
+            set_label(label.text)
           end
 
           # The shared frame already places its caption at the left edge.
@@ -1227,14 +1306,16 @@ module Lich
             session.refuse(self, :label_xalign=) unless value.is_a?(Numeric) && value.zero?
           end
 
-          # Removes the frame decoration using the existing typed border property.
-          # @param value [Symbol] only :none is supported
+          # Restores the themed frame border for :in; native inset bevels are omitted.
+          # @param value [Symbol] :none or :in
           # @return [Frame] self
-          def shadow_type=(value)
-            session.refuse(self, :shadow_type=) unless value == :none
-            write(:border_width, 0)
+          def set_shadow_type(value)
+            session.refuse(self, :shadow_type=) unless %i[none in].include?(value)
+            write(:border_width, value == :none ? 0 : 1)
+            session.degrade(:frame_shadow, 'shadow-type=in uses the themed frame border; native inset bevel omitted') if value == :in
+            self
           end
-          alias set_shadow_type shadow_type=
+          alias shadow_type= set_shadow_type
 
           protected
 
@@ -1259,6 +1340,15 @@ module Lich
             @props[:names] = []
             @props[:selected] = 0
           end
+
+          # The shared tabs component already places selectors above page content.
+          # @param position [Symbol] only :top is supported
+          # @return [Notebook] self
+          def set_tab_pos(position)
+            session.refuse(self, :set_tab_pos) unless position == :top
+            self
+          end
+          alias tab_pos= set_tab_pos
 
           # Validates the border request and reports theme-controlled tab borders.
           # @return [Notebook] self
@@ -1428,6 +1518,9 @@ module Lich
           # @return [Label] self
           # @raise [UnsupportedOperation] for unsupported tags
           def set_markup(value)
+            session.refuse(self, :set_markup) unless value.is_a?(String)
+            value = value.dup.force_encoding(Encoding::UTF_8)
+            session.refuse(self, :set_markup) unless value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:display_text]
             return set_link_markup(value) if value.include?('<a ') || @link_markup
             if (italic = value.match(/\A<i>([^<>]*)<\/i>\z/m))
               text = italic[1].dup.force_encoding(Encoding::UTF_8)
@@ -1435,6 +1528,9 @@ module Lich
               replace_markup_font({})
               write(:font_style, :italic)
               return write(:content, CGI.unescapeHTML(text))
+            end
+            if value.include?('<i>') || value.include?('<small>') || value.match?(/<span\b[^>]*\bforeground=/) || value.match?(/<span\b[^>]*\bsize=['"][a-z-]+['"]/)
+              return set_styled_markup(value)
             end
             if (sized_span = value.match(/\A<span size=(['"])([0-9]{1,6})\1>([^<>]*)<\/span>\z/m))
               points = sized_span[2].to_i / 1024.0
@@ -1445,6 +1541,11 @@ module Lich
               write(:font_style, :normal)
               return write(:content, CGI.unescapeHTML(text))
             end
+            if (monospace = value.match(/\A<tt>([^<>]*)<\/tt>\z/m))
+              replace_markup_font(font_family: 'monospace')
+              write(:font_style, :normal)
+              return write(:content, CGI.unescapeHTML(monospace[1]))
+            end
             if (font_span = value.match(/\A\s*<span font_family="(monospace|sans-serif|serif)">([^<>]*)<\/span>\s*\z/m))
               replace_markup_font(font_family: font_span[1])
               write(:font_style, :normal)
@@ -1453,8 +1554,7 @@ module Lich
             # Boon's measured blue bold tip maps to literal text and the native
             # bounded color record. Source markup never reaches the browser.
             if (tip = value.match(/\A<span color="blue" weight="bold">([^<>]*)<\/span>\z/m))
-              replace_markup_font({})
-              write(:foreground, Color.parse('blue'))
+              replace_markup_font(foreground: Color.parse('blue'))
               write(:emphasis, :strong)
               write(:font_style, :normal)
               return write(:content, CGI.unescapeHTML(tip[1]))
@@ -1474,6 +1574,23 @@ module Lich
           end
           alias markup= set_markup
 
+          # Preserves mixed emphasis, italic and foreground spans using typed fragments.
+          # Parsing completes before any live or shadow label state changes.
+          def set_styled_markup(value)
+            fragments = LabelMarkup.new(self).parse(value)
+            content = fragments.map { |fragment| fragment[:content] }.join
+            session.refuse(self, :set_markup) if @props[:ellipsize] == :middle
+            session.refuse(self, :single_line_mode) if @single_line_mode && content.match?(/[\r\n]|\p{Zl}|\p{Zp}/)
+            session.synchronize do
+              replace_markup_font({})
+              write(:font_style, :normal)
+              write(:content, content)
+              write(:fragments, fragments)
+            end
+            self
+          end
+          private :set_styled_markup
+
           # Builder markup uses the same bounded formatter as direct Label calls.
           # @param value [Boolean] enable markup before materialization
           def use_markup=(value)
@@ -1481,11 +1598,12 @@ module Lich
             @use_markup = value
             set_markup(read(:content)) if value
           end
+          alias set_use_markup use_markup=
 
           # Only literal text and HTTP(S) anchors with optional literal titles become typed Markdown.
           # Unsupported markup is refused, never passed to innerHTML or stripped.
           def set_link_markup(value)
-            session.refuse(self, :set_markup) if @single_line_mode || @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align line_justify])
+            session.refuse(self, :set_markup) if @single_line_mode || @props.keys.intersect?(%i[rotation padding_x padding_y content_vertical_align line_justify max_width_chars ellipsize])
             session.refuse(self, :set_markup) if @handle && !@link_markup
             document = REXML::Document.new("<label>#{value}</label>")
             content = document.root.children.map do |part|
@@ -1581,6 +1699,23 @@ module Lich
             session.refuse(self, :set_width_chars) unless count.is_a?(Integer) && count.between?(1, 1024)
             write(:min_width_chars, count)
           end
+          alias width_chars= set_width_chars
+
+          # Caps natural label width using the core's existing character metric.
+          # @param count [Integer] 1..1024; reset requests remain unsupported
+          def set_max_width_chars(count)
+            session.refuse(self, :set_max_width_chars) unless !@link_markup && count.is_a?(Integer) && count.between?(1, 1024)
+            write(:max_width_chars, count)
+          end
+          alias max_width_chars= set_max_width_chars
+
+          # End ellipsis preserves full literal content for accessibility and reads.
+          # @param mode [Symbol] only :end is accepted by this label facade
+          def set_ellipsize(mode)
+            session.refuse(self, :set_ellipsize) unless !@link_markup && mode == :end
+            write(:ellipsize, mode)
+          end
+          alias ellipsize= set_ellipsize
 
           protected
 
@@ -1629,13 +1764,58 @@ module Lich
             if @single_line_mode && ((property == :content && value.match?(/[\r\n]|\p{Zl}|\p{Zp}/)) || (property == :wrap && value))
               session.refuse(self, :single_line_mode)
             end
-            super
+            session.synchronize do
+              result = super
+              if property == :content && @props.key?(:fragments)
+                session.with_widget(self) { session.port.set(@handle, :fragments, Lich::WebUI::Adapter::UNSET) } if @handle && !destroyed?
+                @props.delete(:fragments)
+              end
+              result
+            end
           end
 
           def component_props
             props = super
             props = props.merge(foreground: @label_color) if @label_color
-            @link_markup ? props.slice(:content, :key, :hidden, :align, :margin, :width) : props
+            @link_markup ? props.slice(:content, :key, :hidden, :disabled, :align, :margin, :width) : props
+          end
+        end
+
+        # Uses the existing literal HTTP(S) anchor projection with real sensitivity.
+        class LinkButton < Label
+          attr_reader :uri
+
+          # @param uri [String] destination accepted by the existing label-link policy
+          # @param label [String] literal link caption
+          def initialize(uri, label = uri)
+            super('')
+            replace_link(uri, label)
+          end
+
+          # URI and caption update together; invalid replacements leave both unchanged.
+          def uri=(value)
+            replace_link(value, @link_label)
+          end
+          alias set_uri uri=
+
+          def label = @link_label
+
+          # @param value [String] literal caption, subject to the label-link bounds
+          def label=(value)
+            replace_link(@uri, value)
+          end
+          alias set_label label=
+
+          private
+
+          def replace_link(uri, label)
+            valid = [uri, label].all? { |value| value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? }
+            session.refuse(self, :link) unless valid
+            session.synchronize do
+              set_markup("<a href=\"#{CGI.escapeHTML(uri)}\">#{CGI.escapeHTML(label)}</a>")
+              @uri, @link_label = uri.dup.freeze, label.dup.freeze
+            end
+            self
           end
         end
 
@@ -1710,9 +1890,10 @@ module Lich
           # Maps a unit-interval fraction to start/center/end text alignment.
           # @raise [UnsupportedOperation] for out-of-range values
           def xalign=(value)
-            session.refuse(self, :xalign=) unless value.is_a?(Numeric) && value.between?(0, 1)
+            session.refuse(self, :xalign=) unless value.is_a?(Numeric) && value.real? && value.finite? && value.between?(0, 1)
             write(:align, value.zero? ? :start : (value == 1 ? :end : :center))
           end
+          alias set_alignment xalign=
 
           # Sets server-owned read-only input behavior before a handle is allocated.
           # @raise [UnsupportedOperation] after materialization
@@ -1861,6 +2042,32 @@ module Lich
         end
 
         class Button < Widget
+          # Only the measured borderless request is accepted; the browser keeps its theme.
+          # @param value [Symbol] :none
+          def set_relief(value)
+            session.refuse(self, :relief=) unless value == :none
+            session.degrade(:button_relief, 'native button relief is omitted; the browser button retains its theme')
+            self
+          end
+          alias relief= set_relief
+
+          # Copies a bounded direction caption into this button, not another browser control.
+          # File images and generic image children remain unsupported by this facade.
+          # @param value [Image] same-owner Up/Down symbolic descriptor
+          def set_image(value)
+            session.synchronize do
+              valid = value.instance_of?(Image) && value.session.equal?(session) && !value.destroyed? && !value.parent &&
+                      value.directional_caption && children.empty? && (label.empty? || @button_image)
+              session.refuse(self, :image=) unless valid
+              self.label = value.directional_caption
+              @button_image = value
+            end
+            self
+          end
+          alias image= set_image
+
+          def image = @button_image
+
           # Retains a single plain Label as real typed content, including live updates.
           # @return [Button] self
           # @raise [UnsupportedOperation] for other child types or occupied/retired buttons

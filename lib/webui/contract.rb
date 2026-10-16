@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.33.0'
+      VERSION = '2.36.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -147,9 +147,9 @@ module Lich
       ATTRIBUTE_APPLICABILITY = {
         page: %i[key disabled width height min_height],
         group: %i[key tooltip disabled hidden align margin width height min_height tone],
-        stack: %i[key disabled hidden align margin width height],
+        stack: %i[key tooltip disabled hidden align margin width height],
         columns: %i[key disabled hidden align margin width height],
-        grid: %i[key disabled hidden align margin width height],
+        grid: %i[key tooltip disabled hidden align margin width height],
         tabs: %i[key disabled hidden align margin width height],
         expander: %i[key tooltip disabled hidden align margin width height],
         split: %i[key disabled hidden align margin width height],
@@ -157,7 +157,7 @@ module Lich
         scroll: %i[key disabled hidden align margin width height min_height],
         divider: %i[key hidden margin width tone],
         text: %i[key tooltip hidden align margin width height emphasis tone],
-        markdown: %i[key hidden align margin width],
+        markdown: %i[key disabled hidden align margin width],
         log: %i[key hidden align margin width height],
         progress: %i[key tooltip hidden align margin width height tone],
         image: %i[key tooltip hidden align margin width height],
@@ -301,7 +301,7 @@ module Lich
                         fragments: property(array(BODY, max: BOUNDS[:collection])),
                         max_width_chars: property(integer(min: 1, max: 1024)),
                         line_limit: property(union(integer(min: -1, max: -1), integer(min: 1, max: 1024))),
-                        ellipsize: property(enum(:middle)) },
+                        ellipsize: property(enum(:middle, :end)) },
           children: :none, events: {}, value: nil,
         },
         markdown: {
@@ -527,6 +527,11 @@ module Lich
         **FONT_STYLE_PROPERTIES,
         foreground: property(RGBA), background: property(RGBA),
       }.freeze
+      TEXT_FRAGMENT = record(
+        content: property(BODY, required: true), emphasis: property(enum(*EMPHASES)),
+        font_style: property(enum(:normal, :italic)), foreground: property(RGBA),
+        scale: property(number(min: 0.5, max: 2))
+      ).freeze
       TINT = union(record(tone: property(enum(*TONES), required: true)), RGBA).freeze
       POINT_FIELDS = {
         x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
@@ -693,6 +698,7 @@ module Lich
             base[:properties][:emphasis] = property(enum(*EMPHASES)) if type == :text_input
             if type == :text
               base[:properties].merge!(TEXT_STYLE_PROPERTIES)
+              base[:properties][:fragments] = property(array(union(BODY, TEXT_FRAGMENT), max: BOUNDS[:collection]))
               base[:properties].merge!(padding_x: property(integer(min: 0, max: 64)), padding_y: property(integer(min: 0, max: 64)),
                                        content_vertical_align: property(enum(:start, :center, :end)),
                                        line_justify: property(enum(:left, :center, :right)),
@@ -716,6 +722,7 @@ module Lich
             if %i[text_input select].include?(type)
               base[:properties][:control_width_chars] = property(integer(min: 1, max: 1024))
             end
+            base[:properties][:control_margin] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(:margin)) if type == :select
             if %i[text_input number_input select].include?(type)
               base[:properties].merge!(inline: property(BOOL, default: false),
                                        control_width: property(integer(min: 1, max: 1024)))

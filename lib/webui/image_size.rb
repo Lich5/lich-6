@@ -8,26 +8,36 @@ module Lich
     module ImageSize
       HEADER_LIMIT = 1_048_576
       JPEG_FRAMES = [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].freeze
+      Info = Data.define(:format, :width, :height)
 
       # Reads bounded PNG, GIF, JPEG or true-color BMP headers without decoding pixels.
       # @param path [String] image file to inspect
       # @return [Array<Integer>] frozen width and height, each between 1 and 65,536
       # @raise [ArgumentError] for unsupported, truncated, or out-of-range image headers
       def self.read(path)
+        result = info(path)
+        [result.width, result.height].freeze
+      end
+
+      # Uses the same bounded read for format identity and dimensions.
+      # @param path [String] image file to inspect
+      # @return [Info] immutable format name, width and height
+      # @raise [ArgumentError] for unsupported, truncated, or out-of-range headers
+      def self.info(path)
         bytes, file_size = File.open(path, 'rb') { |file| [file.read(HEADER_LIMIT), file.stat.size] }
-        size = if bytes&.start_with?([137, 80, 78, 71, 13, 10, 26, 10].pack('C*')) && bytes.byteslice(12, 4) == 'IHDR' && bytes.bytesize >= 24
-                 bytes.byteslice(16, 8).unpack('NN')
-               elsif bytes && %w[GIF87a GIF89a].include?(bytes.byteslice(0, 6)) && bytes.bytesize >= 10
-                 bytes.byteslice(6, 4).unpack('vv')
-               elsif bytes&.start_with?([255, 216].pack('C*'))
-                 jpeg_dimensions(bytes)
-               elsif bytes&.start_with?('BM')
-                 bmp_dimensions(bytes, file_size)
-               end
+        format, size = if bytes&.start_with?([137, 80, 78, 71, 13, 10, 26, 10].pack('C*')) && bytes.byteslice(12, 4) == 'IHDR' && bytes.bytesize >= 24
+                         ['png', bytes.byteslice(16, 8).unpack('NN')]
+                       elsif bytes && %w[GIF87a GIF89a].include?(bytes.byteslice(0, 6)) && bytes.bytesize >= 10
+                         ['gif', bytes.byteslice(6, 4).unpack('vv')]
+                       elsif bytes&.start_with?([255, 216].pack('C*'))
+                         ['jpeg', jpeg_dimensions(bytes)]
+                       elsif bytes&.start_with?('BM')
+                         ['bmp', bmp_dimensions(bytes, file_size)]
+                       end
         raise ArgumentError, 'Unsupported or truncated image header (expected PNG, GIF, JPEG or uncompressed true-color BMP)' unless size
         raise ArgumentError, 'Image dimensions must be within 1..65536 pixels' unless size.all? { |value| value.between?(1, 65_536) }
 
-        size.freeze
+        Info.new(format: format, width: size[0], height: size[1])
       end
 
       # Walks JPEG marker segments until a supported frame header supplies dimensions.

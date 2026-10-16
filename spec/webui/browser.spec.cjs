@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -97,7 +97,143 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'shim-abyssx') {
+  if (scenario === 'buttonbox-empty-id') {
+    const save = page.getByRole('button', { name: 'Save & Close', exact: true });
+    const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
+    const footer = save.locator('..');
+    const combo = page.getByRole('combobox');
+    const cid = await save.getAttribute('data-cid');
+    const checkFooter = async gap => {
+      const sizes = await footer.evaluate(el => ({
+        right: el.getBoundingClientRect().right,
+        buttons: [...el.querySelectorAll('button')].map(button => {
+          const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right };
+        }),
+      }));
+      expect(sizes.buttons).toHaveLength(2);
+      expect(Math.abs(sizes.buttons[1].left - sizes.buttons[0].right - gap)).toBeLessThanOrEqual(1);
+      expect(Math.abs(sizes.right - sizes.buttons[1].right)).toBeLessThanOrEqual(1);
+    };
+    await expect(combo.locator('option:checked')).toHaveText('-- select spell --');
+    await checkFooter(10);
+    await page.setViewportSize({ width: 640, height: 480 });
+    await checkFooter(10);
+    await combo.selectOption({ label: 'Spell' });
+    await expect(page.getByText('Choice: "spell"', { exact: true })).toBeVisible();
+    await save.focus();
+    await save.press('Enter');
+    await expect(page.getByText('Saved: "spell"', { exact: true })).toBeVisible();
+    await expect(combo.locator('option')).toHaveCount(4);
+    await expect(save).toHaveAttribute('data-cid', cid);
+    await checkFooter(18);
+    await combo.selectOption({ label: '-- select spell --' });
+    await expect(page.getByText('Choice: ""', { exact: true })).toBeVisible();
+    await combo.selectOption({ label: 'Extra' });
+    await expect(page.getByText('Choice: "extra"', { exact: true })).toBeVisible();
+    await cancel.click();
+    await expect(page.getByText('Reset: ""', { exact: true })).toBeVisible();
+    await expect(combo.locator('option:checked')).toHaveText('-- select spell --');
+    await checkFooter(18);
+  } else if (scenario === 'frame-scroller') {
+    const frame = page.locator('fieldset.webui-group');
+    const field = page.getByTitle('Draft entry', { exact: true });
+    const entry = field.locator('input');
+    const cid = await field.getAttribute('data-cid');
+    await expect(frame.locator('legend')).toHaveText('Initial frame');
+    await expect(frame).toHaveCSS('border-top-width', '1px');
+    await entry.fill('Retained draft');
+    await page.getByRole('button', { name: 'Rename frame', exact: true }).click();
+    await expect(frame.locator('legend')).toHaveText('Updated frame');
+    await expect(entry).toHaveValue('Retained draft');
+    await expect(field).toHaveAttribute('data-cid', cid);
+    await page.getByRole('button', { name: 'Remove border', exact: true }).click();
+    await expect(frame).toHaveCSS('border-top-width', '0px');
+    await expect(frame).toHaveAttribute('data-borderless', 'true');
+    await page.getByRole('button', { name: 'Restore border', exact: true }).click();
+    await expect(frame).toHaveCSS('border-top-width', '1px');
+    await expect(frame).not.toHaveAttribute('data-borderless');
+    await page.getByRole('button', { name: 'Empty caption', exact: true }).click();
+    await expect(frame.locator('legend')).toHaveCount(0);
+    await expect(frame).toHaveAttribute('data-empty-label', 'true');
+    await expect(entry).toHaveValue('Retained draft');
+    await entry.press('Enter');
+    await expect(page.getByText('Submitted: Retained draft', { exact: true })).toBeVisible();
+  } else if (scenario === 'three-compatibility') {
+    const field = page.getByTitle('Fill entry', { exact: true });
+    const checkFill = async () => {
+      const dimensions = await field.evaluate(el => ({ width: el.getBoundingClientRect().width,
+        input: el.querySelector('input').getBoundingClientRect().width, parent: el.parentElement.getBoundingClientRect().width,
+        columns: el.style.gridColumn, margin: getComputedStyle(el).marginLeft }));
+      expect(dimensions.columns).toContain('span 4');
+      expect(dimensions.margin).toBe('40px');
+      expect(Math.abs(dimensions.width + 40 - dimensions.parent)).toBeLessThanOrEqual(2);
+      expect(Math.abs(dimensions.input - dimensions.width)).toBeLessThanOrEqual(2);
+    };
+    await expect(field).toBeVisible();
+    await checkFill();
+    await page.setViewportSize({ width: 900, height: 700 });
+    await checkFill();
+    await page.setViewportSize({ width: 640, height: 480 });
+    const mono = page.getByText('Mono caption', { exact: true });
+    await expect(mono).toHaveCSS('font-family', 'monospace');
+    const disabled = page.locator('a').filter({ hasText: 'Open wiki' });
+    await expect(disabled).not.toHaveAttribute('href');
+    await expect(disabled).toHaveAttribute('aria-disabled', 'true');
+    await page.getByRole('button', { name: 'Select spell', exact: true }).click();
+    const active = page.getByRole('link', { name: 'Open selected wiki' });
+    await expect(active).toHaveAttribute('href', 'https://example.invalid/spell');
+    await active.evaluate(el => el.addEventListener('click', event => {
+      event.preventDefault(); el.dataset.keyboardActivated = 'true';
+    }));
+    await active.focus();
+    await active.press('Enter');
+    await expect(active).toHaveAttribute('data-keyboard-activated', 'true');
+    await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
+    await expect(page.locator('a').filter({ hasText: 'Open selected wiki' })).not.toHaveAttribute('href');
+    const up = page.getByRole('button', { name: 'Up', exact: true });
+    const down = page.getByRole('button', { name: 'Down', exact: true });
+    await expect(up).toBeDisabled();
+    await down.click();
+    await expect(page.getByText('Second, First', { exact: true })).toBeVisible();
+    await expect(down).toBeDisabled();
+    await up.click();
+    await expect(page.getByText('First, Second', { exact: true })).toBeVisible();
+    await expect(up).toBeDisabled();
+  } else if (scenario === 'priority14-controls') {
+    const profileMargin = page.locator('input[title="Profile name"], [title="Profile name"] input').first();
+    await expect(profileMargin).toHaveCSS('margin-left', '12px');
+    await expect(profileMargin).toHaveCSS('margin-top', '3px');
+    await expect(page.locator('.webui-stack[title="Container help"]')).toBeVisible();
+    await expect(page.locator('.webui-grid[title="Horizontal help"]')).toBeVisible();
+
+    const profile = page.getByTitle('Profile name', { exact: true });
+    await expect(profile.locator('.webui-editable-select')).toHaveCSS('width', '400px');
+    await expect(profile.locator('input')).toHaveValue('Profile A');
+    await expect(page.getByTitle('Material help').locator('option:checked')).toHaveText('bronze');
+    await page.getByRole('button', { name: 'Update controls', exact: true }).click();
+    const updated = page.getByTitle('Updated profile', { exact: true });
+    await expect(updated.locator('.webui-editable-select')).toHaveCSS('width', '320px');
+    await expect(updated.locator('input')).toHaveValue('Profile A');
+    await expect(updated.locator('input')).toHaveCSS('margin-left', '0px');
+    await expect(updated).toHaveCSS('margin-left', '20px');
+    await expect(page.getByTitle('Material help').locator('option:checked')).toHaveText('iron');
+    await expect(page.getByText('Updated profile / iron', { exact: true })).toBeVisible();
+  } else if (scenario === 'priority11-labels') {
+    const mixed = page.locator('.webui-text').filter({ hasText: 'Attack  (optional)' });
+    await expect(mixed).toBeVisible();
+    await expect(mixed.locator('.webui-text-fragment').first()).toHaveCSS('font-weight', '700');
+    await expect(mixed.locator('.webui-text-fragment').last()).toHaveCSS('font-style', 'italic');
+    const warning = page.locator('.webui-text-fragment').filter({ hasText: 'Cleric-only' });
+    await expect(warning).toHaveCSS('color', 'rgb(255, 191, 64)');
+    expect(await warning.evaluate(el => el.style.fontSize)).toBe('1.2em');
+    const bonus = page.getByLabel('A long service bonus description '.repeat(8), { exact: true });
+    await expect(bonus).toHaveCSS('text-overflow', 'ellipsis');
+    expect(await bonus.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+    await page.getByRole('button', { name: 'Reset label', exact: true }).click();
+    const plain = page.getByText('Plain replacement', { exact: true });
+    await expect(plain).toBeVisible();
+    await expect(plain.locator('.webui-text-fragment')).toHaveCount(0);
+  } else if (scenario === 'shim-abyssx') {
     const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
     await page.locator(`[data-cid="${controls.entry_lootsack}"] input`).fill('browser sack');
     await page.locator(`[data-cid="${controls.entry_spell}"] input`).fill('901');

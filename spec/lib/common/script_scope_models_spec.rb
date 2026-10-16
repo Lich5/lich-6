@@ -37,11 +37,11 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     [window, page]
   end
 
-  def connect(page, id)
+  def connect(page, id, resume: nil)
     connection = Struct.new(:viewer_id, :messages).new(id, [])
     def connection.alive? = true
     def connection.send_text(text) = messages << JSON.parse(text)
-    service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+    service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page), resume: resume)
     connection
   end
 
@@ -85,13 +85,48 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     connection = connect(page, 'italic')
     props = nodes(connection).find { |node| node['type'] == 'text' }['props']
     expect(props).to include('font_style' => 'italic', 'content' => "Explorer & team\nDetails")
-    ['<i onclick="x">bad</i>', '<i><b>nested</b></i>', '<i>unclosed'].each do |markup|
+    ['<i onclick="x">bad</i>', '<i>unclosed'].each do |markup|
       expect { label.set_markup(markup) }.to raise_error(gtk::UnsupportedOperation)
     end
     label.set_markup('Plain')
     wait_for do
       props = nodes(connection).find { |node| node['type'] == 'text' }['props']
       props['font_style'] == 'normal' && props['content'] == 'Plain'
+    end
+  end
+
+  it 'accepts top notebook position spellings without changing tab content, handles or viewer selection' do
+    notebook = gtk::Notebook.new
+    expect(notebook.set_tab_pos(:top)).to equal(notebook)
+    notebook.tab_pos = gtk::PositionType::TOP
+    notebook.append_page(gtk::Label.new('First content'), gtk::Label.new('First tab'))
+    notebook.append_page(gtk::Label.new('Second content'), gtk::Label.new('Second tab'))
+    _window, page = show(notebook)
+    viewer = connect(page, 'top-tabs')
+    handle = notebook.materialize
+    children = notebook.children
+    send_event(page, viewer, :tabs, 'select', { index: 1 })
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }.dig('props', 'selected') == 1 }
+    expect(notebook.set_tab_pos(gtk::PositionType::TOP)).to equal(notebook)
+    notebook.tab_pos = :top
+    expect(notebook.materialize).to equal(handle)
+    expect(notebook.children).to eq(children)
+    tabs = nodes(viewer).find { |node| node['type'] == 'tabs' }
+    expect(tabs['props']).to include('names' => ['First tab', 'Second tab'], 'selected' => 1, 'show_tabs' => true)
+    expect(tabs['children'].map { |child| child.dig('props', 'content') }).to eq(['First content', 'Second content'])
+  end
+
+  it 'refuses unsupported notebook positions before and after publication without changing its state' do
+    notebook = gtk::Notebook.new
+    notebook.append_page(gtk::Label.new('Retained'), gtk::Label.new('Tab'))
+    [false, true].each do |live|
+      show(notebook) if live
+      original = notebook.send(:component_props).dup
+      [gtk::PositionType::LEFT, gtk::PositionType::RIGHT, gtk::PositionType::BOTTOM, :TOP, 'top', nil, 0].each do |position|
+        expect { notebook.set_tab_pos(position) }.to raise_error(gtk::UnsupportedOperation)
+        expect { notebook.tab_pos = position }.to raise_error(gtk::UnsupportedOperation)
+        expect(notebook.send(:component_props)).to eq(original)
+      end
     end
   end
 
@@ -1074,6 +1109,142 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
       nodes(viewer).find { |node| node['type'] == 'table' }['props']['rows'].first['cells'].values == ['Accepted']
     end
     expect(row[0]).to eq('Accepted')
+  end
+
+  it 'keeps empty named IDs distinct from no selection and retires them with their model rows' do
+    combo = gtk::ComboBoxText.new
+    combo.append('', 'Same')
+    combo.append('spell', 'Same')
+    combo.append_text('Unnamed')
+    expect(combo.active_id).to be_nil
+    expect(combo.set_active_id('')).to be(true)
+    expect([combo.active, combo.active_text, combo.active_id]).to eq([0, 'Same', ''])
+    expect { combo.append('', 'Duplicate') }.to raise_error(gtk::UnsupportedOperation)
+    expect(combo.model.rows.size).to eq(3)
+    expect(combo.set_active_id('spell')).to be(true)
+    expect(combo.set_active_id('missing')).to be(false)
+    expect([combo.active, combo.active_id]).to eq([1, 'spell'])
+    combo.active = 0
+    expect(combo.active_id).to eq('')
+    combo.active_id = nil
+    expect([combo.active, combo.active_id]).to eq([-1, nil])
+    combo.active = 2
+    expect(combo.active_id).to be_nil
+    combo.active_id = ''
+    combo.remove(0)
+    expect(combo.active_id).to be_nil
+    expect(combo.set_active_id('')).to be(false)
+    combo.append('', 'Replacement')
+    combo.active_id = ''
+    expect(combo.active_text).to eq('Replacement')
+    combo.remove_all
+    expect(combo.active_id).to be_nil
+    combo.append('', 'Rebound')
+    combo.model = gtk::ListStore.new(String)
+    expect(combo.set_active_id('')).to be(false)
+    combo.append('', 'New model')
+    combo.active_id = ''
+    expect(combo.active_text).to eq('New model')
+    editable = gtk::ComboBoxText.new(entry: true)
+    editable.append('', 'Placeholder')
+    editable.child.text = 'Free text'
+    expect(editable.active_id).to be_nil
+    expect(editable.set_active_id('')).to be(true)
+    expect(editable.child.text).to eq('Placeholder')
+  end
+
+  it 'round-trips an empty ID through viewer-local changes and a fresh attachment' do
+    combo = gtk::ComboBoxText.new
+    combo.append('', 'Placeholder')
+    combo.append('spell', 'Spell')
+    combo.active_id = 'spell'
+    changed = []
+    status = gtk::Label.new('Ready')
+    combo.signal_connect('changed') do
+      changed << [combo.active_id, combo.active_text]
+      status.text = combo.active_text
+    end
+    _window, page = show(combo, status)
+    viewer = connect(page, 'empty-id-choice')
+    other = connect(page, 'other-choice')
+    empty_key = combo.model.rows.first.key
+    expect(empty_key).not_to eq('')
+    expect(empty_key).not_to eq('none')
+    expect(send_event(page, viewer, :select, 'change', { value: empty_key })).to eq(:queued)
+    wait_for { changed == [['', 'Placeholder']] }
+    selected = ->(connection) { nodes(connection).find { |node| node['type'] == 'select' }.dig('props', 'value') }
+    wait_for { selected.call(viewer) == empty_key }
+    expect(selected.call(other)).to eq(combo.model.rows[1].key)
+    resume = viewer.messages.reverse.find { |message| message['type'] == 'render' }.fetch('resume')
+    service.runtime.disconnect(viewer)
+    reattached = connect(page, 'resumed-empty-id-choice', resume: resume)
+    expect(selected.call(reattached)).to eq(empty_key)
+  end
+
+  it 'selects existing combo text rows and notifies changes once without inventing options' do
+    combo = gtk::ComboBoxText.new
+    %w[bronze iron bronze].each { |label| combo.append_text(label) }
+    changed = []
+    combo.signal_connect('changed') { changed << [combo.active, combo.active_text] }
+    expect(combo.set_active_text('bronze')).to equal(combo)
+    combo.active_text = 'bronze'
+    expect(combo.active).to eq(0)
+    expect(changed).to eq([[0, 'bronze']])
+    choose = gtk::Button.new('Select iron')
+    choose.signal_connect('clicked') { combo.active_text = 'iron' }
+    _window, page = show(combo, choose)
+    viewer = connect(page, 'material-choice')
+    other = connect(page, 'other-material-choice')
+    expect(send_event(page, viewer, :button, 'activate', {}, submission: [combo.model.rows.first.key])).to eq(:queued)
+    wait_for { nodes(viewer).find { |node| node['type'] == 'select' }.dig('props', 'value') == combo.model.rows[1].key }
+    expect(nodes(other).find { |node| node['type'] == 'select' }.dig('props', 'value')).to eq(combo.model.rows.first.key)
+    expect(changed).to eq([[0, 'bronze'], [1, 'iron']])
+    original = combo.send(:component_props).dup
+    ['unknown', '', nil, 1, 'x' * 513].each do |value|
+      expect { combo.active_text = value }.to raise_error(gtk::UnsupportedOperation)
+      expect(combo.send(:component_props)).to eq(original)
+    end
+    expect(combo.model.rows.map { |row| row[0] }).to eq(%w[bronze iron bronze])
+    expect(changed.size).to eq(2)
+  end
+
+  it 'selects real labels in editable combos while preserving literal free-text separation' do
+    combo = gtk::ComboBoxText.new(entry: true)
+    combo.append_text('bronze')
+    combo.child.text = 'Custom'
+    combo.active_text = 'bronze'
+    expect(combo.active_iter.key).to eq(combo.model.iter_first.key)
+    expect(combo.child.text).to eq('bronze')
+    expect { combo.active_text = 'Missing' }.to raise_error(gtk::UnsupportedOperation)
+    combo.child.text = 'Missing'
+    expect(combo.active_iter).to be_nil
+    expect(combo.active_text).to eq('Missing')
+    combo.model = gtk::ListStore.new(String, Integer)
+    combo.model.append[0] = 'bronze'
+    expect { combo.active_text = 'bronze' }.to raise_error(gtk::UnsupportedOperation, /text_model/)
+  end
+
+  it 'reads shared tooltip metadata through combo and internal entry before, during and after display' do
+    combo = gtk::ComboBoxText.new(entry: true)
+    entry = combo.child
+    expect(combo.tooltip_text).to be_nil
+    expect(entry.get_tooltip_text).to be_nil
+    combo.set_tooltip_text('Material help') unless combo.tooltip_text
+    expect(entry.tooltip_text).to eq('Material help')
+    window, _page = show(combo)
+    entry.set_tooltip_text('Updated help')
+    expect(combo.get_tooltip_text).to eq('Updated help')
+    expect(entry.get_tooltip_text).to eq('Updated help')
+    combo.has_tooltip = false
+    expect(entry.tooltip_text).to eq('')
+    window.destroy
+    entry.tooltip_text = 'Retained help'
+    expect(combo.tooltip_text).to eq('Retained help')
+    expect(entry.tooltip_text).to eq('Retained help')
+    regular = gtk::Entry.new
+    expect(regular.tooltip_text).to be_nil
+    regular.tooltip_text = 'Ordinary entry'
+    expect(regular.get_tooltip_text).to eq('Ordinary entry')
   end
 
   it 'uses real combo model rows, duplicate labels and live label-column updates' do

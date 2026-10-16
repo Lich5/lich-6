@@ -28,6 +28,53 @@ RSpec.describe 'bounded script compatibility pilot' do
     service.stop
   end
 
+  it 'uses entry alignment aliases and omits only a bounded native theme request' do
+    entry = compatibility::Entry.new
+    entry.set_alignment(0.0)
+    expect(entry.send(:component_props)[:align]).to eq(:start)
+    expect { entry.set_alignment(Float::NAN) }.to raise_error(compatibility::UnsupportedOperation)
+    settings = compatibility::Settings.default
+    theme = settings.gtk_application_prefer_dark_theme?
+    expect(settings.set_property('gtk-theme-name', 'win32')).to equal(settings)
+    expect(settings.gtk_application_prefer_dark_theme?).to eq(theme)
+    expect { settings.set_property('gtk-font-name', 'anything') }.to raise_error(compatibility::UnsupportedOperation)
+    expect { settings.set_property('gtk-theme-name', 'x' * 129) }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'packs two split panes and refuses invalid flags without attaching a child' do
+    row = compatibility::Paned.new(:horizontal)
+    first, second = compatibility::Label.new('First'), compatibility::Label.new('Second')
+    expect { row.pack1(first, 'yes', false) }.to raise_error(compatibility::UnsupportedOperation)
+    expect(row.children).to be_empty
+    expect(row.pack1(first, true, false)).to equal(row)
+    expect(row.pack2(second, false, false)).to equal(row)
+    expect(row.children).to eq([first, second])
+    expect { row.pack2(compatibility::Label.new('Third')) }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'copies only same-owner bounded directional images into ordinary button captions' do
+    up = compatibility::Image.new(icon_name: 'go-up', icon_size: :button)
+    down = compatibility::Image.new(icon_name: 'go-down', icon_size: :button)
+    button = compatibility::Button.new
+    expect(button.set_relief(:none)).to equal(button)
+    expect(button.set_image(up)).to equal(button)
+    expect(button.label).to eq('Up')
+    expect(button.image).to equal(up)
+    button.image = down
+    expect(button.label).to eq('Down')
+    expect(button.children).to be_empty
+    expect { button.relief = :unknown }.to raise_error(compatibility::UnsupportedOperation)
+    expect { button.image = compatibility::Image.new }.to raise_error(compatibility::UnsupportedOperation)
+    expect { compatibility::Image.new(icon_name: 'arbitrary', icon_size: :button) }.to raise_error(compatibility::UnsupportedOperation)
+    foreign = Struct.new(:name).new('foreign')
+    allow(Lich::Common::Script).to receive(:current).and_return(foreign)
+    foreign_image = compatibility::Image.new(icon_name: 'go-up', icon_size: :button)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    expect { button.image = foreign_image }.to raise_error(compatibility::UnsupportedOperation)
+    expect(button.label).to eq('Down')
+    Lich::Common::ScriptDeath.run(foreign)
+  end
+
   it 'defers Gtk.queue without blocking its caller and preserves nested enqueue order' do
     started, release, returned, delivered = Queue.new, Queue.new, Queue.new, Queue.new
     producer = Thread.new do
@@ -331,6 +378,74 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect { window.set_position(:mouse) }.to raise_error(compatibility::UnsupportedOperation)
     expect { compatibility::WindowPosition::MOUSE }.to raise_error(compatibility::UnsupportedOperation)
     expect(service.registry.pages_for(owner)).to be_empty
+  end
+
+  it 'shares the nested window position spelling and its unsupported-mode boundary' do
+    window = compatibility::Window.new
+    expect(compatibility::Window::Position).to equal(compatibility::WindowPosition)
+    expect(window.set_position(compatibility::Window::Position::CENTER)).to equal(window)
+    expect { compatibility::Window::Position::MOUSE }.to raise_error(compatibility::UnsupportedOperation)
+    expect(service.registry.pages_for(owner)).to be_empty
+  end
+
+  it 'constructs subclass windows with the legacy uppercase toplevel token without broadening window kinds' do
+    subclass = Class.new(compatibility::Window) do
+      def initialize
+        super(:TOPLEVEL)
+      end
+    end
+    window = subclass.new
+    expect(window.send(:component_props)[:title]).to eq('')
+    window.add(compatibility::Label.new('Original subclass content'))
+    window.show_all
+    Timeout.timeout(2) { sleep 0.001 until service.registry.pages_for(owner).first&.last_render }
+    expect(service.registry.pages_for(owner).size).to eq(1)
+    expect(window).to be_visible
+    expect { compatibility::Window.new(:POPUP) }.to raise_error(compatibility::UnsupportedOperation)
+    expect(service.registry.pages_for(owner).size).to eq(1)
+  end
+
+  it 'replaces scalar margins and preserves untouched edges across assignment spellings and live updates' do
+    window = compatibility::Window.new
+    box = compatibility::Box.new(:vertical)
+    grid = compatibility::Grid.new
+    entry = compatibility::Entry.new
+    window.add(box)
+    box.add(grid)
+    grid.attach(entry, 0, 0, 1, 1)
+    box.margin = 10
+    box.margin_top = 3
+    box.margin_end = 7
+    expect(box.send(:component_props)[:margin]).to eq(top: 3, right: 7, bottom: 10, left: 10)
+    grid.margin = 15
+    entry.margin_start = 40
+    window.show_all
+    expect(box.set_margin(8)).to equal(box)
+    box.margin_left = 2
+    box.margin_right = 4
+    box.margin_bottom = 0
+    box.margin_start = 1
+    box.margin_end = 6
+    handle = box.materialize
+    expect(box.session.port.get(handle, :margin)).to eq(top: 8, right: 6, bottom: 0, left: 1)
+    expect(grid.session.port.get(grid.materialize, :margin)).to eq(15)
+    expect(entry.session.port.get(entry.materialize, :margin)).to eq(left: 40)
+    expect(box.set_margin(0)).to equal(box)
+    expect(box.session.port.get(handle, :margin)).to eq(0)
+  end
+
+  it 'rejects invalid scalar and edge margins without changing the published state' do
+    window = compatibility::Window.new
+    box = compatibility::Box.new(:vertical)
+    window.add(box)
+    box.margin = 512
+    window.show_all
+    [-1, 513, 1.5, '8', nil, { left: 8 }].each do |value|
+      expect { box.set_margin(value) }.to raise_error(compatibility::UnsupportedOperation)
+      expect(box.session.port.get(box.materialize, :margin)).to eq(512)
+    end
+    expect { box.margin_start = 513 }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect(box.session.port.get(box.materialize, :margin)).to eq(512)
   end
 
   it 'does not publish a never-shown hidden window or resurrect a destroyed window' do

@@ -515,9 +515,12 @@ module Lich
           end
           alias set_shadow_type shadow_type=
 
-          # Creates a shared scroll control with a vertical measurement facade.
-          def initialize
-            super
+          # Creates a browser-owned scroller; native adjustment objects are unsupported.
+          # @param horizontal [nil] optional legacy horizontal adjustment argument
+          # @param vertical [nil] optional legacy vertical adjustment argument
+          def initialize(horizontal = nil, vertical = nil)
+            super()
+            session.refuse(self, :new) unless horizontal.nil? && vertical.nil?
             @vadjustment = ScrollAdjustment.new(self)
           end
 
