@@ -230,12 +230,13 @@ module Lich
           end
           alias active_id= set_active_id
 
-          # Selects by current model position or explicitly clears with -1.
-          # @param index [Integer] model-order index, or -1 to clear
+          # Selects by model position; a missing row leaves no active selection, like GTK.
+          # @param index [Integer] GTK signed-int model index, or -1 to clear
           # @return [ComboBox] self
           def active=(index)
-            session.refuse(self, :active=) unless index.is_a?(Integer) && index.between?(-1, model.size - 1)
-            set_choice(index == -1 ? 'none' : model.rows[index].key)
+            session.refuse(self, :active=) unless index.is_a?(Integer) && index.between?(-1, 2_147_483_647)
+            row = model.rows[index] unless index == -1
+            set_choice(row ? row.key : 'none')
           end
           alias set_active active=
 

@@ -30,6 +30,8 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
     var window: WebWindow!
     var web: WKWebView!
     var revealed = false
+    var lastMinimizedRequest: Bool?
+    var lastMinimizedRevision: Int?
     /// Reference edge for converting AppKit coordinates to browser top-left coordinates.
     var primaryTop: CGFloat { NSScreen.screens.first?.frame.maxY ?? 0 }
 
@@ -146,6 +148,14 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
                 NSApplication.shared.unhideWithoutActivation()
                 window.orderFrontRegardless()
             }
+            let revision = value["minimized_revision"] as? Int
+            if let minimized = value["minimized"] as? Bool,
+               minimized != lastMinimizedRequest || revision != lastMinimizedRevision {
+                lastMinimizedRequest = minimized
+                lastMinimizedRevision = revision
+                if minimized && !window.isMiniaturized { window.miniaturize(nil) }
+                if !minimized && window.isMiniaturized { window.deminiaturize(nil) }
+            }
             reportGeometry()
         default: break
         }
@@ -184,7 +194,7 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         let frame = window.frame
         let values: [String: Any] = ["outerWidth": frame.width, "outerHeight": frame.height,
                       "screenX": frame.minX, "screenY": primaryTop - frame.maxY,
-                      "monitors": monitorSnapshot(active: window.screen)]
+                      "monitors": monitorSnapshot(active: window.screen), "minimized": window.isMiniaturized]
         guard let data = try? JSONSerialization.data(withJSONObject: values),
               let json = String(data: data, encoding: .utf8) else { return "" }
         return "window.lichNativeWindow?.update(\(json));"
@@ -195,6 +205,10 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
     func windowDidMove(_ notification: Notification) { reportGeometry() }
     /// Keeps renderer dimensions in sync after a native resize.
     func windowDidResize(_ notification: Notification) { reportGeometry() }
+    /// Publishes the user's native minimize action through the authenticated bridge.
+    func windowDidMiniaturize(_ notification: Notification) { reportGeometry() }
+    /// Publishes native restoration without inferring state from focus or occlusion.
+    func windowDidDeminiaturize(_ notification: Notification) { reportGeometry() }
     /// Ends this window's helper so Ruby's process monitor observes its closure.
     func windowWillClose(_ notification: Notification) { NSApplication.shared.terminate(nil) }
     /// Closes titled and borderless windows through the same Cmd-W or bridge action.

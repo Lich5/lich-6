@@ -133,11 +133,12 @@ module Lich
             )
           end
           # Lifecycle callbacks previously never reached the browser bindings.
-          # Only configure is a browser event; close/attach/detach stay under
+          # Geometry and native state are browser reports; close/attach/detach stay under
           # the runtime's lifecycle delivery and close-once guard.
           bindings = builder.bindings.merge(
             [tree.cid, :configure] => lifecycle_bindings.fetch(:configure, proc {})
           )
+          bindings[[tree.cid, :window_state]] = lifecycle_bindings[:window_state] if lifecycle_bindings.key?(:window_state)
           render = Render.new(
             id, generation, tree, bindings.freeze,
             builder.submissions.freeze, builder.facilities.freeze

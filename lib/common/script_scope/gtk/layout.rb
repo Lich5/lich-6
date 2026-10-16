@@ -16,6 +16,90 @@ module Lich
           FILL = 4
         end
 
+        # Natural-sized children at bounded pixel coordinates, with no native GTK window.
+        class Fixed < Widget
+          include Container
+
+          def initialize
+            super
+            @props[:positioned] = true
+          end
+
+          # Adds a same-owner child at integer coordinates; failed attachment restores its placement.
+          # @return [Fixed] self
+          def put(child, x, y)
+            session.synchronize do
+              valid = !destroyed? && child.is_a?(Widget) && child.session.equal?(session) && !child.destroyed? && child.parent.nil?
+              session.refuse(self, :put) unless valid
+              placement = position(x, y)
+              previous = child.instance_variable_get(:@placement)
+              child.placement = placement
+              begin
+                insert_child(child, @children.length, placement: placement)
+              rescue StandardError
+                child.placement = previous
+                raise
+              end
+            end
+            self
+          end
+
+          # GTK's generic add places an unpositioned child at the origin.
+          def add(child) = put(child, 0, 0)
+
+          # Moves only an existing child, preserving placement on refusal.
+          # @return [Fixed] self
+          def move(child, x, y)
+            session.synchronize do
+              session.refuse(self, :move) unless !destroyed? && child.is_a?(Widget) && !child.destroyed? && child.parent.equal?(self)
+              placement = position(x, y)
+              session.port.place(@handle, child.materialize, placement) if @handle
+              child.placement = placement
+            end
+            self
+          end
+
+          # Keeps attachment validation, adapter detachment and shadow removal atomic with moves.
+          # @return [Fixed] self
+          def remove(child)
+            session.synchronize { super }
+          end
+
+          protected
+
+          def component_type = :overlay
+
+          private
+
+          def position(x, y)
+            session.refuse(self, :position) unless [x, y].all? { |value| value.is_a?(Integer) && Lich::WebUI::Contract::BOUNDS[:geometry].cover?(value) }
+            { x: x, y: y }
+          end
+        end
+
+        # A single-child pointer surface uses the existing owner/viewer event bridge.
+        class EventBox < Widget
+          include Container
+
+          def initialize
+            super
+            @props.merge!(orientation: :vertical, gap: 0)
+          end
+
+          # Preserves GtkBin's single-child rule rather than silently stacking content.
+          # @return [EventBox] self
+          def add(child)
+            session.synchronize do
+              session.refuse(self, :add) unless @children.empty?
+              super
+            end
+          end
+
+          protected
+
+          def component_type = :stack
+        end
+
         # The plain table in vars/alias contains widgets, not a TreeView model.
         # Cell positions become validated grid placements without extra handles.
         class Table < Widget
@@ -67,7 +151,8 @@ module Lich
           # @return [Table] self
           def attach(child, left, right, top, bottom, xoptions = 5, yoptions = 5, xpadding = 0, ypadding = 0)
             valid = [left, right, top, bottom].all? { |value| value.is_a?(Integer) }
-            valid &&= left >= 0 && right > left && right <= 24 && top >= 0 && bottom > top
+            valid &&= left >= 0 && right > left && right <= 24 && top >= 0 && bottom > top &&
+                      bottom <= Lich::WebUI::Contract::BOUNDS[:children]
             session.refuse(self, :attach) unless valid
             session.refuse(self, :attach) unless [xoptions, yoptions].all? { |value| %i[fill expand shrink].include?(value) || (value.is_a?(Integer) && value.between?(0, 7)) }
             if right > @columns
@@ -190,6 +275,19 @@ module Lich
           alias set_row_spacing row_spacings=
           alias set_column_spacing column_spacings=
 
+          # Finds the first attached child covering an original signed GTK cell.
+          # @return [Widget, nil] covering child, or nil for an empty cell
+          # @raise [UnsupportedOperation] for invalid coordinates or a retired grid
+          def get_child_at(column, row)
+            session.synchronize do
+              valid = [column, row].all? { |value| value.is_a?(Integer) && value.abs <= 65_536 }
+              session.refuse(self, :get_child_at) if destroyed? || !valid
+              @grid_origins.find do |_child, (left, top, width, height)|
+                column >= left && column < left + width && row >= top && row < top + height
+              end&.first
+            end
+          end
+
           # Maps the GTK equal-column request to the existing shared grid policy.
           # @raise [UnsupportedOperation] for nonboolean values
           def column_homogeneous=(value)
@@ -296,8 +394,7 @@ module Lich
             end
             columns = [1, *placements.values.map { |p| p[:column] + p[:span] - 1 }].max
             rows = [1, *placements.values.map { |p| p[:row] + p[:row_span] - 1 }].max
-            valid = columns <= 24 && rows <= Lich::WebUI::Contract::BOUNDS[:children] &&
-                    placements.values.all? { |p| p[:row_span] <= 24 }
+            valid = columns <= 24 && rows <= Lich::WebUI::Contract::BOUNDS[:children]
             session.refuse(self, :attach) unless valid
             expanding = placements.flat_map do |child, p|
               child.expands?(:horizontal) ? (p[:column]...(p[:column] + p[:span])).to_a : []
@@ -431,6 +528,9 @@ module Lich
           # @return [ScrolledWindow] self
           # @raise [UnsupportedOperation] for unknown policies
           def set_policy(horizontal, vertical)
+            horizontal, vertical = [horizontal, vertical].map do |value|
+              { AUTOMATIC: :automatic, ALWAYS: :always, NEVER: :never }.fetch(value, value)
+            end
             session.refuse(self, :set_policy) unless [horizontal, vertical].all? { |value| %i[automatic always never].include?(value) }
             session.degrade(:scrollbar_policy, 'browser provides scrollbars when content overflows')
             self

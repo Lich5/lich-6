@@ -48,6 +48,21 @@ test('the injected bridge reports native geometry and forwards ordinary window o
   ]);
 });
 
+test('native state measurements report only actual minimize transitions and forward request revisions', () => {
+  const calls = [], events = [];
+  const window = { webkit: { messageHandlers: { lichWindow: { postMessage: value => calls.push(value) } } }, dispatchEvent: event => events.push(event.type) };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../lib/webui/native/macos/window.js'), 'utf8'),
+    { window, Event: class { constructor(type) { this.type = type; } } });
+  window.lichNativeWindow.update({ minimized: false });
+  window.lichNativeWindow.update({ minimized: true });
+  window.lichNativeWindow.update({ minimized: true });
+  window.lichNativeWindow.update({ minimized: false });
+  assert.equal(window.lichNativeWindow.minimized, false);
+  assert.equal(events.filter(type => type === 'lich-window-state').length, 3);
+  window.lichNativeWindow.present({ minimized: true, minimized_revision: 2 });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ action: 'present', minimized: true, minimized_revision: 2 }]);
+});
+
 test('native monitor snapshots reach the renderer through the existing geometry bridge', () => {
   const window = { webkit: { messageHandlers: { lichWindow: { postMessage() {} } } }, dispatchEvent() {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../lib/webui/native/macos/window.js'), 'utf8'),

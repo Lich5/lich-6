@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.26.0'
+      VERSION = '2.32.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -127,7 +127,8 @@ module Lich
 
       # One shape for declarative facilities and imperative shim window state.
       PRESENTATION = record(
-        always_on_top: property(BOOL), borderless: property(BOOL), hidden: property(BOOL),
+        always_on_top: property(BOOL), borderless: property(BOOL), hidden: property(BOOL), minimized: property(BOOL),
+        minimized_revision: property(integer(min: 1, max: 2_147_483_647)),
         opacity: property(number(min: 0.1, max: 1.0)), scrollbars: property(BOOL)
       ).freeze
 
@@ -251,7 +252,7 @@ module Lich
             column: property(integer(min: 1, max_property: :cols)),
             row: property(integer(min: 1, max: BOUNDS[:children])),
             span: property(integer(min: 1, max_property: :cols)),
-            row_span: property(integer(min: 1, max: 24)),
+            row_span: property(integer(min: 1, max: BOUNDS[:children])),
           }, events: {}, value: nil,
         },
         tabs: {
@@ -277,8 +278,9 @@ module Lich
           events: { move: event(record(position: property(integer(min: 0, max: 100), required: true))) }, value: nil,
         },
         overlay: {
-          properties: {}, children: :many,
-          child_properties: { z: property(integer(min: 0, max: 99)), pass_through: property(BOOL) }, events: {}, value: nil,
+          properties: { positioned: property(BOOL, default: false) }, children: :many,
+          child_properties: { z: property(integer(min: 0, max: 99)), pass_through: property(BOOL),
+                              x: property(GEOMETRY), y: property(GEOMETRY) }, events: {}, value: nil,
         },
         scroll: {
           properties: {
@@ -298,6 +300,7 @@ module Lich
           properties: { content: property(string(:display_text), required: true), wrap: property(BOOL, default: true),
                         fragments: property(array(BODY, max: BOUNDS[:collection])),
                         max_width_chars: property(integer(min: 1, max: 1024)),
+                        line_limit: property(union(integer(min: -1, max: -1), integer(min: 1, max: 1024))),
                         ellipsize: property(enum(:middle)) },
           children: :none, events: {}, value: nil,
         },
@@ -328,7 +331,7 @@ module Lich
             label: property(SHORT, required: true),
             variant: property(enum(:default, :primary, :danger), default: 'default'), confirm: property(SHORT),
             indicator: property(enum(:check, :radio)), checked: property(BOOL, default: false),
-          }, children: :none, events: { activate: event(nil, terminal: true) }, value: nil,
+          }, children: { kind: :named, slots: %w[content], types: %i[text] }, events: { activate: event(nil, terminal: true) }, value: nil,
         },
         toggle: {
           properties: { label: property(SHORT), checked: property(BOOL, required: true, scope: :viewer),
@@ -361,6 +364,7 @@ module Lich
             placeholder: property(SHORT), max_length: property(integer(min: 1, max: 8192)),
             search: property(BOOL, default: false),
             read_only: property(BOOL, default: false),
+            has_frame: property(BOOL, default: true),
             # GTK changed handlers and activate/focus-out handlers have different
             # timing. Keep existing committed changes unless explicitly opted in.
             change_mode: property(enum(:commit, :input), default: :commit),
@@ -511,13 +515,16 @@ module Lich
                            )),
       }.freeze
 
-      # Native typography uses literal text and the existing bounded color
-      # shape. This does not admit Pango markup or add GTK style translation.
-      TEXT_STYLE_PROPERTIES = {
-        font_size: property(number(min: 6, max: 48)),
+      # Shared typography uses literal font properties and the bounded color shape.
+      # Source markup is never forwarded to the browser.
+      FONT_STYLE_PROPERTIES = {
+        font_size: property(number(min: 6, max: 96)),
         font_unit: property(enum(:pt, :px), default: 'pt'),
         font_family: property(string(:identifier)),
         font_style: property(enum(:normal, :italic)),
+      }.freeze
+      TEXT_STYLE_PROPERTIES = {
+        **FONT_STYLE_PROPERTIES,
         foreground: property(RGBA), background: property(RGBA),
       }.freeze
       TINT = union(record(tone: property(enum(*TONES), required: true)), RGBA).freeze
@@ -608,6 +615,7 @@ module Lich
           ), scope: :transient,
         },
         focus: { shape: CID, scope: :viewer },
+        focus_revision: { shape: integer(min: 1, max: 2_147_483_647), scope: :viewer },
         announce: {
           shape: record(
             text: property(BODY, required: true),
@@ -629,6 +637,7 @@ module Lich
 
       PAGE_LIFECYCLE_EVENTS = {
         pointer_press: POINTER_EVENT,
+        window_state: event(record(minimized: property(BOOL, required: true)), lifecycle: true),
         # Measured host geometry is notification data, not a form submission.
         configure: event(record(
                            width: property(integer(min: 0, max: 65_536), required: true),
@@ -666,7 +675,7 @@ module Lich
 
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
             end
-            if %i[page text image group progress table].include?(type)
+            if %i[page text image group progress table stack button].include?(type)
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
             end
@@ -680,6 +689,8 @@ module Lich
             # Grid-child allocation is distinct from text alignment. Single-child
             # frames use their existing content_align property instead.
             base[:properties][:vertical_align] = property(enum(:start, :center, :end, :stretch)) unless type == :page
+            base[:properties].merge!(FONT_STYLE_PROPERTIES) if %i[button text_input].include?(type)
+            base[:properties][:emphasis] = property(enum(*EMPHASES)) if type == :text_input
             if type == :text
               base[:properties].merge!(TEXT_STYLE_PROPERTIES)
               base[:properties].merge!(padding_x: property(integer(min: 0, max: 64)), padding_y: property(integer(min: 0, max: 64)),

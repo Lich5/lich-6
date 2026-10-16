@@ -206,6 +206,24 @@ RSpec.describe 'bounded script compatibility pilot' do
     window.destroy
   end
 
+  it 'checks the advertised GTK version without creating a session or loading native GTK' do
+    expect(compatibility).not_to receive(:session)
+    [[3, 0, 0], [3, 23, 99], [3, 24, 0]].each do |version|
+      expect(compatibility.check_version(*version)).to be_nil
+    end
+    [[2, 24, 0], [4, 0, 0], [3, 24, 1], [3, 25, 0]].each do |version|
+      expect(compatibility.check_version(*version)).to include('3.24.0', version.join('.'))
+    end
+    [-1, 1.0, '3', nil, 0x1_0000_0000].each do |invalid|
+      3.times do |index|
+        version = [3, 0, 0]
+        version[index] = invalid
+        expect { compatibility.check_version(*version) }.to raise_error(ArgumentError, /unsigned 32-bit/)
+      end
+    end
+    expect(eval('Gtk.check_version(3, 0, 0)', scope.script_binding)).to be_nil
+  end
+
   it 'resolves GTK 3 and availability only within script bindings' do
     [scope.script_binding, scope.untrusted_binding].each do |binding|
       expect(eval('Gtk::Version::MAJOR', binding)).to eq(3)
@@ -608,7 +626,8 @@ RSpec.describe 'bounded script compatibility pilot' do
     combo.remove(0)
     expect(combo.active).to eq(-1)
     expect(combo.active_text).to be_nil
-    expect { combo.active = 20 }.to raise_error(StandardError, /active=/)
+    combo.active = 20
+    expect(combo.active).to eq(-1)
     combo.remove_all
     expect(combo.active_text).to be_nil
     combo.append_text('Replacement')

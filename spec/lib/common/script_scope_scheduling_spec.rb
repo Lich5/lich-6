@@ -60,10 +60,23 @@ RSpec.describe 'owner-bound GLib scheduling' do
     expect(glib::Source.remove(id)).to be(true)
     [proc { glib::Timeout.add(-1) {} }, proc { glib::Timeout.add(2) },
      proc { glib::Timeout.add_seconds(0.5) {} }, proc { glib::Source.remove(nil) },
-     proc { glib::MainLoop }, proc { glib::Timeout.add_full(0) {} }].each do |call|
+     proc { glib::Timeout.add_full(0) {} }].each do |call|
       expect(&call).to raise_error(gtk::UnsupportedOperation)
     end
     expect(::Timeout).not_to equal(glib::Timeout)
+  end
+
+  it 'permits owner-bound loop construction but refuses nested execution and termination' do
+    loop = glib::MainLoop.new
+    expect { loop.run }.to raise_error(gtk::UnsupportedOperation, /operation=run/)
+    expect { loop.quit }.to raise_error(gtk::UnsupportedOperation, /operation=quit/)
+    expect { glib::MainLoop.new(:custom_context) }.to raise_error(ArgumentError)
+    @other = Struct.new(:name).new('other.lic')
+    allow(Lich::Common::Script).to receive(:current).and_return(@other)
+    expect { loop.run }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    gtk.session.close
+    expect { glib::MainLoop.new }.to raise_error(gtk::UnsupportedOperation)
   end
 
   it 'stops on callback failure, rejects foreign removal and cleans up on session close' do

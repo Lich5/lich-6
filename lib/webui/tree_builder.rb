@@ -287,6 +287,9 @@ module Lich
 
       def validate_focus!
         target = @facilities[:focus]
+        if @facilities[:focus_revision] && !target
+          raise SchemaViolationError.new('focus revision requires a focus target', owner: owner_label, page_id: @page_id, field: :focus_revision)
+        end
         return unless target
 
         component = @cids[target]
@@ -330,6 +333,9 @@ module Lich
       end
 
       def validate_named_children!(draft, rule)
+        if rule[:types] && draft.children.any? { |child| !rule[:types].include?(child.type) }
+          child_violation!(draft, 'child type is not permitted')
+        end
         slots = case rule.fetch(:kind)
                 when :named then rule.fetch(:slots)
                 when :named_dynamic then Array.new(draft.props.fetch(rule.fetch(:count_property))) { |index| index.to_s }
@@ -359,6 +365,12 @@ module Lich
             @validator.validate_placement!(
               name, shape, value, owner: owner_label, page_id: @page_id, cid: child.cid
             )
+          end
+          if draft.type == :grid && child.placement.fetch(:row, 1) + child.placement.fetch(:row_span, 1) - 1 > Contract::BOUNDS[:children]
+            child_violation!(draft, 'child placement exceeds grid rows')
+          end
+          if draft.type == :overlay && !draft.props[:positioned] && (child.placement.keys & %i[x y]).any?
+            child_violation!(draft, 'coordinates require a positioned overlay')
           end
         end
       end

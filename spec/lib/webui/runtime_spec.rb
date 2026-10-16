@@ -501,7 +501,7 @@ RSpec.describe Lich::WebUI::Runtime do
     attach(first_connection, page)
 
     expect(page.presentation_support).to eq(
-      always_on_top: false, borderless: false, hidden: false, opacity: true, scrollbars: true
+      always_on_top: false, borderless: false, hidden: false, minimized: false, minimized_revision: false, opacity: true, scrollbars: true
     )
     expect(page.degradations).to contain_exactly(
       { facility: :presentation, property: :always_on_top, reason: :unsupported_by_browser_host },

@@ -224,8 +224,11 @@ treated as recoverable callback errors. Repeated destruction remains idempotent.
 `GLib::Timeout.add(milliseconds)`, `Timeout.add_seconds(seconds)`, `Idle.add`
 and `Source.remove(id)` are bounded, script-local scheduling facades. They accept
 the cached positional interval/block (including `&Proc`) forms. They do not load
-native GLib, replace Ruby's `::Timeout`, or expose priorities, MainLoop, IO watches
-or other GLib APIs. Unknown constants/methods retain attributed refusal.
+native GLib, replace Ruby's `::Timeout`, or expose priorities, IO watches
+or other GLib APIs. `GLib::MainLoop.new` accepts no arguments and retains an
+owner-bound compatibility object for scripts that allocate one before building UI.
+Its `run` and `quit` remain explicit refusals: nested dispatch and game-response
+waiting are not implemented. Unknown constants/methods retain attributed refusal.
 
 Core consumers can capture `WebUI.callback_scheduler(owner:)`, whose handle exposes
 `schedule(interval_ms) { ... }`, `cancel(id)` and `cancel_all`. The handle retains

@@ -17,10 +17,51 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(barrier.pop(timeout: 3)).to be(true)
   end
 
+  it 'limits Button content to one plain text child without attaching refused children' do
+    button = adapter.create(:button, label: '')
+    text = adapter.create(:text, content: 'Die')
+    other = adapter.create(:text, content: 'Other')
+    input = adapter.create(:text_input, value: '')
+    expect { adapter.attach(button, input) }.to raise_error(Lich::WebUI::Error, /child type/)
+    adapter.attach(button, text)
+    expect { adapter.attach(button, other) }.to raise_error(Lich::WebUI::Error, /too many children/)
+    adapter.detach(button, text)
+    adapter.attach(button, other)
+    adapter.attach(adapter.create(:stack, {}), input)
+  end
+
   it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :set_overlay_pass_through, :monitor_geometry
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :set_overlay_pass_through, :monitor_geometry, :focus, :place
     )
+  end
+
+  it 'rejects foreign focus and invalid positioned movement without replacing valid state' do
+    allow(service.runtime).to receive(:schedule_render)
+    root = adapter.create(:page, title: 'Positioned')
+    fixed = adapter.create(:overlay, positioned: true)
+    entry = adapter.create(:text_input, value: 'Retained', placement: { x: 10, y: 20 })
+    adapter.attach(root, fixed)
+    adapter.attach(fixed, entry)
+    adapter.focus(root, entry)
+    adapter.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    revision = page.last_render.facilities[:focus_revision]
+    expect(page.last_render.facilities[:focus]).to eq(page.last_render.tree.children.first.children.first.cid)
+    expect { adapter.place(fixed, entry, x: 65_537, y: 0) }.to raise_error(Lich::WebUI::Error)
+    expect { adapter.set(fixed, :positioned, false) }.to raise_error(Lich::WebUI::Error, /coordinates/)
+    adapter.place(fixed, entry, x: -5, y: 30)
+    adapter.send(:flush!)
+    expect(page.last_render.tree.children.first.children.first.placement).to eq(x: -5, y: 30)
+    expect(page.last_render.facilities[:focus_revision]).to eq(revision)
+    detached = adapter.create(:text_input, value: 'Detached')
+    expect { adapter.focus(root, detached) }.to raise_error(Lich::WebUI::Error, /descendant/)
+    another = Lich::WebUI::Adapter.new(owner: Object.new, service: service)
+    foreign = another.create(:text_input, value: 'Foreign')
+    expect { adapter.focus(root, foreign) }.to raise_error(Lich::WebUI::Error)
+    adapter.destroy(entry)
+    adapter.send(:flush!)
+    expect(page.last_render.facilities).not_to have_key(:focus)
   end
 
   it 'validates live overlay hit testing, preserves identity and rolls back failed publication' do
@@ -238,6 +279,27 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(after.props).to include(value: 0.5)
     expect(after.props).not_to have_key(:height)
     expect(after.props).not_to have_key(:fill_color)
+  end
+
+  it 'bounds tall grid spans by their ending row and preserves live placement on refusal' do
+    allow(service.runtime).to receive(:schedule_render)
+    root = adapter.create(:page, title: 'Tall span')
+    grid = adapter.create(:grid, cols: 2)
+    child = adapter.create(:text, content: 'Instructions', placement: { row: 9, row_span: 92 })
+    adapter.attach(root, grid)
+    adapter.attach(grid, child)
+    adapter.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    before = page.last_render.tree.children.first.children.first
+    expect(before.placement).to include(row: 9, row_span: 92)
+    expect { adapter.layout_grid(grid, columns: 2, placements: { child => { row: 1000, row_span: 26 } }) }
+      .to raise_error(Lich::WebUI::Error, /grid rows/)
+    adapter.send(:flush!)
+    expect(page.last_render.tree.children.first.children.first.placement).to eq(before.placement)
+    invalid = adapter.create(:text, content: 'Too tall', placement: { row_span: 1025 })
+    expect { adapter.attach(grid, invalid) }.to raise_error(Lich::WebUI::Error, /1024/)
+    boundary = adapter.create(:text, content: 'Last row', placement: { row: 1024, row_span: 1 })
+    expect { adapter.attach(grid, boundary) }.not_to raise_error
   end
 
   it 'atomically repositions grid children and rejects invalid or foreign replacements' do

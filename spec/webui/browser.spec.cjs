@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -175,6 +175,36 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.getByRole('button', { name: 'Measure screen' }).click();
     await expect(page.getByText(/^Screen: \d+ x \d+ \(browser\)$/)).toBeVisible();
     await page.getByRole('button', { name: 'Finish', exact: true }).click();
+  } else if (scenario === 'shim-fixed-events-focus') {
+    const first = page.getByPlaceholder('First field'), second = page.getByPlaceholder('Second field');
+    await expect(first).toBeFocused();
+    const surface = page.getByText('Pointer surface', { exact: true });
+    const root = page.locator('.webui-overlay');
+    const position = async (target, x, y) => {
+      const outer = await root.boundingBox(), child = await target.boundingBox();
+      expect(child.x - outer.x).toBeCloseTo(x, 0);
+      expect(child.y - outer.y).toBeCloseTo(y, 0);
+      await expect.poll(async () => {
+        const measured = await root.boundingBox(), contents = await target.boundingBox();
+        return measured.width - (contents.x - measured.x + contents.width);
+      }).toBeGreaterThanOrEqual(-1);
+      await expect.poll(async () => {
+        const measured = await root.boundingBox(), contents = await target.boundingBox();
+        return measured.height - (contents.y - measured.y + contents.height);
+      }).toBeGreaterThanOrEqual(-1);
+    };
+    await position(surface, 300, 0);
+    await second.fill('Changed second');
+    await expect(page.getByText('Edited second', { exact: true })).toBeVisible();
+    await expect(second).toBeFocused();
+    await surface.click();
+    const clicked = page.getByText('Pointer 1', { exact: true });
+    await expect(clicked).toBeVisible();
+    await position(clicked, 350, 40);
+    await page.getByRole('button', { name: 'Refocus', exact: true }).click();
+    await expect(first).toBeFocused();
+    await page.getByRole('button', { name: 'Finish', exact: true }).click();
+    await expect(first).toHaveCount(0);
   } else if (scenario === 'native-progress-sizing') {
     const control = key => page.locator(`[data-cid$="progress:${key}"]`);
     const sizes = async () => {
