@@ -77,6 +77,20 @@ module Lich
           end
         end
 
+        # Bounded Layout positioning reuses Fixed; the canvas clips offscreen children.
+        # Native virtual-size and adjustment APIs are outside this facade.
+        class Layout < Fixed
+          # @param hadjustment [nil] only browser-owned scrolling is supported
+          # @param vadjustment [nil] only browser-owned scrolling is supported
+          # @raise [UnsupportedOperation] for native scroll adjustments
+          def initialize(hadjustment = nil, vadjustment = nil)
+            super()
+            session.refuse(self, :new) unless hadjustment.nil? && vadjustment.nil?
+            @props[:clip_children] = true
+            session.degrade(:layout_scrolling, 'Layout positions and clips children; scrolling uses browser containers, not native adjustments')
+          end
+        end
+
         # A single-child pointer surface uses the existing owner/viewer event bridge.
         class EventBox < Widget
           include Container

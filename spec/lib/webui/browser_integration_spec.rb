@@ -7,6 +7,58 @@ require_relative '../../support/webui_browser'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'WebUI browser bootstrap', browser: true do
+  it 'serves and decodes a BMP through the authenticated image route' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    Dir.mktmpdir('webui-bmp') do |root|
+      bytes = 'BM'.b + [62, 0, 54, 40, 2, 1, 1, 24, 0, 8, 0, 0, 0, 0].pack('VVVVl<l<vvVVl<l<VV') + "\0".b * 8
+      File.binwrite(File.join(root, 'fixture.bmp'), bytes)
+      service = Lich::WebUI::Service.new(application_roots: [root])
+      owner = Object.new
+      prefix = service.register_files('bmp', root, owner: owner)
+      page = Lich::WebUI::Page.new(owner: owner, id: 'bmp', title: 'BMP image') do |ui|
+        ui.image src: prefix + 'fixture.bmp', alt: 'BMP fixture'
+      end
+      service.registry.register(page)
+      WebUIBrowser.check(service: service, page: page, scenario: 'native-bmp')
+    ensure
+      service&.stop
+    end
+  end
+
+  it 'clips Layout children at negative coordinates and moves them into the canvas' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    scope = Lich::Common::ScriptScope
+    scope.activate!
+    owner = Struct.new(:name).new('layout.lic')
+    service = Lich::WebUI::Service.new
+    stub_const('Lich::Common::Script', Class.new { def self.current; end })
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
+    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
+    allow(Lich).to receive(:log)
+    gtk = scope.const_get(:Gtk, false)
+    window, layout = gtk::Window.new, gtk::Layout.new
+    layout.set_margin_left(140)
+    hidden, move = gtk::Button.new('Offscreen'), gtk::Button.new('Move into canvas')
+    hidden.set_size_request(100, 30)
+    anchor = gtk::Label.new('Canvas extent')
+    anchor.set_size_request(240, 60)
+    layout.put(hidden, -120, 50)
+    layout.put(anchor, 0, 120)
+    layout.put(move, 0, 0)
+    move.signal_connect('clicked') { layout.move(hidden, 100, 50) }
+    window.add(layout)
+    window.show_all
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-layout')
+  ensure
+    Lich::Common::ScriptDeath.run(owner) if owner
+    service&.stop
+  end
+
   it 'measures Fixed children, delivers EventBox clicks and applies focus requests once' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 

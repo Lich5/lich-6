@@ -9,7 +9,7 @@ module Lich
     class FileService
       EXTENSIONS = {
         '.png' => 'image/png', '.jpg' => 'image/jpeg', '.jpeg' => 'image/jpeg',
-        '.gif' => 'image/gif', '.webp' => 'image/webp',
+        '.gif' => 'image/gif', '.webp' => 'image/webp', '.bmp' => 'image/bmp',
       }.freeze
       ALIAS_PATTERN = /\A[A-Za-z0-9_-]{1,128}\z/
 
