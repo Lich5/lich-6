@@ -8,6 +8,26 @@ RSpec.describe Lich::WebUI::Validator do
 
   let(:context) { { owner: 'spec-owner', page_id: 'spec-page', cid: 'test:component' } }
 
+  it 'accepts effective Markdown sensitivity without adding arbitrary destination or HTML fields' do
+    expect(validator.validate_component!(:markdown, { content: '[Wiki](https://example.org)', disabled: true }, **context))
+      .to include(disabled: true)
+    expect { validator.validate_component!(:markdown, { content: '', disabled: 'true' }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_component!(:markdown, { content: '', href: 'javascript:bad' }, **context) }.to raise_error(Lich::WebUI::UnknownPropertyError)
+  end
+
+  it 'bounds internal select margins independently and admits literal stack tooltips' do
+    props = validator.validate_component!(:select, { options: [], margin: 7, control_margin: { left: 12, top: 3 } }, **context)
+    expect(props).to include(margin: 7, control_margin: { left: 12, top: 3 })
+    %i[stack grid].each do |type|
+      properties = type == :grid ? { cols: 1, tooltip: '<literal>' } : { tooltip: '<literal>' }
+      expect(validator.validate_component!(type, properties, **context)[:tooltip]).to eq('<literal>')
+    end
+    [513, -1, { left: 513 }, { unknown: 1 }].each do |margin|
+      expect { validator.validate_component!(:select, { options: [], control_margin: margin }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    expect { validator.validate_component!(:text, { content: '', control_margin: 1 }, **context) }.to raise_error(Lich::WebUI::UnknownPropertyError)
+  end
+
   it 'accepts an empty tab set but refuses selection until a page exists' do
     props = validator.validate_component!(:tabs, { names: [], selected: 0 }, **context)
     expect(props[:names]).to be_empty
@@ -23,6 +43,19 @@ RSpec.describe Lich::WebUI::Validator do
     expect do
       validator.validate_component!(:select, { options: [{ value: 'one', label: 'x' * 513 }] }, **context)
     end.to raise_error(Lich::WebUI::SchemaViolationError, /512/)
+  end
+
+  it 'accepts literal and styled fragments while refusing untyped styles, oversized content and styled middle ellipsis' do
+    parts = ['Plain ', { content: '<literal>', emphasis: :strong, font_style: :italic, foreground: { r: 255, g: 0, b: 0, a: 1.0 }, scale: 0.9 }]
+    props = validator.validate_component!(:text, { content: '', fragments: parts, ellipsize: :end }, **context)
+    expect(props[:fragments].last).to include(content: '<literal>', emphasis: 'strong', font_style: 'italic')
+    [
+      [{ content: 'x', style: 'color:red' }], [{ content: 'x', scale: 3 }],
+      [{ content: 'x' * 8193 }], Array.new(9) { { content: 'x' * 8192 } }
+    ].each do |fragments|
+      expect { validator.validate_component!(:text, { content: '', fragments: fragments }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    expect { validator.validate_component!(:text, { content: '', fragments: parts, ellipsize: :middle }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError, /plain text/)
   end
 
   it 'accepts bounded plain-text line justification without changing placement or other controls' do

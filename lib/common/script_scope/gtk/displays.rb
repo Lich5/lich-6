@@ -28,6 +28,29 @@ module Lich
             add(child)
           end
 
+          # Uses the existing draggable split; native allocation hints are omitted.
+          # @param resize [Boolean] native resize hint, reported as browser-owned
+          # @param shrink [Boolean] native shrink hint, reported as browser-owned
+          def pack1(child, resize = false, shrink = true)
+            pack_pane(child, resize, shrink, :add1)
+          end
+
+          # Packs the second pane with the same bounded split policy.
+          def pack2(child, resize = true, shrink = true)
+            pack_pane(child, resize, shrink, :add2)
+          end
+
+          private
+
+          def pack_pane(child, resize, shrink, operation)
+            session.synchronize do
+              session.refuse(self, :pack) unless [resize, shrink].all? { |value| [true, false].include?(value) }
+              public_send(operation, child)
+              session.degrade(:split_packing, 'native resize and shrink hints follow browser split layout; the divider remains user-controlled')
+            end
+            self
+          end
+
           protected
 
           def component_type = :split

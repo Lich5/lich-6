@@ -36,6 +36,9 @@ module Lich
         POLICY_ALWAYS = :always
         POLICY_NEVER = :never
 
+        # Legacy spelling reuses the existing bounded scroller inset policy.
+        SHADOW_IN = :in
+
         module Align
           START = :start
           CENTER = :center
@@ -52,6 +55,9 @@ module Lich
             Gtk.session.refuse(self, name)
           end
         end
+
+        # Legacy nested spelling shares the same bounded host-placement hint.
+        Window::Position = WindowPosition
 
         module WindowType
           TOPLEVEL = :toplevel

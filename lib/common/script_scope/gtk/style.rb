@@ -22,6 +22,17 @@ module Lich
           # @return [Settings]
           def self.default = new
 
+          # Native theme names cannot select browser themes. Retain host styling
+          # and report the omission; unknown settings remain explicit refusals.
+          # @param name [String] only gtk-theme-name
+          # @param value [String] bounded native theme name
+          def set_property(name, value)
+            session = Gtk.session
+            session.refuse(self, :set_property) unless name == 'gtk-theme-name' && value.is_a?(String) && value.ascii_only? && value.length.between?(1, 128)
+            session.degrade(:native_theme, 'native GTK theme names are omitted; browser uses the application theme')
+            self
+          end
+
           # Reports the same preference as native pages so scripts can choose
           # their original light/dark palettes without GTK runtime dependencies.
           # @return [Boolean] whether the application prefers the dark theme
@@ -308,7 +319,7 @@ module Lich
         # No browser CSS parsing, URLs, functions, or arbitrary style strings.
         module Color
           NAMES = {
-            'white' => 'ffffff', 'black' => '000000',
+            'white' => 'ffffff', 'black' => '000000', 'red' => 'ff0000',
             'violet' => 'ee82ee', 'orchid' => 'da70d6', 'powderblue' => 'b0e0e6',
             'skyblue' => '87ceeb', 'greenyellow' => 'adff2f', 'hotpink' => 'ff69b4',
             'deepskyblue' => '00bfff', 'gold' => 'ffd700', 'burlywood' => 'deb887',
@@ -395,12 +406,19 @@ module Lich
           attr_reader :weight, :properties
 
           # Parses generic families and bounded point sizes without loading Pango.
-          # @param description [String, nil] e.g. Monospace 10; nil keeps theme typography
+          # @param description [String, nil] e.g. Monospace 10 or 12; nil keeps theme typography
           # @raise [Gtk::UnsupportedOperation] for descriptions outside this subset
           def initialize(description = nil)
             @weight = :normal
             @properties = {}.freeze
             return if description.nil?
+
+            if description.is_a?(String) && description.length <= 512 && description.match?(/\A[0-9]+(?:\.[0-9]+)?\z/)
+              size = description.to_f
+              Gtk.session.refuse(self, :new) unless size.between?(6, 48)
+              @properties = { font_size: size, font_unit: :pt }.freeze
+              return
+            end
 
             match = description.is_a?(String) && description.length <= 512 && description.match(/\A(Monospace|Sans|Serif) ([0-9]+(?:\.[0-9]+)?)\z/i)
             Gtk.session.refuse(self, :new) unless match && match[2].to_f.between?(6, 48)
@@ -413,7 +431,7 @@ module Lich
           # @raise [Gtk::UnsupportedOperation] for an invalid description
           def self.from_string(value)
             Gtk.session.refuse(self, :from_string) unless value.is_a?(String) && value.length.between?(1, 512)
-            return new(value) if value.match?(/\A(?:Monospace|Sans|Serif) [0-9]+(?:\.[0-9]+)?\z/i)
+            return new(value) if value.match?(/\A(?:(?:Monospace|Sans|Serif) )?[0-9]+(?:\.[0-9]+)?\z/i)
 
             Gtk.session.degrade(:font_face, 'unparsed font family and size follow browser theme')
             new

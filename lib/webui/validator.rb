@@ -301,6 +301,7 @@ module Lich
           violation!('width_groups must be unique', context, :width_groups)
         end
         case type
+        when :text then validate_text!(props, context)
         when :columns then validate_columns!(props, context)
         when :grid then validate_grid!(props, context)
         when :tabs then validate_tabs!(props, context)
@@ -313,6 +314,15 @@ module Lich
         when :dialog then validate_dialog!(props, context)
         when :composite then validate_composite!(props, context)
         end
+      end
+
+      def validate_text!(props, context)
+        fragments = props[:fragments]
+        return unless fragments&.any? { |part| part.is_a?(Hash) }
+
+        length = fragments.sum { |part| part.is_a?(Hash) ? part[:content].length : part.length }
+        violation!('styled text exceeds display text bound', context, :fragments) if length > Contract::BOUNDS[:display_text]
+        violation!('middle ellipsis requires plain text', context, :ellipsize) if props[:ellipsize] == 'middle'
       end
 
       def validate_sensitive!(type, props, context)

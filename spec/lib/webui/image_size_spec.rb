@@ -32,6 +32,28 @@ RSpec.describe 'native image dimensions' do
     expect(dimensions('GIF89a' + [32, 48].pack('vv'))).to eq([32, 48])
   end
 
+  it 'identifies image formats from headers rather than extensions with one bounded read' do
+    require 'webui/image_size'
+    fixtures = {
+      'png'  => [137, 80, 78, 71, 13, 10, 26, 10].pack('C*') + [13].pack('N') + 'IHDR' + [20, 10].pack('NN'),
+      'gif'  => 'GIF89a' + [20, 10].pack('vv'),
+      'jpeg' => [255, 216, 255, 192].pack('C*') + [8, 8, 10, 20, 1].pack('nCnnC'),
+      'bmp'  => bmp(20, -10, 32)
+    }
+    allow(File).to receive(:open).and_call_original
+    fixtures.each do |format, bytes|
+      Tempfile.create(['metadata', '.wrong']) do |file|
+        file.binmode
+        file.write(bytes)
+        file.flush
+        expect(File).to receive(:open).with(file.path, 'rb').once.and_call_original
+        result = Lich::WebUI::ImageSize.info(file.path)
+        expect(result).to be_frozen
+        expect([result.format, result.width, result.height]).to eq([format, 20, 10])
+      end
+    end
+  end
+
   it 'reads padded RGB BMP rows and top-down or 32-bit true-color images' do
     require 'webui/image_size'
     expect(dimensions(bmp)).to eq([2, 3])

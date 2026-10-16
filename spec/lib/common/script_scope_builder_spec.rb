@@ -762,6 +762,17 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     end
   end
 
+  it 'routes Builder inset Frame requests through the same bounded frame setter' do
+    load_xml('<object class="GtkFrame" id="frame"><property name="shadow-type">in</property></object>')
+    expect(builder['frame'].send(:component_props)[:border_width]).to eq(1)
+    expect(builder['frame'].set_label('Live caption')).to equal(builder['frame'])
+    expect(builder['frame'].label).to eq('Live caption')
+    builder['frame'].shadow_type = :none
+    expect(builder['frame'].send(:component_props)[:border_width]).to eq(0)
+    expect { builder['frame'].shadow_type = :out }.to raise_error(gtk::UnsupportedOperation)
+    expect(builder['frame'].send(:component_props)[:border_width]).to eq(0)
+  end
+
   it 'uses shared character metrics and borderless frames while refusing unsupported focus and alignment values' do
     load_xml('<object class="GtkLabel" id="label"><property name="width-chars">17</property></object><object class="GtkFrame" id="frame"><property name="shadow-type">none</property></object>')
     expect(builder['label'].send(:component_props)).to include(min_width_chars: 17)
@@ -822,6 +833,42 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     linked = gtk::Label.new
     linked.set_markup('<a href="https://example.com">Link</a>')
     expect { linked.justify = :right }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'maps a Builder internal entry width to its single shared combo input' do
+    load_xml(<<~XML)
+      <object class="GtkWindow" id="window"><child>
+        <object class="GtkComboBoxText" id="choice"><property name="has-entry">True</property>
+          <child internal-child="entry"><object class="GtkEntry" id="entry">
+            <property name="width-request">400</property><property name="tooltip-text">Profile name</property>
+            <property name="margin-start">12</property><property name="margin-top">3</property>
+          </object></child><items><item>First</item></items>
+        </object>
+      </child></object>
+    XML
+    choice, entry = builder['choice'], builder['entry']
+    expect(entry.class).to equal(gtk::Entry)
+    expect(choice.send(:component_props)).to include(control_width: 400, tooltip: 'Profile name', control_margin: { left: 12, top: 3 })
+    expect(choice.send(:component_props)).not_to have_key(:width)
+    expect(entry.tooltip_text).to eq('Profile name')
+    builder['window'].show_all
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    expect(page.last_render.tree.each.count { |node| node.type == :select }).to eq(1)
+    expect(page.last_render.tree.each.none? { |node| node.type == :text_input }).to be(true)
+    choice.margin = 20
+    entry.margin_end = 9
+    expect(choice.session.port.get(choice.materialize, :control_margin)).to eq(left: 12, top: 3, right: 9)
+    expect(choice.session.port.get(choice.materialize, :margin)).to eq(20)
+    expect(entry.set_margin_start(12)).to equal(entry)
+    expect { entry.margin_bottom = 513 }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect(choice.session.port.get(choice.materialize, :control_margin)).to eq(left: 12, top: 3, right: 9)
+    expect(entry.set_width_request(320)).to equal(entry)
+    expect(choice.session.port.get(choice.materialize, :control_width)).to eq(320)
+    [0, -1, 1025, 1.5, '400'].each do |value|
+      expect { entry.width_request = value }.to raise_error(gtk::UnsupportedOperation)
+      expect(choice.session.port.get(choice.materialize, :control_width)).to eq(320)
+    end
   end
 
   it 'reuses one closed select for a noneditable combo entry and one numeric change stream' do

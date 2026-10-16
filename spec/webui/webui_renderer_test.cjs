@@ -548,6 +548,44 @@ test('label typography disappears or restores explicit values after a live marku
   assert.equal(label.style.fontFamily, 'serif');
 });
 
+test('styled fragments preserve literal text through rotation, justification and replacement', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'styled' }] });
+  const fragments = [
+    { content: 'Attack', emphasis: 'strong' }, '  ',
+    { content: '<literal>', font_style: 'italic', foreground: { r: 255, g: 191, b: 64, a: 1 }, scale: 0.9 }
+  ];
+  const render = (generation, props) => receive({ type: 'render', page: 'styled', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'text', cid: 'label', props }] } });
+  render(1, { content: '', fragments, rotation: '90', line_justify: 'left' });
+  let label = dom.window.document.querySelector('[data-cid="label"]');
+  assert.equal(label.textContent, 'Attack  <literal>');
+  const spans = label.querySelectorAll('.webui-text-fragment');
+  assert.equal(spans[0].style.fontWeight, 'bold');
+  assert.equal(spans[1].style.fontStyle, 'italic');
+  assert.equal(spans[1].style.color, 'rgb(255, 191, 64)');
+  assert.equal(spans[1].style.fontSize, '0.9em');
+  assert.equal(label.querySelector('literal'), null);
+  render(2, { content: 'Plain replacement' });
+  label = dom.window.document.querySelector('[data-cid="label"]');
+  assert.equal(label.textContent, 'Plain replacement');
+  assert.equal(label.querySelector('.webui-text-fragment'), null);
+});
+
+test('end ellipsis retains full accessible text and respects character width', t => {
+  const { dom, page } = fixture(); t.after(() => dom.window.close());
+  const content = 'A long service bonus description';
+  const label = dom.window.LichWebUI.render(page, { type: 'text', cid: 'bonus', props: {
+    content, max_width_chars: 20, ellipsize: 'end'
+  } });
+  assert.equal(label.textContent, content);
+  assert.equal(label.getAttribute('aria-label'), content);
+  assert.equal(label.style.maxWidth, '20ch');
+  assert.equal(label.style.whiteSpace, 'pre');
+  assert.equal(label.style.overflow, 'hidden');
+  assert.equal(label.style.textOverflow, 'ellipsis');
+});
+
 test('native typography applies bounded properties while keeping text literal', () => {
   const { dom, page } = fixture();
   const style = { font_size: 18, foreground: { r: 224, g: 27, b: 36, a: 1 }, background: { r: 0, g: 0, b: 0, a: 0.5 } };
@@ -1929,4 +1967,46 @@ test('a delayed release from the previous gesture cannot clear a new pointer hol
   await new Promise(resolve => dom.window.setTimeout(resolve, 10));
   assert.equal(row.isConnected, false);
   assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'After');
+});
+
+
+test('select entry margins stay on the single input while stack tooltips remain literal', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'entry-margin' }] });
+  const publish = (generation, margin) => receive({ type: 'render', page: 'entry-margin', generation, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'stack', cid: 'row', props: { tooltip: '<help>' }, children: [
+      { type: 'select', cid: 'choice', props: { editable: true, value: 'one', options: [{ value: 'one', label: 'One' }],
+        margin: 20, control_margin: margin } }
+    ] }]
+  } });
+  publish(1, { left: 12, top: 3 });
+  const wrapper = dom.window.document.querySelector('[data-cid="choice"]');
+  const input = wrapper.querySelector('input');
+  assert.equal(wrapper.style.margin, '20px');
+  assert.equal(input.style.marginLeft, '12px');
+  assert.equal(input.style.marginTop, '3px');
+  assert.equal(wrapper.querySelectorAll('input').length, 1);
+  assert.equal(dom.window.document.querySelector('[data-cid="row"]').title, '<help>');
+  publish(2, 0);
+  assert.equal(dom.window.document.querySelector('[data-cid="choice"] input').style.margin, '0px');
+});
+
+
+test('disabled Markdown links have no navigation target and live enablement restores only permitted destinations', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'disabled-links' }] });
+  const publish = (generation, disabled, content) => receive({ type: 'render', page: 'disabled-links', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'markdown', cid: 'wiki', props: { content, disabled } }] } });
+  publish(1, true, '[Wiki](https://example.org/wiki)');
+  let wrapper = dom.window.document.querySelector('[data-cid="wiki"]');
+  assert.equal(wrapper.inert, true);
+  assert.equal(wrapper.querySelector('a').hasAttribute('href'), false);
+  assert.equal(wrapper.querySelector('a').getAttribute('aria-disabled'), 'true');
+  assert.equal(wrapper.querySelector('a').tabIndex, -1);
+  publish(2, false, '[New wiki](https://example.org/new)');
+  wrapper = dom.window.document.querySelector('[data-cid="wiki"]');
+  assert.equal(wrapper.querySelector('a').href, 'https://example.org/new');
+  assert.equal(wrapper.querySelector('a').rel, 'noopener noreferrer');
+  publish(3, false, '[Other port](http://127.0.0.1:9090/wiki)');
+  assert.equal(dom.window.document.querySelector('[data-cid="wiki"] a'), null);
 });
