@@ -380,6 +380,66 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     [probe, remover].each { |thread| thread&.join(3) || thread&.kill }
   end
 
+  %i[removed destroyed reparented].each do |state|
+    it "shows a window after its pending focus target is #{state}" do
+      window, entry = gtk::Window.new, gtk::Entry.new
+      window.add(entry)
+      window.set_focus(entry)
+      if state == :destroyed
+        entry.destroy
+      else
+        window.remove(entry)
+        gtk::Window.new.add(entry) if state == :reparented
+      end
+      expect(window.show).to equal(window)
+      wait_for { service.registry.pages_for(owner).first&.last_render }
+      expect(service.registry.pages_for(owner).first.last_render.facilities).not_to have_key(:focus)
+      expect(window.instance_variable_get(:@shown)).to be(true)
+    end
+  end
+
+  it 'retains focus errors for a live pending descendant' do
+    window, entry = gtk::Window.new, gtk::Entry.new
+    window.add(entry)
+    window.set_focus(entry)
+    allow(gtk.session.port).to receive(:focus).and_raise(gtk::UnsupportedOperation, 'fixture focus failure')
+    expect { window.show }.to raise_error(gtk::UnsupportedOperation, 'fixture focus failure')
+  end
+
+  [false, true].each do |live|
+    it "clears specialized markup typography when replacing it with plain markup (live=#{live})" do
+      label = gtk::Label.new
+      label.set_markup('<span size="72000">Large</span>')
+      _window, page = show(label) if live
+      label.set_markup('<span font_family="monospace">Mono</span>')
+      label.set_markup('Plain')
+      _window, page = show(label) unless live
+      viewer = connect(page, 'markup-reset')
+      wait_for { nodes(viewer).any? { |node| node.dig('props', 'content') == 'Plain' } }
+      props = nodes(viewer).find { |node| node['type'] == 'text' }['props']
+      expect(props.keys & %w[font_size font_family]).to be_empty
+      expect(props['font_unit']).to eq('pt')
+    end
+  end
+
+  %i[before after].each do |timing|
+    it "preserves explicit font overrides applied #{timing} specialized markup" do
+      label = gtk::Label.new
+      font = scope.const_get(:Pango)::FontDescription.new('Serif 12')
+      font.weight = :bold
+      label.override_font(font) if timing == :before
+      label.set_markup('<span size="72000">Large</span>')
+      _window, page = show(label)
+      viewer = connect(page, 'markup-base')
+      label.override_font(font) if timing == :after
+      label.set_markup('<span font_family="monospace">Mono</span>')
+      label.set_markup('Plain')
+      wait_for { nodes(viewer).any? { |node| node.dig('props', 'content') == 'Plain' } }
+      props = nodes(viewer).find { |node| node['type'] == 'text' }['props']
+      expect(props).to include('font_size' => 12, 'font_unit' => 'pt', 'font_family' => 'serif', 'emphasis' => 'strong')
+    end
+  end
+
   it 'retains focus before show and validates live window focus targets' do
     window = gtk::Window.new
     first, second = gtk::Entry.new, gtk::Entry.new

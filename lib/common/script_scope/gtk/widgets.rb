@@ -929,7 +929,11 @@ module Lich
               materialize
               if @initial_focus
                 target, @initial_focus = @initial_focus, nil
-                set_focus(target)
+                unless target.destroyed?
+                  ancestor = target
+                  ancestor = ancestor.parent while ancestor && !ancestor.equal?(self)
+                  set_focus(target) if ancestor.equal?(self)
+                end
               end
               @shown = true
             end
@@ -1319,6 +1323,21 @@ module Lich
         end
 
         class Label < Widget
+          # Retains explicit font choices as the baseline beneath temporary markup fonts.
+          # @return [Label] self
+          def override_font(font)
+            session.synchronize do
+              super
+              @explicit_font_emphasis = font.weight == :bold ? :strong : :normal
+              @markup_font_baseline&.each_key do |property|
+                next unless font.properties.key?(property)
+
+                @markup_font_baseline[property] = @props.fetch(property, Lich::WebUI::Adapter::UNSET)
+              end
+            end
+            self
+          end
+
           # A linked label's existing anchor supplies its keyboard focus target.
           # Plain focusable labels still require an unsupported interaction model.
           def can_focus=(value)
@@ -1413,8 +1432,8 @@ module Lich
             if (italic = value.match(/\A<i>([^<>]*)<\/i>\z/m))
               text = italic[1].dup.force_encoding(Encoding::UTF_8)
               session.refuse(self, :set_markup) unless text.valid_encoding?
+              replace_markup_font({})
               write(:font_style, :italic)
-              write(:emphasis, :normal)
               return write(:content, CGI.unescapeHTML(text))
             end
             if (sized_span = value.match(/\A<span size=(['"])([0-9]{1,6})\1>([^<>]*)<\/span>\z/m))
@@ -1422,19 +1441,19 @@ module Lich
               session.refuse(self, :set_markup) unless points.between?(6, 96)
               text = sized_span[3].dup.force_encoding(Encoding::UTF_8)
               session.refuse(self, :set_markup) unless text.valid_encoding?
-              write(:font_size, points)
-              write(:font_unit, :pt)
+              replace_markup_font(font_size: points, font_unit: :pt)
               write(:font_style, :normal)
               return write(:content, CGI.unescapeHTML(text))
             end
             if (font_span = value.match(/\A\s*<span font_family="(monospace|sans-serif|serif)">([^<>]*)<\/span>\s*\z/m))
-              write(:font_family, font_span[1])
+              replace_markup_font(font_family: font_span[1])
               write(:font_style, :normal)
               return write(:content, CGI.unescapeHTML(font_span[2]))
             end
             # Boon's measured blue bold tip maps to literal text and the native
             # bounded color record. Source markup never reaches the browser.
             if (tip = value.match(/\A<span color="blue" weight="bold">([^<>]*)<\/span>\z/m))
+              replace_markup_font({})
               write(:foreground, Color.parse('blue'))
               write(:emphasis, :strong)
               write(:font_style, :normal)
@@ -1447,8 +1466,9 @@ module Lich
             # Preserve every character; never pass markup or CSS to the client.
             span = /\A<span(?: (?:color=(?:'[^'<>]*'|"[^"<>]*")|font_desc=(?:'[^'<>]*'|"[^"<>]*")))+>\z/
             session.refuse(self, :set_markup) if tags.any? { |tag| !%w[<b> <big> </b> </big> </span>].include?(tag) && !span.match?(tag) }
+            replace_markup_font({})
             session.degrade(:markup_style, 'chart colours and font faces follow browser theme; chart text is retained') if tags.any? { |tag| tag.start_with?('<span') }
-            write(:emphasis, value.include?('<b>') ? :strong : :normal)
+            write(:emphasis, value.include?('<b>') ? :strong : (@explicit_font_emphasis || :normal))
             write(:font_style, :normal)
             write(:content, CGI.unescapeHTML(value.gsub(/<[^>]*>/, '')))
           end
@@ -1577,6 +1597,32 @@ module Lich
           end
 
           def component_type = @link_markup ? :markdown : :text
+
+          # Restores only properties owned by the previous markup, then applies
+          # the next bounded font span. Explicit overrides remain the baseline.
+          # @param properties [Hash] validated font properties for this markup
+          # @return [void]
+          def replace_markup_font(properties)
+            session.synchronize do
+              write(:emphasis, @explicit_font_emphasis || :normal)
+              (@markup_font_baseline || {}).each do |property, baseline|
+                if baseline.equal?(Lich::WebUI::Adapter::UNSET)
+                  if @handle && !destroyed?
+                    session.with_widget(self) { session.port.set(@handle, property, baseline) }
+                  end
+                  @props.delete(property)
+                else
+                  write(property, baseline)
+                end
+              end
+              @markup_font_baseline = {}
+              properties.each do |property, value|
+                @markup_font_baseline[property] = @props.fetch(property, Lich::WebUI::Adapter::UNSET)
+                write(property, value)
+              end
+            end
+          end
+          private :replace_markup_font
 
           # Preserve the declared single-line boundary on later text/markup writes.
           def write(property, value)

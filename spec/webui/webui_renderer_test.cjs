@@ -511,6 +511,25 @@ test('plain text preserves chart line breaks and honors nonwrapping labels', () 
   dom.window.close();
 });
 
+test('label typography disappears or restores explicit values after a live markup reset', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'markup-reset' }] });
+  const render = (generation, props) => receive({ type: 'render', page: 'markup-reset', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'text', cid: 'label', props: { content: 'Literal', ...props } }
+    ] } });
+  render(1, { font_size: 70.3125, font_unit: 'pt', font_family: 'monospace' });
+  assert.equal(dom.window.document.querySelector('[data-cid="label"]').style.fontSize, '70.3125pt');
+  render(2, { font_unit: 'pt' });
+  let label = dom.window.document.querySelector('[data-cid="label"]');
+  assert.equal(label.style.fontSize, '');
+  assert.equal(label.style.fontFamily, '');
+  render(3, { font_size: 12, font_unit: 'pt', font_family: 'serif' });
+  label = dom.window.document.querySelector('[data-cid="label"]');
+  assert.equal(label.style.fontSize, '12pt');
+  assert.equal(label.style.fontFamily, 'serif');
+});
+
 test('native typography applies bounded properties while keeping text literal', () => {
   const { dom, page } = fixture();
   const style = { font_size: 18, foreground: { r: 224, g: 27, b: 36, a: 1 }, background: { r: 0, g: 0, b: 0, a: 0.5 } };
