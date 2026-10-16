@@ -60,6 +60,9 @@ module Lich
 
       # BITMAPINFOHEADER with BI_RGB, one plane and 24/32-bit pixels only.
       # Checks DWORD-padded rows against the same open file without reading pixels.
+      # BI_RGB ignores biSizeImage; pixel extents determine whether rows are present.
+      # @param bytes [String] bounded binary header bytes from the image file
+      # @param file_size [Integer] size obtained from the same open file
       # @return [Array<Integer>, nil] dimensions, normalizing top-down height
       def self.bmp_dimensions(bytes, file_size)
         return unless bytes.bytesize >= 54 && bytes.byteslice(14, 4).unpack1('V') == 40
@@ -68,12 +71,12 @@ module Lich
         offset = bytes.byteslice(10, 4).unpack1('V')
         width, height = bytes.byteslice(18, 8).unpack('l<l<')
         planes, depth = bytes.byteslice(26, 4).unpack('vv')
-        compression, image_size = bytes.byteslice(30, 8).unpack('VV')
+        compression = bytes.byteslice(30, 4).unpack1('V')
         return unless planes == 1 && [24, 32].include?(depth) && compression.zero?
         return unless width.positive? && !height.zero? && offset >= 54 && declared_size <= file_size
 
         required = ((width * depth + 31) / 32) * 4 * height.abs
-        return unless offset + required <= declared_size && (image_size.zero? || image_size == required)
+        return unless offset + required <= declared_size
 
         [width, height.abs]
       end
