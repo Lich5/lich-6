@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -55,6 +55,25 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.addInitScript(() => {
       window.fixturePresentation = {};
       window.lichNativeWindow = { present: props => { window.fixturePresentation = props; } };
+    });
+  }
+  if (scenario === 'shim-builder') {
+    // Redeliver an accepted tree on demand to force the CI focus/Enter race.
+    // This fixture hook changes neither the production protocol nor callbacks.
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', event => {
+            let message;
+            try { message = JSON.parse(event.data); } catch { return; }
+            if (message.type === 'render') {
+              window.fixtureRedraw = () => this.dispatchEvent(new MessageEvent('message', { data: event.data }));
+            }
+          });
+        }
+      };
     });
   }
   if (scenario === 'shim-ewaggle') {
@@ -97,7 +116,131 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'buttonbox-empty-id') {
+  if (scenario === 'priority15-notebook') {
+    const main = page.getByRole('tab', { name: 'Main', exact: true });
+    const bag = page.getByRole('tab', { name: 'Bag', exact: true });
+    await expect(main).toHaveCSS('color', 'rgb(255, 0, 0)');
+    await bag.click({ button: 'middle' });
+    await expect(page.getByText('Bag middle command', { exact: true })).toBeVisible();
+    await expect(main).toHaveAttribute('aria-selected', 'true');
+    await bag.click();
+    await expect(bag).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Bag contents', { exact: true })).toBeVisible();
+    await main.focus(); await main.press('Enter');
+    await expect(main).toHaveAttribute('aria-selected', 'true');
+    await bag.click({ button: 'right' });
+    await expect(bag).toHaveCount(0);
+    await expect(page.getByText('Bag closed', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Green tab', exact: true }).click();
+    await expect(main).toHaveCSS('color', 'rgb(0, 255, 0)');
+    await page.getByRole('button', { name: 'Reopen bag', exact: true }).click();
+    await expect(bag).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Bag contents', { exact: true })).toBeVisible();
+    await main.click({ button: 'middle' });
+    await expect(page.getByText('Main middle command', { exact: true })).toBeVisible();
+    await expect(bag).toHaveAttribute('aria-selected', 'true');
+    await main.click({ button: 'right' });
+    await expect(bag).toHaveCount(0);
+    await expect(main).toHaveAttribute('aria-selected', 'true');
+    await expect(main).toHaveCSS('color', 'rgb(0, 255, 0)');
+  } else if (scenario === 'priority15-log-style') {
+    const custom = page.getByTitle('Custom selection', { exact: true }).locator('table');
+    const fallback = page.getByTitle('Default selection', { exact: true }).locator('table');
+    const selected = custom.locator('tr[aria-selected="true"]');
+    const defaultSelected = fallback.locator('tr[aria-selected="true"]');
+    await expect(selected).toHaveCSS('background-color', 'rgb(51, 102, 153)');
+    await expect(defaultSelected).toHaveCSS('background-color', 'rgb(53, 132, 228)');
+    await expect(selected.locator('td')).toHaveCSS('background-image', 'linear-gradient(rgb(51, 102, 153), rgb(51, 102, 153))');
+    await expect(selected.locator('td')).toHaveCSS('color', 'rgb(255, 0, 0)');
+    const scroll = page.locator('.webui-scroll').filter({ has: page.locator('.webui-log') });
+    expect(await scroll.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await scroll.evaluate(el => { el.scrollTop = 0; });
+    await page.getByRole('button', { name: 'Append marked line', exact: true }).click();
+    await expect(selected).toHaveCSS('background-color', 'rgb(0, 255, 0)');
+    await expect(selected.locator('td')).toHaveCSS('background-image', 'linear-gradient(rgb(0, 255, 0), rgb(0, 255, 0))');
+    await expect.poll(() => scroll.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(2);
+    await expect(page.locator('.webui-log')).toContainText('Marked final line');
+    expect(await scroll.evaluate(el => {
+      const text = el.querySelector('.webui-log').firstChild;
+      const start = text.textContent.lastIndexOf('Marked final line');
+      const range = document.createRange(); range.setStart(text, start); range.setEnd(text, start + 17);
+      const line = range.getBoundingClientRect(), bounds = el.getBoundingClientRect();
+      return line.top >= bounds.top && line.bottom <= bounds.bottom;
+    })).toBe(true);
+    await expect(defaultSelected).toHaveCSS('background-color', 'rgb(53, 132, 228)');
+    await custom.getByRole('cell', { name: 'Second', exact: true }).click();
+    await expect(selected).toContainText('Second');
+    const first = custom.getByRole('cell', { name: 'First', exact: true });
+    await expect(first.locator('..')).toHaveAttribute('aria-selected', 'false');
+    await expect(first).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    await expect(first).toHaveCSS('background-image', 'none');
+    await page.getByRole('button', { name: 'Clear log', exact: true }).click();
+    await expect(page.locator('.webui-log')).toHaveText('');
+    await expect(selected).toHaveCSS('background-color', 'rgb(0, 255, 0)');
+    await page.locator('.webui-page').evaluate(el => { el.dataset.theme = 'dark'; el.dataset.density = 'normal'; });
+    await expect(selected).toHaveCSS('background-color', 'rgb(0, 255, 0)');
+    await expect(selected.locator('td')).toHaveCSS('background-image', 'linear-gradient(rgb(0, 255, 0), rgb(0, 255, 0))');
+    await expect(selected.locator('td')).toHaveCSS('color', 'rgb(255, 0, 0)');
+  } else if (scenario === 'priority15-followup') {
+    const split = page.locator('.webui-split');
+    const panes = split.locator(':scope > .split-pane');
+    const divider = split.locator(':scope > .split-handle');
+    const table = split.locator('table');
+    const allowed = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Allowed', exact: true }) });
+    const denied = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Denied', exact: true }) });
+    const failing = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Failing', exact: true }) });
+    const rightWidth = () => panes.last().evaluate(el => el.getBoundingClientRect().width);
+    const initial = await rightWidth();
+    expect(initial).toBeGreaterThan(50);
+    await allowed.click();
+    await expect(allowed).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Accepted: Allowed', { exact: true })).toBeVisible();
+    await denied.click();
+    await expect(denied).toHaveAttribute('aria-selected', 'false');
+    await expect(allowed).toHaveAttribute('aria-selected', 'true');
+    await failing.click();
+    await expect(failing).toHaveAttribute('aria-selected', 'false');
+    await expect(allowed).toHaveAttribute('aria-selected', 'true');
+    expect(Math.abs(await rightWidth() - initial)).toBeLessThanOrEqual(2);
+    await page.setViewportSize({ width: 1100, height: 700 });
+    expect(Math.abs(await rightWidth() - initial)).toBeLessThanOrEqual(2);
+    await divider.focus();
+    await divider.press('ArrowLeft');
+    await expect.poll(rightWidth).toBeGreaterThan(initial + 2);
+    const dragged = await rightWidth();
+    await page.setViewportSize({ width: 1000, height: 650 });
+    await expect.poll(async () => Math.abs(await rightWidth() - dragged)).toBeLessThanOrEqual(2);
+  } else if (scenario === 'priority15-tree-text') {
+    const table = page.getByTitle('Inventory help', { exact: true }).locator('table');
+    const header = table.getByRole('columnheader');
+    const resize = table.getByRole('separator', { name: 'Resize Custom order' });
+    const literal = table.getByRole('cell', { name: '<b>Alpha</b>', exact: true });
+    const rowKey = await literal.locator('..').getAttribute('data-row-key');
+    await expect(literal).toHaveCSS('color', 'rgb(255, 0, 0)');
+    await expect(literal.locator('b')).toHaveCount(0);
+    await expect(header).toHaveAttribute('title', 'Custom header help');
+    await resize.focus();
+    for (let index = 0; index < 20; index++) await resize.press('ArrowLeft');
+    expect(await header.evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(160);
+    await page.setViewportSize({ width: 640, height: 700 });
+    await table.getByRole('button', { name: 'Custom order', exact: true }).click();
+    await expect(table.getByRole('cell').first()).toHaveText('Beta');
+    await expect(table.getByRole('cell').last()).toHaveText('Zulu');
+    await expect(table.getByRole('cell').last().locator('..')).toHaveAttribute('data-row-key', rowKey);
+    await expect(table.getByRole('cell').last()).toHaveCSS('color', 'rgb(255, 0, 0)');
+    expect(await header.evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(240);
+    expect(Number(await resize.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(240);
+    const log = page.getByRole('log');
+    const editor = page.locator('textarea');
+    await expect(log).toHaveCSS('overflow-wrap', 'anywhere');
+    await expect(editor).toHaveCSS('overflow-wrap', 'anywhere');
+    expect(await log.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await expect(log).toHaveAttribute('title', 'Wrapped log');
+    await page.getByRole('button', { name: 'Disable wrap' }).click();
+    await expect(log).toHaveCSS('white-space', 'pre');
+    await expect(editor).toHaveAttribute('wrap', 'off');
+    expect(await log.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+  } else if (scenario === 'buttonbox-empty-id') {
     const save = page.getByRole('button', { name: 'Save & Close', exact: true });
     const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
     const footer = save.locator('..');
@@ -945,6 +1088,8 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(stance).not.toBeChecked();
     await expect(page.getByText('To save properly, exit with the close button and not the X window -->', { exact: true })).toHaveCSS('font-style', 'italic');
     await close.focus();
+    await page.evaluate(() => window.fixtureRedraw());
+    await expect(close).toBeFocused();
     await close.press('Enter');
     // Keep the transport alive through save/close callbacks and any stale-event
     // retry. A dispatched DOM click is not server confirmation of completion.

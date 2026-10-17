@@ -376,7 +376,20 @@ module Lich
           end
         end
         reconcile_table!(attachment.values, component, previous_components[component.cid]) if component.type == :table
+        reconcile_tabs!(attachment.values, component, previous_components[component.cid]) if component.type == :tabs
         component.children.each { |child| seed_values!(attachment, child, previous_components) }
+      end
+
+      # Preserve each viewer's selected tab identity when preceding pages retire.
+      # Removing the selected page chooses the next page, or the previous last page.
+      def reconcile_tabs!(values, component, previous)
+        return unless component.props[:headers]
+
+        field = [component.cid, :selected]
+        index = values.fetch(field, component.props[:selected] || 0)
+        old_key = previous&.props&.dig(:headers, index, :key)
+        current = component.props[:headers].index { |header| header[:key] == old_key } if old_key
+        values[field] = current || index.clamp(0, [component.props[:names].length - 1, 0].max)
       end
 
       # Removes only identities retired from this table; another viewer's choices are untouched.

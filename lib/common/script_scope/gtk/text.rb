@@ -6,13 +6,42 @@ module Lich
       module Gtk
         module WrapMode
           WORD = :word
+          WORD_CHAR = :word_char
           NONE = :none
         end
 
         # Plain text owned by one Script and at most one view. Draft text stays
         # in the core viewer store; buffer reads use the active callback's viewer.
         class TextBuffer
-          Iter = Data.define(:buffer, :offset)
+          # Only insertion advances its supplied iterator, as in GTK. Callers cannot
+          # assign offsets without going through buffer validation.
+          class Iter
+            attr_reader :buffer, :offset
+
+            def initialize(buffer, offset)
+              @buffer, @offset = buffer, offset
+            end
+
+            private
+
+            attr_writer :offset
+          end
+
+          # A bounded anonymous right-gravity anchor, always at this buffer's end.
+          class EndMark
+            attr_reader :buffer
+
+            def initialize(buffer)
+              @buffer = buffer
+              @deleted = false
+            end
+
+            def deleted? = @deleted
+
+            private
+
+            def delete! = @deleted = true
+          end
           MAX_LINES = 1000
           attr_reader :session
 
@@ -53,11 +82,7 @@ module Lich
           def set_text(value)
             session.synchronize do
               session.refuse(self, :text=) unless value.is_a?(String)
-              target = bounded_text(value)
-              changed = text != target || (@text != target && @notifying_text != target)
-              @view&.send(:apply_buffer_text, target)
-              @text = target.dup
-              notify_changed if changed
+              commit_text(bounded_text(value))
             end
             self
           end
@@ -87,8 +112,36 @@ module Lich
             session.synchronize do
               valid_iter!(iterator, :insert)
               session.refuse(self, :insert) unless value.is_a?(String)
-              set_text(text.insert(iterator.offset, value))
+              inserted = text.insert(iterator.offset, value)
+              target = bounded_text(inserted)
+              offset = [iterator.offset + value.length - (inserted.length - target.length), 0].max
+              commit_text(target, iterator, offset)
             end
+          end
+
+          # Supports the measured anonymous right-gravity end anchor only.
+          # Named marks, other gravity and arbitrary positions remain explicit refusals.
+          def create_mark(name, iterator, left_gravity)
+            session.style_operation(self, :create_mark) do
+              valid_iter!(iterator, :create_mark)
+              session.refuse(self, :create_mark) unless name.nil? && left_gravity == false && iterator.offset == char_count
+              EndMark.new(self)
+            end
+          end
+
+          # Retires a same-buffer live mark; it cannot be scrolled or deleted again.
+          def delete_mark(mark)
+            session.style_operation(self, :delete_mark) do
+              validate_mark!(mark, :delete_mark)
+              mark.send(:delete!)
+            end
+            self
+          end
+
+          # @api private
+          def validate_mark!(mark, operation)
+            valid = mark.is_a?(EndMark) && mark.buffer.equal?(self) && !mark.deleted?
+            session.refuse(self, operation) unless valid
           end
 
           # Deletes a validated half-open range.
@@ -180,7 +233,7 @@ module Lich
             end
           end
 
-          # Refuses unimplemented marks, rich ranges and cursor editing explicitly.
+          # Refuses other mark operations, rich ranges and cursor editing explicitly.
           def method_missing(name, *, **, &)
             session.refuse(self, name)
           end
@@ -189,6 +242,17 @@ module Lich
           def respond_to_missing?(*args) = super
 
           private
+
+          # Commit iterator movement before changed callbacks can inspect/reuse it.
+          # A refused renderer write leaves both text and the iterator untouched.
+          def commit_text(target, iterator = nil, offset = nil)
+            changed = text != target || (@text != target && @notifying_text != target)
+            @view&.send(:apply_buffer_text, target)
+            @text = target.dup
+            iterator&.send(:offset=, offset)
+            notify_changed if changed
+            self
+          end
 
           # Applies the selected presentation's limits before any mutation.
           # Logs explicitly degrade history length; editors reject excess text.
@@ -296,11 +360,11 @@ module Lich
           end
           alias cursor_visible= set_cursor_visible
 
-          # Supports literal word wrapping or unwrapped text.
-          # @param value [Symbol] :word or :none
+          # Word/character fallback wraps long tokens without splitting ordinary words.
+          # @param value [Symbol] :word, :word_char or :none
           # @return [TextView] self
           def set_wrap_mode(value)
-            session.refuse(self, :wrap_mode=) unless %i[word none].include?(value)
+            session.refuse(self, :wrap_mode=) unless %i[word word_char none].include?(value)
             write(:wrap, value)
           end
           alias wrap_mode= set_wrap_mode
@@ -331,6 +395,16 @@ module Lich
             valid = iterator.is_a?(TextBuffer::Iter) && iterator.buffer.equal?(@buffer) && iterator.offset == @buffer.end_iter.offset
             session.refuse(self, :scroll_to_iter) unless valid && margin == 0.0 && align == true && x == 0 && y == 0
             write(:follow, true)
+          end
+
+          # Copies the accepted end-follow intent before callers delete the mark.
+          # The renderer never receives or later dereferences a Ruby mark object.
+          def scroll_mark_onscreen(mark)
+            session.style_operation(self, :scroll_mark_onscreen) do
+              session.refuse(self, :scroll_mark_onscreen) if destroyed?
+              @buffer.validate_mark!(mark, :scroll_mark_onscreen)
+              write(:follow, true)
+            end
           end
 
           protected

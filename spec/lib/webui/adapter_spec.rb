@@ -30,9 +30,62 @@ RSpec.describe Lich::WebUI::Adapter do
     adapter.attach(adapter.create(:stack, {}), input)
   end
 
+  it 'replaces tab collections atomically and preserves old structure after rejected children or headers' do
+    tabs = adapter.create(:tabs, names: [])
+    one = adapter.create(:text, content: 'One')
+    two = adapter.create(:text, content: 'Two')
+    adapter.layout_tabs(tabs, children: [one], names: ['One'], headers: [{ key: 'one' }])
+    foreign_parent = adapter.create(:stack, {})
+    adapter.attach(foreign_parent, two)
+    expect { adapter.layout_tabs(tabs, children: [two], names: ['Two'], headers: [{ key: 'two' }]) }.to raise_error(Lich::WebUI::Error)
+    expect { adapter.layout_tabs(tabs, children: [one], names: ['One'], headers: []) }.to raise_error(Lich::WebUI::Error)
+    expect(adapter.get(tabs, :names)).to eq(['One'])
+    adapter.layout_tabs(tabs, children: [], names: [], headers: [])
+    adapter.attach(foreign_parent, one)
+    expect(adapter.get(one, :content)).to eq('One')
+  end
+
+  it 'remaps pending viewer tab writes when a second structural change precedes delivery' do
+    allow(service.runtime).to receive(:schedule_render)
+    tabs = adapter.create(:tabs, names: [])
+    one, two, three = %w[One Two Three].map { |name| adapter.create(:text, content: name) }
+    adapter.layout_tabs(tabs, children: [one, two, three], names: %w[One Two Three], headers: %w[one two three].map { |key| { key: key } })
+    adapter.set(tabs, :selected, 2)
+    adapter.layout_tabs(tabs, children: [two, three], names: %w[Two Three], headers: %w[two three].map { |key| { key: key } })
+    expect(adapter.get(tabs, :selected)).to eq(1)
+    adapter.layout_tabs(tabs, children: [two], names: ['Two'], headers: [{ key: 'two' }])
+    expect(adapter.get(tabs, :selected)).to eq(0)
+  end
+
+  it 'retains implicit native callback viewer writes while unrelated tab metadata is dirty' do
+    unscoped = described_class.new(owner: owner, service: service)
+    allow(service.runtime).to receive(:schedule_render)
+    root = unscoped.create(:page, title: 'Native tabs')
+    tabs = unscoped.create(:tabs, names: %w[One Two], selected: 0)
+    %w[One Two].each { |name| unscoped.attach(tabs, unscoped.create(:text, content: name)) }
+    unscoped.attach(root, tabs)
+    observed = Queue.new
+    unscoped.bind(tabs, :select, proc do |_event|
+      unscoped.set(tabs, :show_tabs, true)
+      unscoped.set(tabs, :selected, 1)
+      observed << unscoped.get(tabs, :selected)
+    end)
+    unscoped.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    messages = []
+    connection = double('connection', viewer_id: 'native-tabs', alive?: true)
+    allow(connection).to receive(:send_text) { |json| messages << JSON.parse(json) }
+    address = service.registry.address_for(page)
+    service.runtime.handle(connection, type: 'attach', page: address)
+    render = messages.last
+    service.runtime.handle(connection, type: 'event', page: address, generation: render['generation'],
+                                       cid: render.dig('tree', 'children', 0, 'cid'), event: 'select', payload: { index: 0 })
+    expect(observed.pop(timeout: 2)).to eq(1)
+  end
+
   it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :set_overlay_pass_through, :monitor_geometry, :focus, :place
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :set_overlay_pass_through, :monitor_geometry, :focus, :place
     )
   end
 

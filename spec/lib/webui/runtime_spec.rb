@@ -45,6 +45,52 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  it 'commits only validated guarded selections on the owner worker and retains state after guard failures' do
+    calls = Queue.new
+    seen = []
+    decision = ['b']
+    store = viewers
+    callback = proc { |context| calls << context.payload[:rows] }
+    callback.define_singleton_method(:prepare_selection) do |context|
+      attachment = store.attachment_for_viewer(context.page, context.viewer_id)
+      seen << store.property(attachment, context.component, :selected)
+      raise 'guard failure' if decision == :raise
+      { rows: decision }
+    end
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'guarded', title: 'Guarded') do
+      table(key: 'choices', columns: [{ key: 'name', label: 'Name' }],
+            rows: [{ key: 'a', cells: { name: 'A' } }, { key: 'b', cells: { name: 'B' } }],
+            selection: :single, selected: ['a'], on: { selection_change: callback })
+    end)
+    address, _frame = attach(first_connection, page)
+    component = page.last_render.tree.children.first
+    viewer = viewers.attachments_for(page).first
+    submit = lambda do |rows|
+      latest = first_connection.sent.reverse.find { |message| message['type'] == 'render' }
+      runtime.handle(first_connection, type: 'event', page: address, generation: latest['generation'],
+                     cid: component.cid, event: 'selection_change', payload: { rows: rows })
+    end
+    barrier = lambda do
+      finished = Queue.new
+      runtime.dispatch(owner: owner) { finished << true }
+      expect(finished.pop(timeout: 2)).to be(true)
+    end
+    expect(submit.call(['b'])).to eq(:queued)
+    barrier.call
+    expect(calls.pop(timeout: 2)).to eq(['b'])
+    expect(seen).to eq([['a']])
+    expect(viewers.property(viewer, component, :selected)).to eq(['b'])
+    decision = ['missing']
+    submit.call(['a'])
+    barrier.call
+    expect(viewers.property(viewer, component, :selected)).to eq(['b'])
+    decision = :raise
+    submit.call(['a'])
+    barrier.call
+    expect(viewers.property(viewer, component, :selected)).to eq(['b'])
+    expect(calls).to be_empty
+  end
+
   it 'refuses events through disabled ancestors or a hidden window and accepts them after restoration' do
     received = Queue.new
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'disabled', title: 'Disabled') do

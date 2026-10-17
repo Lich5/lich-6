@@ -81,6 +81,7 @@ module Lich
           # @return [Widget] self
           # @raise [UnsupportedOperation] unless this widget is its parent
           def remove(child)
+            session.refuse(self, :remove) if @tab_owner
             session.refuse(self, :remove) unless child.parent.equal?(self)
             session.port.detach(@handle, child.materialize) if @handle
             @children.delete(child)
@@ -550,6 +551,7 @@ module Lich
 
               # Keep handle retirement and provider detachment atomic with reloads.
               @dialogs&.dup&.each { |dialog| session.cleanup(dialog) { dialog.destroy } }
+              @tab_owner&.send(:retire_header, self)
               session.port.destroy(@handle) if @handle
               @parent&.send(:forget_child, self)
               @parent = nil
@@ -637,6 +639,7 @@ module Lich
           def write(property, value)
             session.synchronize do
               session.flush_models!
+              @tab_owner&.send(:header_will_change, self, property, value)
               # A rejected port write must leave synchronous script reads at
               # their last valid value, including after window destruction.
               session.with_widget(self) { session.port.set(@handle, port_property(property), value) } if @handle && !@destroyed
@@ -645,6 +648,7 @@ module Lich
               else
                 @props[property] = value
               end
+              @tab_owner&.send(:refresh_headers)
             end
             self
           end
@@ -1339,6 +1343,8 @@ module Lich
             super
             @props[:names] = []
             @props[:selected] = 0
+            @tabs = []
+            @props[:headers] = []
           end
 
           # The shared tabs component already places selectors above page content.
@@ -1385,31 +1391,170 @@ module Lich
           end
           alias set_show_tabs show_tabs=
 
-          # Appends a child and its label in source order.
-          # @return [Integer] zero-based index of the appended page
+          # Pages require an explicit paired header; generic container mutation
+          # cannot bypass the atomic notebook collection path.
+          def add(_child) = session.refuse(self, :add)
+          def reorder_child(_child, _index) = session.refuse(self, :reorder_child)
+
+          # @return [Integer] number of actual pages, excluding tab-label widgets
+          def n_pages = @children.length
+
+          # Selects the last page for GTK's negative spelling, otherwise a bounded index.
+          # Live writes use core viewer state, including pages appended in this callback.
+          def set_current_page(index)
+            session.style_operation(self, :set_current_page) do
+              session.refuse(self, :set_current_page) if destroyed? || !index.is_a?(Integer)
+              index = n_pages - 1 if index.negative?
+              return self unless index.between?(0, n_pages - 1)
+
+              write(:selected, index)
+            end
+          end
+
+          # Accepts a Label, or one EventBox containing a Label. Headers remain
+          # owned widgets but never appear as extra Notebook#children pages.
           def append_page(child, label)
-            session.synchronize do
-              names = @props[:names] + [label.text]
-              # A queued producer may populate an already visible empty notebook.
-              # Publish names before attach so slot/capacity validation sees them.
-              write(:names, names)
-              begin
-                add(child)
-              rescue StandardError
-                write(:names, names[0...-1])
-                raise
+            session.style_operation(self, :append_page) do
+              valid = !destroyed? && child.is_a?(Widget) && child.session.equal?(session) && !child.destroyed? && child.parent.nil?
+              ancestor = self
+              while ancestor
+                valid &&= !ancestor.equal?(child)
+                ancestor = ancestor.parent
               end
-              @children.length - 1
+              text = label.is_a?(EventBox) ? label.children.first : label
+              valid &&= label.is_a?(Widget) && label.session.equal?(session) && !label.destroyed? && label.parent.nil? &&
+                        text.instance_of?(Label) && !text.destroyed? && text.session.equal?(session) && !label.equal?(child) &&
+                        !label.instance_variable_get(:@tab_owner) && !text.instance_variable_get(:@tab_owner)
+              session.refuse(self, :append_page) unless valid
+              entry = { key: "tab-#{SecureRandom.hex(12)}", widget: label, label: text, page: child }
+              publish_tabs(@tabs + [entry])
+              label.send(:parent=, self)
+              [label, text].uniq.each { |widget| widget.instance_variable_set(:@tab_owner, self) }
+              child.send(:parent=, self)
+              @children << child
+              @tabs << entry
+              n_pages - 1
+            end
+          end
+
+          # Detaches a page and its header without destroying reusable widgets.
+          def remove_page(index)
+            session.style_operation(self, :remove_page) do
+              session.refuse(self, :remove_page) if destroyed? || !index.is_a?(Integer)
+              index = n_pages - 1 if index.negative?
+              return self unless index.between?(0, n_pages - 1)
+
+              entry = @tabs.fetch(index)
+              remaining = @tabs.reject { |item| item.equal?(entry) }
+              publish_tabs(remaining)
+              @tabs = remaining
+              @children.delete(entry[:page])
+              entry[:page].send(:parent=, nil)
+              release_header(entry)
+            end
+            self
+          end
+
+          def remove(child)
+            index = @children.index(child)
+            session.refuse(self, :remove) unless index
+            remove_page(index)
+          end
+
+          # Window teardown includes header widgets even though children lists pages only.
+          def mark_destroyed
+            return if destroyed?
+
+            entries = @tabs.dup
+            super
+            entries.each do |entry|
+              release_header(entry)
+              entry[:widget].mark_destroyed
             end
           end
 
           protected
 
           def component_type = :tabs
+          def input_property = :selected
+          def builtin_events = %i[select tab_pointer]
 
-          # Tab selection is a core viewer-state event even when the source
-          # registers no switch-page callback. It must have a server binding.
-          def builtin_events = [:select]
+          # Core validates stable header identity before dispatch; recheck under
+          # the owner monitor because a queued callback may outlive its tab.
+          def bind_event(event)
+            return super unless event == :tab_pointer
+
+            session.port.bind(@handle, event, proc do |context|
+              session.callback(context, widget: self) do
+                entry = @tabs.find { |item| item[:key] == context.payload[:tab] }
+                next unless entry && !entry[:widget].destroyed? && entry[:widget].is_sensitive? && is_sensitive?
+
+                widget = entry[:widget]
+                pointer = PointerEvent.new(**context.payload.except(:tab))
+                session.with_pointer(widget, pointer) do
+                  widget.instance_variable_get(:@signals).fetch(:pointer_press, []).dup.each do |_name, handler|
+                    break if handler.call(widget, pointer) == true
+                  end
+                end
+              end
+            end)
+          end
+
+          def forget_child(child)
+            entry = @tabs.find { |item| item[:page].equal?(child) || item[:widget].equal?(child) }
+            entry ? remove_page(@tabs.index(entry)) : super
+          end
+
+          private
+
+          # Refreshes only headers; label writes never materialize a second surface.
+          def refresh_headers
+            return if destroyed?
+
+            publish_tabs(@tabs)
+          end
+
+          def retire_header(widget)
+            entry = @tabs.find { |item| item[:widget].equal?(widget) || item[:label].equal?(widget) }
+            remove_page(@tabs.index(entry)) if entry
+          end
+
+          def header_will_change(widget, property, value)
+            return unless property == :content
+
+            names = @tabs.map { |entry| entry[:label].equal?(widget) ? value : entry[:label].text }
+            valid = value.is_a?(String) && value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:short_text] && names.uniq.length == names.length
+            session.refuse(self, :tab_label) unless valid
+          end
+
+          def header_snapshot(entries)
+            names = entries.map { |entry| entry[:label].text }
+            session.refuse(self, :tab_label) unless names.uniq.length == names.length
+            headers = entries.map do |entry|
+              props = entry[:label].send(:component_props)
+              { key: entry[:key], pointer_events: entry[:widget].instance_variable_get(:@props)[:pointer_events] == true,
+                foreground: props[:foreground], disabled: !entry[:widget].is_sensitive? }.compact
+            end
+            [names, headers]
+          end
+
+          def publish_tabs(entries)
+            names, headers = header_snapshot(entries)
+            old_key = @props.dig(:headers, @props[:selected] || 0, :key)
+            selected = headers.index { |header| header[:key] == old_key } if old_key
+            selected ||= (@props[:selected] || 0).clamp(0, [names.length - 1, 0].max)
+            candidate = @props.merge(names: names, headers: headers, selected: selected)
+            Lich::WebUI::Validator.new.validate_component!(:tabs, candidate, owner: self.class.name, page_id: 'notebook', cid: 'tabs')
+            if @handle
+              session.port.layout_tabs(@handle, children: entries.map { |entry| entry[:page].materialize }, names: names, headers: headers)
+            end
+            @props.merge!(names: names, headers: headers, selected: selected)
+          end
+
+          def release_header(entry)
+            [entry[:widget], entry[:label]].uniq.each { |widget| widget.remove_instance_variable(:@tab_owner) if widget.instance_variable_defined?(:@tab_owner) }
+            entry[:widget].send(:parent=, nil)
+          end
         end
 
         class Label < Widget

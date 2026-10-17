@@ -141,6 +141,9 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
+            selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+            pending = [selected.to_s, handle, name] if selected
+            return deep_copy(@viewer_values[pending]) if pending && @viewer_values.key?(pending)
             if (page = root_for(node).page) && node.cid && node.published
               target = [page, node.cid, name]
               next
@@ -191,7 +194,7 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
-            if (page = root_for(node).page) && node.cid && node.published
+            if (page = root_for(node).page) && node.cid && node.published && !(node.type == :tabs && @viewer && @dirty_roots[root_for(node)])
               target = [page, node.cid, name]
               next
             end
@@ -313,6 +316,52 @@ module Lich
         raise attributed_error('child index is out of range', parent, :index)
       end
 
+      # Replaces a tabs page/header collection atomically, preserving retained handles.
+      # Viewer selections are reconciled by stable header key on delivery.
+      def layout_tabs(parent, children:, names:, headers:)
+        @mutex.synchronize do
+          tabs = node!(parent)
+          raise attributed_error('tabs required', parent) unless tabs.type == :tabs
+          unless children.is_a?(Array) && names.is_a?(Array) && children.uniq.length == children.length && children.length == names.length
+            raise attributed_error('one unique child per tab required', parent)
+          end
+          props = @validator.validate_component!(
+            :tabs, tabs.props.merge(names: names, headers: headers, selected: 0),
+            owner: owner_label, page_id: adapter_page_id, cid: handle_label(parent)
+          )
+          headers = props.fetch(:headers)
+          candidates = children.map do |handle|
+            child = node!(handle)
+            raise attributed_error('foreign or cyclic tab child', handle) if (child.parent && child.parent != parent) || root_for(tabs).equal?(child)
+            child
+          end
+          old_headers = tabs.props[:headers]
+          remap = proc do |index|
+            old_key = old_headers&.dig(index, :key)
+            found = headers.index { |header| header[:key] == old_key } if old_key
+            found || index.clamp(0, [names.length - 1, 0].max)
+          end
+          props = props.merge(selected: remap.call(tabs.props[:selected] || 0)).freeze
+          pending = @viewer_values.select { |(_viewer, handle, name), _value| handle.equal?(parent) && name == :selected }
+          before_props, before_children = tabs.props, tabs.children.dup
+          involved = (tabs.children + children).uniq.to_h { |handle| [handle, [node!(handle).parent, node!(handle).slot]] }
+          begin
+            (tabs.children - children).each { |handle| node!(handle).parent = node!(handle).slot = nil }
+            tabs.props, tabs.children = props, children.dup
+            candidates.each { |child| child.parent = parent }
+            assign_child_slots!(tabs)
+            pending.each { |key, index| @viewer_values[key] = remap.call(index) }
+            dirty!(root_for(tabs))
+          rescue StandardError
+            tabs.props, tabs.children = before_props, before_children
+            pending.each { |key, index| @viewer_values[key] = index }
+            involved.each { |handle, (owner, slot)| node!(handle).parent, node!(handle).slot = owner, slot }
+            raise
+          end
+        end
+        nil
+      end
+
       # Atomically changes a grid's bounded geometry and placements without
       # replacing handles, bindings or viewer-owned input. Unparented children
       # may be prepared for a subsequent attach; foreign parents are refused.
@@ -422,10 +471,16 @@ module Lich
           end
           binding_id = "binding-#{SecureRandom.hex(16)}".freeze
           @bindings.delete(node.bindings[name])
-          @bindings[binding_id] = [handle, name, proc do |context|
+          callback = proc do |context|
             reconcile_submission(context) if context.submission
             callable.call(context)
-          end]
+          end
+          # A server-only selection guard evaluates an owner proposal before
+          # Runtime commits viewer state. It is never a wire event or property.
+          if node.type == :table && name == :selection_change && callable.respond_to?(:prepare_selection)
+            callback.define_singleton_method(:prepare_selection) { |context| callable.prepare_selection(context) }
+          end
+          @bindings[binding_id] = [handle, name, callback]
           node.bindings[name] = binding_id
           dirty!(root_for(node))
           binding_id

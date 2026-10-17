@@ -40,12 +40,24 @@ module Lich
             pack_pane(child, resize, shrink, :add2)
           end
 
+          # Initial pixels use the existing first-resizing/second-fixed split.
+          # A live reset would overwrite a viewer's drag and remains unsupported.
+          def set_position(value)
+            valid = !@handle && value.is_a?(Integer) && value.between?(0, 65_536)
+            valid &&= @pane_resize == { add1: true, add2: false }
+            session.refuse(self, :position=) unless valid
+            @props.merge!(position_pixels: value, resize_side: :first)
+            self
+          end
+          alias position= set_position
+
           private
 
           def pack_pane(child, resize, shrink, operation)
             session.synchronize do
               session.refuse(self, :pack) unless [resize, shrink].all? { |value| [true, false].include?(value) }
               public_send(operation, child)
+              (@pane_resize ||= {})[operation] = resize
               session.degrade(:split_packing, 'native resize and shrink hints follow browser split layout; the divider remains user-controlled')
             end
             self

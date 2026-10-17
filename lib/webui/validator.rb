@@ -349,6 +349,12 @@ module Lich
       end
 
       def validate_tabs!(props, context)
+        if props[:headers]
+          keys = props[:headers].map { |header| header[:key] }
+          unless keys.length == props[:names].length && keys.uniq.length == keys.length && props[:names].uniq.length == props[:names].length
+            violation!('tab headers must uniquely identify each named page', context, :headers)
+          end
+        end
         return unless props.key?(:selected)
         return if props[:names].empty? && props[:selected].zero?
         return if props[:selected] < props[:names].length
@@ -426,6 +432,10 @@ module Lich
             violation!('parent must name a row in the same table', context, "rows[#{index}].parent")
           end
           unknown_cells = row[:cells].keys - column_keys
+          foreground_columns = (row[:cell_foregrounds] || []).map { |entry| entry[:column] }
+          unless (foreground_columns - column_keys).empty? && foreground_columns.uniq.size == foreground_columns.size
+            violation!('cell_foregrounds must name unique displayed columns', context, "rows[#{index}].cell_foregrounds")
+          end
           disabled_backgrounds = row[:background_disabled] || []
           unless (disabled_backgrounds - column_keys).empty? && disabled_backgrounds.uniq.size == disabled_backgrounds.size
             violation!('background_disabled must name unique displayed columns', context, "rows[#{index}].background_disabled")
@@ -509,6 +519,13 @@ module Lich
           end
         when [:tabs, :select]
           violation!('selected tab index is out of range', context, event_name) if payload[:index] >= normalized_props[:names].length
+          header = normalized_props[:headers]&.[](payload[:index])
+          if header ? payload[:tab] != header[:key] || header[:disabled] : payload.key?(:tab)
+            violation!('tab identity does not match selection', context, event_name)
+          end
+        when [:tabs, :tab_pointer]
+          header = normalized_props.fetch(:headers, []).find { |item| item[:key] == payload[:tab] }
+          violation!('tab pointer target is absent or disabled', context, event_name) unless header && header[:pointer_events] && !header[:disabled] && !normalized_props[:disabled]
         when [:table, :row_activate], [:table, :row_toggle], [:table, :cursor_change]
           row_keys = normalized_props[:rows].map { |row| (row[:key] || row['key']).to_s }
           violation!('event row does not exist', context, event_name) unless row_keys.include?(payload[:row])
@@ -518,6 +535,9 @@ module Lich
           validate_table_selection_event!(payload, normalized_props, context, event_name)
         when [:table, :cell_edit]
           validate_cell_edit_event!(payload, normalized_props, context, event_name)
+        when [:table, :column_activate]
+          column = normalized_props[:columns].find { |candidate| candidate[:key] == payload[:column] }
+          violation!('column is not activatable', context, event_name) unless column && column[:activatable]
         when [:table, :sort_change]
           validate_sort_event!(payload, normalized_props, context, event_name)
         when [:composite, :region_activate]

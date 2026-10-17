@@ -20,7 +20,7 @@ module Lich
         SORT_ASCENDING = SortType::ASCENDING
 
         # Literal scalar cell presentation. Editing proposes a value; only script callbacks
-        # may commit it to the model. Rich attributes and arbitrary data functions are refused.
+        # may commit it to the model. Cell-data functions project literal text and color.
         class CellRendererText < ModelObject
           attr_reader :editable, :align, :background_color
 
@@ -33,6 +33,7 @@ module Lich
           # @param value [Boolean] whether the browser may propose an edit
           # @return [Boolean] accepted flag
           def editable=(value)
+            session.refuse(self, :editable=) if @projecting_cell
             session.refuse(self, :editable=) unless value == true || value == false
             @editable = value
             @columns.each(&:changed!)
@@ -43,6 +44,7 @@ module Lich
           # Literal cell fill is a typed color, never a CSS string or selector.
           # Nil clears the fill so the table theme is visible again.
           def background=(value)
+            session.refuse(self, :background=) if @projecting_cell
             session.style_operation(self, :background=) do
               valid = value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? && value.length <= 64
               color = Color.parse(value) if valid
@@ -56,6 +58,7 @@ module Lich
           # Maps cell alignment fractions to the existing column alignment tokens.
           # @param value [Numeric] 0..1; intermediate fractions use center
           def xalign=(value)
+            session.refuse(self, :xalign=) if @projecting_cell
             session.refuse(self, :xalign=) unless value.is_a?(Numeric) && value.between?(0, 1)
             @align = value.zero? ? :start : (value == 1 ? :end : :center)
             @columns.each(&:changed!)
@@ -93,6 +96,36 @@ module Lich
           end
 
           def unwatch(column) = @columns.delete(column)
+
+          # Literal display text is independent of the model's identity/sort value.
+          def text=(value)
+            session.refuse(self, :text=) unless value.is_a?(String) && value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:body_text]
+            @cell_text = value.dup.freeze
+            @columns.each(&:changed!) unless @projecting_cell
+          end
+
+          def text = @cell_text
+
+          # @param value [Gdk::RGBA, nil] typed foreground; nil restores theme color
+          def foreground_rgba=(value)
+            session.refuse(self, :foreground_rgba=) unless value.nil? || value.is_a?(Gdk::RGBA)
+            @cell_foreground = value&.to_h
+            @columns.each(&:changed!) unless @projecting_cell
+          end
+
+          # A renderer is reused across rows. Restore its defaults even if a
+          # source callback fails, so later rows/columns cannot inherit that row.
+          # @api private
+          def project_cell(value)
+            session.refuse(self, :cell_data_recursion) if @projecting_cell
+            saved = [@cell_text, @cell_foreground, @projecting_cell]
+            @cell_text, @projecting_cell = value, true
+            yield if block_given?
+            [@cell_text, @cell_foreground]
+          ensure
+            @cell_text, @cell_foreground, @projecting_cell = saved if saved
+          end
+
           def editor = editable ? { type: 'text' } : nil
           def value_attribute = 'text'
           def signal_name = 'edited'
@@ -292,6 +325,48 @@ module Lich
           end
           alias set_fixed_width fixed_width=
 
+          # A minimum is retained independently of authored/viewer widths.
+          def min_width=(value)
+            session.refuse(self, :min_width=) unless value.is_a?(Integer) && value.between?(0, 65_536)
+            @min_width = value
+            changed!
+          end
+          alias set_min_width min_width=
+
+          def set_tooltip_text(value)
+            session.refuse(self, :tooltip_text=) unless value.is_a?(String) && value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:body_text]
+            @tooltip = value.dup.freeze
+            changed!
+          end
+          alias tooltip_text= set_tooltip_text
+          def tooltip_text = @tooltip
+
+          # Column clicks run script callbacks; they need not imply built-in sorting.
+          def signal_connect(name, &handler)
+            session.refuse(self, :signal_connect) unless name.to_s == 'clicked' && handler
+            (@click_handlers ||= []) << handler
+            changed!
+            @click_handlers.length
+          end
+
+          def activatable? = @clickable == true && !Array(@click_handlers).empty?
+          def emit_clicked = Array(@click_handlers).dup.each { |handler| handler.call(self) }
+
+          # Project the measured text renderer through the existing row snapshot.
+          def set_cell_data_func(renderer, &handler)
+            view&.check_column_structure!
+            session.refuse(self, :set_cell_data_func) unless renderer.instance_of?(CellRendererText) && renderer.equal?(@renderer) && handler
+            @cell_data_func = handler
+            changed!
+            self
+          end
+
+          def project_cell(model, iter)
+            value = iter[value_column]
+            value = '' if value.nil?
+            renderer.project_cell(value) { @cell_data_func&.call(self, renderer, model, iter) }
+          end
+
           # Fixed GTK column measurement uses browser allocation and any explicit width.
           # @param value [Symbol] only :fixed is accepted
           # @return [void]
@@ -354,8 +429,10 @@ module Lich
           # @api private
           def definition
             session.refuse(self, :renderer) unless renderer
-            session.refuse(self, :clickable=) if @clickable && sort_column_id.nil?
             result = { key: key, label: title, resizable: @resizable, sortable: sortable? }
+            result[:activatable] = activatable?
+            result[:tooltip] = @tooltip if @tooltip
+            result[:min_width] = @min_width if @min_width
             result[:align] = renderer.align if renderer.align
             result[:width] = @width if @width
             result[:editor] = renderer.editor if renderer.editor
@@ -383,6 +460,48 @@ module Lich
             @mode = mode
           end
           alias set_mode mode=
+
+          # GTK passes selection, model, current path and prior membership.
+          # Ruby blocks may ignore unused arguments, as container-window does.
+          def set_select_function(&predicate)
+            session.refuse(self, :set_select_function) unless predicate
+            @select_function = predicate
+            self
+          end
+
+          # Filter transitions without mutating accepted selection. Core remains
+          # the only viewer-state authority for browser and programmatic paths.
+          def filter_keys(previous, requested)
+            model = @view.model
+            live = model ? model.rows.map(&:key) : []
+            previous = previous & live
+            requested = requested & live
+            return requested unless @select_function
+
+            session.refuse(self, :select_function_recursion) if @filtering
+            @filtering = entered = true
+            accepted = previous.dup
+            (previous - requested).each do |key|
+              accepted.delete(key) if permits?(model, key, true)
+            end
+            (requested - previous).each do |key|
+              next if mode != :multiple && !accepted.empty?
+              accepted << key if permits?(model, key, false)
+            end
+            retain = mode == :browse || (mode == :single && !requested.empty?)
+            accepted = previous if retain && accepted.empty? && !previous.empty?
+            accepted
+          ensure
+            @filtering = false if entered
+          end
+
+          def permits?(model, key, selected)
+            revision = model.revision
+            result = @select_function.call(self, model, model.find_key(key).path, selected)
+            session.refuse(self, :select_function_result) unless [true, false].include?(result) && revision == model.revision
+            result
+          end
+          private :permits?
 
           # Reads the originating viewer's single selection; multiple mode requires iteration.
           # @return [TreeIter, nil] selected row; multiple mode requires selected_rows/selected_each
@@ -463,6 +582,17 @@ module Lich
             @selection = TreeSelection.new(self)
             @props.merge!(selection: 'single', selected: [], expanded: [], cursor: {}, headers: true, sort_mode: 'model')
             self.model = model if model
+          end
+
+          # Selected-row color uses the core's typed table property, including live writes.
+          # Other states retain Widget's existing compatibility behavior.
+          def override_background_color(state, colour)
+            return super unless state == :selected
+
+            session.style_operation(self, :override_background_color) do
+              session.refuse(self, :override_background_color) if destroyed? || !colour.is_a?(Gdk::RGBA)
+              write(:selection_background, colour.to_h)
+            end
           end
 
           def columns = @columns.dup
@@ -636,6 +766,7 @@ module Lich
             session.refuse(self, :selection) if selection.mode == :none && !keys.empty?
             return self if selection.mode == :browse && keys.empty? && model && !model.empty?
             previous = view_state(:selected)
+            keys = selection.filter_keys(previous, keys)
             write(:selected, keys)
             selection.changed! unless previous == keys
             self
@@ -706,6 +837,7 @@ module Lich
             if @handle
               write(:columns, column_definitions)
               write(:sortable, visible_columns.any?(&:sort_column_id))
+              write(:rows, row_definitions)
             end
           end
 
@@ -720,7 +852,7 @@ module Lich
 
           def component_type = :table
           def signal_map = { 'row_activated' => :row_activate, 'row_expanded' => :row_toggle, 'row_collapsed' => :row_toggle, 'cursor_changed' => :cursor_change }
-          def builtin_events = %i[selection_change cell_edit sort_change] + (@drag_destination ? [:row_drop] : [])
+          def builtin_events = %i[selection_change cell_edit sort_change column_activate] + (@drag_destination ? [:row_drop] : [])
 
           def component_props
             validate_columns(model)
@@ -743,11 +875,14 @@ module Lich
           # @api private
           def bind_event(event)
             return super if event == :pointer_press
-            session.port.bind(@handle, event, proc do |context|
+            callback = proc do |context|
               session.callback(context, terminal: %i[row_activate row_drop].include?(event), widget: self) do
                 payload = context.payload
                 iter = model&.find_key(payload[:row])
                 case event
+                when :column_activate
+                  column = visible_columns.find { |candidate| candidate.key == payload[:column] }
+                  column.emit_clicked if column&.activatable?
                 when :row_drop then dispatch_row_drop(context)
                 when :selection_change then selection.changed!
                 when :cell_edit
@@ -768,7 +903,16 @@ module Lich
               # The callback must finish committing or rolling back before a
               # no-op/failing editor is repainted from authoritative model data.
               session.synchronize { model_changed! } if event == :cell_edit
-            end)
+            end
+            if event == :selection_change
+              view = self
+              callback.define_singleton_method(:prepare_selection) do |context|
+                view.session.callback(context, widget: view) do
+                  { rows: view.selection.filter_keys(view.send(:view_state, :selected), context.payload[:rows]) }
+                end
+              end
+            end
+            session.port.bind(@handle, event, callback)
           end
 
           private
@@ -824,11 +968,14 @@ module Lich
           def row_definitions
             return [] unless model
             model.rows.map do |iter|
+              foregrounds = []
               cells = visible_columns.to_h do |column|
-                value = iter[column.value_column]
+                value, foreground = column.project_cell(model, iter)
+                foregrounds << { column: column.key, color: foreground } if foreground
                 [column.key, value.nil? ? '' : value]
               end
               row = { key: iter.key, cells: cells }
+              row[:cell_foregrounds] = foregrounds unless foregrounds.empty?
               disabled = visible_columns.reject { |column| column.background_enabled?(iter) }.map(&:key)
               row[:background_disabled] = disabled unless disabled.empty?
               parent = model.iter_parent(iter)
