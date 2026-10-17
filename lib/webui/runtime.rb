@@ -471,14 +471,18 @@ module Lich
 
           context = EventContext.new(attachment.viewer_id, attachment.page, component, :selection_change, payload, nil)
           previous = @viewers.property(attachment, component, :selected) || []
+          restore = true
           begin
             proposed = callback.prepare_selection(context)
             accepted = @validator.validate_event!(:table, :selection_change, proposed, props: component.props,
                                                   owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: cid)
             @viewers.update(attachment, component, :selection_change, accepted)
             callback.call(context.with(payload: accepted)) unless accepted[:rows] == previous
+            # Keep the failure default until the changed callback also succeeds.
+            # Accepted browser state needs no restoration paint when it matches.
+            restore = accepted[:rows] != payload[:rows]
           ensure
-            schedule_refresh(attachment.page)
+            schedule_refresh(attachment.page) if restore
           end
         end
         :queued

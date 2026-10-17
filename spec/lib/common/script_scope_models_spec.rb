@@ -109,7 +109,11 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(changed).to eq(events_before)
     selection.set_select_function { |_selection, _model, _path, _selected| true }
     expect(send_event(page, first, :table, 'selection_change', { rows: [rows[1].key] })).to eq(:queued)
-    wait_for { props.call(first)['selected'] == [rows[1].key] }
+    wait_for { changed.last == 'Denied' }
+    # This transport double has no optimistic DOM. Request a snapshot explicitly;
+    # successful unchanged acceptance deliberately does not repaint the browser.
+    service.runtime.refresh(page)
+    expect(props.call(first)['selected']).to eq([rows[1].key])
     expect(props.call(other)['selected']).to eq([rows[0].key])
     expect(changed.last).to eq('Denied')
     expect(calls).to include(['Allowed', true], ['Denied', false], ['Failing', false])
@@ -226,6 +230,72 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
       props = nodes(connection).find { |node| node['type'] == 'text' }['props']
       props['font_style'] == 'normal' && props['content'] == 'Plain'
     end
+  end
+
+  [[2, 0, 1, 0], [1, 0, 0, 0], [1, 1, 1, 0], [1, 2, 1, 0]].each do |chosen, removed, retained, default|
+    it "PR63 remaps a saved notebook selection #{chosen} after removing page #{removed} without collapsing defaults" do
+      notebook = gtk::Notebook.new
+      %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name + ' content'), gtk::Label.new(name)) }
+      saved = Queue.new
+      save = gtk::Button.new('Save')
+      save.signal_connect('clicked') { saved << notebook.send(:read, :selected) }
+      _window, page = show(notebook, save)
+      viewer, other = connect(page, 'saved'), connect(page, 'independent')
+      headers = nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers']
+      send_event(page, viewer, :tabs, 'select', { index: chosen, tab: headers[chosen]['key'] })
+      wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == chosen }
+      send_event(page, viewer, :button, 'activate', {})
+      expect(saved.pop(timeout: 2)).to eq(chosen)
+      notebook.remove_page(removed)
+      wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'].length == 2 }
+      expect(notebook.send(:read, :selected)).to eq(retained)
+      expect(notebook.send(:component_props)[:selected]).to eq(default)
+      expect(nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(retained)
+      expect(nodes(other).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(default)
+    end
+  end
+
+  it 'PR63 preserves both notebook selection stores when a post-Save structural update refuses' do
+    notebook = gtk::Notebook.new
+    %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name), gtk::Label.new(name)) }
+    saved = Queue.new
+    save = gtk::Button.new('Save')
+    save.signal_connect('clicked') { saved << true }
+    _window, page = show(notebook, save)
+    viewer = connect(page, 'saved')
+    headers = nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers']
+    send_event(page, viewer, :tabs, 'select', { index: 2, tab: headers[2]['key'] })
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == 2 }
+    send_event(page, viewer, :button, 'activate', {})
+    expect(saved.pop(timeout: 2)).to be(true)
+    allow(notebook.session.port).to receive(:layout_tabs).and_raise(Lich::WebUI::Error, 'rejected structure')
+    expect { notebook.remove_page(0) }.to raise_error(Lich::WebUI::Error, /rejected structure/)
+    expect(notebook.n_pages).to eq(3)
+    expect(notebook.send(:read, :selected)).to eq(2)
+    expect(notebook.send(:component_props)[:selected]).to eq(0)
+  end
+
+  it 'PR63 remaps explicit post-Save choices through empty and reopened notebooks without inventing commits' do
+    notebook = gtk::Notebook.new
+    %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name), gtk::Label.new(name)) }
+    expect(notebook.instance_variable_get(:@committed)).not_to have_key(:selected)
+    notebook.remove_page(2)
+    expect(notebook.instance_variable_get(:@committed)).not_to have_key(:selected)
+    saved = Queue.new
+    save = gtk::Button.new('Save')
+    save.signal_connect('clicked') { notebook.set_current_page(1); saved << true }
+    _window, page = show(notebook, save)
+    viewer = connect(page, 'saved')
+    send_event(page, viewer, :button, 'activate', {})
+    expect(saved.pop(timeout: 2)).to be(true)
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == 1 }
+    notebook.remove_page(0)
+    expect(notebook.send(:read, :selected)).to eq(0)
+    notebook.remove_page(0)
+    expect(notebook.send(:read, :selected)).to eq(0)
+    notebook.append_page(gtk::Label.new('New content'), gtk::Label.new('New'))
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'] == ['New'] }
+    expect(notebook.send(:read, :selected)).to eq(0)
   end
 
   it 'owns bounded custom tab labels separately and detaches reusable pages atomically' do

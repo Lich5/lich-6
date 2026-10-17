@@ -1540,15 +1540,23 @@ module Lich
 
           def publish_tabs(entries)
             names, headers = header_snapshot(entries)
-            old_key = @props.dig(:headers, @props[:selected] || 0, :key)
-            selected = headers.index { |header| header[:key] == old_key } if old_key
-            selected ||= (@props[:selected] || 0).clamp(0, [names.length - 1, 0].max)
+            # Authored defaults and terminal viewer snapshots may select different
+            # pages. Remap each by identity without creating a new committed value.
+            remap = lambda do |index|
+              index ||= 0
+              old_key = @props.dig(:headers, index, :key)
+              found = headers.index { |header| header[:key] == old_key } if old_key
+              found || index.clamp(0, [names.length - 1, 0].max)
+            end
+            selected = remap.call(@props[:selected])
+            committed = remap.call(@committed[:selected]) if @committed.key?(:selected)
             candidate = @props.merge(names: names, headers: headers, selected: selected)
             Lich::WebUI::Validator.new.validate_component!(:tabs, candidate, owner: self.class.name, page_id: 'notebook', cid: 'tabs')
             if @handle
               session.port.layout_tabs(@handle, children: entries.map { |entry| entry[:page].materialize }, names: names, headers: headers)
             end
             @props.merge!(names: names, headers: headers, selected: selected)
+            @committed[:selected] = committed if @committed.key?(:selected)
           end
 
           def release_header(entry)

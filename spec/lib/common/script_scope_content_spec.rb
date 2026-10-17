@@ -698,9 +698,14 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     table = page.last_render.tree.each.find { |node| node.type == :table }
     key = model.rows.first.key
     send_event(page, first, table, 'selection_change', rows: [key])
-    wait_for { rendered_node(first, :table)['props']['selected'] == [key] }
+    # Drain accepted selection before the explicit color update publishes it.
+    # The fake connection has no optimistic DOM and acceptance needs no repaint.
+    accepted = Queue.new
+    service.runtime.dispatch(owner: owner) { accepted << true }
+    expect(accepted.pop(timeout: 2)).to be(true)
     view.override_background_color(:selected, rgba.new(0, 1, 0, 1))
     wait_for { rendered_node(first, :table)['props']['selection_background']['g'] == 255 }
+    expect(rendered_node(first, :table)['props']['selected']).to eq([key])
     expect(rendered_node(second, :table)['props']['selected']).to eq([])
     expect(other.send(:component_props)).not_to have_key(:selection_background)
     [:active, :prelight].each do |state|

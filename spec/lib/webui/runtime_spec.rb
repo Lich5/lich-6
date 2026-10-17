@@ -45,6 +45,74 @@ RSpec.describe Lich::WebUI::Runtime do
     [address, connection.sent.last]
   end
 
+  [
+    ['accepted proposal', ['b'], ['b'], nil, 0, ['b']],
+    ['no-op proposal', ['a'], ['a'], nil, 0, ['a']],
+    ['veto', ['b'], ['a'], nil, 1, ['a']],
+    ['modified proposal', ['a'], ['b'], nil, 1, ['b']],
+    ['guard failure', ['b'], ['b'], :guard, 1, ['a']],
+    ['validation failure', ['b'], ['missing'], nil, 1, ['a']],
+    ['update failure', ['b'], ['b'], :update, 1, ['a']],
+    ['callback failure', ['b'], ['b'], :callback, 1, ['b']],
+  ].each do |name, requested, decision, failure, refresh_count, final_rows|
+    it "PR63 refreshes guarded selection appropriately after #{name}" do
+      refreshes, calls = [], []
+      allow(runtime).to receive(:schedule_refresh) { |page| refreshes << page.id }
+      allow(viewers).to receive(:update).and_raise(Lich::WebUI::Error, 'update failure') if failure == :update
+      callback = proc do |context|
+        calls << context.payload[:rows]
+        raise 'changed callback failure' if failure == :callback
+      end
+      callback.define_singleton_method(:prepare_selection) do |_context|
+        raise 'guard failure' if failure == :guard
+        { rows: decision }
+      end
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'guard-refresh', title: 'Guard refresh') do
+        table(key: 'choices', columns: [{ key: 'name', label: 'Name' }],
+              rows: [{ key: 'a', cells: { name: 'A' } }, { key: 'b', cells: { name: 'B' } }],
+              selection: :single, selected: ['a'], on: { selection_change: callback })
+      end)
+      address, frame = attach(first_connection, page)
+      component = page.last_render.tree.children.first
+      refreshes.clear
+      runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                     cid: component.cid, event: 'selection_change', payload: { rows: requested })
+      finished = Queue.new
+      runtime.dispatch(owner: owner) { finished << true }
+      expect(finished.pop(timeout: 2)).to be(true)
+      viewer = viewers.attachments_for(page).first
+      expect(viewers.property(viewer, component, :selected)).to eq(final_rows)
+      expect(refreshes.length).to eq(refresh_count)
+      expect(calls).to eq(final_rows == ['a'] ? [] : [final_rows])
+    end
+  end
+
+  it 'PR63 retains callback-authored refreshes without adding a redundant selection repaint' do
+    refreshes = []
+    allow(runtime).to receive(:schedule_refresh) { |page| refreshes << page.id }
+    callback = proc do |context|
+      status = context.page.last_render.tree.children.find { |node| node.type == :text }
+      context.page.set(status.cid, :content, 'Changed')
+    end
+    callback.define_singleton_method(:prepare_selection) { |context| context.payload }
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'guard-mutation', title: 'Guard mutation') do
+      table(key: 'choices', columns: [{ key: 'name', label: 'Name' }],
+            rows: [{ key: 'a', cells: { name: 'A' } }, { key: 'b', cells: { name: 'B' } }],
+            selection: :single, selected: ['a'], on: { selection_change: callback })
+      text(key: 'status', content: 'Initial')
+    end)
+    address, frame = attach(first_connection, page)
+    component = page.last_render.tree.children.first
+    refreshes.clear
+    runtime.handle(first_connection, type: 'event', page: address, generation: frame['generation'],
+                   cid: component.cid, event: 'selection_change', payload: { rows: ['b'] })
+    finished = Queue.new
+    runtime.dispatch(owner: owner) { finished << true }
+    expect(finished.pop(timeout: 2)).to be(true)
+    expect(refreshes).to eq(['guard-mutation'])
+    expect(page.last_render.tree.children.last.then { |node| page.get(node.cid, :content) }).to eq('Changed')
+  end
+
   it 'commits only validated guarded selections on the owner worker and retains state after guard failures' do
     calls = Queue.new
     seen = []
