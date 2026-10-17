@@ -58,6 +58,28 @@ RSpec.describe Lich::WebUI::Validator do
     expect { validator.validate_component!(:text, { content: '', fragments: parts, ellipsize: :middle }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError, /plain text/)
   end
 
+  it 'bounds rectangle coordinates, drawing styles and opt-in clipping' do
+    layer = { kind: :rectangle, mode: :fill, x: 0, y: 0, w: 17.5, h: 8, color: { r: 204, g: 0, b: 0, a: 1.0 } }
+    base = { width: 120, height: 8, clip_layers: true, layers: [layer] }
+    expect(validator.validate_component!(:composite, base, **context)[:layers][0][:w]).to eq(17.5)
+    [{ w: -1 }, { x: Float::NAN }, { line_width: 17 }, { mode: :script }].each do |invalid|
+      expect { validator.validate_component!(:composite, base.merge(layers: [layer.merge(invalid)]), **context) }
+        .to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    expect { validator.validate_component!(:composite, base.merge(clip_layers: 'true'), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'bounds fragment typography independently from literal content' do
+    fragment = { content: 'COMBATICAL', font_size: 22, font_unit: :pt, font_weight: 900, letter_spacing: 4 }
+    expect(validator.validate_component!(:text, { content: '', fragments: [fragment] }, **context)[:fragments][0])
+      .to include(font_size: 22, font_weight: 900, letter_spacing: 4)
+    [{ font_size: 97 }, { font_size: 5 }, { font_unit: :em }, { font_family: 'url(evil)' },
+     { font_weight: 1001 }, { font_weight: '900' }, { letter_spacing: 65 }, { letter_spacing: Float::INFINITY }].each do |invalid|
+      expect { validator.validate_component!(:text, { content: '', fragments: [fragment.merge(invalid)] }, **context) }
+        .to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+  end
+
   it 'accepts bounded plain-text line justification without changing placement or other controls' do
     %i[left center right].each do |justify|
       expect(validator.validate_component!(:text, { content: 'Caption', align: :start, line_justify: justify }, **context))

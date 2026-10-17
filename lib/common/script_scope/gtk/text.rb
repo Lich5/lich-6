@@ -462,12 +462,38 @@ module Lich
           def initialize(label = '')
             super()
             @props.merge!(label: String(label), open: false)
+            @caption_label = Label.new(String(label))
+            @caption_label.instance_variable_set(:@frame_caption_owner, self)
           end
 
           # @return [String] literal heading
           def label = read(:label)
+
           # @return [Expander] self after replacing the literal heading
-          def set_label(value) = write(:label, String(value))
+          def set_label(value)
+            text = String(value)
+            write(:label, text)
+            @caption_label.text = text unless @caption_label.text == text
+            self
+          end
+
+          # @return [Label] owned caption facade for live literal/markup edits
+          def label_widget = @caption_label
+
+          # Retires the caption together with the disclosure subtree.
+          # @return [void]
+          def mark_destroyed
+            super
+            @caption_label.mark_destroyed
+          end
+
+          # Releases the owned caption and any registered style context.
+          # @return [Expander] self
+          def destroy
+            super
+            @caption_label.destroy
+            self
+          end
           alias label= set_label
           # @return [Boolean] open state for the originating viewer or retained default
           def expanded? = read(:open)
@@ -493,6 +519,15 @@ module Lich
           end
 
           protected
+
+          # Copies literal text and warns once only when markup styling is omitted.
+          # @param label [Label] owned caption whose content or fragments changed
+          # @return [Object] write result, or nil for a retired/unchanged caption
+          def refresh_caption(label)
+            return if destroyed? || !@caption_label.equal?(label)
+            session.degrade(:expander_caption_style, 'expander caption retains literal text; typography follows browser theme') if label.instance_variable_get(:@props)[:fragments]
+            write(:label, label.text) unless @props[:label] == label.text
+          end
 
           # @return [Symbol] existing disclosure component, with no shim renderer
           def component_type = :expander

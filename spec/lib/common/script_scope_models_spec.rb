@@ -703,6 +703,32 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     allow(Lich::Common::Script).to receive(:current).and_return(owner)
   end
 
+  it 'rejects retired release handlers before publication and republishes disconnected handler sets' do
+    surface = gtk::EventBox.new.add(gtk::Label.new('Release'))
+    calls = []
+    first = surface.signal_connect('button-release-event') { calls << :first }
+    _window, page = show(surface)
+    connect(page, 'release-handler')
+    admitted = page.last_render
+    component = admitted.tree.each.find { |node| node.props[:pointer_events] }
+    original = admitted.bindings[[component.cid, :pointer_release]]
+    payload = { x: 1, y: 1, button: 1, time: 0, state: 0, click_count: 1 }
+    context = Lich::WebUI::Runtime::EventContext.new(nil, page, component, :pointer_release, payload, nil, admitted)
+    surface.signal_connect('button-release-event') { calls << :second }
+    expect { original.call(context) }.to raise_error(gtk::UnsupportedOperation, /operation=pointer_release/)
+    expect(calls).to be_empty
+    wait_for { !page.last_render.bindings[[component.cid, :pointer_release]].equal?(original) }
+    replacement = page.last_render.bindings[[component.cid, :pointer_release]]
+    replacement.call(context)
+    expect(calls).to eq(%i[first second])
+    calls.clear
+    surface.send(:disconnect_signal_handler, first)
+    expect { replacement.call(context) }.to raise_error(gtk::UnsupportedOperation, /operation=pointer_release/)
+    wait_for { !page.last_render.bindings[[component.cid, :pointer_release]].equal?(replacement) }
+    page.last_render.bindings[[component.cid, :pointer_release]].call(context)
+    expect(calls).to eq([:second])
+  end
+
   it 'dispatches Button pointer metadata separately from ordinary activation' do
     expect(gtk::Button.new.label).to eq('')
     button = gtk::Button.new('Customize')
@@ -2213,6 +2239,171 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(Lich).to have_received(:log).with(/background_set.*expected boolean/).once
     expect { gtk::TreeViewColumn.new('CSS', renderer, text: 0, background: 1) }.to raise_error(gtk::UnsupportedOperation)
     expect { gtk::TreeViewColumn.new('Huge index', renderer, text: 0, background_set: 2**80) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'dispatches bounded widget moves with measured insertion geometry and guaranteed drag cleanup' do
+    source, target = gtk::EventBox.new, gtk::Box.new(:vertical)
+    source.add(gtk::Label.new('Spirit Barrier'))
+    child = gtk::Label.new('Existing ability')
+    target.add(child)
+    descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+    source.drag_source_set(:button1, [descriptor], :move)
+    target.drag_dest_set(gtk::DestDefaults::MOTION | gtk::DestDefaults::HIGHLIGHT, [descriptor], :move)
+    calls = []
+    source.signal_connect('drag-begin') { calls << :begin }
+    source.signal_connect('drag-end') { calls << :end }
+    target.signal_connect('drag-motion') { |_w, _ctx, x, y| calls << [:motion, x, y, child.allocation.y, child.allocation.height] }
+    target.signal_connect('drag-drop') { calls << :drop }
+    target.signal_connect('drag-leave') { calls << :leave }
+    box = gtk::Box.new(:vertical)
+    box.add(source); box.add(target)
+    _window, page = show(box)
+    viewer = connect(page, 'widget-transfer')
+    from = nodes(viewer).find { |node| node['props']['drag_source'] }
+    to = nodes(viewer).find { |node| node['props']['drag_destination'] }
+    payload = { source: from['cid'], x: 12, y: 25, allocations: [{ cid: to['children'][0]['cid'], y: 10, height: 30 }] }
+    deliver = lambda do |proposed|
+      render = viewer.messages.reverse.find { |message| message['type'] == 'render' }
+      service.runtime.handle(viewer, type: 'event', page: service.registry.address_for(page), generation: render['generation'],
+                             cid: to['cid'], event: 'widget_drop', payload: proposed)
+      drain_models
+    end
+    deliver.call(payload.merge(allocations: []))
+    deliver.call(payload.merge(source: to['cid']))
+    deliver.call(payload.merge(x: 65_537))
+    deliver.call(payload.merge(allocations: [{ cid: to['children'][0]['cid'], y: 0, height: 65_537 }]))
+    expect(calls).to be_empty
+    deliver.call(payload)
+    expect(calls).to eq([:begin, [:motion, 12, 25, 10, 30], :drop, :leave, :end])
+    expect(child.instance_variable_defined?(:@transfer_allocation)).to be(false)
+    data = gtk::SelectionData.new
+    data.set_text('Spirit Barrier')
+    expect(data.text).to eq('Spirit Barrier')
+    calls.clear
+    admitted = page.last_render
+    previous_binding = admitted.bindings[[to['cid'], :widget_drop]]
+    target.signal_connect('drag-drop') { raise 'drop callback failed' }
+    retired_context = Lich::WebUI::Runtime::EventContext.new(
+      nil, page, admitted.tree.each.find { |node| node.cid == to['cid'] }, :widget_drop, payload, nil, admitted
+    )
+    expect { previous_binding.call(retired_context) }.to raise_error(gtk::UnsupportedOperation, /operation=widget_drop/)
+    expect(calls).to be_empty
+    wait_for { !page.last_render.bindings[[to['cid'], :widget_drop]].equal?(previous_binding) }
+    deliver.call(payload)
+    expect(calls.last(2)).to eq([:leave, :end])
+    expect(child.instance_variable_defined?(:@transfer_allocation)).to be(false)
+    calls.clear
+    source.sensitive = false
+    wait_for { nodes(viewer).find { |node| node['cid'] == from['cid'] }['props']['disabled'] }
+    deliver.call(payload)
+    expect(calls).to be_empty
+    source.sensitive = true
+    source.hide
+    wait_for { nodes(viewer).find { |node| node['cid'] == from['cid'] }['props']['hidden'] }
+    deliver.call(payload)
+    expect(calls).to be_empty
+  end
+
+  [[:manual, 'Ability'], [:received, 'Ability'], [:received, ''], [:received, nil],
+   [:received, 'x' * 8193], [:disconnected, 'Ability'], [:failure, 'Ability']].each do |mode, text|
+    it "delivers bounded source-owned widget data with cleanup for #{mode}/#{text&.length.inspect}" do
+      source, target = gtk::EventBox.new, gtk::Box.new(:vertical)
+      child = gtk::Label.new('Existing')
+      target.add(child)
+      descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+      source.drag_source_set(:button1, [descriptor], :move)
+      target.drag_dest_set(1, [descriptor], :move)
+      box = gtk::Box.new(:vertical)
+      box.add(source); box.add(target)
+      calls, moves, data_objects = [], [], []
+      source.signal_connect('drag-begin') { calls << :begin }
+      source.signal_connect('drag-data-get') do |_widget, _context, data, info, time|
+        calls << [:get, info, time]
+        data_objects << data
+        data.set_text(text) unless text.nil?
+      end
+      target.signal_connect('drag-drop') do
+        calls << :drop
+        if mode == :manual
+          source.parent.remove(source)
+          target.add(source)
+          moves << :manual
+        end
+      end
+      receiver = target.signal_connect('drag-data-received') do |_widget, _context, x, y, data, info, time|
+        calls << [:received, x, y, data.text, info, time]
+        expect(data).to equal(data_objects.last)
+        raise 'receiver failure' if mode == :failure
+        if mode == :received
+          source.parent.remove(source)
+          target.add(source)
+          moves << :received
+        end
+      end
+      target.send(:disconnect_signal_handler, receiver) if mode == :disconnected
+      target.signal_connect('drag-leave') { calls << :leave }
+      source.signal_connect('drag-end') { calls << :end }
+      _window, page = show(box)
+      viewer = connect(page, "widget-data-#{mode}")
+      from = nodes(viewer).find { |node| node['props']['drag_source'] }
+      to = nodes(viewer).find { |node| node['props']['drag_destination'] }
+      render = viewer.messages.reverse.find { |message| message['type'] == 'render' }
+      service.runtime.handle(viewer, type: 'event', page: service.registry.address_for(page), generation: render['generation'],
+                             cid: to['cid'], event: 'widget_drop', payload: { source: from['cid'], x: 12, y: 25,
+                                                                                 allocations: [{ cid: to['children'][0]['cid'], y: 10, height: 30 }] })
+      drain_models
+      expected = [:begin, [:get, 0, 0]]
+      expected << :drop unless text && text.length > 8192
+      expected << [:received, 12, 25, text, 0, 0] if text && text.length <= 8192 && mode != :disconnected
+      expect(calls).to eq(expected + [:leave, :end])
+      expect(moves).to eq((mode == :manual || (mode == :received && text && text.length <= 8192)) ? [mode] : [])
+      expect(child.instance_variable_defined?(:@transfer_allocation)).to be(false)
+    end
+  end
+
+  it 'retires source and destination authority when live shadow drag handlers change' do
+    source, target = gtk::EventBox.new, gtk::Box.new(:vertical)
+    descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+    source.drag_source_set(:button1, [descriptor], :move)
+    target.drag_dest_set(1, [descriptor], :move)
+    box = gtk::Box.new(:vertical)
+    box.add(source); box.add(target)
+    target_handler = target.signal_connect('drag-drop') {}
+    _window, page = show(box)
+    viewer = connect(page, 'transfer-authority')
+    source_key = -> { nodes(viewer).find { |node| node['props']['drag_source'] }['props']['drag_source'] }
+    original = source_key.call
+    admitted = page.last_render
+    before_source, before_target = admitted.tree.each.select { |node| node.props[:drag_source] || node.props[:drag_destination] }
+    old_context = Lich::WebUI::Runtime::EventContext.new(
+      nil, page, before_target, :widget_drop, { source: before_source.cid, x: 1, y: 1, allocations: [] }, nil, admitted
+    )
+    id = source.signal_connect('drag-data-get') { |_widget, _context, data| data.set_text('New source') }
+    expect { target.send(:dispatch_widget_drop, old_context) }.to raise_error(gtk::UnsupportedOperation, /operation=widget_drop/)
+    wait_for { source_key.call != original }
+    connected = source_key.call
+    source.send(:disconnect_signal_handler, id)
+    wait_for { source_key.call != connected }
+    target_cid = nodes(viewer).find { |node| node['props']['drag_destination'] }['cid']
+    original_binding = page.last_render.bindings[[target_cid, :widget_drop]]
+    target.send(:disconnect_signal_handler, target_handler)
+    wait_for { !page.last_render.bindings[[target_cid, :widget_drop]].equal?(original_binding) }
+  end
+
+  it 'refuses widget transfer protocols outside their owner, types and lifecycle' do
+    source = gtk::EventBox.new
+    target = gtk::Box.new(:vertical)
+    descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+    expect { gtk::TargetEntry.new('text/uri-list', :same_app, 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect { source.drag_source_set(:button3, [descriptor], :move) }.to raise_error(gtk::UnsupportedOperation)
+    expect { target.drag_dest_set(8, [descriptor], :move) }.to raise_error(gtk::UnsupportedOperation)
+    expect { target.drag_dest_set(1, [descriptor], :copy) }.to raise_error(gtk::UnsupportedOperation)
+    expect { source.signal_connect('drag-begin') {} }.to raise_error(gtk::UnsupportedOperation)
+    target.drag_dest_set(1, [descriptor], :move)
+    show(target)
+    expect { target.drag_dest_set(1, [descriptor], :move) }.to raise_error(gtk::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(Struct.new(:name).new('foreign'))
+    expect { source.drag_source_set(:button1, [descriptor], :move) }.to raise_error(gtk::UnsupportedOperation)
   end
 
   %i[instance module].each do |spelling|

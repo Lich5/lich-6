@@ -349,6 +349,116 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect(frame.label).to eq('')
   end
 
+  it 'warns only for omitted Expander caption markup while synchronizing live text' do
+    expander = compatibility::Expander.new('Initial')
+    window = compatibility::Window.new.add(expander)
+    viewer = connect(show(window), 'expander-caption-warning')
+    expander.label = 'Plain update'
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Plain update' }
+    expect(Lich).not_to have_received(:log).with(/compatibility expander_caption_style/)
+    expander.label_widget.set_markup('<b>Styled</b> <i>heading</i>')
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Styled heading' }
+    expander.label_widget.set_markup('<i>Another</i> heading')
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Another heading' }
+    expect(Lich).to have_received(:log).with(/compatibility expander_caption_style/).once
+    expander.label = 'Plain again'
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Plain again' }
+    expect(Lich).to have_received(:log).with(/compatibility expander_caption_style/).once
+  end
+
+  it 'retires replaced Frame captions and style contexts without accumulating resources' do
+    frame = compatibility::Frame.new('Initial')
+    retired = []
+    destroyed = []
+    8.times do |index|
+      previous = frame.label_widget
+      previous.style_context
+      previous.signal_connect('destroy') { destroyed << previous }
+      retired << previous
+      replacement = compatibility::Label.new("Caption #{index}")
+      replacement.style_context
+      frame.set_label_widget(replacement)
+      expect(previous.destroyed?).to be(true)
+      expect(previous.instance_variable_defined?(:@frame_caption_owner)).to be(false)
+      expect(replacement.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+      expect(frame.session.instance_variable_get(:@style_contexts).size).to eq(1)
+    end
+    expect(destroyed).to eq(retired)
+    current = frame.label_widget
+    current.signal_connect('destroy') { destroyed << current }
+    frame.destroy
+    frame.destroy
+    expect(destroyed).to eq(retired + [current])
+    expect(frame.session.instance_variable_get(:@style_contexts)).to be_empty
+  end
+
+  it 'preserves Frame caption ownership when replacement validation refuses' do
+    frame = compatibility::Frame.new('Initial')
+    previous = frame.label_widget
+    previous.style_context
+    parented = compatibility::Label.new('Parented')
+    compatibility::Box.new.add(parented)
+    retired = compatibility::Label.new('Retired')
+    retired.destroy
+    [compatibility::Label.new('x' * 513), previous, parented, retired].each do |replacement|
+      expect { frame.set_label_widget(replacement) }.to raise_error(compatibility::UnsupportedOperation)
+      expect(frame.label_widget).to equal(previous)
+      expect(frame.label).to eq('Initial')
+      expect(previous.destroyed?).to be(false)
+      expect(previous.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+      expect(frame.session.instance_variable_get(:@style_contexts).size).to eq(1)
+    end
+  end
+
+  it 'preserves the live Frame caption and child identity when publication fails' do
+    frame = compatibility::Frame.new('Initial')
+    frame.add(compatibility::Entry.new)
+    window = compatibility::Window.new.add(frame)
+    viewer = connect(show(window), 'caption-refusal')
+    child = rendered_node(viewer, :text_input)['cid']
+    previous = frame.label_widget
+    replacement = compatibility::Label.new('Replacement')
+    allow(frame.session.port).to receive(:set).with(anything, :label, 'Replacement').and_raise(Lich::WebUI::Error, 'caption refused')
+    expect { frame.set_label_widget(replacement) }.to raise_error(Lich::WebUI::Error, /caption refused/)
+    expect(frame.label_widget).to equal(previous)
+    expect(frame.label).to eq('Initial')
+    expect(previous.destroyed?).to be(false)
+    expect(previous.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+    expect(replacement.instance_variable_defined?(:@frame_caption_owner)).to be(false)
+    expect(rendered_node(viewer, :text_input)['cid']).to eq(child)
+  end
+
+  it 'preserves a caption installed reentrantly by the previous caption destroy handler' do
+    frame = compatibility::Frame.new('Initial')
+    previous = frame.label_widget
+    middle, final = compatibility::Label.new('Middle'), compatibility::Label.new('Final')
+    [previous, middle, final].each(&:style_context)
+    observed = []
+    previous.signal_connect('destroy') do
+      observed << frame.label_widget
+      frame.set_label_widget(final)
+    end
+    frame.set_label_widget(middle)
+    expect(observed).to eq([middle])
+    expect(frame.label_widget).to equal(final)
+    expect(frame.label).to eq('Final')
+    expect([previous, middle].all?(&:destroyed?)).to be(true)
+    expect(final.destroyed?).to be(false)
+    expect(final.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+    expect(frame.session.instance_variable_get(:@style_contexts).size).to eq(1)
+  end
+
+  it 'retires the new caption if the previous caption destroy handler destroys the Frame' do
+    frame = compatibility::Frame.new('Initial')
+    previous = frame.label_widget
+    replacement = compatibility::Label.new('Replacement')
+    [previous, replacement].each(&:style_context)
+    previous.signal_connect('destroy') { frame.destroy }
+    frame.set_label_widget(replacement)
+    expect([frame, previous, replacement].all?(&:destroyed?)).to be(true)
+    expect(frame.session.instance_variable_get(:@style_contexts)).to be_empty
+  end
+
   it 'bounds ButtonBox layout and live spacing without replacing button identities' do
     expect { compatibility::ButtonBox.new(:vertical) }.to raise_error(compatibility::UnsupportedOperation)
     footer = compatibility::ButtonBox.new(:horizontal)
@@ -482,6 +592,55 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     label.text = 'Plain replacement'
     wait_for { rendered_node(viewer, :text).dig('props', 'content') == 'Plain replacement' }
     expect(rendered_node(viewer, :text)['props']).not_to have_key('fragments')
+  end
+
+  it 'preserves Combatical title typography as bounded fragments and resets it on replacement' do
+    glyph = [0x2694].pack('U')
+    label = compatibility::Label.new
+    label.markup = "<span font_desc='18' weight='bold' foreground='#D4AF37'>#{glyph} </span>" \
+                   "<span font_desc='22' weight='heavy' foreground='#D4AF37' letter_spacing='4096'>COMBATICAL</span>" \
+                   "<span font_desc='18' weight='bold' foreground='#D4AF37'> #{glyph}</span>"
+    fragments = label.send(:component_props).fetch(:fragments)
+    expect(fragments.map { |part| part[:content] }.join).to eq("#{glyph} COMBATICAL #{glyph}")
+    expect(fragments[0]).to include(font_size: 18.0, font_unit: :pt, emphasis: :strong)
+    expect(fragments[1]).to include(font_size: 22.0, font_weight: 900, letter_spacing: 4.0)
+    label.markup = "<span foreground='red' font_desc='Sans 12' weight='heavy'><b>Bold</b> Heavy</span>"
+    parts = label.send(:component_props).fetch(:fragments)
+    expect(parts[0]).to include(font_family: 'sans-serif', emphasis: :strong)
+    expect(parts[0]).not_to have_key(:font_weight)
+    expect(parts[1]).to include(font_weight: 900)
+    label.markup = '<b>Plain replacement</b>'
+    expect(label.send(:component_props)).not_to have_key(:fragments)
+    original = label.send(:component_props).dup
+    ["font_desc='5'", "font_desc='49'", "font_desc='18px'", "weight='900; color:red'",
+     "letter_spacing='65537'", "letter_spacing='-16385'", "letter_spacing='4px'"].each do |attribute|
+      expect { label.markup = "<span foreground='red' #{attribute}>Bad</span>" }.to raise_error(compatibility::UnsupportedOperation)
+      expect(label.send(:component_props)).to eq(original)
+    end
+  end
+
+  it 'retains only boolean overlay preferences without changing scroll policy or content' do
+    scroll = compatibility::ScrolledWindow.new
+    expect(scroll.overlay_scrolling?).to be(true)
+    expect(scroll.set_overlay_scrolling(false)).to equal(scroll)
+    expect(scroll.overlay_scrolling).to be(false)
+    scroll.set_policy(:never, :automatic)
+    scroll.add(compatibility::Label.new('Scrollable content'))
+    window = compatibility::Window.new
+    window.add(scroll)
+    viewer = connect(show(window), 'overlay-preference')
+    identity = rendered_node(viewer, :scroll)['cid']
+    scroll.overlay_scrolling = true
+    expect(scroll.overlay_scrolling?).to be(true)
+    expect(rendered_node(viewer, :scroll)['cid']).to eq(identity)
+    expect([scroll.hscrollbar_policy, scroll.vscrollbar_policy]).to eq(%i[never automatic])
+    [nil, 0, 'true'].each { |value| expect { scroll.set_overlay_scrolling(value) }.to raise_error(compatibility::UnsupportedOperation) }
+    allow(Lich::Common::Script).to receive(:current).and_return(Struct.new(:name).new('foreign'))
+    expect { scroll.set_overlay_scrolling(false) }.to raise_error(compatibility::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    scroll.destroy
+    expect { scroll.set_overlay_scrolling(false) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { scroll.overlay_scrolling? }.to raise_error(compatibility::UnsupportedOperation)
   end
 
   it 'maps foreground warning spans and use-markup initialization without leaking color into later markup' do
@@ -1294,6 +1453,108 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-tooltips')
     expect(identities).to eq([true])
   end
+  it 'renders title typography and retains scrolling across overlay preference changes in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    gtk = compatibility
+    glyph = [0x2694].pack('U')
+    window = gtk::Window.new('Combatical typography')
+    root = gtk::Box.new(:vertical)
+    title = gtk::Label.new
+    title.markup = "<span font_desc='18' weight='bold' foreground='#D4AF37'>#{glyph} </span>" \
+                   "<span font_desc='22' weight='heavy' foreground='#D4AF37' letter_spacing='4096'>COMBATICAL</span>" \
+                   "<span font_desc='18' weight='bold' foreground='#D4AF37'> #{glyph}</span>"
+    scroll = gtk::ScrolledWindow.new
+    scroll.set_overlay_scrolling(true)
+    scroll.set_policy(:never, :automatic)
+    scroll.set_size_request(320, 100)
+    content = gtk::Box.new(:vertical)
+    50.times { |index| content.add(gtk::Label.new("Scroll line #{index}")) }
+    scroll.add_with_viewport(content)
+    status = gtk::Label.new('Overlay true')
+    toggle = gtk::Button.new('Toggle overlay preference')
+    toggle.signal_connect('clicked') { scroll.overlay_scrolling = !scroll.overlay_scrolling?; status.text = "Overlay #{scroll.overlay_scrolling?}" }
+    reset = gtk::Button.new('Reset title')
+    reset.signal_connect('clicked') { title.text = 'Plain replacement' }
+    [title, scroll, toggle, status, reset].each { |widget| root.add(widget) }
+    window.add(root)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority17-title-scroll')
+  end
+
+  it 'moves ability widgets between containers without firing callbacks for cancelled drags in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    gtk = compatibility
+    window = gtk::Window.new('Combatical widget drag fixture')
+    root = gtk::Box.new(:vertical)
+    row = gtk::Box.new(:horizontal)
+    pool, assigned = gtk::Box.new(:vertical), gtk::Box.new(:vertical)
+    pool.add(gtk::Label.new('Ability pool'))
+    assigned.add(gtk::Label.new('Assigned abilities'))
+    [pool, assigned].each { |box| box.set_size_request(240, 180); row.add(box) }
+    ability = gtk::EventBox.new
+    ability.add(gtk::Label.new('Spirit Barrier'))
+    pool.add(ability)
+    descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+    ability.drag_source_set(:button1, [descriptor], :move)
+    status = gtk::Label.new('Moves 0; unlocked')
+    calls, moves = [], 0
+    ability.signal_connect('button-release-event') { calls << :released }
+    ability.signal_connect('drag-begin') { calls << :begin }
+    ability.signal_connect('drag-data-get') { |_widget, _context, data| calls << :get; data.set_text('Spirit Barrier') }
+    ability.signal_connect('drag-end') { calls << :end; status.text = "Moves #{moves}; unlocked" }
+    [pool, assigned].each do |target|
+      target.drag_dest_set(gtk::DestDefaults::MOTION, [descriptor], :move)
+      target.signal_connect('drag-motion') { calls << :motion }
+      target.signal_connect('drag-drop') do |_widget, _context, _x, y|
+        calls << :drop
+        index = target.children.index { |child| y < child.allocation.y + child.allocation.height / 2.0 } || target.children.length
+        ability.parent.remove(ability)
+        target.add(ability)
+        target.reorder_child(ability, index)
+        moves += 1
+      end
+      target.signal_connect('drag-data-received') { |_widget, _context, _x, _y, data| calls << [:received, data.text] }
+      target.signal_connect('drag-leave') { calls << :leave }
+    end
+    ticker = gtk::Label.new('Tick 0')
+    release = gtk::EventBox.new
+    release.add(gtk::Label.new('Release refresh target'))
+    release_status = gtk::Label.new('Releases 0')
+    releases = 0
+    release.signal_connect('button-release-event') { releases += 1; release_status.text = "Releases #{releases}" }
+    root.add(row); root.add(status); root.add(ticker); root.add(release); root.add(release_status); window.add(root)
+    tick = 0
+    scope.const_get(:GLib)::Timeout.add(25) { tick += 1; ticker.text = "Tick #{tick}"; true }
+    page = show(window)
+    overtaken = 0
+    phases = []
+    allow(service.runtime).to receive(:log).and_wrap_original do |method, level, message|
+      phases << message if message.match?(/\AWebUI (widget_drop|pointer_release) phase=/)
+      method.call(level, message)
+    end
+    # Force the previously flaky wire ordering for every browser drop/release:
+    # even a retry would be overtaken. The real timer and native drag stay active.
+    allow(service.runtime).to receive(:handle).and_wrap_original do |method, connection, message|
+      if message[:type] == 'event' && %w[widget_drop pointer_release].include?(message[:event])
+        2.times { service.runtime.refresh(page) }
+        overtaken += 1
+      end
+      method.call(connection, message)
+    end
+    begin
+      WebUIBrowser.check(service: service, page: page, scenario: 'priority17-widget-drag')
+    rescue RuntimeError => error
+      raise RuntimeError, "#{error.message}\nWidget server admission: \n#{phases.join("\n")}", cause: error
+    end
+    expect(overtaken).to eq(3)
+    %w[widget_drop pointer_release].zip([2, 1]).each do |event, count|
+      expect(phases.grep(/#{event} phase=queued/).length).to eq(count)
+      expect(phases.grep(/#{event} phase=completed/).length).to eq(count)
+    end
+    expect(calls).to eq([:begin, :motion, :get, :drop, [:received, 'Spirit Barrier'], :leave, :end] * 2)
+    expect(releases).to eq(1)
+    expect(ability.parent).to equal(pool)
+  end
+
   it 'rebuilds live combo options and selects a new duplicate row in one callback in Chrome', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
     window = compatibility::Window.new('Combo rebuild')
