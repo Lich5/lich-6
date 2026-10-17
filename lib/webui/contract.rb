@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.43.0'
+      VERSION = '2.46.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -538,13 +538,22 @@ module Lich
       TEXT_FRAGMENT = record(
         content: property(BODY, required: true), emphasis: property(enum(*EMPHASES)),
         font_style: property(enum(:normal, :italic)), foreground: property(RGBA),
-        scale: property(number(min: 0.5, max: 2)), underline: property(BOOL)
+        scale: property(number(min: 0.5, max: 2)), underline: property(BOOL),
+        font_size: property(number(min: 6, max: 96)), font_unit: property(enum(:pt, :px)),
+        font_family: property(enum(:monospace, :'sans-serif', :serif)),
+        font_weight: property(integer(min: 100, max: 1000)), letter_spacing: property(number(min: -16, max: 64))
       ).freeze
       TINT = union(record(tone: property(enum(*TONES), required: true)), RGBA).freeze
       POINT_FIELDS = {
         x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
       }.freeze
       COMPOSITE_LAYER = union(
+        record(
+          kind: property(enum(:rectangle), required: true), mode: property(enum(:fill, :stroke), required: true),
+          x: property(number(min: -65_536, max: 65_536), required: true), y: property(number(min: -65_536, max: 65_536), required: true),
+          w: property(number(min: 0, max: 65_536), required: true), h: property(number(min: 0, max: 65_536), required: true),
+          color: property(RGBA, required: true), line_width: property(number(min: 1, max: 16), default: 2)
+        ),
         # Map's original hollow room ring and tag/location crosses. This is a
         # bounded native drawing primitive, not GTK/Cairo or executable markup.
         record({
@@ -586,6 +595,7 @@ module Lich
       ).freeze
 
       COMPOSITE_PROPERTIES = {
+        clip_layers: property(BOOL),
         width: property(GEOMETRY, required: true), height: property(GEOMETRY, required: true),
         scale: property(number(min: 0.1, max: 8.0), default: 1.0),
         scroll_to: property(IDENT, scope: :viewer),
@@ -700,9 +710,20 @@ module Lich
 
               base[:properties][attribute] = deep_dup(ATTRIBUTE_SCHEMAS.fetch(attribute))
             end
+            base[:properties][:content_align] = property(enum(:start, :center, :end, :stretch)) if type == :stack
+            if %i[stack grid group expander scroll].include?(type)
+              base[:properties][:drag_source] = property(IDENT)
+              base[:properties][:drag_destination] = property(BOOL, default: false)
+              base[:events][:widget_drop] = event(record(
+                                                    source: property(CID, required: true), x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
+                                                    allocations: property(array(record(cid: property(CID, required: true),
+                                                                                       y: property(GEOMETRY, required: true), height: property(integer(min: 0, max: 65_536), required: true)), max: BOUNDS[:children]), required: true)
+                                                  ), terminal: true)
+            end
             if %i[page text image group progress table stack button].include?(type)
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
+              base[:events][:pointer_release] = event(deep_dup(POINTER_EVENT[:payload]), ordered: true)
             end
             if %i[overlay select number_input group].include?(type)
               base[:events][:scroll] = event(record(

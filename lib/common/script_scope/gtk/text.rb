@@ -462,12 +462,33 @@ module Lich
           def initialize(label = '')
             super()
             @props.merge!(label: String(label), open: false)
+            @caption_label = Label.new(String(label))
+            @caption_label.instance_variable_set(:@frame_caption_owner, self)
           end
 
           # @return [String] literal heading
           def label = read(:label)
+
           # @return [Expander] self after replacing the literal heading
-          def set_label(value) = write(:label, String(value))
+          def set_label(value)
+            text = String(value)
+            write(:label, text)
+            @caption_label.text = text unless @caption_label.text == text
+            self
+          end
+
+          def label_widget = @caption_label
+
+          def mark_destroyed
+            super
+            @caption_label.mark_destroyed
+          end
+
+          def destroy
+            super
+            @caption_label.destroy
+            self
+          end
           alias label= set_label
           # @return [Boolean] open state for the originating viewer or retained default
           def expanded? = read(:open)
@@ -493,6 +514,12 @@ module Lich
           end
 
           protected
+
+          def refresh_caption(label)
+            return if destroyed? || !@caption_label.equal?(label)
+            session.degrade(:expander_caption_style, 'expander caption retains literal text; typography follows browser theme')
+            write(:label, label.text) unless @props[:label] == label.text
+          end
 
           # @return [Symbol] existing disclosure component, with no shim renderer
           def component_type = :expander

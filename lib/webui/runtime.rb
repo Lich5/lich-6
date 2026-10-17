@@ -409,6 +409,19 @@ module Lich
           end
         end
 
+        if message[:event].to_sym == :widget_drop
+          source = find_component!(attachment, payload[:source])
+          valid = component.props[:drag_destination] && source.props[:drag_source] &&
+                  widget_transfer_available?(attachment.render.tree, component.cid) &&
+                  widget_transfer_available?(attachment.render.tree, source.cid) &&
+                  payload[:allocations].map { |item| item[:cid] } == component.children.map(&:cid)
+          raise Protocol::Refusal.new(:payload, 'widget transfer requires live enabled peers and matching children') unless valid
+        end
+
+        if message[:event].to_sym == :pointer_release && !widget_transfer_available?(attachment.render.tree, component.cid)
+          raise Protocol::Refusal.new(:payload, 'pointer release target is hidden or disabled')
+        end
+
         event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
         unless event_schema[:lifecycle]
           presentation = (attachment.render.tree.props[:presentation] || {}).merge(attachment.render.facilities[:presentation] || {})
@@ -637,6 +650,19 @@ module Lich
 
         component.children.each do |child|
           result = interaction_disabled?(child, cid, disabled)
+          return result unless result.nil?
+        end
+        nil
+      end
+
+      # Widget transfers cannot originate in a hidden or disabled ancestor.
+      # @return [Boolean, nil] availability, or nil when absent from this subtree
+      def widget_transfer_available?(component, cid, unavailable = false)
+        unavailable ||= component.props[:disabled] == true || component.props[:hidden] == true
+        return !unavailable if component.cid == cid
+
+        component.children.each do |child|
+          result = widget_transfer_available?(child, cid, unavailable)
           return result unless result.nil?
         end
         nil

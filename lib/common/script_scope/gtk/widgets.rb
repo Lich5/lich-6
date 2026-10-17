@@ -189,10 +189,11 @@ module Lich
                         mapped = { 'scroll_event' => :scroll, 'enter_notify_event' => :pointer_enter, 'leave_notify_event' => :pointer_leave }.fetch(name)
                         session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(mapped)
                         mapped
-                      elsif name == 'button_press_event'
-                        session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(:pointer_press)
+                      elsif %w[button_press_event button_release_event].include?(name)
+                        pointer_event = name == 'button_press_event' ? :pointer_press : :pointer_release
+                        session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(pointer_event)
                         write(:pointer_events, true)
-                        :pointer_press
+                        pointer_event
                       else
                         signal_map.transform_keys { |key| key.tr('-', '_') }[name] || session.refuse(self, "signal:#{name}")
                       end
@@ -638,7 +639,7 @@ module Lich
           end
 
           def validate_vertical_parent(alignment)
-            supported = parent.is_a?(Table) || parent.is_a?(Frame) || parent.is_a?(Overlay) ||
+            supported = parent.is_a?(Table) || parent.is_a?(Frame) || parent.is_a?(EventBox) || parent.is_a?(Overlay) ||
                         (parent.is_a?(ScrolledWindow) && parent.children.length == 1) ||
                         (parent.is_a?(Box) && (!parent.vertical? || (alignment == :start && !expands?(:vertical))))
             session.refuse(self, :valign_parent) unless supported
@@ -678,6 +679,7 @@ module Lich
                 @props[property] = value
               end
               @tab_owner&.send(:refresh_headers)
+              @frame_caption_owner&.send(:refresh_caption, self) if %i[content fragments].include?(property)
               parent.send(:refresh_headers) if property == :hidden && parent.is_a?(Notebook)
             end
             self
@@ -720,7 +722,7 @@ module Lich
                          elsif %i[pointer_enter pointer_leave].include?(event)
                            crossing = CrossingEvent.new(event == :pointer_enter ? :enter_notify : :leave_notify)
                            @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(widget, crossing) == true }
-                         elsif event == :pointer_press
+                         elsif %i[pointer_press pointer_release].include?(event)
                            pointer = PointerEvent.new(**context.payload)
                            session.with_pointer(widget, pointer) do
                              @signals.fetch(event, []).dup.each do |_name, handler|
@@ -1352,13 +1354,39 @@ module Lich
                     value.length <= Lich::WebUI::Contract::BOUNDS[:short_text]
             session.refuse(self, :label=) unless valid
             write(:label, value)
+            @frame_label ||= Label.new(value)
+            @frame_label.instance_variable_set(:@frame_caption_owner, self)
+            @frame_label.text = value unless @frame_label.text == value
+            self
           end
           alias label= set_label
+
+          def label_widget = @frame_label
+
+          def mark_destroyed
+            super
+            @frame_label&.mark_destroyed
+          end
 
           # Copies the supplied label's text into the shared group label.
           # @return [Frame] self
           def set_label_widget(label)
-            set_label(label.text)
+            session.style_operation(self, :set_label_widget) do
+              valid = label.is_a?(Label) && label.session.equal?(session) && !label.destroyed? && label.parent.nil? &&
+                      !label.instance_variable_get(:@tab_owner) && !label.instance_variable_get(:@frame_caption_owner)
+              session.refuse(self, :set_label_widget) unless valid && !destroyed?
+              @frame_label&.remove_instance_variable(:@frame_caption_owner)
+              @frame_label = label
+              label.instance_variable_set(:@frame_caption_owner, self)
+              write(:label, label.text)
+            end
+            self
+          end
+
+          def destroy
+            super
+            @frame_label&.destroy
+            self
           end
 
           # The shared frame already places its caption at the left edge.
@@ -1382,6 +1410,12 @@ module Lich
           protected
 
           def component_type = :group
+
+          def refresh_caption(label)
+            return if destroyed? || !@frame_label.equal?(label)
+            session.degrade(:frame_caption_style, 'frame caption keeps literal label text; caption typography follows browser theme') if label.instance_variable_get(:@props)[:fragments]
+            write(:label, label.text) unless @props[:label] == label.text
+          end
 
           # A frame aligns its child's natural height within its own allocation.
           # Explicit :start resets an earlier center/end request after live edits.

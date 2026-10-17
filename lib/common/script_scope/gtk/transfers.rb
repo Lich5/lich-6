@@ -8,19 +8,19 @@ module Lich
           SAME_APP = :same_app
         end
 
-        # A bounded same-application text-row transfer descriptor, not a native target.
+        # A bounded same-application text transfer descriptor, not a native target.
         class TargetEntry < ModelObject
           attr_reader :target, :flags, :info
 
           def initialize(target, flags, info)
             super()
-            session.refuse(self, :new) unless target == 'STRING' && flags == TargetFlags::SAME_APP && info == 0
+            session.refuse(self, :new) unless %w[STRING text/plain].include?(target) && flags == TargetFlags::SAME_APP && info == 0
             @target, @flags, @info = target, flags, info
           end
         end
 
         # Data never comes from an arbitrary browser payload: the source callback
-        # produces it from a validated live row in the same viewer/page.
+        # produces it from a validated live source in the same viewer/page.
         class SelectionData < ModelObject
           attr_reader :text
 
@@ -37,6 +37,7 @@ module Lich
           def text=(text)
             set(Gdk::Selection::TYPE_STRING, text)
           end
+          alias set_text text=
         end
 
         # Script callbacks own model changes. Completion acknowledges their result;
@@ -71,6 +72,149 @@ module Lich
             widget.drag_dest_set(defaults, targets, action)
           end
         end
+
+        module DestDefaults
+          MOTION = 1
+          HIGHLIGHT = 2
+        end
+
+        # Accepted widget drops run as one owner callback, so redraws cannot leave
+        # script drag locks set. Cancelled/browser-external drags invoke no script.
+        module WidgetTransfers
+          TransferAllocation = Data.define(:y, :height)
+          SIGNALS = %w[drag_begin drag_end drag_motion drag_leave drag_drop drag_data_get drag_data_received].freeze
+
+          # Registers a same-session text MOVE source before publication.
+          def drag_source_set(mask, targets, action)
+            session.style_operation(self, :drag_source_set) do
+              validate_widget_transfer!(targets, action)
+              session.refuse(self, :drag_source_set) unless mask == Gdk::ModifierType::BUTTON1_MASK
+              @props[:drag_source] ||= "widget-drag-#{Widget.send(:next_signal_id)}"
+            end
+            self
+          end
+
+          # Registers the measured motion/highlight destination spelling.
+          def drag_dest_set(defaults, targets, action)
+            session.style_operation(self, :drag_dest_set) do
+              validate_widget_transfer!(targets, action)
+              session.refuse(self, :drag_dest_set) unless [DestDefaults::MOTION, DestDefaults::MOTION | DestDefaults::HIGHLIGHT].include?(defaults)
+              @props[:drag_destination] = true
+            end
+            self
+          end
+
+          # Stores transfer handlers in the ordinary disconnectable signal store.
+          def signal_connect(name, &handler)
+            signal = name.to_s.tr('-', '_')
+            return super unless SIGNALS.include?(signal)
+
+            session.style_operation(self, :signal_connect) do
+              source_signal = %w[drag_begin drag_end drag_data_get].include?(signal)
+              enabled = source_signal ? @props[:drag_source] : @props[:drag_destination]
+              session.refuse(self, :signal_connect) unless !destroyed? && enabled && handler
+              id = Widget.send(:next_signal_id)
+              callback = proc { |*args| handler.call(*args) if @signal_connections.key?(id) }
+              (@signals[:widget_drop] ||= []) << [signal, callback]
+              @signal_connections[id] = [:widget_drop, callback]
+              bind_event(:widget_drop) if @handle && @props[:drag_destination]
+              id
+            end
+          end
+
+          # Geometry is viewer measurement data scoped to the accepted callback.
+          def allocation
+            return @transfer_allocation if @transfer_allocation
+            super
+          end
+
+          protected
+
+          def bind_event(event)
+            return super unless event == :widget_drop
+            return unless @props[:drag_destination]
+
+            session.port.bind(@handle, event, proc do |event_context|
+              session.callback(event_context, terminal: true, widget: self) { dispatch_widget_drop(event_context) }
+            end)
+          end
+
+          private
+
+          def validate_widget_transfer!(targets, action)
+            valid = targets.is_a?(Array) && targets.length == 1 && targets.first.instance_of?(TargetEntry) &&
+                    targets.first.session.equal?(session) && action == Gdk::DragAction::MOVE &&
+                    session.port.schema(component_type)[:events].key?(:widget_drop) && !destroyed? && !@handle
+            session.refuse(self, :widget_drag) unless valid
+            session.degrade(:widget_drag_callbacks, 'same-page widget begin/motion/data-get/drop/data-received/leave/end callbacks run together on accepted drop; cancelled drags invoke no callbacks')
+          end
+
+          # Recheck queued work against live shadow ancestors before callbacks.
+          def widget_transfer_live?
+            widget = self
+            while widget
+              return false if widget.destroyed? || !widget.sensitive? || widget.instance_variable_get(:@props)[:hidden] == true
+              widget = widget.parent
+            end
+            true
+          end
+
+          def emit_widget_drag(signal, *args)
+            @signals.fetch(:widget_drop, []).dup.each do |name, callback|
+              callback.call(self, *args) if name == signal
+            end
+          end
+
+          def dispatch_widget_drop(event)
+            payload = event.payload
+            component = event.page.last_render.tree.each.find { |node| node.cid == payload[:source] }
+            key = component&.props&.fetch(:drag_source, nil)
+            pending = [toplevel]
+            source = nil
+            until pending.empty?
+              widget = pending.pop
+              source = widget if key && widget.instance_variable_get(:@props)[:drag_source] == key
+              pending.concat(widget.children)
+            end
+            session.refuse(self, :widget_drop) unless source && source.send(:widget_transfer_live?) && widget_transfer_live?
+            current = event.page.last_render.tree.each.find { |node| node.cid == event.component.cid }
+            session.refuse(self, :widget_drop) unless current && current.children.map(&:cid) == payload[:allocations].map { |item| item[:cid] }
+            children = self.children
+            session.refuse(self, :widget_drop) unless children.length == payload[:allocations].length
+            context = DragContext.new
+            children.zip(payload[:allocations]).each do |child, item|
+              child.instance_variable_set(:@transfer_allocation, TransferAllocation.new(item[:y], item[:height]))
+            end
+            begin
+              source.send(:emit_widget_drag, 'drag_begin', context)
+              emit_widget_drag('drag_motion', context, payload[:x], payload[:y], Gdk::CURRENT_TIME)
+              # Gather bounded source data before a manual drop can mutate the tree.
+              # Scripts own both manual and data-driven moves; the shim never moves.
+              if widget_transfer_live? && source.send(:widget_transfer_live?)
+                data = SelectionData.new
+                source.send(:emit_widget_drag, 'drag_data_get', context, data, 0, Gdk::CURRENT_TIME)
+                if widget_transfer_live? && source.send(:widget_transfer_live?)
+                  emit_widget_drag('drag_drop', context, payload[:x], payload[:y], Gdk::CURRENT_TIME)
+                  if !data.text.nil? && widget_transfer_live? && source.send(:widget_transfer_live?)
+                    emit_widget_drag('drag_data_received', context, payload[:x], payload[:y], data, 0, Gdk::CURRENT_TIME)
+                  end
+                end
+              end
+            ensure
+              begin
+                emit_widget_drag('drag_leave', context, Gdk::CURRENT_TIME) unless destroyed?
+              ensure
+                begin
+                  source.send(:emit_widget_drag, 'drag_end', context)
+                ensure
+                  children.each { |child| child.remove_instance_variable(:@transfer_allocation) if child.instance_variable_defined?(:@transfer_allocation) }
+                end
+              end
+            end
+          end
+        end
+
+        Widget.prepend(WidgetTransfers)
 
         class TreeView
           # Only primary-button, same-app text MOVE transfers are admitted.

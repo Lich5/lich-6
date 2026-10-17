@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -1154,6 +1154,88 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.screenshot({ path: require('path').join(__dirname, 'test-results', `${scenario}.png`), fullPage: true });
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.locator('.webui-page')).toHaveCount(0);
+  } else if (scenario === 'priority17-drawing') {
+    const surface = page.locator('.composite-surface');
+    const rectangles = surface.locator('rect');
+    await expect(rectangles).toHaveCount(3);
+    await expect(rectangles.nth(1)).toHaveAttribute('width', '30');
+    await expect(rectangles.nth(2)).toHaveAttribute('stroke-width', '1');
+    await expect(surface).toHaveCSS('overflow', 'hidden');
+    await expect(page.getByText('Revealed pool')).toBeHidden();
+    const target = page.getByText('Centered target', { exact: true });
+    const parent = target.locator('..');
+    const a = await target.boundingBox(), b = await parent.boundingBox();
+    expect(Math.abs(a.y + a.height / 2 - b.y - b.height / 2)).toBeLessThan(2);
+    await page.getByRole('button', { name: 'Update resources' }).click();
+    await expect(rectangles.nth(1)).toHaveAttribute('width', '90');
+    await expect(page.getByText('Revealed pool')).toBeVisible();
+  } else if (scenario === 'priority17-title-scroll') {
+    const spans = page.locator('.webui-text-fragment');
+    await expect(spans).toHaveCount(3);
+    await expect(spans.nth(0)).toHaveCSS('font-size', '24px');
+    await expect(spans.nth(1)).toHaveText('COMBATICAL');
+    await expect(spans.nth(1)).toHaveCSS('font-size', /29\.33/);
+    await expect(spans.nth(1)).toHaveCSS('font-weight', '900');
+    await expect(spans.nth(1)).toHaveCSS('letter-spacing', '4px');
+    await expect(spans.nth(1)).toHaveCSS('color', 'rgb(212, 175, 55)');
+    const scroller = page.locator('[data-component-type="scroll"]');
+    await scroller.evaluate(element => { element.scrollTop = 200; });
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    const offset = await scroller.evaluate(element => element.scrollTop);
+    await page.getByRole('button', { name: 'Toggle overlay preference' }).click();
+    await expect(page.getByText('Overlay false', { exact: true })).toBeVisible();
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(offset);
+    await page.getByRole('button', { name: 'Reset title' }).click();
+    await expect(page.getByText('Plain replacement', { exact: true })).toBeVisible();
+    await expect(spans).toHaveCount(0);
+  } else if (scenario === 'priority17-widget-drag') {
+    const source = () => page.locator('[data-widget-drag-source]');
+    const targets = page.locator('[data-widget-drag-destination]');
+    const status = page.getByText(/^Moves \d+; unlocked$/);
+    await expect(status).toHaveText('Moves 0; unlocked');
+    // An external drop cannot supply the page-local drag state.
+    await targets.nth(1).dispatchEvent('drop', { dataTransfer: await page.evaluateHandle(() => new DataTransfer()) });
+    await expect(status).toHaveText('Moves 0; unlocked');
+    const bounds = await source().evaluate(element => element.getBoundingClientRect().toJSON());
+    await page.mouse.move(bounds.x + 8, bounds.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + 35, bounds.y + 35, { steps: 8 });
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await expect(status).toHaveText('Moves 0; unlocked');
+    // Locator dragTo waits for two animation frames of stability, which a
+    // legitimate 25 ms meter refresh deliberately prevents before pointerdown.
+    const moveTo = async index => {
+      // Measure both endpoints in one browser task; a timer can replace the
+      // DOM between separate locator measurements and yield a detached node.
+      const { start, end } = await page.evaluate(index => ({
+        start: document.querySelector('[data-widget-drag-source]').getBoundingClientRect().toJSON(),
+        end: document.querySelectorAll('[data-widget-drag-destination]')[index].getBoundingClientRect().toJSON()
+      }), index);
+      await page.mouse.move(start.x + 10, start.y + 10);
+      await page.mouse.down();
+      await page.mouse.move(start.x + 30, start.y + 20, { steps: 4 });
+      await page.mouse.move(end.x + 40, end.y + 140, { steps: 8 });
+      await page.mouse.up();
+    };
+    await moveTo(1);
+    await expect(status).toHaveText('Moves 1; unlocked');
+    await expect(targets.nth(1).locator('[data-widget-drag-source]')).toHaveCount(1);
+    await moveTo(0);
+    await expect(status).toHaveText('Moves 2; unlocked');
+    // Read the rectangle in one task: the 25 ms refresh can detach a locator
+    // between its resolution and boundingBox acquisition before pointerdown.
+    const position = await page.evaluate(() => [...document.querySelectorAll('[data-component-type="text"]')]
+      .find(element => element.textContent === 'Release refresh target').getBoundingClientRect().toJSON());
+    await page.mouse.move(position.x + 4, position.y + 4);
+    await page.mouse.down();
+    const before = await page.getByText(/^Tick \d+$/).textContent();
+    // Let several real timer renders arrive while the release-only surface holds.
+    await page.waitForTimeout(150);
+    await expect(page.getByText(/^Tick \d+$/)).toHaveText(before);
+    await page.mouse.up();
+    await expect(page.getByText('Releases 1', { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Tick \d+$/)).not.toHaveText(before);
   } else if (scenario === 'shim-ewaggle') {
     await page.setViewportSize({ width: 730, height: 800 });
     await expect.poll(() => page.evaluate(() => {

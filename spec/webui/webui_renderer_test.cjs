@@ -2283,3 +2283,242 @@ for (const state of ['live', 'removed', 'disabled']) {
     assert.equal(env.events().filter(message => message.event === 'activate').length, activations.length);
   });
 }
+
+for (const invalid of ['external', 'cancelled', 'blurred', 'disabled']) {
+  test(`widget drag refuses ${invalid} drops and emits no browser text`, t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    receive({ type: 'hello', pages: [{ address: 'drag' }] });
+    const tree = disabled => ({ type: 'page', cid: 'root', props: {}, children: [
+      { type: 'stack', cid: 'source', props: { drag_source: 'ability' }, children: [] },
+      { type: 'stack', cid: 'target', props: { drag_destination: true, disabled }, children: [] }
+    ] });
+    const render = generation => receive({ type: 'render', page: 'drag', generation,
+      bindings: { target: ['widget_drop'] }, tree: tree(invalid === 'disabled') });
+    render(1);
+    const select = cid => dom.window.document.querySelector(`[data-cid="${cid}"]`);
+    const fire = (element, name) => {
+      const event = new dom.window.Event(name, { bubbles: true, cancelable: true });
+      Object.assign(event, { dataTransfer: { effectAllowed: '', setData() {}, getData: () => 'untrusted' }, clientX: 12, clientY: 40 });
+      element.dispatchEvent(event);
+    };
+    if (invalid !== 'external') fire(select('source'), 'dragstart');
+    if (invalid === 'cancelled') fire(select('source'), 'dragend');
+    if (invalid === 'blurred') { dom.window.dispatchEvent(new dom.window.Event('blur')); render(2); }
+    fire(select('target'), 'drop');
+    assert.equal(sent.filter(message => message.event === 'widget_drop').length, 0);
+  });
+}
+
+test('nested widget drop targets emit once with local coordinates and ordered child measurements', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'drag' }] });
+  receive({ type: 'render', page: 'drag', generation: 1, bindings: { outer: ['widget_drop'], inner: ['widget_drop'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [
+      { type: 'stack', cid: 'source', props: { drag_source: 'ability' }, children: [] },
+      { type: 'group', cid: 'outer', props: { drag_destination: true }, children: [
+        { type: 'stack', cid: 'inner', props: { drag_destination: true }, children: [
+          { type: 'text', cid: 'child', props: { content: 'Existing' } }
+        ] }
+      ] }
+    ]
+  } });
+  const select = cid => dom.window.document.querySelector(`[data-cid="${cid}"]`);
+  select('inner').getBoundingClientRect = () => ({ left: 10, top: 20 });
+  select('child').getBoundingClientRect = () => ({ top: 50, height: 24 });
+  const fire = (element, name) => {
+    const event = new dom.window.Event(name, { bubbles: true, cancelable: true });
+    Object.assign(event, { dataTransfer: { setData() {} }, clientX: 15, clientY: 60 });
+    element.dispatchEvent(event);
+  };
+  fire(select('source'), 'dragstart');
+  fire(select('child'), 'drop');
+  fire(select('child'), 'drop');
+  const drops = sent.filter(message => message.event === 'widget_drop');
+  assert.equal(drops.length, 1);
+  assert.equal(drops[0].cid, 'inner');
+  assert.deepEqual(drops[0].payload, { source: 'source', x: 5, y: 40, allocations: [{ cid: 'child', y: 30, height: 24 }] });
+  receive({ type: 'refusal', reason: 'stale_generation', request: drops[0].request, page: 'drag', cid: 'inner', event: 'widget_drop' });
+  receive({ type: 'render', page: 'drag', generation: 2, bindings: {}, tree: { type: 'page', cid: 'root', props: {}, children: [] } });
+  assert.equal(sent.filter(message => message.event === 'widget_drop').length, 1);
+});
+
+test('periodic renders preserve a widget drag until native dragend releases the deferred tree', async t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'drag' }] });
+  const render = (generation, text) => receive({ type: 'render', page: 'drag', generation,
+    bindings: {}, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'stack', cid: 'source', props: { drag_source: 'ability' }, children: [
+        { type: 'text', cid: 'label', props: { content: text } }
+      ] }
+    ] } });
+  render(1, 'Before');
+  const source = dom.window.document.querySelector('[data-cid="source"]');
+  const start = new dom.window.Event('dragstart', { bubbles: true });
+  start.dataTransfer = { setData() {} };
+  source.dispatchEvent(start);
+  render(2, 'After');
+  assert.equal(dom.window.document.querySelector('[data-cid="source"]'), source);
+  assert.match(source.textContent, /Before/);
+  source.dispatchEvent(new dom.window.Event('dragend', { bubbles: true }));
+  await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  assert.equal(source.isConnected, false);
+  assert.match(dom.window.document.querySelector('[data-cid="label"]').textContent, /After/);
+  assert.equal(sent.filter(message => message.event === 'widget_drop').length, 0);
+});
+
+for (const changed of ['geometry', 'children', 'source']) {
+  test(`stale widget drop rebases only unchanged identities (${changed})`, async t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    let newer = false;
+    dom.window.HTMLElement.prototype.getBoundingClientRect = function() {
+      return this.dataset.cid === 'child' ? { top: newer ? 100 : 10, height: newer ? 40 : 20 } : { left: 0, top: 0 };
+    };
+    receive({ type: 'hello', pages: [{ address: 'drag' }] });
+    const render = generation => receive({ type: 'render', page: 'drag', generation,
+      bindings: { target: ['widget_drop'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+        { type: 'stack', cid: 'source', props: { drag_source: newer && changed === 'source' ? 'replacement' : 'ability' }, children: [] },
+        { type: 'stack', cid: 'target', props: { drag_destination: true }, children: [
+          { type: 'text', cid: newer && changed === 'children' ? 'replacement' : 'child', props: { content: 'Existing' } }
+        ] }
+      ] } });
+    render(1);
+    const fire = (cid, name) => {
+      const event = new dom.window.Event(name, { bubbles: true, cancelable: true });
+      Object.assign(event, { dataTransfer: { setData() {} }, clientX: 5, clientY: 25 });
+      dom.window.document.querySelector(`[data-cid="${cid}"]`).dispatchEvent(event);
+    };
+    fire('source', 'dragstart'); fire('target', 'drop'); fire('source', 'dragend');
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+    const first = sent.filter(message => message.event === 'widget_drop')[0];
+    receive({ type: 'refusal', reason: 'stale_generation', page: 'drag', cid: 'target', event: 'widget_drop', request: first.request });
+    newer = true; render(2);
+    const drops = sent.filter(message => message.event === 'widget_drop');
+    assert.equal(drops.length, changed === 'geometry' ? 2 : 1);
+    if (changed === 'geometry') {
+      assert.deepEqual(drops[1].payload, { source: 'source', x: 5, y: 140, allocations: [{ cid: 'child', y: 100, height: 40 }] });
+      receive({ type: 'refusal', reason: 'stale_generation', page: 'drag', cid: 'target', event: 'widget_drop', request: drops[1].request });
+      render(3);
+      assert.equal(sent.filter(message => message.event === 'widget_drop').length, 2);
+    }
+  });
+}
+
+test('typed title fragments render absolute sizes, heavy weight and bounded spacing then clear on replacement', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'title' }] });
+  const render = (generation, props) => receive({ type: 'render', page: 'title', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'text', cid: 'title', props }] } });
+  render(1, { fragments: [{ content: '<img onerror=evil>', font_size: 22, font_unit: 'pt', font_weight: 900,
+    letter_spacing: 4, foreground: { r: 212, g: 175, b: 55, a: 1 }, scale: 1.2 }] });
+  const span = dom.window.document.querySelector('.webui-text-fragment');
+  assert.equal(span.textContent, '<img onerror=evil>');
+  assert.equal(dom.window.document.querySelector('img'), null);
+  assert.equal(span.style.fontSize, '26.4pt');
+  assert.equal(span.style.fontWeight, '900');
+  assert.equal(span.style.letterSpacing, '4px');
+  render(2, { content: 'Plain' });
+  assert.equal(dom.window.document.querySelector('.webui-text-fragment'), null);
+  const text = dom.window.document.querySelector('[data-cid="title"]');
+  assert.equal(text.textContent, 'Plain');
+  assert.equal(text.style.fontWeight, '');
+  assert.equal(text.style.letterSpacing, '');
+});
+
+test('typed rectangle layers preserve fractional fill, centered stroke and surface-only clipping', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'draw' }] });
+  const render = clip_layers => receive({ type: 'render', page: 'draw', generation: clip_layers ? 1 : 2,
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'composite', cid: 'area', props: {
+      width: 120, height: 8, clip_layers, layers: [
+        { kind: 'rectangle', mode: 'fill', x: 0, y: 0, w: 120 / 7, h: 8, color: { r: 204, g: 0, b: 0, a: 1 } },
+        { kind: 'rectangle', mode: 'stroke', x: 0, y: 0, w: 120, h: 8, color: { r: 128, g: 128, b: 128, a: 1 }, line_width: 1 }
+      ]
+    } }] } });
+  render(true);
+  const rects = dom.window.document.querySelectorAll('rect');
+  assert.equal(Number(rects[0].getAttribute('width')), 120 / 7);
+  assert.equal(rects[0].getAttribute('fill'), 'rgba(204, 0, 0, 1)');
+  assert.equal(rects[1].getAttribute('fill'), 'none');
+  assert.equal(rects[1].getAttribute('stroke-width'), '1');
+  assert.equal(dom.window.document.querySelector('.composite-surface').style.overflow, 'hidden');
+  render(false);
+  assert.equal(dom.window.document.querySelector('.composite-surface').style.overflow, '');
+});
+
+test('release-only surfaces require an uncancelled local press and never execute a drag release', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'release' }] });
+  receive({ type: 'render', page: 'release', generation: 1, bindings: { box: ['pointer_release'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'stack', cid: 'box', props: { pointer_events: true }, children: [] }]
+  } });
+  const box = dom.window.document.querySelector('[data-cid="box"]');
+  const fire = type => {
+    const event = new dom.window.MouseEvent(type, { bubbles: true, button: 0, clientX: 4, clientY: 5 });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    box.dispatchEvent(event);
+  };
+  fire('pointerup');
+  fire('pointerdown'); fire('pointerup');
+  fire('pointerdown'); fire('pointercancel'); fire('pointerup');
+  fire('pointerdown'); fire('dragstart'); fire('pointerup');
+  const releases = sent.filter(message => message.event === 'pointer_release');
+  assert.equal(releases.length, 1);
+  assert.equal(releases[0].payload.x, 4);
+  assert.equal(releases[0].payload.y, 5);
+  assert.equal(sent.filter(message => message.event === 'pointer_press').length, 0);
+});
+
+for (const draggable of [false, true]) {
+  test(`release surfaces hold and flush refreshes (draggable=${draggable})`, async t => {
+    const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+    receive({ type: 'hello', pages: [{ address: 'release-refresh' }] });
+    const render = generation => receive({ type: 'render', page: 'release-refresh', generation,
+      bindings: { box: ['pointer_release'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+        { type: 'stack', cid: 'box', props: { pointer_events: true, ...(draggable ? { drag_source: 'source' } : {}) }, children: [
+          { type: 'text', cid: 'caption', props: { content: `Generation ${generation}` }, children: [] }
+        ] }
+      ] } });
+    render(1);
+    const box = dom.window.document.querySelector('[data-cid="box"]');
+    const fire = (type, target = box, button = 0, id = 1) => {
+      const event = new dom.window.MouseEvent(type, { bubbles: true, button, clientX: 4, clientY: 5 });
+      Object.defineProperty(event, 'pointerId', { value: id }); target.dispatchEvent(event);
+    };
+    fire('pointerdown'); render(2);
+    assert.equal(box.isConnected, true);
+    assert.match(box.textContent, /Generation 1/);
+    fire('pointerup');
+    await new Promise(resolve => dom.window.setTimeout(resolve, 20));
+    assert.equal(sent.filter(message => message.event === 'pointer_release').length, 1);
+    assert.equal(box.isConnected, false);
+    assert.match(dom.window.document.body.textContent, /Generation 2/);
+  });
+}
+
+test('outside releases and blur invalidate local release gestures and flush holds', async t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'release-cancel' }] });
+  const render = generation => receive({ type: 'render', page: 'release-cancel', generation,
+    bindings: { outer: ['pointer_release'], inner: ['pointer_release'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [{ type: 'stack', cid: 'outer', props: { pointer_events: true }, children: [
+        { type: 'stack', cid: 'inner', props: { pointer_events: true }, children: [] }
+      ] }]
+    } });
+  render(1);
+  const fire = (type, target, id = 1, button = 0) => {
+    const event = new dom.window.MouseEvent(type, { bubbles: true, button });
+    Object.defineProperty(event, 'pointerId', { value: id }); target.dispatchEvent(event);
+  };
+  let inner = dom.window.document.querySelector('[data-cid="inner"]');
+  fire('pointerdown', inner); fire('pointerup', dom.window.document.body); fire('pointerup', inner);
+  fire('pointerdown', inner); dom.window.dispatchEvent(new dom.window.Event('blur')); fire('pointerup', inner);
+  fire('pointerdown', inner); fire('pointerup', inner, 2); fire('pointerup', inner);
+  fire('pointerdown', inner); fire('pointerup', inner, 1, 1); fire('pointerup', inner);
+  assert.equal(sent.filter(message => message.event === 'pointer_release').length, 0);
+  fire('pointerdown', inner); render(2); fire('pointercancel', inner); fire('pointerup', inner);
+  await new Promise(resolve => dom.window.setTimeout(resolve, 20));
+  assert.equal(inner.isConnected, false);
+  inner = dom.window.document.querySelector('[data-cid="inner"]');
+  fire('pointerdown', inner); fire('pointerup', inner);
+  assert.deepEqual(sent.filter(message => message.event === 'pointer_release').map(message => message.cid), ['inner']);
+});

@@ -112,6 +112,12 @@ module Lich
           protected
 
           def component_type = :stack
+
+          def layout_props
+            alignment = @children.first&.instance_variable_get(:@props)&.fetch(:vertical_align, nil)
+            return {} unless alignment || @published_layout&.key?(:content_align)
+            { content_align: alignment || :stretch }
+          end
         end
 
         # The plain table in vars/alias contains widgets, not a TreeView model.
@@ -214,6 +220,16 @@ module Lich
             end
           end
 
+          alias set_selection_mode selection_mode=
+
+          # Combatical requests the natural one-child minimum; larger minima require new layout semantics.
+          def set_min_children_per_line(value)
+            session.style_operation(self, :set_min_children_per_line) do
+              session.refuse(self, :set_min_children_per_line) if destroyed? || value != 1
+            end
+            self
+          end
+
           # @return [Symbol] :none, including before any explicit assignment
           def selection_mode = @selection_mode || :none
 
@@ -308,6 +324,8 @@ module Lich
             session.refuse(self, :column_homogeneous=) unless [true, false].include?(value)
             write(:homogeneous, value)
           end
+
+          alias set_column_homogeneous column_homogeneous=
 
           # Equal row tracks are independent of equal columns and surplus-space
           # spreading. Content spanning rows contributes to their shared minimum.
@@ -499,6 +517,56 @@ module Lich
           end
         end
 
+        # Single-child visibility container; slide timing remains browser-owned.
+        class Revealer < Box
+          def initialize
+            super(:vertical, 0)
+            @reveal_child, @shown = false, false
+          end
+
+          def add(child)
+            session.refuse(self, :add) unless children.empty?
+            super
+          end
+
+          def set_reveal_child(value)
+            session.style_operation(self, :set_reveal_child) do
+              session.refuse(self, :set_reveal_child) if destroyed? || ![true, false].include?(value)
+              @reveal_child = value
+              write(:hidden, !@shown)
+            end
+            self
+          end
+          alias reveal_child= set_reveal_child
+          def reveal_child? = @reveal_child
+
+          def set_transition_type(value)
+            session.style_operation(self, :set_transition_type) do
+              session.refuse(self, :set_transition_type) if destroyed? || !%i[none slide_down].include?(value)
+              session.degrade(:reveal_animation, 'reveal state is immediate; native slide animation is omitted')
+            end
+            self
+          end
+
+          def set_transition_duration(value)
+            session.style_operation(self, :set_transition_duration) do
+              session.refuse(self, :set_transition_duration) if destroyed? || !value.is_a?(Integer) || !value.between?(0, 10_000)
+              session.degrade(:reveal_animation, 'reveal state is immediate; native slide animation is omitted')
+            end
+            self
+          end
+
+          protected
+
+          def write(property, value)
+            if property == :hidden
+              @shown = !value
+              value ||= !@reveal_child
+            end
+            super
+          end
+        end
+
         class ScrolledWindow < Widget
           include Container
 
@@ -523,6 +591,29 @@ module Lich
             session.refuse(self, :new) unless horizontal.nil? && vertical.nil?
             @vadjustment = ScrollAdjustment.new(self)
           end
+
+          # Retains the GTK preference; browser/host chrome owns scrollbar presentation.
+          # @param value [Boolean] requested overlay scrollbar preference
+          # @return [ScrolledWindow] self
+          # @raise [UnsupportedOperation] for invalid values, ownership or retired widgets
+          def set_overlay_scrolling(value)
+            session.style_operation(self, :set_overlay_scrolling) do
+              session.refuse(self, :set_overlay_scrolling) if destroyed? || ![true, false].include?(value)
+              @overlay_scrolling = value
+              session.degrade(:overlay_scrolling, 'overlay scrollbar preference retained; browser and host determine scrollbar presentation')
+            end
+            self
+          end
+          alias overlay_scrolling= set_overlay_scrolling
+
+          # @return [Boolean] retained preference, GTK default true before assignment
+          def overlay_scrolling?
+            session.style_operation(self, :overlay_scrolling) do
+              session.refuse(self, :overlay_scrolling) if destroyed?
+              @overlay_scrolling.nil? ? true : @overlay_scrolling
+            end
+          end
+          alias overlay_scrolling overlay_scrolling?
 
           # Requests a minimum viewport height independently of an explicit height request.
           # GTK's -1 reset becomes an unconstrained zero browser minimum.

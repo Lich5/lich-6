@@ -109,6 +109,7 @@ jobs:
               spec/lib/common/script_scope_source_refresh_spec.rb
               spec/lib/common/script_scope_manatimer_spec.rb
               spec/lib/common/script_scope_geometry_cursor_spec.rb
+              spec/lib/common/script_scope_drawing_spec.rb
     env:
       BUNDLE_WITHOUT: 'vscode:profanity'
       NATIVE_BROWSER: '1'
