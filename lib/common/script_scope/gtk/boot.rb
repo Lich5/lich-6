@@ -21,6 +21,7 @@ require_relative 'text'
 require_relative 'images'
 require_relative 'menus'
 require_relative 'transfers'
+require_relative 'drawing'
 require_relative 'builder'
 require_relative 'require_boundary'
 

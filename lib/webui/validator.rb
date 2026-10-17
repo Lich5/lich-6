@@ -511,7 +511,7 @@ module Lich
 
       def validate_event_invariants!(type, event_name, payload, props, context)
         normalized_props = props.transform_keys { |key| normalize_name(key) }
-        if event_name == :pointer_press && !normalized_props[:pointer_events]
+        if %i[pointer_press pointer_release].include?(event_name) && !normalized_props[:pointer_events]
           violation!('pointer events are not enabled', context, event_name)
         end
         if event_name == :dismiss && normalized_props[:menu] != 'context'

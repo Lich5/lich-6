@@ -51,7 +51,7 @@ module Lich
             when 'b', 'i', 'u', 'small', 'big'
               refuse unless attributes.empty?
               case element.name
-              when 'b' then inherited.merge(emphasis: :strong)
+              when 'b' then inherited.reject { |key, _| key == :font_weight }.merge(emphasis: :strong)
               when 'i' then inherited.merge(font_style: :italic)
               when 'u' then inherited.merge(underline: true)
               else
@@ -60,7 +60,7 @@ module Lich
                 inherited.merge(scale: scale)
               end
             when 'span'
-              refuse if attributes.empty? || (attributes.keys - %w[foreground weight size]).any?
+              refuse if attributes.empty? || (attributes.keys - %w[foreground weight size font_desc letter_spacing]).any?
               result = inherited.dup
               if attributes['size']
                 sizes = %w[xx-small x-small small medium large x-large xx-large]
@@ -70,14 +70,29 @@ module Lich
                 refuse unless scale.between?(0.5, 2)
                 result[:scale] = scale
               end
+              if attributes['font_desc']
+                font = Pango::FontDescription.new(attributes['font_desc'])
+                result.merge!(font.properties)
+              end
+              if attributes['letter_spacing']
+                spacing = attributes['letter_spacing']
+                refuse unless spacing.match?(/\A-?[0-9]{1,6}\z/) && spacing.to_i.between?(-16_384, 65_536)
+                result[:letter_spacing] = spacing.to_i / 1024.0
+              end
               if attributes['foreground']
                 color = Color.parse(attributes['foreground'])
                 refuse unless color
                 result[:foreground] = color
               end
               if attributes['weight']
-                refuse unless %w[normal bold].include?(attributes['weight'])
-                result[:emphasis] = attributes['weight'] == 'bold' ? :strong : :normal
+                refuse unless %w[normal bold heavy].include?(attributes['weight'])
+                result.delete(:font_weight)
+                if attributes['weight'] == 'heavy'
+                  result.delete(:emphasis)
+                  result[:font_weight] = 900
+                else
+                  result[:emphasis] = attributes['weight'] == 'bold' ? :strong : :normal
+                end
               end
               result
             else

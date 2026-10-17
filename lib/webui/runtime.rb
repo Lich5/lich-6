@@ -15,7 +15,12 @@ module Lich
       attr_reader :scheduler
 
       LIFECYCLE_SNAPSHOT_KEY = :lich_webui_lifecycle_snapshot
-      EventContext = Data.define(:viewer_id, :page, :component, :event, :payload, :submission)
+      EventContext = Data.define(:viewer_id, :page, :component, :event, :payload, :submission, :render) do
+        # The optional immutable admission render pins callback source identity.
+        def initialize(viewer_id:, page:, component:, event:, payload:, submission:, render: nil)
+          super
+        end
+      end
       PRESENTATION_SUPPORT = {
         always_on_top: false, borderless: false, hidden: false, minimized: false, minimized_revision: false, opacity: true, scrollbars: true,
       }.freeze
@@ -391,7 +396,14 @@ module Lich
       # @raise [Protocol::Refusal] for invalid events or queue overflow
       def event(connection, message)
         attachment = fetch_attachment(connection, message[:page])
-        stale!(connection, attachment) unless message[:generation] == attachment.delivered_generation
+        @viewers.admit_event(attachment, message) do |admission|
+          dispatch_event(connection, attachment, message, admission)
+        end
+      end
+
+      # Validates and enqueues against the render protected by ViewerStore admission.
+      # Script callbacks run only on the dispatcher, outside the store monitor.
+      def dispatch_event(connection, attachment, message, admission)
         component = find_component!(attachment, message[:cid])
         payload = @validator.validate_event!(
           component.type, message[:event], message[:payload] || {}, props: component.props,
@@ -407,6 +419,19 @@ module Lich
                  source.props[:rows].any? { |row| row[:key] == payload[:row] }
             raise Protocol::Refusal.new(:payload, 'row transfer is outside its declared table group')
           end
+        end
+
+        if message[:event].to_sym == :widget_drop
+          source = find_component!(attachment, payload[:source])
+          valid = component.props[:drag_destination] && source.props[:drag_source] &&
+                  widget_transfer_available?(attachment.render.tree, component.cid) &&
+                  widget_transfer_available?(attachment.render.tree, source.cid) &&
+                  payload[:allocations].map { |item| item[:cid] } == component.children.map(&:cid)
+          raise Protocol::Refusal.new(:payload, 'widget transfer requires live enabled peers and matching children') unless valid
+        end
+
+        if message[:event].to_sym == :pointer_release && !widget_transfer_available?(attachment.render.tree, component.cid)
+          raise Protocol::Refusal.new(:payload, 'pointer release target is hidden or disabled')
         end
 
         event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
@@ -434,7 +459,7 @@ module Lich
         end
         @viewers.update(attachment, component, message[:event].to_sym, payload, message[:request])
         context = EventContext.new(
-          attachment.viewer_id, attachment.page, component, message[:event].to_sym, payload, snapshot
+          attachment.viewer_id, attachment.page, component, message[:event].to_sym, payload, snapshot, admission.render
         )
         @dispatcher.enqueue(
           owner: attachment.page.owner, page_id: attachment.page.id,
@@ -442,9 +467,16 @@ module Lich
           coalescable: !event_schema[:terminal] && !event_schema[:lifecycle] && !event_schema[:ordered],
           cleanup: -> { snapshot&.discard_sensitive! }
         ) do
-          callback.call(context)
+          if %i[widget_drop pointer_release].include?(context.event)
+            run_bounded_gesture(attachment, admission, message, callback, context)
+          else
+            callback.call(context)
+          end
         end
         dispatched = true
+        if %i[widget_drop pointer_release].include?(context.event)
+          log(:debug, "WebUI #{context.event} phase=queued request=#{message[:request]} generation=#{message[:generation]} admitted_generation=#{admission.render.generation}")
+        end
         # A control already displays its own draft. Redrawing on blur needlessly
         # changes generation before the following Save arrives. Structural
         # choices still need a render; callbacks schedule their own other edits.
@@ -457,6 +489,25 @@ module Lich
         raise Protocol::Refusal.new(:overflow, 'viewer event queue overflow')
       ensure
         snapshot&.discard_sensitive! unless dispatched
+      end
+
+      # Retires obsolete queued gestures and records callback completion separately
+      # from native browser delivery. No store monitor is held while user code runs.
+      def run_bounded_gesture(attachment, admission, message, callback, context)
+        current = if context.event == :pointer_release
+                    @viewers.release_admission_current?(attachment, admission)
+                  else
+                    @viewers.widget_admission_current?(attachment, admission)
+                  end
+        unless current
+          log(:debug, "WebUI #{context.event} phase=retired request=#{message[:request]}")
+          return
+        end
+        callback.call(context)
+        log(:debug, "WebUI #{context.event} phase=completed request=#{message[:request]}")
+      rescue StandardError => error
+        log(:error, "WebUI #{context.event} phase=failed request=#{message[:request]} error=#{error.class}")
+        raise
       end
 
       # Evaluate guarded proposals in owner order against current live selection.
@@ -637,6 +688,19 @@ module Lich
 
         component.children.each do |child|
           result = interaction_disabled?(child, cid, disabled)
+          return result unless result.nil?
+        end
+        nil
+      end
+
+      # Widget transfers cannot originate in a hidden or disabled ancestor.
+      # @return [Boolean, nil] availability, or nil when absent from this subtree
+      def widget_transfer_available?(component, cid, unavailable = false)
+        unavailable ||= component.props[:disabled] == true || component.props[:hidden] == true
+        return !unavailable if component.cid == cid
+
+        component.children.each do |child|
+          result = widget_transfer_available?(child, cid, unavailable)
           return result unless result.nil?
         end
         nil

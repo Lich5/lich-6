@@ -452,8 +452,10 @@ RSpec.describe 'progress provider lifecycle' do
     expect { other.style_context }.not_to raise_error
   end
 
-  it 'keeps unsupported widgets and unrelated style operations as explicit hard stops' do
-    expect { gtk.const_get(:DrawingArea) }.to raise_error(gtk.const_get(:UnsupportedOperation))
+  it 'keeps unsupported drawing and unrelated style operations as explicit hard stops' do
+    area = gtk.const_get(:DrawingArea).new
+    area.signal_connect('draw') { |_widget, context| context.arc(0, 0, 1) }
+    expect { area.queue_draw }.to raise_error(gtk.const_get(:UnsupportedOperation))
     label = gtk.const_get(:Label).new('Unchanged')
     expect { label.style_context.get_property('color') }.to raise_error(gtk.const_get(:UnsupportedOperation))
     expect { gtk.const_get(:StyleContext).reset_widgets }.to raise_error(gtk.const_get(:UnsupportedOperation))

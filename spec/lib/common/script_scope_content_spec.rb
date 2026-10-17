@@ -484,6 +484,55 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect(rendered_node(viewer, :text)['props']).not_to have_key('fragments')
   end
 
+  it 'preserves Combatical title typography as bounded fragments and resets it on replacement' do
+    glyph = [0x2694].pack('U')
+    label = compatibility::Label.new
+    label.markup = "<span font_desc='18' weight='bold' foreground='#D4AF37'>#{glyph} </span>" \
+                   "<span font_desc='22' weight='heavy' foreground='#D4AF37' letter_spacing='4096'>COMBATICAL</span>" \
+                   "<span font_desc='18' weight='bold' foreground='#D4AF37'> #{glyph}</span>"
+    fragments = label.send(:component_props).fetch(:fragments)
+    expect(fragments.map { |part| part[:content] }.join).to eq("#{glyph} COMBATICAL #{glyph}")
+    expect(fragments[0]).to include(font_size: 18.0, font_unit: :pt, emphasis: :strong)
+    expect(fragments[1]).to include(font_size: 22.0, font_weight: 900, letter_spacing: 4.0)
+    label.markup = "<span foreground='red' font_desc='Sans 12' weight='heavy'><b>Bold</b> Heavy</span>"
+    parts = label.send(:component_props).fetch(:fragments)
+    expect(parts[0]).to include(font_family: 'sans-serif', emphasis: :strong)
+    expect(parts[0]).not_to have_key(:font_weight)
+    expect(parts[1]).to include(font_weight: 900)
+    label.markup = '<b>Plain replacement</b>'
+    expect(label.send(:component_props)).not_to have_key(:fragments)
+    original = label.send(:component_props).dup
+    ["font_desc='5'", "font_desc='49'", "font_desc='18px'", "weight='900; color:red'",
+     "letter_spacing='65537'", "letter_spacing='-16385'", "letter_spacing='4px'"].each do |attribute|
+      expect { label.markup = "<span foreground='red' #{attribute}>Bad</span>" }.to raise_error(compatibility::UnsupportedOperation)
+      expect(label.send(:component_props)).to eq(original)
+    end
+  end
+
+  it 'retains only boolean overlay preferences without changing scroll policy or content' do
+    scroll = compatibility::ScrolledWindow.new
+    expect(scroll.overlay_scrolling?).to be(true)
+    expect(scroll.set_overlay_scrolling(false)).to equal(scroll)
+    expect(scroll.overlay_scrolling).to be(false)
+    scroll.set_policy(:never, :automatic)
+    scroll.add(compatibility::Label.new('Scrollable content'))
+    window = compatibility::Window.new
+    window.add(scroll)
+    viewer = connect(show(window), 'overlay-preference')
+    identity = rendered_node(viewer, :scroll)['cid']
+    scroll.overlay_scrolling = true
+    expect(scroll.overlay_scrolling?).to be(true)
+    expect(rendered_node(viewer, :scroll)['cid']).to eq(identity)
+    expect([scroll.hscrollbar_policy, scroll.vscrollbar_policy]).to eq(%i[never automatic])
+    [nil, 0, 'true'].each { |value| expect { scroll.set_overlay_scrolling(value) }.to raise_error(compatibility::UnsupportedOperation) }
+    allow(Lich::Common::Script).to receive(:current).and_return(Struct.new(:name).new('foreign'))
+    expect { scroll.set_overlay_scrolling(false) }.to raise_error(compatibility::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(owner)
+    scroll.destroy
+    expect { scroll.set_overlay_scrolling(false) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { scroll.overlay_scrolling? }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
   it 'maps foreground warning spans and use-markup initialization without leaking color into later markup' do
     label = compatibility::Label.new('<span foreground="black">12</span>')
     label.use_markup = true
@@ -1294,6 +1343,108 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-tooltips')
     expect(identities).to eq([true])
   end
+  it 'renders title typography and retains scrolling across overlay preference changes in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    gtk = compatibility
+    glyph = [0x2694].pack('U')
+    window = gtk::Window.new('Combatical typography')
+    root = gtk::Box.new(:vertical)
+    title = gtk::Label.new
+    title.markup = "<span font_desc='18' weight='bold' foreground='#D4AF37'>#{glyph} </span>" \
+                   "<span font_desc='22' weight='heavy' foreground='#D4AF37' letter_spacing='4096'>COMBATICAL</span>" \
+                   "<span font_desc='18' weight='bold' foreground='#D4AF37'> #{glyph}</span>"
+    scroll = gtk::ScrolledWindow.new
+    scroll.set_overlay_scrolling(true)
+    scroll.set_policy(:never, :automatic)
+    scroll.set_size_request(320, 100)
+    content = gtk::Box.new(:vertical)
+    50.times { |index| content.add(gtk::Label.new("Scroll line #{index}")) }
+    scroll.add_with_viewport(content)
+    status = gtk::Label.new('Overlay true')
+    toggle = gtk::Button.new('Toggle overlay preference')
+    toggle.signal_connect('clicked') { scroll.overlay_scrolling = !scroll.overlay_scrolling?; status.text = "Overlay #{scroll.overlay_scrolling?}" }
+    reset = gtk::Button.new('Reset title')
+    reset.signal_connect('clicked') { title.text = 'Plain replacement' }
+    [title, scroll, toggle, status, reset].each { |widget| root.add(widget) }
+    window.add(root)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority17-title-scroll')
+  end
+
+  it 'moves ability widgets between containers without firing callbacks for cancelled drags in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    gtk = compatibility
+    window = gtk::Window.new('Combatical widget drag fixture')
+    root = gtk::Box.new(:vertical)
+    row = gtk::Box.new(:horizontal)
+    pool, assigned = gtk::Box.new(:vertical), gtk::Box.new(:vertical)
+    pool.add(gtk::Label.new('Ability pool'))
+    assigned.add(gtk::Label.new('Assigned abilities'))
+    [pool, assigned].each { |box| box.set_size_request(240, 180); row.add(box) }
+    ability = gtk::EventBox.new
+    ability.add(gtk::Label.new('Spirit Barrier'))
+    pool.add(ability)
+    descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+    ability.drag_source_set(:button1, [descriptor], :move)
+    status = gtk::Label.new('Moves 0; unlocked')
+    calls, moves = [], 0
+    ability.signal_connect('button-release-event') { calls << :released }
+    ability.signal_connect('drag-begin') { calls << :begin }
+    ability.signal_connect('drag-data-get') { |_widget, _context, data| calls << :get; data.set_text('Spirit Barrier') }
+    ability.signal_connect('drag-end') { calls << :end; status.text = "Moves #{moves}; unlocked" }
+    [pool, assigned].each do |target|
+      target.drag_dest_set(gtk::DestDefaults::MOTION, [descriptor], :move)
+      target.signal_connect('drag-motion') { calls << :motion }
+      target.signal_connect('drag-drop') do |_widget, _context, _x, y|
+        calls << :drop
+        index = target.children.index { |child| y < child.allocation.y + child.allocation.height / 2.0 } || target.children.length
+        ability.parent.remove(ability)
+        target.add(ability)
+        target.reorder_child(ability, index)
+        moves += 1
+      end
+      target.signal_connect('drag-data-received') { |_widget, _context, _x, _y, data| calls << [:received, data.text] }
+      target.signal_connect('drag-leave') { calls << :leave }
+    end
+    ticker = gtk::Label.new('Tick 0')
+    release = gtk::EventBox.new
+    release.add(gtk::Label.new('Release refresh target'))
+    release_status = gtk::Label.new('Releases 0')
+    releases = 0
+    release.signal_connect('button-release-event') { releases += 1; release_status.text = "Releases #{releases}" }
+    root.add(row); root.add(status); root.add(ticker); root.add(release); root.add(release_status); window.add(root)
+    tick = 0
+    scope.const_get(:GLib)::Timeout.add(25) { tick += 1; ticker.text = "Tick #{tick}"; true }
+    page = show(window)
+    overtaken = 0
+    phases = []
+    allow(service.runtime).to receive(:log).and_wrap_original do |method, level, message|
+      phases << message if message.match?(/\AWebUI (widget_drop|pointer_release) phase=/)
+      method.call(level, message)
+    end
+    # Force the previously flaky wire ordering for every browser drop/release:
+    # even a retry would be overtaken. The real timer and native drag stay active.
+    allow(service.runtime).to receive(:handle).and_wrap_original do |method, connection, message|
+      if message[:type] == 'event' && %w[widget_drop pointer_release].include?(message[:event])
+        2.times { service.runtime.refresh(page) }
+        overtaken += 1
+      end
+      method.call(connection, message)
+    end
+    begin
+      WebUIBrowser.check(service: service, page: page, scenario: 'priority17-widget-drag')
+    rescue RuntimeError => error
+      raise RuntimeError, "#{error.message}\nWidget server admission: \n#{phases.join("\n")}", cause: error
+    end
+    expect(overtaken).to eq(3)
+    %w[widget_drop pointer_release].zip([2, 1]).each do |event, count|
+      expect(phases.grep(/#{event} phase=queued/).length).to eq(count)
+      expect(phases.grep(/#{event} phase=completed/).length).to eq(count)
+    end
+    expect(calls).to eq([:begin, :motion, :get, :drop, [:received, 'Spirit Barrier'], :leave, :end] * 2)
+    expect(releases).to eq(1)
+    expect(ability.parent).to equal(pool)
+  end
+
   it 'rebuilds live combo options and selects a new duplicate row in one callback in Chrome', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
     window = compatibility::Window.new('Combo rebuild')
