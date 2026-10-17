@@ -3,6 +3,7 @@
 require_relative '../../spec_helper'
 require 'json'
 require_relative '../../../lib/webui/contract'
+require_relative '../../../lib/webui/validator'
 require_relative '../../../lib/webui/component'
 require_relative '../../../lib/webui/sensitive_value'
 
