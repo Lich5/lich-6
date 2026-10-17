@@ -61,7 +61,7 @@ RSpec.describe Lich::WebUI::Adapter do
     unscoped = described_class.new(owner: owner, service: service)
     allow(service.runtime).to receive(:schedule_render)
     root = unscoped.create(:page, title: 'Native tabs')
-    tabs = unscoped.create(:tabs, names: %w[One Two], selected: 0)
+    tabs = unscoped.create(:tabs, names: %w[One Two], selected: 1)
     %w[One Two].each { |name| unscoped.attach(tabs, unscoped.create(:text, content: name)) }
     unscoped.attach(root, tabs)
     observed = Queue.new
@@ -83,9 +83,68 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(observed.pop(timeout: 2)).to eq(1)
   end
 
+  it 'stages current select choices until options publish and reconciles consecutive rebuilds per viewer' do
+    allow(service.runtime).to receive(:schedule_render)
+    identity = Struct.new(:viewer_id).new(nil)
+    port = described_class.new(owner: owner, service: service, viewer: identity)
+    root = port.create(:page, title: 'Rebuild choices')
+    select = port.create(:select, options: [{ value: 'none', label: '' }, { value: 'old', label: 'Old' }], value: 'old', empty_value: 'none')
+    port.attach(root, select)
+    port.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    viewers = %w[first second].map do |id|
+      connection = double(id, viewer_id: id, alive?: true, send_text: true)
+      service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+      service.runtime.instance_variable_get(:@viewers).fetch(connection_id: id, address: service.registry.address_for(page)).viewer_id
+    end
+    identity.viewer_id = viewers.first
+    port.set(select, :options, [{ value: 'none', label: '' }, { value: 'new', label: 'Duplicate' }, { value: 'other', label: 'Duplicate' }])
+    port.set(select, :value, 'other')
+    port.set(select, :value, 'new')
+    expect { port.set(select, :value, 'invented') }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect(port.get(select, :value)).to eq('new')
+    identity.viewer_id = viewers.last
+    port.set(select, :value, 'other')
+    port.send(:flush!)
+    expect(port.get(select, :value)).to eq('other')
+    identity.viewer_id = viewers.first
+    expect(port.get(select, :value)).to eq('new')
+    port.set(select, :options, [{ value: 'none', label: '' }, { value: 'next', label: 'Next' }])
+    port.set(select, :value, 'next')
+    expect { port.set(select, :options, [{ value: 'bad', label: 'x' * 513 }]) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect(port.get(select, :value)).to eq('next')
+    port.set(select, :options, [{ value: 'none', label: '' }])
+    expect(port.get(select, :value)).to eq('none')
+    port.send(:flush!)
+    expect(port.get(select, :value)).to eq('none')
+    identity.viewer_id = viewers.last
+    expect(port.get(select, :value)).to eq('none')
+  end
+
+  it 'preserves pending editable free text and its existing bounds through option replacement' do
+    allow(service.runtime).to receive(:schedule_render)
+    identity = Struct.new(:viewer_id).new(nil)
+    port = described_class.new(owner: owner, service: service, viewer: identity)
+    root = port.create(:page, title: 'Editable choices')
+    select = port.create(:select, editable: true, free_text_prefix: 'text:', options: [{ value: 'none', label: '' }], value: 'none', empty_value: 'none')
+    port.attach(root, select)
+    port.send(:flush!)
+    page = service.registry.pages_for(owner).first
+    connection = double('editor', viewer_id: 'editor', alive?: true, send_text: true)
+    service.runtime.handle(connection, type: 'attach', page: service.registry.address_for(page))
+    identity.viewer_id = service.runtime.instance_variable_get(:@viewers).fetch(connection_id: 'editor', address: service.registry.address_for(page)).viewer_id
+    port.set(select, :options, [{ value: 'none', label: '' }, { value: 'new', label: 'New' }])
+    port.set(select, :value, 'text:literal')
+    port.set(select, :options, [{ value: 'none', label: '' }])
+    expect(port.get(select, :value)).to eq('text:literal')
+    expect { port.set(select, :value, 'x' * 8193) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    port.send(:flush!)
+    expect(port.get(select, :value)).to eq('text:literal')
+  end
+
   it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :set_overlay_pass_through, :monitor_geometry, :focus, :place
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :replace_child, :set_overlay_pass_through, :monitor_geometry, :focus, :place
     )
   end
 
@@ -707,6 +766,50 @@ RSpec.describe Lich::WebUI::Adapter do
       expect(scoped.get(input, :value)).to eq('Newer')
     ensure
       writer&.kill if writer&.alive?
+    end
+  end
+
+  it 'swaps ordinary children atomically and rejects owned, foreign and cyclic replacements' do
+    root = adapter.create(:stack, {})
+    old, replacement = %w[Old New].map { |name| adapter.create(:text, content: name) }
+    adapter.attach(root, old)
+    other = adapter.create(:stack, {})
+    adapter.attach(other, replacement)
+    expect { adapter.replace_child(root, old, replacement) }.to raise_error(Lich::WebUI::Error)
+    expect { adapter.replace_child(root, old, root) }.to raise_error(Lich::WebUI::Error)
+    foreign = described_class.new(owner: Object.new, service: service).create(:text, content: 'Foreign')
+    expect { adapter.replace_child(root, old, foreign) }.to raise_error(Lich::WebUI::Error)
+    adapter.detach(other, replacement)
+    adapter.replace_child(root, old, replacement)
+    adapter.attach(other, old)
+    expect { adapter.detach(root, old) }.to raise_error(Lich::WebUI::Error)
+    adapter.detach(root, replacement)
+    expect(adapter.get(replacement, :content)).to eq('New')
+  end
+  [true, false].each do |replace_previous|
+    it "restores ordinary child ownership when publication refuses #{replace_previous ? 'replacement' : 'append'}" do
+      allow(service.runtime).to receive(:schedule_render)
+      root, parent = adapter.create(:page, title: 'Rollback'), adapter.create(:stack, {})
+      before, old, after, replacement = %w[Before Old After New].map { |name| adapter.create(:text, content: name) }
+      [before, old, after].each { |child| adapter.attach(parent, child) }
+      adapter.attach(root, parent)
+      adapter.send(:flush!)
+      adapter.instance_variable_set(:@publication_pending, false)
+      failure = Lich::WebUI::Error.new('render owner is terminated')
+      allow(service.runtime).to receive(:schedule_render).and_raise(failure)
+      expect { adapter.replace_child(parent, replace_previous ? old : nil, replacement) }.to(raise_error { |error| expect(error).to equal(failure) })
+      expect(adapter.send(:node!, parent).children).to eq([before, old, after])
+      expect(adapter.send(:node!, old).parent).to equal(parent)
+      expect(adapter.send(:node!, replacement).parent).to be_nil
+      expect(adapter.instance_variable_get(:@publication_pending)).to be(false)
+      allow(service.runtime).to receive(:schedule_render)
+      adapter.replace_child(parent, replace_previous ? old : nil, replacement)
+      expected = replace_previous ? [before, replacement, after] : [before, old, after, replacement]
+      expect(adapter.send(:node!, parent).children).to eq(expected)
+      expect(adapter.send(:node!, replacement).parent).to equal(parent)
+      adapter.send(:flush!)
+      page = service.registry.pages_for(owner).first
+      expect(page.last_render.tree.each.select { |node| node.type == :text }.map { |node| node.props[:content] }).to eq(expected.map { |handle| adapter.get(handle, :content) })
     end
   end
 end

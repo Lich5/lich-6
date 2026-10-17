@@ -46,11 +46,11 @@ RSpec.describe Lich::WebUI::Validator do
   end
 
   it 'accepts literal and styled fragments while refusing untyped styles, oversized content and styled middle ellipsis' do
-    parts = ['Plain ', { content: '<literal>', emphasis: :strong, font_style: :italic, foreground: { r: 255, g: 0, b: 0, a: 1.0 }, scale: 0.9 }]
+    parts = ['Plain ', { content: '<literal>', emphasis: :strong, font_style: :italic, underline: true, foreground: { r: 255, g: 0, b: 0, a: 1.0 }, scale: 0.9 }]
     props = validator.validate_component!(:text, { content: '', fragments: parts, ellipsize: :end }, **context)
-    expect(props[:fragments].last).to include(content: '<literal>', emphasis: 'strong', font_style: 'italic')
+    expect(props[:fragments].last).to include(content: '<literal>', emphasis: 'strong', font_style: 'italic', underline: true)
     [
-      [{ content: 'x', style: 'color:red' }], [{ content: 'x', scale: 3 }],
+      [{ content: 'x', style: 'color:red' }], [{ content: 'x', scale: 3 }], [{ content: 'x', underline: 'yes' }],
       [{ content: 'x' * 8193 }], Array.new(9) { { content: 'x' * 8192 } }
     ].each do |fragments|
       expect { validator.validate_component!(:text, { content: '', fragments: fragments }, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
@@ -348,5 +348,24 @@ RSpec.describe Lich::WebUI::Validator do
       expect { validator.validate_component!(:table, props.merge(rows: [{ key: 'row', cells: { name: 'Literal' }, background_disabled: mask }]), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
     end
     expect(validator.validate_component!(:toggle, { checked: false, appearance: :switch }, **context)[:appearance]).to eq('switch')
+  end
+
+  it 'requires unique displayed sensitivity keys and refuses only their disabled cell edits' do
+    base = { columns: [{ key: 'name', label: 'Name', expand: true, editor: { type: 'text' } }],
+             rows: [{ key: 'one', cells: { name: 'Old' }, cell_disabled: ['name'] },
+                    { key: 'two', cells: { name: 'Old' } }] }
+    props = validator.validate_component!(:table, base, **context)
+    expect do
+      validator.validate_event!(:table, :cell_edit, { row: 'one', column: 'name', value: 'New' }, props: props, **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError, /disabled/)
+    expect(validator.validate_event!(:table, :cell_edit, { row: 'two', column: 'name', value: 'New' }, props: props, **context))
+      .to include(value: 'New')
+    [%w[name name], ['missing']].each do |keys|
+      invalid = base.merge(rows: [base[:rows][0].merge(cell_disabled: keys)])
+      expect { validator.validate_component!(:table, invalid, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    expect do
+      validator.validate_component!(:table, base.merge(columns: [base[:columns][0].merge(expand: 1)]), **context)
+    end.to raise_error(Lich::WebUI::SchemaViolationError)
   end
 end

@@ -21,7 +21,7 @@ function fixture() {
   };
   dom.window.eval(fs.readFileSync(path.join(root, 'app.js'), 'utf8'));
   return { dom, sent, page: { controls: new Map(), bindings: {}, submissions: {} },
-    receive: message => listeners.message({ data: JSON.stringify(message) }) };
+    receive: message => listeners.message({ data: JSON.stringify(message) }), disconnect: () => listeners.close() };
 }
 
 test('native minimize measurements are deduplicated and listeners retire on close', t => {
@@ -2152,3 +2152,134 @@ test('plain action focus yields to a new explicit server focus request', t => {
   render(3, 2);
   assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('input'));
 });
+
+function wheelFixture(t) {
+  const env = fixture(); t.after(() => env.dom.window.close());
+  const frames = new Map(); let id = 0;
+  env.dom.window.requestAnimationFrame = callback => { frames.set(++id, callback); return id; };
+  env.dom.window.cancelAnimationFrame = key => frames.delete(key);
+  const draw = (generation, props = {}, present = true) => env.receive({ type: 'render', page: 'wheel', generation,
+    bindings: { surface: ['scroll'], action: ['activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      ...(present ? [{ type: 'group', cid: 'surface', props, children: [] }] : []),
+      { type: 'button', cid: 'action', props: { label: 'Action' } }
+    ] } });
+  env.receive({ type: 'hello', pages: [{ address: 'wheel' }] }); draw(1);
+  const frame = () => { const tasks = [...frames.values()]; frames.clear(); tasks.forEach(work => work()); };
+  frame();
+  const wheel = (y, options = {}) => env.dom.window.document.querySelector('[data-cid="surface"]').dispatchEvent(
+    new env.dom.window.WheelEvent('wheel', { deltaY: y, bubbles: true, cancelable: true, ...options }));
+  const messages = () => env.sent.filter(message => message.event === 'scroll');
+  return { ...env, wheel, frame, draw, messages };
+}
+
+test('wheel bursts coalesce once per frame with an exact sum', t => {
+  const env = wheelFixture(t);
+  for (let index = 0; index < 100; index++) env.wheel(2);
+  assert.equal(env.messages().length, 0);
+  env.frame();
+  assert.equal(env.messages().length, 1);
+  assert.equal(env.messages()[0].payload.delta_y, 200);
+});
+
+test('wheel batches preserve modifier and direction transitions and normalized units', t => {
+  const env = wheelFixture(t);
+  env.wheel(2, { deltaMode: 1 }); env.wheel(3, { deltaMode: 1 });
+  env.wheel(4, { shiftKey: true }); env.wheel(5, { ctrlKey: true }); env.wheel(-6, { ctrlKey: true });
+  env.frame();
+  assert.deepEqual(env.messages().map(message => [message.payload.delta_y, message.payload.state]), [[80, 0], [4, 1], [5, 4], [-6, 4]]);
+  env.wheel(1, { deltaMode: 2 }); env.frame();
+  assert.equal(env.messages().at(-1).payload.delta_y, env.dom.window.innerHeight);
+});
+
+test('large wheel sums split into bounded messages without losing movement', t => {
+  const env = wheelFixture(t);
+  for (let index = 0; index < 100; index++) env.wheel(1000, { deltaX: 500 });
+  env.frame();
+  assert.equal(env.messages().length, 2);
+  assert.equal(env.messages().reduce((sum, message) => sum + message.payload.delta_y, 0), 100000);
+  assert.equal(env.messages().reduce((sum, message) => sum + message.payload.delta_x, 0), 50000);
+  assert.ok(env.messages().every(message => Math.max(Math.abs(message.payload.delta_x), Math.abs(message.payload.delta_y)) <= 65536));
+});
+
+test('wheel movement survives redraw by identity and flushes before a later activation', t => {
+  const env = wheelFixture(t);
+  env.wheel(10); env.draw(2); env.frame();
+  assert.equal(env.messages()[0].generation, 2);
+  assert.equal(env.messages()[0].payload.delta_y, 10);
+  env.wheel(20);
+  env.dom.window.document.querySelector('[data-cid="action"]').click();
+  assert.deepEqual(env.sent.filter(message => ['scroll', 'activate'].includes(message.event)).map(message => message.event), ['scroll', 'scroll', 'activate']);
+  env.frame(); assert.equal(env.messages().length, 2);
+});
+
+test('wheel batches retire when their surface disappears, disables or closes', t => {
+  const env = wheelFixture(t);
+  env.wheel(10); env.draw(2, {}, false); env.frame(); assert.equal(env.messages().length, 0);
+  env.draw(3); env.wheel(20); env.draw(4, { disabled: true }); env.frame(); assert.equal(env.messages().length, 0);
+  env.draw(5); env.wheel(30); env.receive({ type: 'page_closed', page: 'wheel' }); env.frame(); assert.equal(env.messages().length, 0);
+});
+
+test('nested wheel surfaces emit only for the innermost enabled surface', t => {
+  const env = wheelFixture(t);
+  env.receive({ type: 'render', page: 'wheel', generation: 2, bindings: { surface: ['scroll'], inner: ['scroll'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'group', cid: 'surface', props: {}, children: [
+      { type: 'group', cid: 'inner', props: {}, children: [] }
+    ] }]
+  } });
+  env.dom.window.document.querySelector('[data-cid="inner"]').dispatchEvent(new env.dom.window.WheelEvent('wheel', { deltaY: 7, bubbles: true, cancelable: true }));
+  env.frame();
+  assert.deepEqual(env.messages().map(message => [message.cid, message.payload.delta_y]), [['inner', 7]]);
+  env.draw(3, { hidden: true }); env.wheel(8); env.frame();
+  assert.equal(env.messages().length, 1);
+});
+
+test('disconnect cancels unsent wheel frames and retiring DOM nodes cannot queue new movement', t => {
+  const env = wheelFixture(t);
+  const old = env.dom.window.document.querySelector('[data-cid="surface"]');
+  env.draw(2);
+  old.dispatchEvent(new env.dom.window.WheelEvent('wheel', { deltaY: 10, bubbles: true, cancelable: true }));
+  env.frame(); assert.equal(env.messages().length, 0);
+  env.wheel(20); env.disconnect(); env.frame(); assert.equal(env.messages().length, 0);
+});
+
+function radioFixture(t) {
+  const env = fixture(); t.after(() => env.dom.window.close());
+  const draw = (generation, present = true, disabled = false) => env.receive({ type: 'render', page: 'radio-order', generation,
+    bindings: { one: ['change'], two: ['change', 'activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'radio_option', cid: 'one', props: { group: 'choice', label: 'One', checked: generation === 1 } },
+      ...(present ? [{ type: 'radio_option', cid: 'two', props: { group: 'choice', label: 'Two', checked: generation > 1, disabled } }] : [])
+    ] } });
+  env.receive({ type: 'hello', pages: [{ address: 'radio-order' }] }); draw(1);
+  const control = () => env.dom.window.document.querySelectorAll('input[type="radio"]')[1];
+  const events = () => env.sent.filter(message => ['change', 'activate'].includes(message.event));
+  return { ...env, draw, control, events };
+}
+
+test('native radios publish change before activation once and already-selected clicks still activate', t => {
+  const env = radioFixture(t);
+  env.control().click();
+  assert.deepEqual(env.events().map(message => message.event), ['change', 'activate']);
+  env.control().click();
+  assert.deepEqual(env.events().map(message => message.event), ['change', 'activate', 'activate']);
+  env.dom.window.document.querySelectorAll('input[type="radio"]')[0].click();
+  env.control().click();
+  assert.equal(env.events().filter(message => message.cid === 'two' && message.event === 'change').length, 2);
+});
+
+for (const state of ['live', 'removed', 'disabled']) {
+  test(`radio activation resolves current identity after a synchronous ${state} redraw`, t => {
+    const env = radioFixture(t);
+    const send = env.dom.window.WebSocket.prototype.send;
+    env.dom.window.WebSocket.prototype.send = function (json) {
+      send.call(this, json);
+      if (JSON.parse(json).event === 'change') env.draw(2, state !== 'removed', state === 'disabled');
+    };
+    const previous = env.control();
+    previous.click();
+    const activations = env.events().filter(message => message.event === 'activate');
+    assert.equal(activations.length, state === 'live' ? 1 : 0);
+    if (state === 'live') assert.equal(activations[0].generation, 2);
+    previous.click();
+    assert.equal(env.events().filter(message => message.event === 'activate').length, activations.length);
+  });
+}

@@ -178,6 +178,12 @@ module Lich
             end
           end
 
+          # Widget teardown cancels only IDs retained from this session, including
+          # owner close after registration has already been disabled.
+          def cancel_widget_source(id)
+            synchronize { @scheduler&.cancel(id) }
+          end
+
           # Retains a top-level window for owner-death cleanup.
           # @return [void]
           def register(window)

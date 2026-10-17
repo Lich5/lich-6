@@ -1460,4 +1460,195 @@ RSpec.describe 'bounded script compatibility pilot' do
     scroll.destroy
     expect { scroll.set_min_content_height(10) }.to raise_error(compatibility::UnsupportedOperation)
   end
+  it 'honors recursive visibility opt-outs while explicit show and hide retain control' do
+    window = compatibility::Window.new
+    box = compatibility::VBox.new
+    hidden = compatibility::Label.new('Hidden')
+    hidden.no_show_all = true
+    box.add(hidden)
+    window.add(box)
+    window.show_all
+    expect(hidden.visible?).to be(false)
+    expect(hidden.send(:component_props)[:hidden]).to be(true)
+    hidden.show
+    expect(hidden.visible?).to be(true)
+    hidden.hide
+    window.show_all
+    expect(hidden.visible?).to be(false)
+    hidden.no_show_all = false
+    window.show_all
+    expect(hidden.visible?).to be(true)
+    expect { hidden.no_show_all = nil }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'emits realize once and map/show on real visibility transitions with ordered handlers' do
+    window = compatibility::Window.new
+    events = []
+    %w[realize show map].each { |name| window.signal_connect(name) { events << name } }
+    window.show_all
+    window.show_all
+    window.hide
+    window.show
+    expect(events).to eq(%w[realize show map show map])
+    expect { compatibility::Entry.new.signal_connect('map') {} }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'emits allocation notifications only for size changes and retains configure movement' do
+    window = compatibility::Window.new
+    seen = []
+    window.signal_connect('size-allocate') { |_widget, allocation| seen << [:size, allocation.width, allocation.height] }
+    window.signal_connect('configure-event') { |_widget, event| seen << [:configure, event.x] }
+    window.show_all
+    bindings = window.instance_variable_get(:@signals)
+    expect(bindings[:configure].length).to eq(2)
+    port = window.session.port
+    callbacks = []
+    allow(port).to receive(:bind) { |_handle, name, callback| callbacks << callback if name == :configure }
+    window.send(:bind_event, :configure)
+    [[300, 200, 0], [300, 200, 10], [400, 200, 10]].each do |width, height, x|
+      callbacks.last.call(Lich::WebUI::Runtime::EventContext.new(nil, nil, nil, :configure, { width: width, height: height, position: [x, 0] }, nil))
+    end
+    expect(seen).to eq([[:size, 300, 200], [:configure, 0], [:configure, 10], [:size, 400, 200], [:configure, 10]])
+    window.destroy
+    expect(window.allocation.width).to be_a(Integer)
+  end
+
+  it 'keeps native loop polling nonblocking without consuming the owner dispatcher' do
+    expect(compatibility.events_pending?).to be(false)
+    expect(compatibility.main_iteration_do(false)).to be(false)
+    expect { compatibility.main_iteration_do(true) }.to raise_error(compatibility::UnsupportedOperation)
+    expect(compatibility::Window.new.destroy).to be_destroyed
+  end
+
+  it 'delays only search notifications, coalesces edits and cancels on entry destruction' do
+    allow(Lich::WebUI).to receive(:callback_scheduler) { |owner:| service.runtime.scheduler.for_owner(owner) }
+    entry = compatibility::SearchEntry.new
+    seen = Queue.new
+    changed = []
+    entry.signal_connect('changed') { changed << entry.text }
+    entry.signal_connect('search-changed') { seen << entry.text }
+    entry.text = 'a'
+    entry.text = 'ab'
+    expect(changed).to eq(%w[a ab])
+    expect(seen.pop(timeout: 2)).to eq('ab')
+    expect(seen).to be_empty
+    entry.text = ''
+    expect(seen.pop(timeout: 2)).to eq('')
+    entry.text = 'retired'
+    ids = entry.instance_variable_get(:@search_sources).values
+    entry.destroy
+    expect(ids.all? { |id| !service.runtime.scheduler.for_owner(owner).cancel(id) }).to be(true)
+    expect(seen).to be_empty
+  end
+
+  it 'hides notebook headers with opted-out pages and restores them on explicit show' do
+    notebook = compatibility::Notebook.new
+    first = compatibility::Label.new('First content')
+    hidden = compatibility::Label.new('Hidden content')
+    hidden.no_show_all = true
+    notebook.append_page(first, compatibility::Label.new('First'))
+    notebook.append_page(hidden, compatibility::Label.new('Hidden'))
+    notebook.show_all
+    expect(notebook.send(:component_props)[:headers].map { |header| header[:hidden] }).to eq([false, true])
+    hidden.show
+    expect(notebook.send(:component_props)[:headers].last[:hidden]).to be(false)
+    first.hide
+    expect(notebook.send(:read, :selected)).to eq(1)
+  end
+
+  it 'keeps scroll suppression and directional replay explicit and bounded' do
+    event = compatibility::ScrollEvent.new(delta_x: 0, delta_y: 40, state: 1)
+    expect(event.state).to eq(1)
+    expect(event.state.control_mask?).to be(false)
+    expect(event.direction).to eq(:down)
+    event.direction = :right
+    event.put
+    expect(event).to be_replayed
+    expect(event.deltas).to eq([40, 0])
+    event.direction = :bogus
+    expect { event.put }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'keeps delayed search sources and pending text isolated between viewers' do
+    allow(Lich::WebUI).to receive(:callback_scheduler) { |owner:| service.runtime.scheduler.for_owner(owner) }
+    entry = compatibility::SearchEntry.new
+    entry.materialize
+    seen = Queue.new
+    entry.signal_connect('search-changed') { seen << [entry.session.viewer_id, entry.text] }
+    %w[alpha beta].each do |viewer|
+      context = Lich::WebUI::Runtime::EventContext.new(viewer, nil, nil, :change, {}, nil)
+      entry.session.callback(context, widget: entry) { entry.text = viewer }
+    end
+    expect(2.times.map { seen.pop(timeout: 2) }.sort).to eq([%w[alpha alpha], %w[beta beta]])
+    expect(entry.text).to eq('beta')
+  end
+
+  it 'validates new event payloads and refuses hidden tab interaction' do
+    validator = Lich::WebUI::Validator.new
+    context = { owner: 'events', page_id: 'events', cid: 'component' }
+    expect { validator.validate_event!(:text_input, :blur, { value: 'long' }, props: { value: '', max_length: 2 }, **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_event!(:text_input, :blur, { value: 'x' }, props: { value: '', read_only: true }, **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_event!(:overlay, :scroll, { delta_x: 0, delta_y: 65_537, state: 0 }, props: {}, **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_event!(:page, :key_press, { keyval: -1, state: 0 }, props: { title: 'Keys' }, **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError)
+    expect { validator.validate_event!(:tabs, :select, { index: 0, tab: 'hidden' }, props: { names: ['Hidden'], selected: 0, headers: [{ key: 'hidden', hidden: true }] }, **context) }
+      .to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'delivers Priority 16 events with viewer isolation and scrolling in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    allow(Lich::WebUI).to receive(:callback_scheduler) { |owner:| service.runtime.scheduler.for_owner(owner) }
+    window = compatibility::Window.new('Priority 16')
+    box = compatibility::VBox.new(false, 4)
+    blur = compatibility::Label.new('Blur pending')
+    search_status = compatibility::Label.new('Search pending')
+    clicked = compatibility::Label.new('Radio pending')
+    key_status = compatibility::Label.new('Key pending')
+    hover = compatibility::Label.new('Hover pending')
+    entry = compatibility::Entry.new
+    entry.placeholder_text = 'Blur fixture'
+    entry.signal_connect('focus-out-event') { blur.text = "Blur: #{entry.text}" }
+    search = compatibility::SearchEntry.new
+    search.placeholder_text = 'Search fixture'
+    search.signal_connect('search-changed') { search_status.text = "Search: #{search.text}" }
+    first = compatibility::RadioButton.new('First radio')
+    second = compatibility::RadioButton.new(first, 'Second radio')
+    count = 0
+    second.signal_connect('clicked') { count += 1; clicked.text = "Radio: #{second.active?}:#{count}" }
+    spin = compatibility::SpinButton.new(compatibility::Adjustment.new(5, 0, 10, 1, 1, 0), 1, 0)
+    spin.signal_connect('enter-notify-event') { hover.text = 'Hover delivered' }
+    spin.signal_connect('scroll-event') { true }
+    window.signal_connect('key-press-event') { |_widget, event| key_status.text = "Key: #{event.keyval}" }
+    scrolling = compatibility::ScrolledWindow.new
+    scrolling.height_request = 90
+    scrolling.width_request = 300
+    layout = compatibility::Layout.new
+    label = compatibility::Label.new('Scroll surface')
+    label.width_request = 800
+    label.height_request = 600
+    layout.put(label, 0, 0)
+    layout.signal_connect('scroll-event') do |_widget, event|
+      if event.state.shift_mask?
+        event.direction = :right
+        event.put
+        true
+      else
+        event.state.control_mask?
+      end
+    end
+    scrolling.add(layout)
+    hidden = compatibility::Label.new('Opted out')
+    hidden.no_show_all = true
+    toggle = compatibility::Button.new('Reveal')
+    toggle.signal_connect('clicked') { hidden.show }
+    [entry, blur, search, search_status, first, second, clicked, spin, hover, key_status, scrolling, hidden, toggle].each { |widget| box.add(widget) }
+    window.add(box).show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'priority16-events')
+  end
 end

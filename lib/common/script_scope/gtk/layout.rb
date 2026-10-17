@@ -541,6 +541,29 @@ module Lich
             session.style_operation(self, :min_content_height) { @min_content_height || -1 }
           end
 
+          # Minimum viewport width uses the same bounded floor/reset as height.
+          def set_min_content_width(value)
+            session.style_operation(self, :set_min_content_width) do
+              valid = value.is_a?(Integer) && value.between?(-1, Lich::WebUI::Contract::BOUNDS[:geometry].end)
+              session.refuse(self, :set_min_content_width) if destroyed? || !valid
+              write(:min_width, [value, 0].max)
+              @min_content_width = value
+            end
+            self
+          end
+          alias min_content_width= set_min_content_width
+
+          def min_content_width
+            session.style_operation(self, :min_content_width) { @min_content_width || -1 }
+          end
+
+          def hscrollbar_policy = (@scrollbar_policy || %i[automatic automatic]).first
+          def vscrollbar_policy = (@scrollbar_policy || %i[automatic automatic]).last
+          def set_hscrollbar_policy(value) = session.style_operation(self, :set_hscrollbar_policy) { set_policy(value, vscrollbar_policy) }
+          def set_vscrollbar_policy(value) = session.style_operation(self, :set_vscrollbar_policy) { set_policy(hscrollbar_policy, value) }
+          alias hscrollbar_policy= set_hscrollbar_policy
+          alias vscrollbar_policy= set_vscrollbar_policy
+
           # Accepts known GTK policy tokens while reporting browser-owned overflow behavior.
           # @return [ScrolledWindow] self
           # @raise [UnsupportedOperation] for unknown policies
@@ -549,6 +572,8 @@ module Lich
               { AUTOMATIC: :automatic, ALWAYS: :always, NEVER: :never }.fetch(value, value)
             end
             session.refuse(self, :set_policy) unless [horizontal, vertical].all? { |value| %i[automatic always never].include?(value) }
+            session.refuse(self, :set_policy) if destroyed?
+            @scrollbar_policy = [horizontal, vertical].freeze
             session.degrade(:scrollbar_policy, 'browser provides scrollbars when content overflows')
             self
           end

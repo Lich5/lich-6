@@ -138,7 +138,9 @@ module Lich
           bindings = builder.bindings.merge(
             [tree.cid, :configure] => lifecycle_bindings.fetch(:configure, proc {})
           )
-          bindings[[tree.cid, :window_state]] = lifecycle_bindings[:window_state] if lifecycle_bindings.key?(:window_state)
+          %i[window_state pointer_press key_press key_release].each do |event|
+            bindings[[tree.cid, event]] = lifecycle_bindings[event] if lifecycle_bindings.key?(event)
+          end
           render = Render.new(
             id, generation, tree, bindings.freeze,
             builder.submissions.freeze, builder.facilities.freeze

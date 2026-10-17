@@ -147,6 +147,18 @@ module Lich
           nil
         end
 
+        # There is no native GTK queue to pump; the core worker owns dispatch.
+        def self.events_pending?
+          session.degrade(:main_loop, 'native main-loop control is replaced by the core dispatcher')
+          false
+        end
+
+        # A nonblocking native iteration has no work; nested blocking dispatch refuses.
+        def self.main_iteration_do(blocking)
+          session.refuse(self, :main_iteration_do) unless blocking == false
+          events_pending?
+        end
+
         # Refuses unsupported GTK constants at the script boundary.
         # @raise [UnsupportedOperation] always
         def self.const_missing(name)

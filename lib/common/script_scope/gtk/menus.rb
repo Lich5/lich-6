@@ -159,17 +159,29 @@ module Lich
           # @return [String] literal action or submenu label
           def label = read(:label)
 
-          # Changes submenu ownership before the control's type is materialized.
+          # Replaces submenu contents while retaining the published trigger's identity.
           # @param menu [Menu] unparented menu from the same Script session
           # @return [MenuItem] self
-          # @raise [UnsupportedOperation] for an owned/foreign menu or a published item
+          # @raise [UnsupportedOperation] for an owned/foreign menu or a published terminal action
           def set_submenu(menu)
-            session.refuse(self, :set_submenu) if @handle || !menu.is_a?(Menu) || !menu.session.equal?(session) || menu.parent
-            session.synchronize do
-              remove(@submenu) if @submenu
+            session.style_operation(self, :set_submenu) do
+              valid = !destroyed? && menu.is_a?(Menu) && menu.session.equal?(session) && !menu.destroyed? &&
+                      !menu.parent && (!menu.instance_variable_get(:@handle) || menu.instance_variable_get(:@embedded)) && (!@handle || @submenu_trigger)
+              session.refuse(self, :set_submenu) unless valid
+              previous = @submenu
               menu.send(:embed!)
-              add(menu)
+              if @handle
+                session.port.replace_child(@handle, previous&.materialize, menu.materialize)
+              end
+              if previous
+                @children.delete(previous)
+                previous.send(:parent=, nil)
+              end
+              @children << menu
+              menu.send(:parent=, self)
               @submenu = menu
+              @submenu_trigger = true
+              session.refresh_label_styles
             end
             self
           end
@@ -179,19 +191,26 @@ module Lich
           # @return [MenuItem] self
           # @raise [UnsupportedOperation] for submenu triggers, which open in the browser
           def activate
-            session.refuse(self, :activate) if @submenu
+            session.refuse(self, :activate) if @submenu_trigger
             emit_handlers(:activate)
             self
           end
 
           protected
 
+          # Destruction of a submenu retires its owner reference without changing
+          # the already rendered trigger's component type.
+          def forget_child(child)
+            @submenu = nil if @submenu.equal?(child)
+            super
+          end
+
           # @return [Symbol] submenu container or terminal action
-          def component_type = @submenu ? :group : :button
+          def component_type = @submenu_trigger ? :group : :button
           # @return [Hash] shared submenu presentation only when this item owns a menu
-          def component_props = @submenu ? super.merge(menu: :submenu) : super
+          def component_props = @submenu_trigger ? super.merge(menu: :submenu) : super
           # @return [Hash] submenu opening has no script activation callback
-          def signal_map = @submenu ? {} : { 'activate' => :activate }
+          def signal_map = @submenu_trigger ? {} : { 'activate' => :activate }
         end
 
         class SeparatorMenuItem < Widget
@@ -264,6 +283,60 @@ module Lich
           def signal_map = { 'toggled' => :change, 'activate' => :activate }
         end
 
+        # Immutable key notification with the same script-readable masks as scroll events.
+        KeyEvent = Data.define(:keyval, :state) do
+          # Retains the key code and normalizes modifiers without nesting existing wrappers.
+          # @param keyval [Integer] validated shared key code
+          # @param state [Integer, ModifierState] modifier bitmask or existing wrapper
+          def initialize(keyval:, state:)
+            super(keyval: keyval, state: state.is_a?(ModifierState) ? state : ModifierState.new(state))
+          end
+        end
+
+        # Script-readable modifiers retain ordinary integer mask comparisons.
+        class ModifierState < Numeric
+          def initialize(value)
+            super()
+            @value = value
+          end
+
+          def control_mask? = (@value & 4) != 0
+          def shift_mask? = (@value & 1) != 0
+          def ==(other) = @value == other
+          def to_i = @value
+          def &(other) = @value & other
+        end
+
+        class ScrollEvent
+          attr_reader :state
+          attr_accessor :direction
+
+          def initialize(payload)
+            @state = ModifierState.new(payload[:state])
+            @dx, @dy = payload.values_at(:delta_x, :delta_y)
+            @direction = if @dx.abs > @dy.abs
+                           @dx.negative? ? :left : :right
+                         else
+                           @dy.negative? ? :up : :down
+                         end
+            @original_direction = @direction
+          end
+
+          def put
+            Gtk.session.refuse(self, :put) unless %i[up down left right].include?(@direction)
+            @replayed = true
+          end
+
+          def replayed? = @replayed == true
+
+          def deltas
+            return [@dx, @dy] if @direction == @original_direction
+
+            magnitude = [@dx.abs, @dy.abs].max
+            { up: [0, -magnitude], down: [0, magnitude], left: [-magnitude, 0], right: [magnitude, 0] }.fetch(@direction)
+          end
+        end
+
         # Popups are page children with viewer-scoped open state, never OS windows.
         # Submenus remain in the same owner tree for destruction and input commits.
         class Menu < Widget
@@ -322,7 +395,9 @@ module Lich
             session.refuse(self, :popup_at_pointer) unless root.is_a?(Window) && (!parent || parent.equal?(root))
             root.add(self) unless parent
             root.children.grep(Menu).each { |menu| menu.popdown unless menu.equal?(self) }
+            was_visible = visible?
             show_all
+            emit_handlers(:show) if was_visible && !destroyed?
             write(:popup_position, [pointer.x, pointer.y])
             write(:open, true)
           end
@@ -337,7 +412,7 @@ module Lich
           # Selects inline submenu contents before materialization fixes the core type.
           # @raise [UnsupportedOperation] if the menu has already been materialized
           def embed!
-            session.refuse(self, :submenu) if @handle
+            session.refuse(self, :submenu) if @handle && !@embedded
             @embedded = true
           end
 
@@ -363,6 +438,9 @@ module Lich
       module Gdk
         module EventMask
           BUTTON_PRESS_MASK = 1 << 8
+          SCROLL_MASK = 1 << 21
+          ENTER_NOTIFY_MASK = 1 << 12
+          LEAVE_NOTIFY_MASK = 1 << 13
         end
         BUTTON_PRESS_MASK = EventMask::BUTTON_PRESS_MASK
         BUTTON_PRIMARY = 1
@@ -371,6 +449,22 @@ module Lich
         module EventType
           BUTTON_PRESS = :button_press
           BUTTON2_PRESS = :button2_press
+        end
+
+        module ScrollDirection
+          UP = :up
+          DOWN = :down
+          LEFT = :left
+          RIGHT = :right
+        end
+        EventScroll = ScrollDirection
+        module Window
+          SHIFT_MASK = 1
+        end
+
+        module Keyval
+          KEY_Escape = 0xff1b
+          ('0'..'9').chain('a'..'z', 'A'..'Z').each { |key| const_set("KEY_#{key}", key.ord) }
         end
 
         module WindowState

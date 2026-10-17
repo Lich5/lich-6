@@ -231,7 +231,7 @@ module Lich
             attachment.values[[component.cid, :checked]] = payload[:value]
           when [:toggle, :change], [:checkbox, :change] then attachment.values[[component.cid, :checked]] = payload[:value]
           when [:radio, :change] then attachment.values[[component.cid, :selected]] = payload[:value]
-          when [:text_input, :change], [:textarea, :change], [:textarea, :blur], [:number_input, :change], [:slider, :change], [:select, :change]
+          when [:text_input, :change], [:text_input, :blur], [:textarea, :change], [:textarea, :blur], [:number_input, :change], [:slider, :change], [:select, :change]
             attachment.values[[component.cid, :value]] = payload[:value]
           when [:tabs, :select] then attachment.values[[component.cid, :selected]] = payload[:index]
           when [:group, :dismiss] then attachment.values[[component.cid, :open]] = false
@@ -389,7 +389,7 @@ module Lich
         index = values.fetch(field, component.props[:selected] || 0)
         old_key = previous&.props&.dig(:headers, index, :key)
         current = component.props[:headers].index { |header| header[:key] == old_key } if old_key
-        values[field] = current || index.clamp(0, [component.props[:names].length - 1, 0].max)
+        values[field] = Contract.visible_tab_index(component.props[:headers], current || index.clamp(0, [component.props[:names].length - 1, 0].max))
       end
 
       # Removes only identities retired from this table; another viewer's choices are untouched.

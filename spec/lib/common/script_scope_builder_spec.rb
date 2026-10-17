@@ -1122,4 +1122,26 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect { builder.add_from_string('x' * (gtk::Builder::MAX_BYTES + 1)) }.to raise_error(gtk::BuilderError, /bounded/)
     expect { builder.add_from_string('<interface>') }.to raise_error(gtk::BuilderError, /malformed/)
   end
+
+  it 'connects both combo choice signal spellings without replacing the edited text contract' do
+    builder.add_from_string(<<~XML)
+      <interface>
+        <object class="GtkListStore" id="choices"><columns><column type="gchararray"/></columns>
+          <data><row><col id="0">Chosen</col></row></data>
+        </object>
+        <object class="GtkCellRendererCombo" id="cell">
+          <property name="model">choices</property><property name="editable">True</property>
+          <signal name="changed" handler="choice_changed"/><signal name="edited" handler="text_edited"/>
+        </object>
+        <object class="GtkLabel" id="label"><property name="selectable">True</property></object>
+      </interface>
+    XML
+    calls = []
+    builder.connect_signals { |name| proc { |_cell, _path, value| calls << [name, value] } }
+    choice = builder['choices'].iter_first
+    builder['cell'].emit_edit('0', choice.key)
+    expect(calls[0][0]).to eq('choice_changed')
+    expect(calls[0][1].model).to equal(builder['choices'])
+    expect(calls[1]).to eq(['text_edited', 'Chosen'])
+  end
 end

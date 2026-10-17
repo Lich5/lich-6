@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.39.0'
+      VERSION = '2.43.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -112,8 +112,8 @@ module Lich
 
       # Describes an event payload and its dispatch/lifecycle classification.
       # @return [Hash] event definition
-      def event(payload = nil, terminal: false, lifecycle: false, structural: false)
-        { payload: payload, terminal: terminal, lifecycle: lifecycle, structural: structural }
+      def event(payload = nil, terminal: false, lifecycle: false, structural: false, ordered: false)
+        { payload: payload, terminal: terminal, lifecycle: lifecycle, structural: structural, ordered: ordered }
       end
 
       SHORT = string(:short_text).freeze
@@ -150,11 +150,11 @@ module Lich
         stack: %i[key tooltip disabled hidden align margin width height],
         columns: %i[key disabled hidden align margin width height],
         grid: %i[key tooltip disabled hidden align margin width height],
-        tabs: %i[key disabled hidden align margin width height],
+        tabs: %i[key tooltip disabled hidden align margin width height],
         expander: %i[key tooltip disabled hidden align margin width height],
         split: %i[key disabled hidden align margin width height],
         overlay: %i[key disabled hidden align margin width height],
-        scroll: %i[key disabled hidden align margin width height min_height],
+        scroll: %i[key tooltip disabled hidden align margin width height min_height],
         divider: %i[key hidden margin width tone],
         text: %i[key tooltip hidden align margin width height emphasis tone],
         markdown: %i[key disabled hidden align margin width],
@@ -373,6 +373,7 @@ module Lich
             change: event(record(value: property(string(:input_text), required: true))),
             # Focus changes can execute source logic; never coalesce them.
             focus: event(nil, lifecycle: true),
+            blur: event(record(value: property(string(:input_text), required: true)), lifecycle: true),
             submit: event(nil, terminal: true),
           }, value: string(:input_text), value_scope: :viewer,
         },
@@ -455,7 +456,7 @@ module Lich
         align: property(enum(:start, :center, :end), default: 'start'), width: property(GEOMETRY),
         min_width: property(integer(min: 0, max: 65_536)), tooltip: property(string(:body_text)),
         activatable: property(BOOL, default: false),
-        sortable: property(BOOL, default: false), resizable: property(BOOL, default: false),
+        sortable: property(BOOL, default: false), resizable: property(BOOL, default: false), expand: property(BOOL, default: false),
         editor: property(scalar(:editor), default: nil),
         background: property(RGBA),
         color_preview: property(record(width: property(integer(min: 1, max: 128), required: true),
@@ -468,6 +469,7 @@ module Lich
         # Preserve numeric ordering when the visible cells include formatting.
         sort_cells: property(scalar(:cell_map)),
         background_disabled: property(array(IDENT, max: BOUNDS[:table_columns])),
+        cell_disabled: property(array(IDENT, max: BOUNDS[:table_columns])),
         cell_foregrounds: property(array(record(column: property(IDENT, required: true),
                                                 color: property(RGBA, required: true)), max: BOUNDS[:table_columns]))
       ).freeze
@@ -536,7 +538,7 @@ module Lich
       TEXT_FRAGMENT = record(
         content: property(BODY, required: true), emphasis: property(enum(*EMPHASES)),
         font_style: property(enum(:normal, :italic)), foreground: property(RGBA),
-        scale: property(number(min: 0.5, max: 2))
+        scale: property(number(min: 0.5, max: 2)), underline: property(BOOL)
       ).freeze
       TINT = union(record(tone: property(enum(*TONES), required: true)), RGBA).freeze
       POINT_FIELDS = {
@@ -648,6 +650,10 @@ module Lich
 
       PAGE_LIFECYCLE_EVENTS = {
         pointer_press: POINTER_EVENT,
+        key_press: event(record(keyval: property(integer(min: 0, max: 0x10ffff), required: true),
+                                state: property(integer(min: 0, max: 13), required: true)), ordered: true),
+        key_release: event(record(keyval: property(integer(min: 0, max: 0x10ffff), required: true),
+                                  state: property(integer(min: 0, max: 13), required: true)), ordered: true),
         window_state: event(record(minimized: property(BOOL, required: true)), lifecycle: true),
         # Measured host geometry is notification data, not a form submission.
         configure: event(record(
@@ -668,6 +674,14 @@ module Lich
         attach: event(nil, lifecycle: true),
         detach: event(nil, lifecycle: true),
       }.freeze
+
+      # Retains a visible selected page, otherwise selects the first visible page.
+      # All-hidden notebooks keep a bounded index while displaying no page.
+      def visible_tab_index(headers, index)
+        return index unless headers&.dig(index, :hidden)
+
+        headers.index { |header| !header[:hidden] } || 0
+      end
 
       # Assembles and recursively freezes the bounded control/facility contract once.
       # Shared property families are added here so native and shim consumers agree.
@@ -690,10 +704,31 @@ module Lich
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
             end
+            if %i[overlay select number_input group].include?(type)
+              base[:events][:scroll] = event(record(
+                                               delta_x: property(integer(min: -65_536, max: 65_536), required: true),
+                                               delta_y: property(integer(min: -65_536, max: 65_536), required: true),
+                                               state: property(integer(min: 0, max: 13), required: true)
+                                             ), ordered: true)
+              # Cumulative viewer-local deltas survive coalesced redraw delivery.
+              base[:properties][:scroll_request] = property(record(
+                                                              x: property(integer(min: -2_147_483_647, max: 2_147_483_647), required: true),
+                                                              y: property(integer(min: -2_147_483_647, max: 2_147_483_647), required: true)
+                                                            ), scope: :viewer)
+            end
+            if %i[number_input group].include?(type)
+              base[:events][:pointer_enter] = event(nil, ordered: true)
+            end
+            if type == :stack
+              base[:events][:pointer_enter] = event(nil, ordered: true)
+            end
+            if %i[group number_input stack].include?(type)
+              base[:events][:pointer_leave] = event(nil, ordered: true)
+            end
             if type == :tabs
               base[:properties][:headers] = property(array(record(
                                                              key: property(IDENT, required: true), foreground: property(RGBA),
-                                                             pointer_events: property(BOOL, default: false), disabled: property(BOOL, default: false)
+                                                             pointer_events: property(BOOL, default: false), disabled: property(BOOL, default: false), hidden: property(BOOL, default: false)
                                                            ), max: BOUNDS[:collection]))
               pointer = deep_dup(POINTER_EVENT)
               pointer[:payload][:fields][:tab] = property(IDENT, required: true)

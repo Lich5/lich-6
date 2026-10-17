@@ -46,8 +46,44 @@ module Lich
         end
 
         # Search fields retain ordinary Entry changed/activate signals and shared input state.
-        # Delayed search-changed notifications remain unsupported.
+        # Search notifications coalesce per viewer on the existing owner scheduler.
         class SearchEntry < Entry
+          # Cancels pending search notifications when this entry/window retires.
+          def mark_destroyed
+            @search_sources&.each_value { |id| session.cancel_widget_source(id) }
+            @search_sources&.clear
+            super
+          end
+
+          protected
+
+          def signal_map = super.merge('search_changed' => :change)
+
+          # Ordinary changed remains immediate; search_changed waits 150ms after
+          # the newest edit from that viewer. Clearing dispatches without delay.
+          def emit_handlers(event, signal: nil)
+            return super unless event == :change && signal.nil?
+
+            result = super(event, signal: 'changed')
+            return result unless @signals.fetch(:change, []).any? { |name, _handler| name == 'search_changed' }
+
+            @search_sources ||= {}
+            viewer = session.viewer_id
+            session.remove_source(self, @search_sources.delete(viewer)) if @search_sources.key?(viewer)
+            if text.empty?
+              super(event, signal: 'search_changed')
+            else
+              @search_sources[viewer] = session.schedule(self, :search_changed, 150) do
+                @search_sources.delete(viewer)
+                emit_handlers(:change, signal: 'search_changed') unless destroyed?
+                false
+              end
+            end
+            result
+          end
+
+          public
+
           # The shared search input owns its theme-provided decoration. This
           # accepts only the noninteractive standard search icon, not custom art.
           # @param value [String] standard symbolic search icon

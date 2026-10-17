@@ -42,7 +42,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -116,7 +116,195 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'priority15-notebook') {
+  if (scenario === 'pr64-native-radio') {
+    await page.getByRole('radio', { name: 'Native second', exact: true }).click();
+    await expect(page.getByText('Native true 1', { exact: true })).toBeVisible();
+    await page.getByRole('radio', { name: 'Native second', exact: true }).click();
+    await expect(page.getByText('Native true 2', { exact: true })).toBeVisible();
+    await expect(page.getByRole('radio', { name: 'Native first', exact: true })).not.toBeChecked();
+    await expect(page.getByRole('radio', { name: 'Native second', exact: true })).toBeChecked();
+  } else if (scenario === 'priority16-review') {
+    const surface = page.locator('[data-scroll-surface]').filter({ hasText: 'Wheel burst surface' });
+    await surface.evaluate(element => {
+      for (let index = 0; index < 100; index++) element.dispatchEvent(new WheelEvent('wheel', { deltaY: 2, bubbles: true, cancelable: true }));
+    });
+    await expect.poll(() => page.locator('.webui-scroll').evaluate(element => element.scrollTop)).toBe(200);
+    const cell = page.getByRole('cell', { name: 'Mapped', exact: true });
+    await expect(cell).toHaveAttribute('aria-disabled', 'true');
+    await cell.dblclick();
+    await expect(cell.locator('input')).toHaveCount(0);
+    const entry = page.getByPlaceholder('Unsent entry');
+    await entry.evaluate(element => { element.value = 'Unsent draft'; });
+    await page.getByRole('radio', { name: 'Second plain radio', exact: true }).click();
+    await expect(page.getByRole('radio', { name: 'Second plain radio', exact: true })).toBeChecked();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  } else if (scenario === 'priority16-combo-rebuild') {
+    const combo = page.getByRole('combobox');
+    await page.getByRole('button', { name: 'Rebuild combo', exact: true }).click();
+    await expect(page.getByText('Selected 1: All', { exact: true })).toBeVisible();
+    await expect(combo.locator('option')).toHaveCount(3);
+    await expect.poll(() => combo.evaluate(element => element.selectedIndex)).toBe(2);
+    await page.getByRole('button', { name: 'Clear combo', exact: true }).click();
+    await expect(page.getByText('Cleared -1', { exact: true })).toBeVisible();
+    await expect(combo.locator('option')).toHaveCount(1);
+    await expect(combo).toHaveValue('none');
+  } else if (scenario === 'priority16-tooltips') {
+    const tabs = page.locator('.webui-tabs');
+    const scroll = page.locator('.webui-scroll');
+    await page.getByRole('tab', { name: 'Second', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Second', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Tooltip content 0', { exact: true })).toBeVisible();
+    await scroll.evaluate(element => { element.scrollTop = 70; });
+    await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(70);
+    await expect(tabs).not.toHaveAttribute('title');
+    await expect(scroll).not.toHaveAttribute('title');
+    for (const name of ['Assign tooltips', 'Clear tooltips']) {
+      await page.getByRole('button', { name, exact: true }).click();
+      if (name === 'Assign tooltips') {
+        await expect(tabs).toHaveAttribute('title', '<literal help>');
+        await expect(scroll).toHaveAttribute('title', '<literal help>');
+        await expect(page.locator('literal')).toHaveCount(0);
+      } else {
+        await expect(tabs).not.toHaveAttribute('title');
+        await expect(scroll).not.toHaveAttribute('title');
+      }
+      await expect(page.getByRole('tab', { name: 'Second', exact: true })).toHaveAttribute('aria-selected', 'true');
+      await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(70);
+    }
+  } else if (scenario === 'priority16-two-facades') {
+    await expect(page.getByRole('tab', { name: 'Profession', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Rebuild choices', exact: true }).click();
+    await page.getByRole('combobox').selectOption({ label: 'Rebuilt' });
+    await expect(page.locator('.webui-text').filter({ hasText: /^Rebuilt$/ })).toBeVisible();
+    await page.getByRole('button', { name: 'Show profession', exact: true }).click();
+    await page.getByRole('tab', { name: 'Profession', exact: true }).click();
+    await expect(page.getByText('Profession content', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Hide profession', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Profession', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: 'Main', exact: true })).toHaveAttribute('aria-selected', 'true');
+  } else if (scenario === 'priority16-hover-choice') {
+    await page.getByText('Hover first', { exact: true }).hover();
+    await expect(page.getByText('Hover 1/0', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Refresh hovered box', exact: true }).click();
+    await expect(page.getByText('Hover refreshed', { exact: true })).toBeVisible();
+    await page.getByText('Hover second', { exact: true }).hover();
+    await expect(page.getByText('Hover 1/0', { exact: true })).toBeVisible();
+    await page.getByText('Hover 1/0', { exact: true }).hover();
+    await expect(page.getByText('Hover 1/1', { exact: true })).toBeVisible();
+    const cell = page.getByRole('cell', { name: 'Choice: Original', exact: true });
+    await cell.click();
+    const control = cell.locator('select');
+    await expect(control.locator('option')).toHaveCount(3);
+    await control.selectOption({ index: 2 });
+    await expect(page.getByText('Choice 99', { exact: true })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'Choice: Duplicate', exact: true })).toBeVisible();
+    const other = await context.newPage();
+    await other.goto(page.url());
+    await other.getByText('Hover refreshed', { exact: true }).hover();
+    await expect(other.getByText('Hover 2/1', { exact: true })).toBeVisible();
+    await other.getByText('Hover 2/1', { exact: true }).hover();
+    await expect(other.getByText('Hover 2/2', { exact: true })).toBeVisible();
+    await other.close();
+  } else if (scenario === 'priority16-successor-controls') {
+    const heading = page.getByText('Group heading', { exact: true });
+    const fragment = page.locator('.webui-text-fragment').filter({ hasText: /^Group heading$/ });
+    await expect(fragment).toHaveCSS('text-decoration-line', 'underline');
+    await expect(fragment).toHaveCSS('font-weight', '700');
+    await expect(fragment).toHaveCSS('color', 'rgb(216, 222, 233)');
+    await expect(page.locator('.webui-scroll')).toHaveCSS('min-width', '300px');
+    await page.getByRole('tab', { name: 'Second', exact: true }).click();
+    await expect(page.getByText('Page 1: Second content', { exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Second', exact: true }).click();
+    await page.getByText('Open choices', { exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Choices', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: 'Old choice', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Replace choices', exact: true }).click();
+    await page.getByText('Open choices', { exact: true }).click({ button: 'right' });
+    const trigger = page.getByRole('menuitem', { name: 'Choices', exact: true });
+    await trigger.focus();
+    await trigger.press('ArrowRight');
+    await expect(page.getByRole('menuitem', { name: 'Old choice', exact: true })).toHaveCount(0);
+    await page.getByRole('menuitem', { name: 'New choice', exact: true }).click();
+    await expect(page.getByText('New choice activated', { exact: true })).toBeVisible();
+  } else if (scenario === 'priority16-successor-columns') {
+    const table = page.getByTitle('Selective expansion', { exact: true });
+    const shared = page.getByTitle('Shared expansion', { exact: true });
+    const measure = target => target.locator('thead th').evaluateAll(cells => cells.map(cell => cell.getBoundingClientRect().width));
+    const widths = () => measure(table);
+    await expect.poll(async () => (await widths())[0]).toBeGreaterThan(300);
+    await expect.poll(async () => Math.abs(((await measure(shared))[1] - (await measure(shared))[0]) - 40)).toBeLessThan(2);
+    const before = await widths();
+    const sharedBefore = await measure(shared);
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await expect.poll(async () => (await widths())[0]).toBeGreaterThan(before[0] + 50);
+    expect(Math.abs((await widths())[1] - before[1])).toBeLessThan(2);
+    await expect.poll(async () => (await measure(shared))[0]).toBeGreaterThan(sharedBefore[0] + 20);
+    const sharedAfter = await measure(shared);
+    expect(Math.abs((sharedAfter[0] - sharedBefore[0]) - (sharedAfter[1] - sharedBefore[1]))).toBeLessThan(2);
+    expect(Math.abs(sharedAfter[2] - sharedBefore[2])).toBeLessThan(2);
+    expect(sharedAfter[2]).toBeGreaterThanOrEqual(150);
+    const resize = table.getByRole('separator', { name: 'Resize Skill' });
+    await resize.focus();
+    await resize.press('ArrowLeft');
+    const authored = (await widths())[0];
+    await page.setViewportSize({ width: 1600, height: 900 });
+    expect(Math.abs((await widths())[0] - authored)).toBeLessThan(2);
+    const disabled = table.locator('tbody tr').filter({ hasText: 'Disabled skill' }).locator('td').nth(1);
+    await expect(disabled).toHaveAttribute('aria-disabled', 'true');
+    await disabled.dblclick();
+    await expect(disabled.locator('select')).toHaveCount(0);
+    const enabled = table.locator('tbody tr').filter({ hasText: 'Active skill' }).locator('td').nth(1);
+    await enabled.dblclick();
+    await enabled.locator('select').selectOption('New');
+    await expect(enabled).toHaveText('New');
+  } else if (scenario === 'priority16-events') {
+    const entry = page.getByPlaceholder('Blur fixture');
+    await entry.fill('latest');
+    await page.getByRole('button', { name: 'Reveal', exact: true }).focus();
+    await expect(page.getByText('Blur: latest', { exact: true })).toBeVisible();
+    await expect(page.getByText('Opted out', { exact: true })).toBeHidden();
+    await page.getByRole('button', { name: 'Reveal', exact: true }).click();
+    await expect(page.getByText('Opted out', { exact: true })).toBeVisible();
+    const search = page.getByPlaceholder('Search fixture');
+    await search.fill('ab');
+    await search.fill('abc');
+    await expect(page.getByText('Search: abc', { exact: true })).toBeVisible();
+    await search.fill('');
+    await expect(page.getByText('Search: ', { exact: true })).toBeVisible();
+    await page.getByRole('radio', { name: 'Second radio', exact: true }).click();
+    await expect(page.getByText('Radio: true:1', { exact: true })).toBeVisible();
+    await page.getByRole('radio', { name: 'Second radio', exact: true }).click();
+    await expect(page.getByText('Radio: true:2', { exact: true })).toBeVisible();
+    const spin = page.getByRole('spinbutton');
+    await spin.hover();
+    await expect(page.getByText('Hover delivered', { exact: true })).toBeVisible();
+    await spin.focus();
+    await spin.dispatchEvent('wheel', { deltaY: 100, deltaMode: 0 });
+    await expect(spin).toHaveValue('5');
+    await entry.focus();
+    await entry.press('q');
+    await expect(page.getByText('Key: 113', { exact: true })).toBeVisible();
+    const surface = page.locator('[data-scroll-surface]').filter({ hasText: 'Scroll surface' });
+    const scroller = page.locator('.webui-scroll');
+    await surface.dispatchEvent('wheel', { deltaY: 40, deltaMode: 0 });
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(40);
+    await surface.dispatchEvent('wheel', { deltaY: 30, deltaMode: 0 });
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(70);
+    await surface.dispatchEvent('wheel', { deltaY: 25, deltaMode: 0, shiftKey: true });
+    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBe(25);
+    await surface.dispatchEvent('wheel', { deltaY: 200, deltaMode: 0, ctrlKey: true });
+    await entry.fill('barrier');
+    await page.getByRole('button', { name: 'Reveal', exact: true }).focus();
+    await expect(page.getByText('Blur: barrier', { exact: true })).toBeVisible();
+    expect(await scroller.evaluate(element => element.scrollTop)).toBe(70);
+    const other = await context.newPage();
+    await other.goto(page.url());
+    await expect(other.getByPlaceholder('Search fixture')).toHaveValue('');
+    expect(await other.locator('.webui-scroll').evaluate(element => element.scrollTop)).toBe(0);
+    await other.close();
+  } else if (scenario === 'priority15-notebook') {
     const main = page.getByRole('tab', { name: 'Main', exact: true });
     const bag = page.getByRole('tab', { name: 'Bag', exact: true });
     await expect(main).toHaveCSS('color', 'rgb(255, 0, 0)');
