@@ -327,7 +327,12 @@ module Lich
       end
 
       # Replaces one ordinary container child without publishing an intermediate tree.
-      # Invalid ownership/cycles leave both children and their placement unchanged.
+      # Invalid ownership/cycles or refused publication preserve the previous tree.
+      # @param parent_handle [Handle] ordinary container accepting many children
+      # @param previous_handle [Handle, nil] actual child to replace, or nil to append
+      # @param replacement_handle [Handle] unparented same-adapter replacement
+      # @return [nil]
+      # @raise [Error] for invalid replacement or refused publication admission
       def replace_child(parent_handle, previous_handle, replacement_handle)
         @mutex.synchronize do
           parent, replacement = node!(parent_handle), node!(replacement_handle)
@@ -345,11 +350,19 @@ module Lich
           expected = parent.children.length + (previous ? 0 : 1)
           raise attributed_error('component has too many children', parent_handle) if expected > Contract::BOUNDS[:children]
           index = previous ? parent.children.index(previous_handle) : parent.children.length
-          parent.children.delete(previous_handle) if previous
-          previous.parent = nil if previous
-          parent.children.insert(index, replacement_handle)
-          replacement.parent = parent_handle
-          dirty!(root_for(parent))
+          before_children = parent.children.dup
+          begin
+            parent.children.delete(previous_handle) if previous
+            previous.parent = nil if previous
+            parent.children.insert(index, replacement_handle)
+            replacement.parent = parent_handle
+            dirty!(root_for(parent))
+          rescue StandardError
+            parent.children.replace(before_children)
+            previous.parent = parent_handle if previous
+            replacement.parent = nil
+            raise
+          end
         end
         nil
       end

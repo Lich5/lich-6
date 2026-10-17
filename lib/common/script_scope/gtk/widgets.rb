@@ -1469,6 +1469,8 @@ module Lich
 
           # Selects the last page for GTK's negative spelling, otherwise a bounded index.
           # Live writes use core viewer state, including pages appended in this callback.
+          # @param index [Integer] page index; negative values select the last page
+          # @return [Notebook] self, including unchanged or ignored selections
           def set_current_page(index)
             session.style_operation(self, :set_current_page) do
               session.refuse(self, :set_current_page) if destroyed? || !index.is_a?(Integer)
@@ -1480,6 +1482,7 @@ module Lich
               write(:selected, index)
               notify_switch(previous)
             end
+            self
           end
 
           # Accepts a Label, or one EventBox containing a Label. Headers remain

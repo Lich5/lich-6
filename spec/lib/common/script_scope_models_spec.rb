@@ -178,6 +178,57 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(page.last_render.bindings.keys).not_to include([choice['cid'], :activate])
   end
 
+  it 'normalizes immutable key event masks while preserving wrapped instances and positional construction' do
+    modifier = gtk::ModifierState.new(5)
+    event = gtk::KeyEvent.new(keyval: 113, state: 5)
+    expect(event).to be_frozen
+    expect(event.keyval).to eq(113)
+    expect(event.state.control_mask?).to be(true)
+    expect(event.state.shift_mask?).to be(true)
+    expect(event.state & 4).to eq(4)
+    expect(event.state.to_i).to eq(5)
+    expect(gtk::KeyEvent.new(113, 0).state.control_mask?).to be(false)
+    expect(gtk::KeyEvent.new(keyval: 113, state: modifier).state).to equal(modifier)
+  end
+
+  it 'delivers modifier predicates in both key press and release callbacks' do
+    window = gtk::Window.new
+    observed = Queue.new
+    %w[key-press-event key-release-event].each do |signal|
+      window.signal_connect(signal) { |_widget, event| observed << [signal, event.keyval, event.state.control_mask?, event.state.shift_mask?] }
+    end
+    window.show_all
+    page = nil
+    wait_for { (page = service.registry.pages_for(owner).first)&.last_render }
+    viewer = connect(page, 'modifier-events')
+    send_event(page, viewer, :page, :key_press, { keyval: 113, state: 5 })
+    expect(observed.pop(timeout: 3)).to eq(['key-press-event', 113, true, true])
+    send_event(page, viewer, :page, :key_release, { keyval: 113, state: 0 })
+    expect(observed.pop(timeout: 3)).to eq(['key-release-event', 113, false, false])
+  end
+
+  it 'returns the Notebook receiver through changed, unchanged, ignored and chained page selection' do
+    notebook = gtk::Notebook.new
+    expect(notebook.set_current_page(0)).to equal(notebook)
+    pages = 3.times.map { |index| gtk::Label.new(index.to_s) }
+    pages.each_with_index { |page, index| notebook.append_page(page, gtk::Label.new(index.to_s)) }
+    calls = []
+    notebook.signal_connect('switch-page') { |_widget, page, index| calls << [page, index]; :arbitrary_handler_result }
+    expect(notebook.set_current_page(1)).to equal(notebook)
+    expect(notebook.set_current_page(1).show_all).to equal(notebook)
+    expect(calls).to eq([[pages[1], 1]])
+    expect(notebook.set_current_page(99)).to equal(notebook)
+    pages[2].hide
+    expect(notebook.set_current_page(-1)).to equal(notebook)
+    expect(notebook.send(:read, :selected)).to eq(1)
+    pages[2].show
+    expect(notebook.set_current_page(-2)).to equal(notebook)
+    expect(calls.last).to eq([pages[2], 2])
+    expect { notebook.set_current_page('1') }.to raise_error(gtk::UnsupportedOperation)
+    notebook.destroy
+    expect { notebook.set_current_page(0) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
   it 'filters browser and programmatic selection in owner context without committing rejected or failing proposals' do
     model = gtk::ListStore.new(String)
     rows = %w[Allowed Denied Failing].map { |name| model.append.tap { |iter| iter[0] = name } }

@@ -283,7 +283,15 @@ module Lich
           def signal_map = { 'toggled' => :change, 'activate' => :activate }
         end
 
-        KeyEvent = Data.define(:keyval, :state)
+        # Immutable key notification with the same script-readable masks as scroll events.
+        KeyEvent = Data.define(:keyval, :state) do
+          # Retains the key code and normalizes modifiers without nesting existing wrappers.
+          # @param keyval [Integer] validated shared key code
+          # @param state [Integer, ModifierState] modifier bitmask or existing wrapper
+          def initialize(keyval:, state:)
+            super(keyval: keyval, state: state.is_a?(ModifierState) ? state : ModifierState.new(state))
+          end
+        end
 
         # Script-readable modifiers retain ordinary integer mask comparisons.
         class ModifierState < Numeric

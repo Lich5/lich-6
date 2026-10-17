@@ -2241,3 +2241,45 @@ test('disconnect cancels unsent wheel frames and retiring DOM nodes cannot queue
   env.frame(); assert.equal(env.messages().length, 0);
   env.wheel(20); env.disconnect(); env.frame(); assert.equal(env.messages().length, 0);
 });
+
+function radioFixture(t) {
+  const env = fixture(); t.after(() => env.dom.window.close());
+  const draw = (generation, present = true, disabled = false) => env.receive({ type: 'render', page: 'radio-order', generation,
+    bindings: { one: ['change'], two: ['change', 'activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'radio_option', cid: 'one', props: { group: 'choice', label: 'One', checked: generation === 1 } },
+      ...(present ? [{ type: 'radio_option', cid: 'two', props: { group: 'choice', label: 'Two', checked: generation > 1, disabled } }] : [])
+    ] } });
+  env.receive({ type: 'hello', pages: [{ address: 'radio-order' }] }); draw(1);
+  const control = () => env.dom.window.document.querySelectorAll('input[type="radio"]')[1];
+  const events = () => env.sent.filter(message => ['change', 'activate'].includes(message.event));
+  return { ...env, draw, control, events };
+}
+
+test('native radios publish change before activation once and already-selected clicks still activate', t => {
+  const env = radioFixture(t);
+  env.control().click();
+  assert.deepEqual(env.events().map(message => message.event), ['change', 'activate']);
+  env.control().click();
+  assert.deepEqual(env.events().map(message => message.event), ['change', 'activate', 'activate']);
+  env.dom.window.document.querySelectorAll('input[type="radio"]')[0].click();
+  env.control().click();
+  assert.equal(env.events().filter(message => message.cid === 'two' && message.event === 'change').length, 2);
+});
+
+for (const state of ['live', 'removed', 'disabled']) {
+  test(`radio activation resolves current identity after a synchronous ${state} redraw`, t => {
+    const env = radioFixture(t);
+    const send = env.dom.window.WebSocket.prototype.send;
+    env.dom.window.WebSocket.prototype.send = function (json) {
+      send.call(this, json);
+      if (JSON.parse(json).event === 'change') env.draw(2, state !== 'removed', state === 'disabled');
+    };
+    const previous = env.control();
+    previous.click();
+    const activations = env.events().filter(message => message.event === 'activate');
+    assert.equal(activations.length, state === 'live' ? 1 : 0);
+    if (state === 'live') assert.equal(activations[0].generation, 2);
+    previous.click();
+    assert.equal(env.events().filter(message => message.event === 'activate').length, activations.length);
+  });
+}

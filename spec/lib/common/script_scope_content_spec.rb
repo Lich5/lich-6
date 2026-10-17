@@ -1349,4 +1349,25 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect(wheel_calls).to eq([[0, 200]])
     expect(entry_changes).to be_empty
   end
+  it 'keeps native radio activation current across redraws without a submission scope in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    observed, activations = [], 0
+    page = service.registry.register(Lich::WebUI::Page.new(owner: owner, id: 'native-radio-order', title: 'Native radio ordering') do
+      status = text(key: 'status', content: 'Waiting')
+      radio_option(key: 'one', group: 'choice', label: 'Native first', checked: true,
+                   on: { change: ->(event) { observed << [:one, event.payload[:value]] } })
+      radio_option(key: 'two', group: 'choice', label: 'Native second', checked: false,
+                   on: { change: lambda { |event|
+                     observed << [:two, event.payload[:value]]
+                     event.page.set(status.cid, :content, 'Changed')
+                   }, activate: lambda { |event|
+                     selected = event.page.get(event.component.cid, :checked, viewer: event.viewer_id)
+                     observed << [:activate, selected]
+                     activations += 1
+                     event.page.set(status.cid, :content, "Native #{selected} #{activations}")
+                   } })
+    end)
+    WebUIBrowser.check(service: service, page: page, scenario: 'pr64-native-radio')
+    expect(observed).to eq([[:one, false], [:two, true], [:activate, true], [:activate, true]])
+  end
 end

@@ -786,4 +786,30 @@ RSpec.describe Lich::WebUI::Adapter do
     adapter.detach(root, replacement)
     expect(adapter.get(replacement, :content)).to eq('New')
   end
+  [true, false].each do |replace_previous|
+    it "restores ordinary child ownership when publication refuses #{replace_previous ? 'replacement' : 'append'}" do
+      allow(service.runtime).to receive(:schedule_render)
+      root, parent = adapter.create(:page, title: 'Rollback'), adapter.create(:stack, {})
+      before, old, after, replacement = %w[Before Old After New].map { |name| adapter.create(:text, content: name) }
+      [before, old, after].each { |child| adapter.attach(parent, child) }
+      adapter.attach(root, parent)
+      adapter.send(:flush!)
+      adapter.instance_variable_set(:@publication_pending, false)
+      failure = Lich::WebUI::Error.new('render owner is terminated')
+      allow(service.runtime).to receive(:schedule_render).and_raise(failure)
+      expect { adapter.replace_child(parent, replace_previous ? old : nil, replacement) }.to(raise_error { |error| expect(error).to equal(failure) })
+      expect(adapter.send(:node!, parent).children).to eq([before, old, after])
+      expect(adapter.send(:node!, old).parent).to equal(parent)
+      expect(adapter.send(:node!, replacement).parent).to be_nil
+      expect(adapter.instance_variable_get(:@publication_pending)).to be(false)
+      allow(service.runtime).to receive(:schedule_render)
+      adapter.replace_child(parent, replace_previous ? old : nil, replacement)
+      expected = replace_previous ? [before, replacement, after] : [before, old, after, replacement]
+      expect(adapter.send(:node!, parent).children).to eq(expected)
+      expect(adapter.send(:node!, replacement).parent).to equal(parent)
+      adapter.send(:flush!)
+      page = service.registry.pages_for(owner).first
+      expect(page.last_render.tree.each.select { |node| node.type == :text }.map { |node| node.props[:content] }).to eq(expected.map { |handle| adapter.get(handle, :content) })
+    end
+  end
 end
