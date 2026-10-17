@@ -1418,13 +1418,13 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     overtaken = 0
     phases = []
     allow(service.runtime).to receive(:log).and_wrap_original do |method, level, message|
-      phases << message if message.start_with?('WebUI widget_drop phase=')
+      phases << message if message.match?(/\AWebUI (widget_drop|pointer_release) phase=/)
       method.call(level, message)
     end
-    # Force the previously flaky wire ordering for every actual browser drop:
+    # Force the previously flaky wire ordering for every browser drop/release:
     # even a retry would be overtaken. The real timer and native drag stay active.
     allow(service.runtime).to receive(:handle).and_wrap_original do |method, connection, message|
-      if message[:type] == 'event' && message[:event] == 'widget_drop'
+      if message[:type] == 'event' && %w[widget_drop pointer_release].include?(message[:event])
         2.times { service.runtime.refresh(page) }
         overtaken += 1
       end
@@ -1435,9 +1435,11 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     rescue RuntimeError => error
       raise RuntimeError, "#{error.message}\nWidget server admission: \n#{phases.join("\n")}", cause: error
     end
-    expect(overtaken).to eq(2)
-    expect(phases.grep(/phase=queued/).length).to eq(2)
-    expect(phases.grep(/phase=completed/).length).to eq(2)
+    expect(overtaken).to eq(3)
+    %w[widget_drop pointer_release].zip([2, 1]).each do |event, count|
+      expect(phases.grep(/#{event} phase=queued/).length).to eq(count)
+      expect(phases.grep(/#{event} phase=completed/).length).to eq(count)
+    end
     expect(calls).to eq([:begin, :motion, :get, :drop, [:received, 'Spirit Barrier'], :leave, :end] * 2)
     expect(releases).to eq(1)
     expect(ability.parent).to equal(pool)

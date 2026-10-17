@@ -11,13 +11,18 @@ module Lich
     class ViewerStore
       RECONNECT_WINDOW = 60
       WIDGET_ADMISSION_WINDOW = 30
+      RELEASE_ADMISSION_WINDOW = 30
       Admission = Data.define(:render, :widget_revision, :accepted_at)
+      ReleaseAdmission = Data.define(:render, :epoch, :cid, :accepted_at)
+      ReleaseEpoch = Struct.new(:signature, :generation, :started_at)
       Snapshot = Data.define(:page, :viewer_id, :render, :values, :input_requests)
 
       class Attachment
         attr_accessor :connection_id, :render, :delivered_generation, :expires_at
         attr_accessor :widget_signature, :widget_generation, :widget_started_at, :widget_revision, :widget_request
         attr_reader :viewer_id, :resume_token, :address, :page, :values, :delivered_read_only, :input_requests
+        attr_reader :release_epochs
+        attr_accessor :release_request
 
         # Creates independent viewer identity, resume capability, and local state for a page.
         # The resume token is server-generated; no render is delivered yet.
@@ -35,6 +40,8 @@ module Lich
           @expires_at = nil
           @widget_signature = @widget_generation = @widget_started_at = @widget_request = nil
           @widget_revision = 0
+          @release_epochs = {}
+          @release_request = nil
         end
       end
 
@@ -207,6 +214,7 @@ module Lich
 
           signature = widget_signature(render)
           now = @clock.call
+          update_release_epochs(attachment, render, now)
           changed = signature != attachment.widget_signature
           if changed || !attachment.widget_started_at || now - attachment.widget_started_at >= WIDGET_ADMISSION_WINDOW
             attachment.widget_revision += 1 if changed
@@ -233,9 +241,9 @@ module Lich
 
       # Serializes event validation and queue admission with delivery/detachment.
       # The yielded runtime work may enqueue callbacks, but never runs script code.
-      # Only unchanged widget-transfer authority can outlive a paint generation;
-      # one compressed epoch is retained per viewer, never a render history.
-      # @yieldparam admission [Admission] optional transfer render and queued-drop authority
+      # Only unchanged transfer/release authority can outlive a paint generation;
+      # compressed epochs are retained per viewer, never a render history.
+      # @yieldparam admission [Admission, ReleaseAdmission] captured gesture authority
       # @return [Object] runtime admission result, or :queued for a duplicate request
       # @raise [Protocol::Refusal] for obsolete generations or a departed viewer
       def admit_event(attachment, message)
@@ -244,6 +252,8 @@ module Lich
             raise Protocol::Refusal.new(:attachment, 'viewer is no longer attached')
           end
           widget_drop = message[:event].to_s == 'widget_drop'
+          return admit_release(attachment, message) { |admission| yield admission } if message[:event].to_s == 'pointer_release'
+
           generation = message[:generation]
           current = attachment.delivered_generation
           compatible = widget_drop && attachment.widget_generation && generation.is_a?(Integer) &&
@@ -270,6 +280,14 @@ module Lich
         @mutex.synchronize do
           live_attachment?(attachment) && attachment.widget_revision == admission.widget_revision &&
             @clock.call - admission.accepted_at < WIDGET_ADMISSION_WINDOW
+        end
+      end
+
+      # Rechecks the exact release surface epoch before queued user code runs.
+      def release_admission_current?(attachment, admission)
+        @mutex.synchronize do
+          live_attachment?(attachment) && attachment.release_epochs[admission.cid].equal?(admission.epoch) &&
+            @clock.call - admission.accepted_at < RELEASE_ADMISSION_WINDOW
         end
       end
 
@@ -394,8 +412,70 @@ module Lich
       end
 
       def retire_widget_admission!(attachment)
+        attachment.release_epochs.clear
+        attachment.release_request = nil
         attachment.widget_signature = attachment.widget_generation = attachment.widget_started_at = attachment.widget_request = nil
         attachment.widget_revision += 1
+      end
+
+      # One epoch per currently bound release surface; removed surfaces retain no
+      # history. Equal paints keep authority for at most 30 seconds. The caller
+      # holds the same monitor used for delivery and event validation.
+      def update_release_epochs(attachment, render, now)
+        signatures = release_signatures(render)
+        attachment.release_epochs.keep_if { |cid, _epoch| signatures.key?(cid) }
+        signatures.each do |cid, signature|
+          epoch = attachment.release_epochs[cid]
+          if !epoch || epoch.signature != signature
+            attachment.release_epochs[cid] = ReleaseEpoch.new(signature, render.generation, now)
+          elsif now - epoch.started_at >= RELEASE_ADMISSION_WINDOW
+            epoch.generation = render.generation
+            epoch.started_at = now
+          end
+        end
+      end
+
+      # Captures target subtrees and ancestor layout/state, excluding unrelated
+      # sibling text paints. Shared immutable projections keep storage linear in
+      # the tree plus the ancestry of each bound release surface.
+      def release_signatures(render)
+        return {} unless render.bindings.any? { |(_cid, event), _callback| event == :pointer_release }
+
+        bindings = render.bindings.each_with_object({}) do |((cid, event), callback), grouped|
+          (grouped[cid] ||= {})[event] = callback
+        end
+        signatures = {}
+        project = lambda do |node, ancestors|
+          boundary = [node.cid, node.type, node.props, node.slot, node.placement, node.children.map(&:cid)]
+          children = node.children.map { |child| project.call(child, ancestors + [boundary]) }
+          subtree = [boundary, bindings[node.cid], render.submissions[node.cid], children]
+          signatures[node.cid] = [subtree, ancestors, render.facilities] if bindings[node.cid]&.key?(:pointer_release)
+          subtree
+        end
+        project.call(render.tree, [])
+        signatures
+      end
+
+      # Admits only unchanged release surfaces, never submitted forms or arbitrary
+      # stale event families. Request high-water marks prevent duplicate callbacks
+      # across surface replacement and time-window renewal.
+      def admit_release(attachment, message)
+        epoch = attachment.release_epochs[message[:cid]]
+        generation = message[:generation]
+        current = attachment.delivered_generation
+        compatible = epoch && generation.is_a?(Integer) && generation.between?(epoch.generation, current) &&
+                     @clock.call - epoch.started_at < RELEASE_ADMISSION_WINDOW &&
+                     attachment.render.submissions.fetch(message[:cid], []).empty?
+        unless generation == current || compatible
+          raise Protocol::Refusal.new(:stale_generation, 'stale generation')
+        end
+        request = message[:request] if message[:request].is_a?(Integer)
+        return :queued if request && attachment.release_request && request <= attachment.release_request
+
+        admission = ReleaseAdmission.new(attachment.render, epoch, message[:cid], @clock.call)
+        result = yield admission
+        attachment.release_request = request if request && result == :queued
+        result
       end
 
       # Transfer descendants retain all authored properties/bindings, so geometry

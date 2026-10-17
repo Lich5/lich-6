@@ -224,6 +224,7 @@ module Lich
                 @destroy_handlers.delete(handler)
               else
                 @signals.fetch(event).delete_if { |_name, callback| callback.equal?(handler) }
+                bind_event(event) if event == :pointer_release && @handle
               end
             end
             self
@@ -706,8 +707,12 @@ module Lich
           # @api private
           def bind_event(event)
             widget = self
+            release_handlers = @signals.fetch(event, []).dup if event == :pointer_release
             session.port.bind(@handle, event, proc do |context|
               session.callback(context, terminal: !context.viewer_id.nil? && %i[activate submit close].include?(event), widget: widget) do
+                # A shadow handler change can precede its next published tree.
+                # Never retarget an admitted release to replacement handlers.
+                session.refuse(self, :pointer_release) if release_handlers && release_handlers != @signals.fetch(event, [])
                 result = if event == :scroll
                            scroll = ScrollEvent.new(context.payload)
                            stopped = @signals.fetch(event, []).dup.any? { |_name, handler| handler.call(widget, scroll) == true }

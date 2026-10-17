@@ -467,15 +467,15 @@ module Lich
           coalescable: !event_schema[:terminal] && !event_schema[:lifecycle] && !event_schema[:ordered],
           cleanup: -> { snapshot&.discard_sensitive! }
         ) do
-          if context.event == :widget_drop
-            run_widget_drop(attachment, admission, message, callback, context)
+          if %i[widget_drop pointer_release].include?(context.event)
+            run_bounded_gesture(attachment, admission, message, callback, context)
           else
             callback.call(context)
           end
         end
         dispatched = true
-        if context.event == :widget_drop
-          log(:debug, "WebUI widget_drop phase=queued request=#{message[:request]} generation=#{message[:generation]} admitted_generation=#{admission.render.generation}")
+        if %i[widget_drop pointer_release].include?(context.event)
+          log(:debug, "WebUI #{context.event} phase=queued request=#{message[:request]} generation=#{message[:generation]} admitted_generation=#{admission.render.generation}")
         end
         # A control already displays its own draft. Redrawing on blur needlessly
         # changes generation before the following Save arrives. Structural
@@ -491,17 +491,22 @@ module Lich
         snapshot&.discard_sensitive! unless dispatched
       end
 
-      # Retires obsolete queued transfers and records callback completion separately
+      # Retires obsolete queued gestures and records callback completion separately
       # from native browser delivery. No store monitor is held while user code runs.
-      def run_widget_drop(attachment, admission, message, callback, context)
-        unless @viewers.widget_admission_current?(attachment, admission)
-          log(:debug, "WebUI widget_drop phase=retired request=#{message[:request]}")
+      def run_bounded_gesture(attachment, admission, message, callback, context)
+        current = if context.event == :pointer_release
+                    @viewers.release_admission_current?(attachment, admission)
+                  else
+                    @viewers.widget_admission_current?(attachment, admission)
+                  end
+        unless current
+          log(:debug, "WebUI #{context.event} phase=retired request=#{message[:request]}")
           return
         end
         callback.call(context)
-        log(:debug, "WebUI widget_drop phase=completed request=#{message[:request]}")
+        log(:debug, "WebUI #{context.event} phase=completed request=#{message[:request]}")
       rescue StandardError => error
-        log(:error, "WebUI widget_drop phase=failed request=#{message[:request]} error=#{error.class}")
+        log(:error, "WebUI #{context.event} phase=failed request=#{message[:request]} error=#{error.class}")
         raise
       end
 

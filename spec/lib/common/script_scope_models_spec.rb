@@ -703,6 +703,32 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     allow(Lich::Common::Script).to receive(:current).and_return(owner)
   end
 
+  it 'rejects retired release handlers before publication and republishes disconnected handler sets' do
+    surface = gtk::EventBox.new.add(gtk::Label.new('Release'))
+    calls = []
+    first = surface.signal_connect('button-release-event') { calls << :first }
+    _window, page = show(surface)
+    connect(page, 'release-handler')
+    admitted = page.last_render
+    component = admitted.tree.each.find { |node| node.props[:pointer_events] }
+    original = admitted.bindings[[component.cid, :pointer_release]]
+    payload = { x: 1, y: 1, button: 1, time: 0, state: 0, click_count: 1 }
+    context = Lich::WebUI::Runtime::EventContext.new(nil, page, component, :pointer_release, payload, nil, admitted)
+    surface.signal_connect('button-release-event') { calls << :second }
+    expect { original.call(context) }.to raise_error(gtk::UnsupportedOperation, /operation=pointer_release/)
+    expect(calls).to be_empty
+    wait_for { !page.last_render.bindings[[component.cid, :pointer_release]].equal?(original) }
+    replacement = page.last_render.bindings[[component.cid, :pointer_release]]
+    replacement.call(context)
+    expect(calls).to eq(%i[first second])
+    calls.clear
+    surface.send(:disconnect_signal_handler, first)
+    expect { replacement.call(context) }.to raise_error(gtk::UnsupportedOperation, /operation=pointer_release/)
+    wait_for { !page.last_render.bindings[[component.cid, :pointer_release]].equal?(replacement) }
+    page.last_render.bindings[[component.cid, :pointer_release]].call(context)
+    expect(calls).to eq([:second])
+  end
+
   it 'dispatches Button pointer metadata separately from ordinary activation' do
     expect(gtk::Button.new.label).to eq('')
     button = gtk::Button.new('Customize')

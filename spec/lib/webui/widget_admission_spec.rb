@@ -216,7 +216,7 @@ RSpec.describe 'coherent widget-transfer admission' do
   it 'preserves strict generation checks for other event families' do
     publish
     paint
-    expect(runtime.handle(@connection, @event.merge(event: 'pointer_release', payload: { x: 1, y: 1, button: 1, time: 0, state: 0, click_count: 1 }))).to eq(:refused)
+    expect(runtime.handle(@connection, @event.merge(event: 'pointer_press', payload: { x: 1, y: 1, button: 1, time: 0, state: 0, click_count: 1 }))).to eq(:refused)
     expect(@frames.reverse.find { |frame| frame['type'] == 'refusal' }['reason']).to eq('stale_generation')
   end
 end
