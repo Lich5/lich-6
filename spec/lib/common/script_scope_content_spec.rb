@@ -349,6 +349,116 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect(frame.label).to eq('')
   end
 
+  it 'warns only for omitted Expander caption markup while synchronizing live text' do
+    expander = compatibility::Expander.new('Initial')
+    window = compatibility::Window.new.add(expander)
+    viewer = connect(show(window), 'expander-caption-warning')
+    expander.label = 'Plain update'
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Plain update' }
+    expect(Lich).not_to have_received(:log).with(/compatibility expander_caption_style/)
+    expander.label_widget.set_markup('<b>Styled</b> <i>heading</i>')
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Styled heading' }
+    expander.label_widget.set_markup('<i>Another</i> heading')
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Another heading' }
+    expect(Lich).to have_received(:log).with(/compatibility expander_caption_style/).once
+    expander.label = 'Plain again'
+    wait_for { rendered_node(viewer, :expander)['props']['label'] == 'Plain again' }
+    expect(Lich).to have_received(:log).with(/compatibility expander_caption_style/).once
+  end
+
+  it 'retires replaced Frame captions and style contexts without accumulating resources' do
+    frame = compatibility::Frame.new('Initial')
+    retired = []
+    destroyed = []
+    8.times do |index|
+      previous = frame.label_widget
+      previous.style_context
+      previous.signal_connect('destroy') { destroyed << previous }
+      retired << previous
+      replacement = compatibility::Label.new("Caption #{index}")
+      replacement.style_context
+      frame.set_label_widget(replacement)
+      expect(previous.destroyed?).to be(true)
+      expect(previous.instance_variable_defined?(:@frame_caption_owner)).to be(false)
+      expect(replacement.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+      expect(frame.session.instance_variable_get(:@style_contexts).size).to eq(1)
+    end
+    expect(destroyed).to eq(retired)
+    current = frame.label_widget
+    current.signal_connect('destroy') { destroyed << current }
+    frame.destroy
+    frame.destroy
+    expect(destroyed).to eq(retired + [current])
+    expect(frame.session.instance_variable_get(:@style_contexts)).to be_empty
+  end
+
+  it 'preserves Frame caption ownership when replacement validation refuses' do
+    frame = compatibility::Frame.new('Initial')
+    previous = frame.label_widget
+    previous.style_context
+    parented = compatibility::Label.new('Parented')
+    compatibility::Box.new.add(parented)
+    retired = compatibility::Label.new('Retired')
+    retired.destroy
+    [compatibility::Label.new('x' * 513), previous, parented, retired].each do |replacement|
+      expect { frame.set_label_widget(replacement) }.to raise_error(compatibility::UnsupportedOperation)
+      expect(frame.label_widget).to equal(previous)
+      expect(frame.label).to eq('Initial')
+      expect(previous.destroyed?).to be(false)
+      expect(previous.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+      expect(frame.session.instance_variable_get(:@style_contexts).size).to eq(1)
+    end
+  end
+
+  it 'preserves the live Frame caption and child identity when publication fails' do
+    frame = compatibility::Frame.new('Initial')
+    frame.add(compatibility::Entry.new)
+    window = compatibility::Window.new.add(frame)
+    viewer = connect(show(window), 'caption-refusal')
+    child = rendered_node(viewer, :text_input)['cid']
+    previous = frame.label_widget
+    replacement = compatibility::Label.new('Replacement')
+    allow(frame.session.port).to receive(:set).with(anything, :label, 'Replacement').and_raise(Lich::WebUI::Error, 'caption refused')
+    expect { frame.set_label_widget(replacement) }.to raise_error(Lich::WebUI::Error, /caption refused/)
+    expect(frame.label_widget).to equal(previous)
+    expect(frame.label).to eq('Initial')
+    expect(previous.destroyed?).to be(false)
+    expect(previous.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+    expect(replacement.instance_variable_defined?(:@frame_caption_owner)).to be(false)
+    expect(rendered_node(viewer, :text_input)['cid']).to eq(child)
+  end
+
+  it 'preserves a caption installed reentrantly by the previous caption destroy handler' do
+    frame = compatibility::Frame.new('Initial')
+    previous = frame.label_widget
+    middle, final = compatibility::Label.new('Middle'), compatibility::Label.new('Final')
+    [previous, middle, final].each(&:style_context)
+    observed = []
+    previous.signal_connect('destroy') do
+      observed << frame.label_widget
+      frame.set_label_widget(final)
+    end
+    frame.set_label_widget(middle)
+    expect(observed).to eq([middle])
+    expect(frame.label_widget).to equal(final)
+    expect(frame.label).to eq('Final')
+    expect([previous, middle].all?(&:destroyed?)).to be(true)
+    expect(final.destroyed?).to be(false)
+    expect(final.instance_variable_get(:@frame_caption_owner)).to equal(frame)
+    expect(frame.session.instance_variable_get(:@style_contexts).size).to eq(1)
+  end
+
+  it 'retires the new caption if the previous caption destroy handler destroys the Frame' do
+    frame = compatibility::Frame.new('Initial')
+    previous = frame.label_widget
+    replacement = compatibility::Label.new('Replacement')
+    [previous, replacement].each(&:style_context)
+    previous.signal_connect('destroy') { frame.destroy }
+    frame.set_label_widget(replacement)
+    expect([frame, previous, replacement].all?(&:destroyed?)).to be(true)
+    expect(frame.session.instance_variable_get(:@style_contexts)).to be_empty
+  end
+
   it 'bounds ButtonBox layout and live spacing without replacing button identities' do
     expect { compatibility::ButtonBox.new(:vertical) }.to raise_error(compatibility::UnsupportedOperation)
     footer = compatibility::ButtonBox.new(:horizontal)

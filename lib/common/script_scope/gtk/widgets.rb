@@ -1355,9 +1355,7 @@ module Lich
           # @param value [String] literal caption, at most 512 characters
           # @return [Frame] self
           def set_label(value)
-            valid = value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? &&
-                    value.length <= Lich::WebUI::Contract::BOUNDS[:short_text]
-            session.refuse(self, :label=) unless valid
+            validate_caption!(value)
             write(:label, value)
             @frame_label ||= Label.new(value)
             @frame_label.instance_variable_set(:@frame_caption_owner, self)
@@ -1366,28 +1364,41 @@ module Lich
           end
           alias label= set_label
 
+          # @return [Label, nil] owned caption, retired when replaced or destroyed
           def label_widget = @frame_label
 
+          # Retires the owned caption when a containing window retires this frame.
+          # @return [void]
           def mark_destroyed
             super
             @frame_label&.mark_destroyed
           end
 
-          # Copies the supplied label's text into the shared group label.
+          # Adopts a same-session unparented label and retires the prior caption.
+          # Publishes before cleanup so rejected writes preserve ownership and
+          # destroy callbacks observe the replacement without later overwrites.
+          # @param label [Label] live, unowned replacement with bounded literal text
           # @return [Frame] self
+          # @raise [UnsupportedOperation] for invalid labels or a destroyed frame
           def set_label_widget(label)
             session.style_operation(self, :set_label_widget) do
               valid = label.is_a?(Label) && label.session.equal?(session) && !label.destroyed? && label.parent.nil? &&
                       !label.instance_variable_get(:@tab_owner) && !label.instance_variable_get(:@frame_caption_owner)
               session.refuse(self, :set_label_widget) unless valid && !destroyed?
-              @frame_label&.remove_instance_variable(:@frame_caption_owner)
+              text = label.text
+              validate_caption!(text)
+              write(:label, text)
+              previous = @frame_label
+              previous&.remove_instance_variable(:@frame_caption_owner)
               @frame_label = label
               label.instance_variable_set(:@frame_caption_owner, self)
-              write(:label, label.text)
+              previous&.destroy
             end
             self
           end
 
+          # Releases the current caption and its style context exactly once.
+          # @return [Frame] self
           def destroy
             super
             @frame_label&.destroy
@@ -1416,10 +1427,23 @@ module Lich
 
           def component_type = :group
 
+          # Synchronizes owned caption text, reporting only omitted markup styling.
+          # @param label [Label] caption whose content or fragments changed
+          # @return [Object] write result, or nil for a retired/unchanged caption
           def refresh_caption(label)
             return if destroyed? || !@frame_label.equal?(label)
             session.degrade(:frame_caption_style, 'frame caption keeps literal label text; caption typography follows browser theme') if label.instance_variable_get(:@props)[:fragments]
             write(:label, label.text) unless @props[:label] == label.text
+          end
+
+          # Applies the shared caption bound before any ownership or port change.
+          # @param value [String] proposed literal heading
+          # @return [void]
+          # @raise [UnsupportedOperation] for malformed or oversized headings
+          def validate_caption!(value)
+            valid = value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? &&
+                    value.length <= Lich::WebUI::Contract::BOUNDS[:short_text]
+            session.refuse(self, :label=) unless valid
           end
 
           # A frame aligns its child's natural height within its own allocation.

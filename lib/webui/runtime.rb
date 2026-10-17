@@ -403,6 +403,11 @@ module Lich
 
       # Validates and enqueues against the render protected by ViewerStore admission.
       # Script callbacks run only on the dispatcher, outside the store monitor.
+      # @param connection [Object] authenticated transport receiving any refusal
+      # @param attachment [ViewerStore::Attachment] coherently admitted viewer
+      # @param message [Hash] event envelope with validated protocol fields
+      # @param admission [Object] captured render and bounded gesture authority
+      # @return [Symbol] :queued after validation and dispatcher submission
       def dispatch_event(connection, attachment, message, admission)
         component = find_component!(attachment, message[:cid])
         payload = @validator.validate_event!(
@@ -493,6 +498,13 @@ module Lich
 
       # Retires obsolete queued gestures and records callback completion separately
       # from native browser delivery. No store monitor is held while user code runs.
+      # @param attachment [ViewerStore::Attachment] viewer that admitted the gesture
+      # @param admission [Object] captured render and bounded epoch identity
+      # @param message [Hash] request metadata used for phase diagnostics
+      # @param callback [#call] captured server binding, never a replacement binding
+      # @param context [EventContext] validated component, payload and render
+      # @return [void]
+      # @raise [StandardError] callback failure, logged and propagated to dispatcher
       def run_bounded_gesture(attachment, admission, message, callback, context)
         current = if context.event == :pointer_release
                     @viewers.release_admission_current?(attachment, admission)

@@ -6,12 +6,19 @@ module Lich
       module Gtk
         # A closed, owner-bound rectangle recorder. It is valid for one draw only.
         class RectangleDrawing < ModelObject
+          # Starts an owner-bound recorder with an empty path and opaque black fill.
+          # @return [RectangleDrawing] context valid only during the current draw
           def initialize
             super
             @active, @commands, @paths, @layers = true, 0, [], []
             @color, @line_width = { r: 0, g: 0, b: 0, a: 1.0 }, 2
           end
 
+          # Sets the opaque source color without accepting CSS or native resources.
+          # @param red [Numeric] finite channel in 0..1
+          # @param green [Numeric] finite channel in 0..1
+          # @param blue [Numeric] finite channel in 0..1
+          # @return [RectangleDrawing] self
           def set_source_rgb(red, green, blue)
             operation(:set_source_rgb) do
               values = [red, green, blue]
@@ -20,6 +27,12 @@ module Lich
             end
           end
 
+          # Appends a bounded rectangle path, consumed by the next fill or stroke.
+          # @param x [Numeric] finite horizontal origin in -65536..65536
+          # @param y [Numeric] finite vertical origin in -65536..65536
+          # @param width [Numeric] finite nonnegative extent, at most 65536
+          # @param height [Numeric] finite nonnegative extent, at most 65536
+          # @return [RectangleDrawing] self
           def rectangle(x, y, width, height)
             operation(:rectangle) do
               valid = [x, y, width, height].all? { |value| finite?(value) && value.abs <= 65_536 }
@@ -28,6 +41,9 @@ module Lich
             end
           end
 
+          # Sets the stroke width for subsequent recorded paths.
+          # @param value [Numeric] finite width in 1..16
+          # @return [RectangleDrawing] self
           def set_line_width(value)
             operation(:set_line_width) do
               session.refuse(self, :set_line_width) unless finite?(value) && value.between?(1, 16)
@@ -35,7 +51,9 @@ module Lich
             end
           end
 
+          # @return [RectangleDrawing] self after filling and consuming all paths
           def fill = paint(:fill)
+          # @return [RectangleDrawing] self after stroking and consuming all paths
           def stroke = paint(:stroke)
 
           # Retires the borrowed context even when an original handler raises.
@@ -47,8 +65,13 @@ module Lich
 
           private
 
+          # @return [Boolean] whether geometry can be serialized as a finite number
           def finite?(value) = value.is_a?(Integer) || (value.is_a?(Float) && value.finite?)
 
+          # Enforces owner, lifetime and the 512-command bound before recording.
+          # @param name [Symbol] operation used in refusal attribution
+          # @yield bounded recorder mutation
+          # @return [RectangleDrawing] self
           def operation(name)
             session.style_operation(self, name) do
               @commands += 1
@@ -58,6 +81,9 @@ module Lich
             self
           end
 
+          # Converts pending paths to typed layers, enforcing the 512-layer bound.
+          # @param mode [Symbol] :fill or :stroke
+          # @return [RectangleDrawing] self
           def paint(mode)
             operation(mode) do
               session.refuse(self, mode) if @layers.size + @paths.size > 512
@@ -69,11 +95,16 @@ module Lich
 
         # Requested-size rectangle surface; arbitrary Cairo operations remain refused.
         class DrawingArea < Widget
+          # Creates a clipped rectangle surface with a one-pixel requested size.
           def initialize
             super
             @props.merge!(width: 1, height: 1, layers: [], clip_layers: true)
           end
 
+          # Updates requested dimensions and redraws an already published surface.
+          # @param width [Integer] -1, or requested width in 1..65536
+          # @param height [Integer] -1, or requested height in 1..65536
+          # @return [DrawingArea] self
           def set_size_request(width, height)
             session.style_operation(self, :set_size_request) do
               valid = [width, height].all? { |value| value.is_a?(Integer) && (value == -1 || value.between?(1, 65_536)) }
@@ -84,7 +115,9 @@ module Lich
             self
           end
 
+          # @return [Integer] bounded requested width used by the draw callback
           def allocated_width = drawing_dimension(:width)
+          # @return [Integer] bounded requested height used by the draw callback
           def allocated_height = drawing_dimension(:height)
 
           # Retains ordinary handler IDs and disconnection/destruction behavior.
@@ -100,6 +133,8 @@ module Lich
             end
           end
 
+          # @param id [Integer] live connection ID returned by signal_connect
+          # @return [DrawingArea] self after retiring exactly that handler
           def signal_handler_disconnect(id) = disconnect_signal_handler(id)
 
           # Rebuilds the complete layer list before replacing the published frame.
@@ -129,6 +164,9 @@ module Lich
             end
           end
 
+          # Runs script draw handlers once with an always-retired borrowed context.
+          # Publication occurs only after all callbacks and recorder cleanup finish.
+          # @return [Array<Hash>] typed layers for one complete frame
           def drawing_layers
             session.refuse(self, :draw) if destroyed? || @drawing
             allocated_width

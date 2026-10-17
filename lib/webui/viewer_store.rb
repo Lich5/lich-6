@@ -284,6 +284,9 @@ module Lich
       end
 
       # Rechecks the exact release surface epoch before queued user code runs.
+      # @param attachment [Attachment] original admitting viewer
+      # @param admission [ReleaseAdmission] captured surface epoch and queue time
+      # @return [Boolean] whether the queued callback still has live authority
       def release_admission_current?(attachment, admission)
         @mutex.synchronize do
           live_attachment?(attachment) && attachment.release_epochs[admission.cid].equal?(admission.epoch) &&
@@ -407,10 +410,17 @@ module Lich
 
       private
 
+      # Checks connection identity as well as transient-disconnect state.
+      # Caller holds the store monitor; no resume token alone authorizes events.
+      # @param attachment [Attachment] candidate live viewer
+      # @return [Boolean] whether this exact attachment remains routed
       def live_attachment?(attachment)
         @by_connection[[attachment.connection_id, attachment.address]].equal?(attachment) && !attachment.expires_at
       end
 
+      # Clears transfer/release epochs on disconnect or permanent destruction.
+      # @param attachment [Attachment] viewer whose queued authority is retired
+      # @return [Integer] advanced transfer revision
       def retire_widget_admission!(attachment)
         attachment.release_epochs.clear
         attachment.release_request = nil
@@ -421,6 +431,10 @@ module Lich
       # One epoch per currently bound release surface; removed surfaces retain no
       # history. Equal paints keep authority for at most 30 seconds. The caller
       # holds the same monitor used for delivery and event validation.
+      # @param attachment [Attachment] viewer receiving the render
+      # @param render [Page::Render] newest coherent component tree and bindings
+      # @param now [Numeric] monotonic delivery time
+      # @return [Hash] current release signatures, keyed by component identity
       def update_release_epochs(attachment, render, now)
         signatures = release_signatures(render)
         attachment.release_epochs.keep_if { |cid, _epoch| signatures.key?(cid) }
@@ -438,6 +452,8 @@ module Lich
       # Captures target subtrees and ancestor layout/state, excluding unrelated
       # sibling text paints. Shared immutable projections keep storage linear in
       # the tree plus the ancestry of each bound release surface.
+      # @param render [Page::Render] validated tree and binding authority
+      # @return [Hash] per-surface projections without viewer input snapshots
       def release_signatures(render)
         return {} unless render.bindings.any? { |(_cid, event), _callback| event == :pointer_release }
 
@@ -459,6 +475,11 @@ module Lich
       # Admits only unchanged release surfaces, never submitted forms or arbitrary
       # stale event families. Request high-water marks prevent duplicate callbacks
       # across surface replacement and time-window renewal.
+      # @param attachment [Attachment] live viewer protected by the store monitor
+      # @param message [Hash] correlated release envelope, still subject to validation
+      # @yieldparam admission [ReleaseAdmission] coherent callback render and epoch
+      # @return [Object] validation/enqueue result, or :queued for a duplicate
+      # @raise [Protocol::Refusal] for a generation outside the surface epoch
       def admit_release(attachment, message)
         epoch = attachment.release_epochs[message[:cid]]
         generation = message[:generation]
@@ -483,6 +504,8 @@ module Lich
       # retain their state and child order; unrelated sibling text paints do not.
       # Shared immutable property references keep the retained projection bounded
       # by the already validated component tree; no viewer input values are copied.
+      # @param render [Page::Render] validated tree and transfer bindings
+      # @return [Array, nil] transfer projection, or nil without transfer surfaces
       def widget_signature(render)
         bindings = render.bindings.each_with_object({}) do |((cid, event), callback), grouped|
           (grouped[cid] ||= {})[event] = callback
