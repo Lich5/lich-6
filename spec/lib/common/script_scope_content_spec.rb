@@ -337,7 +337,10 @@ RSpec.describe 'bounded text, image and menu compatibility' do
       expect { frame.label = value }.to raise_error(compatibility::UnsupportedOperation)
       expect(frame.label).to eq('Updated')
     end
-    %i[out etched_in etched_out unknown].each do |value|
+    frame.shadow_type = :etched_in
+    expect(frame.send(:component_props)[:border_width]).to eq(1)
+    expect(rendered_node(viewer, :text_input)['cid']).to eq(original_child)
+    %i[out etched_out unknown].each do |value|
       expect { frame.shadow_type = value }.to raise_error(compatibility::UnsupportedOperation)
       expect(frame.send(:component_props)[:border_width]).to eq(1)
     end
@@ -1008,5 +1011,342 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect(mnemonic.label).to eq('Plain')
     expect { nested.add(menu) }.to raise_error(compatibility::UnsupportedOperation)
     expect { compatibility::Expander.new.add(parent) }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'replaces live submenus and retires destroyed references without changing the trigger' do
+    trigger = compatibility::MenuItem.new('Scale')
+    original = compatibility::Menu.new
+    original.add(compatibility::MenuItem.new('Original'))
+    trigger.submenu = original
+    trigger.materialize
+    identity = trigger.instance_variable_get(:@handle)
+    replacement = compatibility::Menu.new
+    replacement.add(compatibility::MenuItem.new('Replacement'))
+    port = trigger.session.port
+    allow(port).to receive(:replace_child).and_raise(Lich::WebUI::Error, 'injected replacement failure')
+    expect { trigger.submenu = replacement }.to raise_error(Lich::WebUI::Error, /injected/)
+    expect(trigger.children).to eq([original])
+    expect(trigger.submenu).to equal(original)
+    expect(replacement.parent).to be_nil
+    allow(port).to receive(:replace_child).and_call_original
+    trigger.submenu = replacement
+    expect(trigger.children).to eq([replacement])
+    expect(trigger.submenu).to equal(replacement)
+    expect(original.parent).to be_nil
+    expect(original).not_to be_destroyed
+    expect(trigger.instance_variable_get(:@handle)).to equal(identity)
+    other = compatibility::MenuItem.new('Other')
+    expect { other.submenu = replacement }.to raise_error(compatibility::UnsupportedOperation)
+    expect(trigger.children).to eq([replacement])
+    replacement.destroy
+    expect(trigger.submenu).to be_nil
+    expect(trigger.children).to be_empty
+    expect { trigger.activate }.to raise_error(compatibility::UnsupportedOperation)
+    third = compatibility::Menu.new
+    trigger.submenu = third
+    expect(trigger.submenu).to equal(third)
+    expect(trigger.instance_variable_get(:@handle)).to equal(identity)
+    terminal = compatibility::MenuItem.new('Terminal')
+    terminal.materialize
+    expect { terminal.submenu = compatibility::Menu.new }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'inherits bounded underline, bold and color without leaking styles into siblings or replacement' do
+    label = compatibility::Label.new
+    label.markup = "<span foreground='#d8dee9'><b><u>Group &amp; role</u> plain</b></span> end"
+    parts = label.send(:component_props).fetch(:fragments)
+    expect(parts[0]).to include(content: 'Group & role', underline: true, emphasis: :strong,
+                                foreground: { r: 216, g: 222, b: 233, a: 1.0 })
+    expect(parts[1]).not_to have_key(:underline)
+    expect(parts[2]).to eq(content: ' end')
+    expect { label.markup = '<u onclick="bad">bad</u>' }.to raise_error(compatibility::UnsupportedOperation)
+    expect(label.text).to eq('Group & role plain end')
+    label.markup = 'Plain'
+    expect(label.send(:component_props)).not_to have_key(:fragments)
+  end
+
+  it 'retains opposite scrollbar policies and bounds live minimum width independently of height' do
+    scroll = compatibility::ScrolledWindow.new
+    scroll.set_policy(:never, :always)
+    scroll.set_hscrollbar_policy(:AUTOMATIC)
+    expect([scroll.hscrollbar_policy, scroll.vscrollbar_policy]).to eq(%i[automatic always])
+    scroll.vscrollbar_policy = :never
+    scroll.min_content_height = 120
+    scroll.min_content_width = 300
+    window = compatibility::Window.new
+    window.add(scroll)
+    viewer = connect(show(window), 'scroll-width')
+    expect(rendered_node(viewer, :scroll)['props']).to include('min_width' => 300, 'min_height' => 120)
+    identity = rendered_node(viewer, :scroll)['cid']
+    scroll.min_content_width = -1
+    wait_for { rendered_node(viewer, :scroll).dig('props', 'min_width') == 0 }
+    expect(scroll.min_content_width).to eq(-1)
+    expect(rendered_node(viewer, :scroll)['cid']).to eq(identity)
+    [-2, 65_537, 0.5, '300'].each do |value|
+      expect { scroll.min_content_width = value }.to raise_error(compatibility::UnsupportedOperation)
+    end
+    expect { scroll.set_policy(:always, :unknown) }.to raise_error(compatibility::UnsupportedOperation)
+    expect([scroll.hscrollbar_policy, scroll.vscrollbar_policy]).to eq(%i[automatic never])
+  end
+
+  it 'renders successor fragments, live submenus and Notebook callbacks in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Priority 16 successor controls')
+    box = compatibility::Box.new(:vertical)
+    heading = compatibility::Label.new
+    heading.markup = "<span foreground='#d8dee9'><b><u>Group heading</u></b></span>"
+    frame = compatibility::Frame.new('Etched frame')
+    frame.shadow_type = :etched_in
+    scroll = compatibility::ScrolledWindow.new
+    scroll.min_content_width = 300
+    scroll.min_content_height = 40
+    scroll.add(heading)
+    frame.add(scroll)
+    notebook = compatibility::Notebook.new
+    notebook.append_page(compatibility::Label.new('First content'), compatibility::Label.new('First'))
+    notebook.append_page(compatibility::Label.new('Second content'), compatibility::Label.new('Second'))
+    status = compatibility::Label.new('No page change')
+    seen = []
+    notebook.signal_connect('switch-page') { |widget, page, index| seen << [widget, page, index]; status.text = "Page #{index}: #{page.text}" }
+    action = compatibility::Label.new('Open choices')
+    menu, nested = compatibility::Menu.new, compatibility::Menu.new
+    trigger = compatibility::MenuItem.new('Choices')
+    nested.add(compatibility::MenuItem.new('Old choice'))
+    trigger.submenu = nested
+    menu.add(trigger)
+    action.signal_connect('button-press-event') { |_widget, event| menu.popup_at_pointer(event) }
+    rebuild = compatibility::Button.new('Replace choices')
+    rebuild.signal_connect('clicked') do
+      nested.destroy
+      replacement = compatibility::Menu.new
+      item = compatibility::MenuItem.new('New choice')
+      item.signal_connect('activate') { status.text = 'New choice activated' }
+      replacement.add(item)
+      trigger.submenu = replacement
+    end
+    [frame, notebook, status, action, rebuild].each { |widget| box.add(widget) }
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-successor-controls')
+    expect(seen.map(&:last)).to eq([1])
+    expect(status.text).to eq('New choice activated')
+  end
+
+  it 'allocates only expanding columns and protects insensitive combo cells in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    model = compatibility::ListStore.new(String, String, TrueClass)
+    first, second = model.append, model.append
+    first[0], first[1], first[2] = 'Active skill', 'Old', true
+    second[0], second[1], second[2] = 'Disabled skill', 'Old', false
+    options = compatibility::ListStore.new(String)
+    options.append[0] = 'Old'
+    options.append[0] = 'New'
+    view = compatibility::TreeView.new(model)
+    skill = compatibility::TreeViewColumn.new('Skill', compatibility::CellRendererText.new, text: 0)
+    skill.expand = true
+    skill.resizable = true
+    editor = compatibility::CellRendererCombo.new
+    editor.model = options
+    editor.text_column = 0
+    editor.editable = true
+    editor.has_entry = false
+    choice = compatibility::TreeViewColumn.new('Choice', editor, text: 1, sensitive: 2)
+    editor.signal_connect('edited') { |_cell, path, value| model.get_iter(path)[1] = value }
+    [skill, choice].each { |column| view.append_column(column) }
+    view.set_tooltip_text('Selective expansion')
+    shared = compatibility::TreeView.new(model)
+    shared.set_tooltip_text('Shared expansion')
+    %w[First Second Fixed].each_with_index do |name, index|
+      column = compatibility::TreeViewColumn.new(name, compatibility::CellRendererText.new, text: 0)
+      column.expand = index < 2
+      column.min_width = index == 0 ? 80 : 120
+      column.fixed_width = 150 if index == 2
+      shared.append_column(column)
+    end
+    window = compatibility::Window.new('Priority 16 successor columns')
+    box = compatibility::Box.new(:vertical)
+    box.add(view)
+    box.add(shared)
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-successor-columns')
+    expect(first[1]).to eq('New')
+    expect(second[1]).to eq('Old')
+  end
+
+  it 'shares Label selectability validation and validates combined EventBox crossing masks atomically' do
+    label = compatibility::Label.new('Selectable')
+    expect(label.selectable = true).to be(true)
+    expect(label.set_selectable(false)).to equal(label)
+    expect { label.selectable = :yes }.to raise_error(compatibility::UnsupportedOperation)
+    box = compatibility::EventBox.new.add(label)
+    masks = scope::Gdk::EventMask
+    expect(box.add_events(masks::ENTER_NOTIFY_MASK | masks::LEAVE_NOTIFY_MASK)).to equal(box)
+    expect { box.add_events(masks::ENTER_NOTIFY_MASK | (1 << 14)) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { compatibility::Layout.new.add_events(masks::BUTTON_PRESS_MASK) }.to raise_error(compatibility::UnsupportedOperation)
+    calls = Queue.new
+    box.signal_connect('enter-notify-event') { |widget, event| calls << [widget, event.event_type] }
+    box.signal_connect('leave-notify-event') { |widget, event| calls << [widget, event.event_type] }
+    window = compatibility::Window.new
+    window.add(box)
+    page = show(window)
+    viewer = connect(page, 'crossings')
+    node = page.last_render.tree.each.find { |item| item.type == :stack }
+    send_event(page, viewer, node, 'pointer_enter')
+    expect(calls.pop(timeout: 2)).to eq([box, :enter_notify])
+    send_event(page, viewer, node, 'pointer_leave')
+    expect(calls.pop(timeout: 2)).to eq([box, :leave_notify])
+  end
+
+  it 'retains EventBox hover through redraw and sends iterator-backed combo choices in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Priority 16 hover and choices')
+    outer, inner = compatibility::Box.new(:vertical), compatibility::Box.new(:vertical)
+    box = compatibility::EventBox.new.add(inner)
+    counts = [0, 0]
+    status = compatibility::Label.new('Hover 0/0')
+    box.add_events(scope::Gdk::EventMask::ENTER_NOTIFY_MASK | scope::Gdk::EventMask::LEAVE_NOTIFY_MASK)
+    box.signal_connect('enter-notify-event') { counts[0] += 1; status.text = "Hover #{counts.join('/')}" }
+    box.signal_connect('leave-notify-event') { counts[1] += 1; status.text = "Hover #{counts.join('/')}" }
+    first, second = compatibility::Label.new('Hover first'), compatibility::Label.new('Hover second')
+    refresh = compatibility::Button.new('Refresh hovered box')
+    refresh.signal_connect('clicked') { first.text = 'Hover refreshed' }
+    [first, second, refresh].each { |widget| inner.add(widget) }
+    model = compatibility::ListStore.new(String)
+    row = model.append
+    row[0] = 'Original'
+    choices = compatibility::ListStore.new(String, Integer)
+    [['Original', 0], ['Duplicate', 42], ['Duplicate', 99]].each do |text, number|
+      choice = choices.append
+      choice[0], choice[1] = text, number
+    end
+    renderer = compatibility::CellRendererCombo.new
+    renderer.model = choices
+    renderer.editable = true
+    selected = compatibility::Label.new('No choice')
+    renderer.signal_connect('changed') { |_cell, path, choice| model.get_iter(path)[0] = choice[0]; selected.text = "Choice #{choice[1]}" }
+    view = compatibility::TreeView.new(model)
+    view.append_column(compatibility::TreeViewColumn.new('Choice', renderer, text: 0))
+    [box, status, view, selected].each { |widget| outer.add(widget) }
+    window.add(outer)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-hover-choice')
+    expect(counts).to eq([2, 2])
+    expect(row[0]).to eq('Duplicate')
+    expect(selected.text).to eq('Choice 99')
+  end
+
+  it 'rebuilds combo callbacks and changes hidden Notebook pages through their real widgets in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Priority16 facade follow-ups')
+    box = compatibility::Box.new(:vertical)
+    combo = compatibility::ComboBoxText.new
+    combo.append_text('Original')
+    calls = []
+    old = combo.signal_connect('changed') { calls << :stale }
+    combo.active = 0
+    calls.clear
+    status = compatibility::Label.new('No choice')
+    rebuild = compatibility::Button.new('Rebuild choices')
+    rebuild.signal_connect('clicked') do
+      combo.signal_handler_disconnect(old)
+      combo.remove_all
+      combo.append_text('Rebuilt')
+      combo.signal_connect('changed') { calls << :new; status.text = combo.active_text }
+    end
+    notebook = compatibility::Notebook.new
+    first, second = compatibility::Label.new('Main content'), compatibility::Label.new('Profession content')
+    notebook.append_page(first, compatibility::Label.new('Main'))
+    notebook.append_page(second, compatibility::Label.new('Profession'))
+    notebook.get_nth_page(1).no_show_all = true
+    notebook.get_nth_page(1).hide
+    reveal = compatibility::Button.new('Show profession')
+    identities = []
+    reveal.signal_connect('clicked') { identities << notebook.get_nth_page(1).equal?(second); notebook.get_nth_page(1).no_show_all = false; notebook.get_nth_page(1).show }
+    hide = compatibility::Button.new('Hide profession')
+    hide.signal_connect('clicked') { identities << notebook.get_nth_page(1).equal?(second); notebook.get_nth_page(1).no_show_all = true; notebook.get_nth_page(1).hide }
+    [combo, rebuild, status, notebook, reveal, hide].each { |widget| box.add(widget) }
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-two-facades')
+    expect(calls).to eq([:new])
+    expect(identities).to eq([true, true])
+    expect(second.visible?).to be(false)
+  end
+  it 'updates and clears container tooltips while retaining selection and scroll in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Container tooltips')
+    box = compatibility::Box.new(:vertical)
+    notebook, scroll = compatibility::Notebook.new, compatibility::ScrolledWindow.new
+    content = compatibility::Box.new(:vertical)
+    40.times { |index| content.add(compatibility::Label.new("Tooltip content #{index}")) }
+    scroll.set_size_request(300, 140)
+    scroll.add_with_viewport(content)
+    notebook.append_page(compatibility::Label.new('First content'), compatibility::Label.new('First'))
+    notebook.append_page(scroll, compatibility::Label.new('Second'))
+    [notebook, scroll].each { |widget| widget.set_tooltip_text(nil) }
+    assign = compatibility::Button.new('Assign tooltips')
+    clear = compatibility::Button.new('Clear tooltips')
+    identities = []
+    assign.signal_connect('clicked') do
+      identities << notebook.get_nth_page(1).equal?(scroll)
+      [notebook, scroll].each { |widget| widget.tooltip_text = '<literal help>' }
+    end
+    clear.signal_connect('clicked') { [notebook, scroll].each { |widget| widget.set_tooltip_text(nil) } }
+    [notebook, assign, clear].each { |widget| box.add(widget) }
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-tooltips')
+    expect(identities).to eq([true])
+  end
+  it 'rebuilds live combo options and selects a new duplicate row in one callback in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Combo rebuild')
+    box = compatibility::Box.new(:vertical)
+    combo = compatibility::ComboBoxText.new
+    combo.append_text('Old')
+    combo.active = 0
+    status = compatibility::Label.new('Not rebuilt')
+    rebuild = compatibility::Button.new('Rebuild combo')
+    rebuild.signal_connect('clicked') do
+      combo.remove_all
+      2.times { combo.append_text('All') }
+      combo.set_active(1) if combo.model.iter_n_children(nil).positive?
+      status.text = "Selected #{combo.active}: #{combo.active_text}"
+    end
+    clear = compatibility::Button.new('Clear combo')
+    clear.signal_connect('clicked') { combo.remove_all; combo.active = -1; status.text = "Cleared #{combo.active}" }
+    [combo, rebuild, clear, status].each { |widget| box.add(widget) }
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-combo-rebuild')
+  end
+  it 'batches wheel bursts and keeps optional signals and additive cell bindings in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Priority16 review fixes')
+    box = compatibility::Box.new(:vertical)
+    scroll, layout = compatibility::ScrolledWindow.new, compatibility::Layout.new
+    scroll.set_size_request(300, 120)
+    content = compatibility::Label.new('Wheel burst surface')
+    content.set_size_request(800, 6000)
+    layout.put(content, 0, 0)
+    wheel_calls = []
+    layout.signal_connect('scroll-event') { |_widget, event| sleep 0.02; wheel_calls << event.deltas; false }
+    scroll.add(layout)
+    entry = compatibility::Entry.new
+    entry.placeholder_text = 'Unsent entry'
+    entry_changes = []
+    entry.signal_connect('changed') { entry_changes << entry.text }
+    first = compatibility::RadioButton.new('First plain radio')
+    second = compatibility::RadioButton.new(first, 'Second plain radio')
+    model = compatibility::ListStore.new(String, TrueClass, TrueClass, String)
+    row = model.append
+    ['Old', false, true, 'Mapped'].each_with_index { |value, index| row[index] = value }
+    renderer = compatibility::CellRendererText.new
+    renderer.editable = true
+    column = compatibility::TreeViewColumn.new('Bound', renderer, text: 0, background_set: 2)
+    column.add_attribute(renderer, 'sensitive', 1)
+    column.add_attribute(renderer, 'text', 3)
+    view = compatibility::TreeView.new(model)
+    view.append_column(column)
+    [scroll, entry, first, second, view].each { |widget| box.add(widget) }
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority16-review')
+    expect(wheel_calls).to eq([[0, 200]])
+    expect(entry_changes).to be_empty
   end
 end

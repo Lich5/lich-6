@@ -416,6 +416,12 @@ module Lich
             raise Protocol::Refusal.new(:payload, 'component interaction is disabled or its window is hidden')
           end
         end
+        # A select notification represents a transition, including when a client
+        # resubmits its already selected tab before the next render arrives.
+        if component.type == :tabs && message[:event].to_sym == :select &&
+           @viewers.property(attachment, component, :selected) == payload[:index]
+          return :queued
+        end
         snapshot = build_submission(attachment, component, message)
         return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
         if component.type == :table && message[:event].to_sym == :selection_change && callback.respond_to?(:prepare_selection)
@@ -433,7 +439,7 @@ module Lich
         @dispatcher.enqueue(
           owner: attachment.page.owner, page_id: attachment.page.id,
           viewer_id: attachment.viewer_id, cid: component.cid, event: context.event,
-          coalescable: !event_schema[:terminal] && !event_schema[:lifecycle],
+          coalescable: !event_schema[:terminal] && !event_schema[:lifecycle] && !event_schema[:ordered],
           cleanup: -> { snapshot&.discard_sensitive! }
         ) do
           callback.call(context)

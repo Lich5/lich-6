@@ -21,7 +21,7 @@ function fixture() {
   };
   dom.window.eval(fs.readFileSync(path.join(root, 'app.js'), 'utf8'));
   return { dom, sent, page: { controls: new Map(), bindings: {}, submissions: {} },
-    receive: message => listeners.message({ data: JSON.stringify(message) }) };
+    receive: message => listeners.message({ data: JSON.stringify(message) }), disconnect: () => listeners.close() };
 }
 
 test('native minimize measurements are deduplicated and listeners retire on close', t => {
@@ -2151,4 +2151,93 @@ test('plain action focus yields to a new explicit server focus request', t => {
   assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('button'));
   render(3, 2);
   assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('input'));
+});
+
+function wheelFixture(t) {
+  const env = fixture(); t.after(() => env.dom.window.close());
+  const frames = new Map(); let id = 0;
+  env.dom.window.requestAnimationFrame = callback => { frames.set(++id, callback); return id; };
+  env.dom.window.cancelAnimationFrame = key => frames.delete(key);
+  const draw = (generation, props = {}, present = true) => env.receive({ type: 'render', page: 'wheel', generation,
+    bindings: { surface: ['scroll'], action: ['activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      ...(present ? [{ type: 'group', cid: 'surface', props, children: [] }] : []),
+      { type: 'button', cid: 'action', props: { label: 'Action' } }
+    ] } });
+  env.receive({ type: 'hello', pages: [{ address: 'wheel' }] }); draw(1);
+  const frame = () => { const tasks = [...frames.values()]; frames.clear(); tasks.forEach(work => work()); };
+  frame();
+  const wheel = (y, options = {}) => env.dom.window.document.querySelector('[data-cid="surface"]').dispatchEvent(
+    new env.dom.window.WheelEvent('wheel', { deltaY: y, bubbles: true, cancelable: true, ...options }));
+  const messages = () => env.sent.filter(message => message.event === 'scroll');
+  return { ...env, wheel, frame, draw, messages };
+}
+
+test('wheel bursts coalesce once per frame with an exact sum', t => {
+  const env = wheelFixture(t);
+  for (let index = 0; index < 100; index++) env.wheel(2);
+  assert.equal(env.messages().length, 0);
+  env.frame();
+  assert.equal(env.messages().length, 1);
+  assert.equal(env.messages()[0].payload.delta_y, 200);
+});
+
+test('wheel batches preserve modifier and direction transitions and normalized units', t => {
+  const env = wheelFixture(t);
+  env.wheel(2, { deltaMode: 1 }); env.wheel(3, { deltaMode: 1 });
+  env.wheel(4, { shiftKey: true }); env.wheel(5, { ctrlKey: true }); env.wheel(-6, { ctrlKey: true });
+  env.frame();
+  assert.deepEqual(env.messages().map(message => [message.payload.delta_y, message.payload.state]), [[80, 0], [4, 1], [5, 4], [-6, 4]]);
+  env.wheel(1, { deltaMode: 2 }); env.frame();
+  assert.equal(env.messages().at(-1).payload.delta_y, env.dom.window.innerHeight);
+});
+
+test('large wheel sums split into bounded messages without losing movement', t => {
+  const env = wheelFixture(t);
+  for (let index = 0; index < 100; index++) env.wheel(1000, { deltaX: 500 });
+  env.frame();
+  assert.equal(env.messages().length, 2);
+  assert.equal(env.messages().reduce((sum, message) => sum + message.payload.delta_y, 0), 100000);
+  assert.equal(env.messages().reduce((sum, message) => sum + message.payload.delta_x, 0), 50000);
+  assert.ok(env.messages().every(message => Math.max(Math.abs(message.payload.delta_x), Math.abs(message.payload.delta_y)) <= 65536));
+});
+
+test('wheel movement survives redraw by identity and flushes before a later activation', t => {
+  const env = wheelFixture(t);
+  env.wheel(10); env.draw(2); env.frame();
+  assert.equal(env.messages()[0].generation, 2);
+  assert.equal(env.messages()[0].payload.delta_y, 10);
+  env.wheel(20);
+  env.dom.window.document.querySelector('[data-cid="action"]').click();
+  assert.deepEqual(env.sent.filter(message => ['scroll', 'activate'].includes(message.event)).map(message => message.event), ['scroll', 'scroll', 'activate']);
+  env.frame(); assert.equal(env.messages().length, 2);
+});
+
+test('wheel batches retire when their surface disappears, disables or closes', t => {
+  const env = wheelFixture(t);
+  env.wheel(10); env.draw(2, {}, false); env.frame(); assert.equal(env.messages().length, 0);
+  env.draw(3); env.wheel(20); env.draw(4, { disabled: true }); env.frame(); assert.equal(env.messages().length, 0);
+  env.draw(5); env.wheel(30); env.receive({ type: 'page_closed', page: 'wheel' }); env.frame(); assert.equal(env.messages().length, 0);
+});
+
+test('nested wheel surfaces emit only for the innermost enabled surface', t => {
+  const env = wheelFixture(t);
+  env.receive({ type: 'render', page: 'wheel', generation: 2, bindings: { surface: ['scroll'], inner: ['scroll'] }, tree: {
+    type: 'page', cid: 'root', props: {}, children: [{ type: 'group', cid: 'surface', props: {}, children: [
+      { type: 'group', cid: 'inner', props: {}, children: [] }
+    ] }]
+  } });
+  env.dom.window.document.querySelector('[data-cid="inner"]').dispatchEvent(new env.dom.window.WheelEvent('wheel', { deltaY: 7, bubbles: true, cancelable: true }));
+  env.frame();
+  assert.deepEqual(env.messages().map(message => [message.cid, message.payload.delta_y]), [['inner', 7]]);
+  env.draw(3, { hidden: true }); env.wheel(8); env.frame();
+  assert.equal(env.messages().length, 1);
+});
+
+test('disconnect cancels unsent wheel frames and retiring DOM nodes cannot queue new movement', t => {
+  const env = wheelFixture(t);
+  const old = env.dom.window.document.querySelector('[data-cid="surface"]');
+  env.draw(2);
+  old.dispatchEvent(new env.dom.window.WheelEvent('wheel', { deltaY: 10, bubbles: true, cancelable: true }));
+  env.frame(); assert.equal(env.messages().length, 0);
+  env.wheel(20); env.disconnect(); env.frame(); assert.equal(env.messages().length, 0);
 });

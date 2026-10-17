@@ -19,6 +19,8 @@ module Lich
         # Only materialized widgets own opaque port handles. Destruction removes
         # the browser surface while leaving Ruby metadata readable, as MyFletch
         # reads and normalizes its entries after destroying the setup window.
+        CrossingEvent = Data.define(:event_type)
+
         class Widget
           SIGNAL_ID_MUTEX = Mutex.new
           private_constant :SIGNAL_ID_MUTEX
@@ -180,8 +182,13 @@ module Lich
             session.style_operation(self, :signal_connect) do
               session.refuse(self, :signal_connect) if destroyed?
               name = name.to_s.tr('-', '_')
-              event = if name == 'destroy'
-                        :destroy
+              event = if %w[destroy show map realize].include?(name)
+                        session.refuse(self, "signal:#{name}") if %w[map realize].include?(name) && !is_a?(Window)
+                        name.to_sym
+                      elsif %w[scroll_event enter_notify_event leave_notify_event].include?(name)
+                        mapped = { 'scroll_event' => :scroll, 'enter_notify_event' => :pointer_enter, 'leave_notify_event' => :pointer_leave }.fetch(name)
+                        session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(mapped)
+                        mapped
                       elsif name == 'button_press_event'
                         session.refuse(self, "signal:#{name}") unless session.port.schema(component_type)[:events].key?(:pointer_press)
                         write(:pointer_events, true)
@@ -197,7 +204,7 @@ module Lich
                 (@destroy_handlers ||= []) << handler
               else
                 (@signals[event] ||= []) << [name, handler]
-                bind_event(event) if @handle
+                bind_event(event) if @handle && !%i[show map realize].include?(event)
               end
               @signal_connections[id] = [event, handler]
               id
@@ -226,8 +233,15 @@ module Lich
           # Other native event families are not implied by menu support.
           # @return [Widget] self
           def add_events(mask)
-            session.refuse(self, :add_events) unless mask == Gdk::EventMask::BUTTON_PRESS_MASK && session.port.schema(component_type)[:events].key?(:pointer_press)
-            write(:pointer_events, true)
+            masks = { Gdk::EventMask::BUTTON_PRESS_MASK => :pointer_press, Gdk::EventMask::SCROLL_MASK => :scroll,
+                      Gdk::EventMask::ENTER_NOTIFY_MASK => :pointer_enter, Gdk::EventMask::LEAVE_NOTIFY_MASK => :pointer_leave }
+            mask = Gdk::EventMask::SCROLL_MASK if mask == :scroll_mask
+            supported = masks.keys.reduce(0, :|)
+            session.refuse(self, :add_events) unless mask.is_a?(Integer) && mask.positive? && (mask & ~supported).zero?
+            events = masks.filter_map { |bit, event| event unless (mask & bit).zero? }
+            session.refuse(self, :add_events) unless events.all? { |event| session.port.schema(component_type)[:events].key?(event) }
+            write(:pointer_events, true) if events.include?(:pointer_press)
+            self
           end
 
           # Maps content border spacing to the shared control's margin.
@@ -494,7 +508,8 @@ module Lich
             @handle = session.port.create(component_type, component_props.merge(placement: @placement || {}))
             @published_layout = layout_props
             child_handles.each { |child| session.port.attach(@handle, child) }
-            (builtin_events + signal_map.values + @signals.keys).uniq.each { |event| bind_event(event) }
+            optional = %i[key_press key_release blur] + (is_a?(RadioButton) ? [:activate] : [])
+            (builtin_events + signal_map.values + @signals.keys).uniq.reject { |event| %i[show map realize].include?(event) || (optional.include?(event) && !@signals.key?(event)) }.each { |event| bind_event(event) }
             @handle
           end
 
@@ -526,8 +541,20 @@ module Lich
           # Clears the shared hidden property.
           # @return [Widget] self
           def show
+            changed = !visible?
             write(:hidden, false)
+            emit_handlers(:show) if changed && !destroyed?
+            self
           end
+
+          # Opts out of recursive show_all; explicit show/hide still work.
+          def no_show_all=(value)
+            session.refuse(self, :no_show_all=) unless [true, false].include?(value)
+            write(:hidden, true) if value && !visible? && !is_a?(Window)
+            @no_show_all = value
+          end
+          alias set_no_show_all no_show_all=
+          def no_show_all? = @no_show_all == true
 
           # Hides widget content without discarding its input or destroying its owner.
           # @return [Widget] self
@@ -538,6 +565,8 @@ module Lich
           # Shows this widget and every shadow descendant.
           # @return [Widget] self
           def show_all
+            return self if no_show_all?
+
             show
             @children.each(&:show_all)
             self
@@ -649,6 +678,7 @@ module Lich
                 @props[property] = value
               end
               @tab_owner&.send(:refresh_headers)
+              parent.send(:refresh_headers) if property == :hidden && parent.is_a?(Notebook)
             end
             self
           end
@@ -676,7 +706,21 @@ module Lich
             widget = self
             session.port.bind(@handle, event, proc do |context|
               session.callback(context, terminal: !context.viewer_id.nil? && %i[activate submit close].include?(event), widget: widget) do
-                result = if event == :pointer_press
+                result = if event == :scroll
+                           scroll = ScrollEvent.new(context.payload)
+                           stopped = @signals.fetch(event, []).dup.any? { |_name, handler| handler.call(widget, scroll) == true }
+                           unless destroyed? || (stopped && !scroll.replayed?)
+                             delta = scroll.deltas
+                             previous = session.with_widget(self) { session.port.get(@handle, :scroll_request) } || { x: 0, y: 0 }
+                             write(:scroll_request, { x: previous[:x] + delta[0], y: previous[:y] + delta[1] })
+                           end
+                         elsif %i[key_press key_release].include?(event)
+                           key = KeyEvent.new(**context.payload)
+                           @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(widget, key) == true }
+                         elsif %i[pointer_enter pointer_leave].include?(event)
+                           crossing = CrossingEvent.new(event == :pointer_enter ? :enter_notify : :leave_notify)
+                           @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(widget, crossing) == true }
+                         elsif event == :pointer_press
                            pointer = PointerEvent.new(**context.payload)
                            session.with_pointer(widget, pointer) do
                              @signals.fetch(event, []).dup.each do |_name, handler|
@@ -945,6 +989,8 @@ module Lich
           # Applies content margins and materializes this page for the shared publication path.
           # @return [Window] self
           def show_all
+            return self if no_show_all?
+
             @children.each { |child| child.set_border_width(@content_margin) unless child.equal?(@titlebar) } if @content_margin
             @children.each(&:show_all)
             show
@@ -965,7 +1011,13 @@ module Lich
                   set_focus(target) if ancestor.equal?(self)
                 end
               end
+              first = !@realized
+              changed = !@shown
+              @realized = true
               @shown = true
+              emit_handlers(:realize) if first
+              emit_handlers(:show) if changed && !destroyed?
+              emit_handlers(:map) if changed && !destroyed? && visible?
             end
             self
           end
@@ -1032,7 +1084,9 @@ module Lich
             props
           end
 
-          def signal_map = { 'delete_event' => :close, 'configure_event' => :configure, 'window_state_event' => :window_state }
+          def signal_map = { 'delete_event' => :close, 'configure_event' => :configure, 'window_state_event' => :window_state, 'size_allocate' => :configure,
+                             'key_press_event' => :key_press, 'key_release_event' => :key_release }
+
           def builtin_events = %i[close configure window_state]
 
           # Preserve the latest validated browser measurements for the original
@@ -1064,8 +1118,12 @@ module Lich
                 next if previous && previous.values_at(:width, :height, :position) == geometry
 
                 event = ConfigureEvent.new(width: geometry[0], height: geometry[1], x: geometry[2][0], y: geometry[2][1])
-                @signals.fetch(:configure, []).dup.each do |_name, handler|
-                  break if destroyed? || handler.call(self, event) == true
+                @signals.fetch(:configure, []).dup.each do |name, handler|
+                  break if destroyed?
+                  next if name == 'size_allocate' && previous && previous.values_at(:width, :height) == geometry.first(2)
+
+                  argument = name == 'size_allocate' ? Allocation.new(*geometry.first(2)) : event
+                  break if handler.call(self, argument) == true && name != 'size_allocate'
                 end
               end
             end)
@@ -1311,12 +1369,12 @@ module Lich
           end
 
           # Restores the themed frame border for :in; native inset bevels are omitted.
-          # @param value [Symbol] :none or :in
+          # @param value [Symbol] :none, :in or :etched_in
           # @return [Frame] self
           def set_shadow_type(value)
-            session.refuse(self, :shadow_type=) unless %i[none in].include?(value)
+            session.refuse(self, :shadow_type=) unless %i[none in etched_in].include?(value)
             write(:border_width, value == :none ? 0 : 1)
-            session.degrade(:frame_shadow, 'shadow-type=in uses the themed frame border; native inset bevel omitted') if value == :in
+            session.degrade(:frame_shadow, 'native inset/etched bevel uses the themed frame border; bevel decoration omitted') unless value == :none
             self
           end
           alias shadow_type= set_shadow_type
@@ -1399,6 +1457,16 @@ module Lich
           # @return [Integer] number of actual pages, excluding tab-label widgets
           def n_pages = @children.length
 
+          # Returns the actual page, including hidden pages; every negative index
+          # names the last page, matching GTK. Out-of-range and empty lookups are nil.
+          def get_nth_page(index)
+            session.style_operation(self, :get_nth_page) do
+              session.refuse(self, :get_nth_page) if destroyed? || !index.is_a?(Integer)
+              index = n_pages - 1 if index.negative?
+              @children[index] if index.between?(0, n_pages - 1)
+            end
+          end
+
           # Selects the last page for GTK's negative spelling, otherwise a bounded index.
           # Live writes use core viewer state, including pages appended in this callback.
           def set_current_page(index)
@@ -1407,7 +1475,10 @@ module Lich
               index = n_pages - 1 if index.negative?
               return self unless index.between?(0, n_pages - 1)
 
+              return self if @tabs[index][:page].instance_variable_get(:@props)[:hidden] == true
+              previous = selected_tab_key
               write(:selected, index)
+              notify_switch(previous)
             end
           end
 
@@ -1426,6 +1497,7 @@ module Lich
                         text.instance_of?(Label) && !text.destroyed? && text.session.equal?(session) && !label.equal?(child) &&
                         !label.instance_variable_get(:@tab_owner) && !text.instance_variable_get(:@tab_owner)
               session.refuse(self, :append_page) unless valid
+              previous = selected_tab_key
               entry = { key: "tab-#{SecureRandom.hex(12)}", widget: label, label: text, page: child }
               publish_tabs(@tabs + [entry])
               label.send(:parent=, self)
@@ -1433,6 +1505,7 @@ module Lich
               child.send(:parent=, self)
               @children << child
               @tabs << entry
+              notify_switch(previous)
               n_pages - 1
             end
           end
@@ -1444,6 +1517,7 @@ module Lich
               index = n_pages - 1 if index.negative?
               return self unless index.between?(0, n_pages - 1)
 
+              previous = selected_tab_key
               entry = @tabs.fetch(index)
               remaining = @tabs.reject { |item| item.equal?(entry) }
               publish_tabs(remaining)
@@ -1451,6 +1525,7 @@ module Lich
               @children.delete(entry[:page])
               entry[:page].send(:parent=, nil)
               release_header(entry)
+              notify_switch(previous)
             end
             self
           end
@@ -1477,11 +1552,22 @@ module Lich
 
           def component_type = :tabs
           def input_property = :selected
+          def signal_map = { 'switch_page' => :select }
           def builtin_events = %i[select tab_pointer]
 
           # Core validates stable header identity before dispatch; recheck under
           # the owner monitor because a queued callback may outlive its tab.
           def bind_event(event)
+            if event == :select
+              return session.port.bind(@handle, :select, proc do |context|
+                session.callback(context, widget: self) do
+                  index = @tabs.index { |entry| entry[:key] == context.payload[:tab] }
+                  next unless index && !@tabs[index][:page].destroyed? && @tabs[index][:page].instance_variable_get(:@props)[:hidden] != true
+
+                  emit_switch(index)
+                end
+              end)
+            end
             return super unless event == :tab_pointer
 
             session.port.bind(@handle, event, proc do |context|
@@ -1507,11 +1593,30 @@ module Lich
 
           private
 
+          def selected_tab_key
+            @tabs[read(:selected) || 0]&.fetch(:key)
+          end
+
+          def notify_switch(previous)
+            current = selected_tab_key
+            emit_switch(@tabs.index { |entry| entry[:key] == current }) if current && current != previous
+          end
+
+          def emit_switch(index)
+            page = @tabs[index][:page]
+            @signals.fetch(:select, []).dup.each do |name, handler|
+              break if destroyed? || page.destroyed? || !@children.include?(page)
+              handler.call(self, page, index) if name == 'switch_page'
+            end
+          end
+
           # Refreshes only headers; label writes never materialize a second surface.
           def refresh_headers
             return if destroyed?
 
+            previous = selected_tab_key
             publish_tabs(@tabs)
+            notify_switch(previous)
           end
 
           def retire_header(widget)
@@ -1533,7 +1638,7 @@ module Lich
             headers = entries.map do |entry|
               props = entry[:label].send(:component_props)
               { key: entry[:key], pointer_events: entry[:widget].instance_variable_get(:@props)[:pointer_events] == true,
-                foreground: props[:foreground], disabled: !entry[:widget].is_sensitive? }.compact
+                foreground: props[:foreground], hidden: entry[:page].instance_variable_get(:@props)[:hidden] == true, disabled: !entry[:widget].is_sensitive? }.compact
             end
             [names, headers]
           end
@@ -1546,7 +1651,7 @@ module Lich
               index ||= 0
               old_key = @props.dig(:headers, index, :key)
               found = headers.index { |header| header[:key] == old_key } if old_key
-              found || index.clamp(0, [names.length - 1, 0].max)
+              Lich::WebUI::Contract.visible_tab_index(headers, found || index.clamp(0, [names.length - 1, 0].max))
             end
             selected = remap.call(@props[:selected])
             committed = remap.call(@committed[:selected]) if @committed.key?(:selected)
@@ -1666,6 +1771,8 @@ module Lich
             self
           end
 
+          alias selectable= set_selectable
+
           # Translates the measured markup subset into literal text and bounded emphasis/color.
           # Unknown tags are refused; source markup is never forwarded as browser HTML.
           # @return [Label] self
@@ -1682,7 +1789,7 @@ module Lich
               write(:font_style, :italic)
               return write(:content, CGI.unescapeHTML(text))
             end
-            if value.include?('<i>') || value.include?('<small>') || value.match?(/<span\b[^>]*\bforeground=/) || value.match?(/<span\b[^>]*\bsize=['"][a-z-]+['"]/)
+            if value.include?('<i>') || value.include?('<u>') || value.include?('<small>') || value.match?(/<span\b[^>]*\bforeground=/) || value.match?(/<span\b[^>]*\bsize=['"][a-z-]+['"]/)
               return set_styled_markup(value)
             end
             if (sized_span = value.match(/\A<span size=(['"])([0-9]{1,6})\1>([^<>]*)<\/span>\z/m))
@@ -2066,7 +2173,7 @@ module Lich
 
           def component_type = :text_input
           def input_property = :value
-          def signal_map = { 'changed' => :change, 'activate' => :submit, 'focus-in-event' => :focus }
+          def signal_map = { 'changed' => :change, 'activate' => :submit, 'focus-in-event' => :focus, 'focus-out-event' => :blur }
 
           def component_props
             super.merge(change_mode: :input, read_only: !@editable)
@@ -2347,7 +2454,7 @@ module Lich
           protected
 
           def component_type = :radio_option
-          def signal_map = { 'toggled' => :change }
+          def signal_map = { 'toggled' => :change, 'clicked' => :activate }
         end
       end
     end

@@ -605,6 +605,7 @@ module Lich
                           object.send(:signal_map).keys.map { |key| key.tr('-', '_') } + ['destroy']
                         elsif object.is_a?(Adjustment) then %w[changed value_changed]
                         elsif object.is_a?(TreeSelection) then ['changed']
+                        elsif object.is_a?(CellRendererCombo) then %w[edited changed]
                         elsif object.is_a?(CellRendererText) then [object.signal_name]
                         else []
                         end

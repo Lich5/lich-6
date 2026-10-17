@@ -16,6 +16,8 @@ module Lich
           DESCENDING = :descending
         end
 
+        SELECTION_NONE = SelectionMode::NONE
+
         # Legacy spelling uses the same validated model sorting implementation.
         SORT_ASCENDING = SortType::ASCENDING
 
@@ -110,6 +112,14 @@ module Lich
           def foreground_rgba=(value)
             session.refuse(self, :foreground_rgba=) unless value.nil? || value.is_a?(Gdk::RGBA)
             @cell_foreground = value&.to_h
+            @cell_foreground_set = !value.nil?
+            @columns.each(&:changed!) unless @projecting_cell
+          end
+
+          # Clearing the flag restores the theme without discarding the chosen color.
+          def foreground_set=(value)
+            session.refuse(self, :foreground_set=) unless [true, false].include?(value)
+            @cell_foreground_set = value
             @columns.each(&:changed!) unless @projecting_cell
           end
 
@@ -118,12 +128,12 @@ module Lich
           # @api private
           def project_cell(value)
             session.refuse(self, :cell_data_recursion) if @projecting_cell
-            saved = [@cell_text, @cell_foreground, @projecting_cell]
+            saved = [@cell_text, @cell_foreground, @cell_foreground_set, @projecting_cell]
             @cell_text, @projecting_cell = value, true
             yield if block_given?
-            [@cell_text, @cell_foreground]
+            [@cell_text, @cell_foreground_set == false ? nil : @cell_foreground]
           ensure
-            @cell_text, @cell_foreground, @projecting_cell = saved if saved
+            @cell_text, @cell_foreground, @cell_foreground_set, @projecting_cell = saved if saved
           end
 
           def editor = editable ? { type: 'text' } : nil
@@ -171,6 +181,32 @@ module Lich
           def initialize
             super
             @model, @text_column = nil, 0
+            @changed_handlers = []
+          end
+
+          # Choice changes carry an actual iterator, while edited keeps literal text.
+          def signal_connect(name, &handler)
+            return super unless name.to_s == 'changed'
+
+            session.refuse(self, :signal_connect) unless handler
+            @changed_handlers << handler
+            model_changed!
+            @handlers.length + @changed_handlers.length
+          end
+
+          def emit_edit(path, value)
+            return super if @changed_handlers.empty?
+
+            choice_model = model
+            choice = choice_model&.find_key(value)
+            return unless choice
+
+            text = choice[text_column].to_s
+            @changed_handlers.dup.each do |handler|
+              break unless model.equal?(choice_model) && choice_model.iter_is_valid?(choice)
+              handler.call(self, path, choice)
+            end
+            super(path, text)
           end
 
           # Rebinds the same-owner model and detaches the previous observer.
@@ -230,6 +266,11 @@ module Lich
             session.refuse(self, :model) unless model && model.get_column_type(text_column) == String
             # Unset string cells display as blank choices, while the model keeps
             # nil for script callbacks just as it does for ordinary table cells.
+            unless @changed_handlers.empty?
+              choices = model.rows.map { |iter| { value: iter.key, label: iter[text_column].to_s } }
+              session.refuse(self, :options) if choices.length > Lich::WebUI::Contract::BOUNDS[:collection]
+              return { type: 'select', options: choices, option_labels: true }
+            end
             values = model.rows.map { |iter| iter[text_column].to_s }.uniq
             session.refuse(self, :options) if values.length > Lich::WebUI::Contract::BOUNDS[:collection]
             { type: 'select', options: values.map { |text| { value: text, label: text } } }
@@ -265,19 +306,28 @@ module Lich
             self
           end
 
-          # Maps a literal value plus an optional boolean background-enable column.
+          # Adds supplied mappings while preserving the renderer's other column bindings.
           # @param renderer [CellRendererText] this column's renderer
-          # @param attributes [Hash] one text/active binding
+          # @param attributes [Hash] partial value, background_set and sensitive bindings
           # @return [TreeViewColumn] self
           def set_attributes(renderer, attributes)
             view&.check_column_structure!
             normalized = attributes.transform_keys(&:to_s)
-            valid = renderer.equal?(@renderer) && (normalized.keys - [renderer.value_attribute, 'background_set']).empty?
-            column = normalized[renderer.value_attribute]
+            valid = renderer.equal?(@renderer) && (normalized.keys - [renderer.value_attribute, 'background_set', 'sensitive']).empty?
+            column = normalized.fetch(renderer.value_attribute, @value_column)
             session.refuse(self, :set_attributes) unless valid && column.is_a?(Integer) && column >= 0
-            background_column = normalized['background_set']
+            background_column = normalized.fetch('background_set', @background_set_column)
             valid_background = background_column.nil? || (background_column.is_a?(Integer) && background_column.between?(0, Lich::WebUI::Contract::BOUNDS[:table_columns] - 1))
             session.refuse(self, :set_attributes) unless valid_background
+            sensitive_column = normalized.fetch('sensitive', @sensitive_column)
+            valid_sensitive = sensitive_column.nil? || (sensitive_column.is_a?(Integer) && sensitive_column.between?(0, Lich::WebUI::Contract::BOUNDS[:table_columns] - 1))
+            session.refuse(self, :set_attributes) unless valid_sensitive
+            if view&.model
+              type = view.model.get_column_type(column)
+              session.refuse(self, :cell_type) if renderer.is_a?(CellRendererToggle) && type != TrueClass
+              session.refuse(self, :sensitive) if sensitive_column && view.model.get_column_type(sensitive_column) != TrueClass
+            end
+            @sensitive_column = sensitive_column
             @value_column = column
             @background_set_column = background_column
             changed!
@@ -295,6 +345,15 @@ module Lich
             view&.check_column_structure!
             @visible = value
           end
+
+          # Only requested columns share spare width; cell-renderer expansion is separate.
+          def expand=(value)
+            session.refuse(self, :expand=) unless [true, false].include?(value)
+            @expand = value
+            changed!
+          end
+          alias set_expand expand=
+          def expand? = @expand == true
 
           # Updates the header caption without changing the column identity.
           # @param value [String] header caption
@@ -355,7 +414,7 @@ module Lich
           # Project the measured text renderer through the existing row snapshot.
           def set_cell_data_func(renderer, &handler)
             view&.check_column_structure!
-            session.refuse(self, :set_cell_data_func) unless renderer.instance_of?(CellRendererText) && renderer.equal?(@renderer) && handler
+            session.refuse(self, :set_cell_data_func) unless [CellRendererText, CellRendererCombo].include?(renderer.class) && renderer.equal?(@renderer) && handler
             @cell_data_func = handler
             changed!
             self
@@ -420,6 +479,13 @@ module Lich
             end
           end
 
+          # A sensitivity binding must name an actual boolean model column.
+          def validate_sensitive_binding(model)
+            session.refuse(self, :sensitive) if @sensitive_column && model.get_column_type(@sensitive_column) != TrueClass
+          end
+
+          def sensitive_for?(iter) = @sensitive_column.nil? || iter[@sensitive_column] == true
+
           def background_enabled?(iter)
             !@background_boolean_model.equal?(iter.model) || iter[@background_set_column] == true
           end
@@ -430,6 +496,7 @@ module Lich
           def definition
             session.refuse(self, :renderer) unless renderer
             result = { key: key, label: title, resizable: @resizable, sortable: sortable? }
+            result[:expand] = @expand unless @expand.nil?
             result[:activatable] = activatable?
             result[:tooltip] = @tooltip if @tooltip
             result[:min_width] = @min_width if @min_width
@@ -887,7 +954,7 @@ module Lich
                 when :selection_change then selection.changed!
                 when :cell_edit
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
-                  column.renderer.emit_edit(iter.path.to_s, payload[:value]) if iter && column
+                  column.renderer.emit_edit(iter.path.to_s, payload[:value]) if iter && column && column.sensitive_for?(iter)
                 when :sort_change
                   column = visible_columns.find { |candidate| candidate.key == payload[:column] }
                   model.set_sort_column_id(column.sort_column_id, payload[:direction] == 'asc' ? :ascending : :descending) if model && column&.sortable?
@@ -959,6 +1026,7 @@ module Lich
               session.refuse(self, :cell_type) if column.renderer.is_a?(CellRendererToggle) && type != TrueClass
               candidate.get_column_type(column.sort_column_id) if column.sort_column_id
               column.validate_background_binding(candidate)
+              column.validate_sensitive_binding(candidate)
             end
           end
 
@@ -976,6 +1044,8 @@ module Lich
               end
               row = { key: iter.key, cells: cells }
               row[:cell_foregrounds] = foregrounds unless foregrounds.empty?
+              disabled_cells = visible_columns.reject { |column| column.sensitive_for?(iter) }.map(&:key)
+              row[:cell_disabled] = disabled_cells unless disabled_cells.empty?
               disabled = visible_columns.reject { |column| column.background_enabled?(iter) }.map(&:key)
               row[:background_disabled] = disabled unless disabled.empty?
               parent = model.iter_parent(iter)

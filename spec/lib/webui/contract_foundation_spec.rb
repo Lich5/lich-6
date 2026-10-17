@@ -10,13 +10,26 @@ RSpec.describe 'WebUI contract foundation' do
   let(:contract) { Lich::WebUI::Contract }
 
   it 'publishes exactly the supported component vocabulary' do
-    expect(contract::VERSION).to eq('2.39.0')
+    expect(contract::VERSION).to eq('2.43.0')
     expect(contract::TYPES).to contain_exactly(
       :page, :group, :stack, :columns, :grid, :tabs, :expander, :split, :overlay, :scroll, :divider,
       :text, :markdown, :log, :progress, :image, :button, :toggle, :checkbox, :radio, :radio_option, :text_input,
       :password_input, :textarea, :number_input, :slider, :select, :table, :dialog, :composite
     )
     expect(contract.schemas.size).to eq(30)
+  end
+
+  it 'bounds literal tooltips on tabs and scroll, including empty clearing values' do
+    validator = Lich::WebUI::Validator.new
+    context = { owner: 'tooltips', page_id: 'page', cid: 'container' }
+    { tabs: { names: ['One'] }, scroll: {} }.each do |type, props|
+      ['', '<literal help>', 'x' * 8192].each do |text|
+        expect(validator.validate_component!(type, props.merge(tooltip: text), **context)).to include(tooltip: text)
+      end
+      [nil, true, 42, {}, 'x' * 8193].each do |value|
+        expect { validator.validate_component!(type, props.merge(tooltip: value), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+      end
+    end
   end
 
   it 'keeps renderer lifecycle exemptions aligned with every contract event' do

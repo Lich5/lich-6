@@ -48,11 +48,12 @@ module Lich
           def style(element, inherited)
             attributes = element.attributes.to_h.transform_values(&:value)
             case element.expanded_name
-            when 'b', 'i', 'small', 'big'
+            when 'b', 'i', 'u', 'small', 'big'
               refuse unless attributes.empty?
               case element.name
               when 'b' then inherited.merge(emphasis: :strong)
               when 'i' then inherited.merge(font_style: :italic)
+              when 'u' then inherited.merge(underline: true)
               else
                 scale = inherited.fetch(:scale, 1.0) * (element.name == 'small' ? 1 / 1.2 : 1.2)
                 refuse unless scale.between?(0.5, 2)

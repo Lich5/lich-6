@@ -107,6 +107,10 @@ module Lich
 
           attr_reader :model, :child, :entry_text_column
 
+          # Removes one local callback through the shared guarded connection registry.
+          # @return [ComboBox] self
+          def signal_handler_disconnect(id) = disconnect_signal_handler(id)
+
           # Creates a bounded model-backed combo or its single-input entry facade.
           # @param source [ListStore, Boolean, nil] model, or legacy text-only constructor flag
           # @param entry [Boolean] expose an editable entry child

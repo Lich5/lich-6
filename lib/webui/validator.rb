@@ -266,6 +266,7 @@ module Lich
                    {
                      type: Contract.property(Contract.enum(:select), required: true),
                      options: Contract.property(Contract::OPTIONS, required: true),
+                     option_labels: Contract.property(Contract::BOOL, default: false),
                    }
                  else
                    violation!('has unknown editor type', context, "#{path}.type")
@@ -436,6 +437,10 @@ module Lich
           unless (foreground_columns - column_keys).empty? && foreground_columns.uniq.size == foreground_columns.size
             violation!('cell_foregrounds must name unique displayed columns', context, "rows[#{index}].cell_foregrounds")
           end
+          disabled_cells = row[:cell_disabled] || []
+          unless (disabled_cells - column_keys).empty? && disabled_cells.uniq.size == disabled_cells.size
+            violation!('cell_disabled must name unique displayed columns', context, "rows[#{index}].cell_disabled")
+          end
           disabled_backgrounds = row[:background_disabled] || []
           unless (disabled_backgrounds - column_keys).empty? && disabled_backgrounds.uniq.size == disabled_backgrounds.size
             violation!('background_disabled must name unique displayed columns', context, "rows[#{index}].background_disabled")
@@ -520,12 +525,12 @@ module Lich
         when [:tabs, :select]
           violation!('selected tab index is out of range', context, event_name) if payload[:index] >= normalized_props[:names].length
           header = normalized_props[:headers]&.[](payload[:index])
-          if header ? payload[:tab] != header[:key] || header[:disabled] : payload.key?(:tab)
+          if header ? payload[:tab] != header[:key] || header[:disabled] || header[:hidden] : payload.key?(:tab)
             violation!('tab identity does not match selection', context, event_name)
           end
         when [:tabs, :tab_pointer]
           header = normalized_props.fetch(:headers, []).find { |item| item[:key] == payload[:tab] }
-          violation!('tab pointer target is absent or disabled', context, event_name) unless header && header[:pointer_events] && !header[:disabled] && !normalized_props[:disabled]
+          violation!('tab pointer target is absent or disabled', context, event_name) unless header && header[:pointer_events] && !header[:disabled] && !header[:hidden] && !normalized_props[:disabled]
         when [:table, :row_activate], [:table, :row_toggle], [:table, :cursor_change]
           row_keys = normalized_props[:rows].map { |row| (row[:key] || row['key']).to_s }
           violation!('event row does not exist', context, event_name) unless row_keys.include?(payload[:row])
@@ -552,7 +557,7 @@ module Lich
       end
 
       def validate_input_event!(type, event_name, payload, props, context)
-        return unless event_name == :change || (type == :textarea && event_name == :blur)
+        return unless event_name == :change || (%i[text_input textarea].include?(type) && event_name == :blur)
         violation!('sensitive components cannot emit change', context, event_name) if props[:sensitive] == true
 
         value = payload[:value]
@@ -616,6 +621,8 @@ module Lich
         violation!('edit row does not exist', context, event_name) unless row_keys.include?(payload[:row])
         column = props[:columns].find { |candidate| (candidate[:key] || candidate['key']).to_s == payload[:column] }
         violation!('edit column does not exist', context, event_name) unless column
+        row = props[:rows].find { |candidate| candidate[:key] == payload[:row] }
+        violation!('cell is disabled', context, event_name) if (row[:cell_disabled] || []).include?(payload[:column])
         editor = column[:editor] || column['editor']
         violation!('column is read-only', context, event_name) unless editor
         violation!('column editor is disabled', context, event_name) if editor[:disabled] || editor['disabled']

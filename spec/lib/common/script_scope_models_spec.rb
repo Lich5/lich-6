@@ -71,6 +71,113 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(barrier.pop(timeout: 5)).to be(true)
   end
 
+  it 'clears container tooltips before publication and updates their live metadata' do
+    notebook, scroll = gtk::Notebook.new, gtk::ScrolledWindow.new
+    content = gtk::Label.new('Content')
+    scroll.add(content)
+    notebook.append_page(scroll, gtk::Label.new('One'))
+    [notebook, scroll].each { |widget| widget.set_tooltip_text(nil); expect(widget.tooltip_text).to eq('') }
+    _window, page = show(notebook)
+    connection = connect(page, 'tooltips')
+    expect(nodes(connection).select { |node| %w[tabs scroll].include?(node['type']) }.map { |node| node['props']['tooltip'] }).to eq(['', ''])
+    [notebook, scroll].each { |widget| widget.tooltip_text = '<literal help>' }
+    wait_for { nodes(connection).select { |node| %w[tabs scroll].include?(node['type']) }.all? { |node| node['props']['tooltip'] == '<literal help>' } }
+    expect(nodes(connection).select { |node| %w[tabs scroll].include?(node['type']) }.map { |node| node['props']['tooltip'] }).to eq(['<literal help>', '<literal help>'])
+    [notebook, scroll].each { |widget| widget.set_tooltip_text(nil); expect(widget.get_tooltip_text).to eq('') }
+    wait_for { nodes(connection).select { |node| %w[tabs scroll].include?(node['type']) }.all? { |node| node['props']['tooltip'] == '' } }
+    expect(nodes(connection).select { |node| %w[tabs scroll].include?(node['type']) }.map { |node| node['props']['tooltip'] }).to eq(['', ''])
+    expect(notebook.get_nth_page(0)).to equal(scroll)
+    expect(notebook.send(:read, :selected)).to eq(0)
+  end
+
+  it 'rebuilds a materialized combo and selects a newly appended duplicate label in the same queued callback' do
+    combo = gtk::ComboBoxText.new
+    combo.append_text('Old')
+    combo.active = 0
+    trigger = gtk::Button.new('Rebuild')
+    observed = Queue.new
+    changed = []
+    combo.signal_connect('changed') { changed << [combo.active, combo.active_text] }
+    trigger.signal_connect('clicked') do
+      gtk.queue do
+        combo.remove_all
+        2.times { combo.append_text('All') }
+        combo.set_active(1) if combo.model.iter_n_children(nil).positive?
+        observed << [combo.active, combo.active_text, combo.active_iter.key]
+      end
+    end
+    _window, page = show(combo, trigger)
+    viewer = connect(page, 'combo-rebuild')
+    expect(send_event(page, viewer, :button, :activate, {}, submission: [combo.model.rows.first.key])).to eq(:queued)
+    result = observed.pop(timeout: 3)
+    expect(result).to eq([1, 'All', combo.model.rows[1].key])
+    expect(changed).to eq([[1, 'All']])
+    drain_models
+    expect(Lich).not_to have_received(:log).with(/callback failed/)
+  end
+
+  it 'adds partial column mappings without dropping sensitivity or background and refuses invalid candidates atomically' do
+    model = gtk::ListStore.new(String, TrueClass, TrueClass, String, TrueClass)
+    row = model.append
+    ['Old', true, false, 'New', false].each_with_index { |value, index| row[index] = value }
+    renderer = gtk::CellRendererText.new
+    column = gtk::TreeViewColumn.new('Name', renderer)
+    column.add_attribute(renderer, 'sensitive', 1)
+    column.set_attributes(renderer, text: 0, background_set: 2)
+    column.add_attribute(renderer, 'text', 3)
+    column.add_attribute(renderer, 'sensitive', 4)
+    column.set_attributes(renderer, background_set: 2)
+    view = gtk::TreeView.new(model)
+    view.append_column(column)
+    expect { column.add_attribute(renderer, 'sensitive', 0) }.to raise_error(gtk::UnsupportedOperation)
+    expect(column.value_column).to eq(3)
+    expect(column.instance_variable_get(:@sensitive_column)).to eq(4)
+    expect(column.instance_variable_get(:@background_set_column)).to eq(2)
+    _window, page = show(view)
+    viewer = connect(page, 'partial-bindings')
+    props = nodes(viewer).find { |node| node['type'] == 'table' }['props']
+    expect(props['rows'].first['cells'][column.key]).to eq('New')
+    expect(props['rows'].first['cell_disabled']).to eq([column.key])
+    expect(props['rows'].first['background_disabled']).to eq([column.key])
+    expect { column.add_attribute(renderer, 'text', 0) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'omits optional Entry blur and radio clicked until subscribed, including late subscriptions' do
+    entry, radio = gtk::Entry.new, gtk::RadioButton.new('Choice')
+    _window, page = show(entry, radio)
+    render = page.last_render
+    input = render.tree.each.find { |node| node.type == :text_input }
+    choice = render.tree.each.find { |node| node.type == :radio_option }
+    expect(render.bindings).not_to have_key([input.cid, :blur])
+    expect(render.bindings).not_to have_key([choice.cid, :activate])
+    expect(render.bindings).to have_key([choice.cid, :change])
+    blur = Queue.new
+    entry.signal_connect('focus-out-event') { blur << entry.text }
+    radio.signal_connect('clicked') {}
+    wait_for { page.last_render.bindings.key?([input.cid, :blur]) && page.last_render.bindings.key?([choice.cid, :activate]) }
+    viewer = connect(page, 'late-optional')
+    send_event(page, viewer, :text_input, :blur, { value: 'Latest' })
+    expect(blur.pop(timeout: 3)).to eq('Latest')
+  end
+
+  it 'changes a handler-free radio group without submitting unrelated entry drafts' do
+    entry = gtk::Entry.new
+    first = gtk::RadioButton.new('First')
+    second = gtk::RadioButton.new(first, 'Second')
+    changed = []
+    entry.signal_connect('changed') { changed << entry.text }
+    _window, page = show(entry, first, second)
+    viewer = connect(page, 'plain-radio')
+    render = viewer.messages.reverse.find { |message| message['type'] == 'render' }
+    choice = nodes(viewer).find { |node| node['type'] == 'radio_option' && node['props']['label'] == 'Second' }
+    expect(service.runtime.handle(viewer, type: 'event', page: service.registry.address_for(page), generation: render['generation'],
+                                  cid: choice['cid'], event: 'change', payload: { value: true })).to eq(:queued)
+    drain_models
+    expect(changed).to be_empty
+    expect(entry.text).to eq('')
+    expect(page.last_render.bindings.keys).not_to include([choice['cid'], :activate])
+  end
+
   it 'filters browser and programmatic selection in owner context without committing rejected or failing proposals' do
     model = gtk::ListStore.new(String)
     rows = %w[Allowed Denied Failing].map { |name| model.append.tap { |iter| iter[0] = name } }
@@ -2143,5 +2250,223 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(double_press.event_type).to eq(scope.const_get(:Gdk)::Event::BUTTON2_PRESS)
   ensure
     allow(Lich::Common::Script).to receive(:current).and_return(owner)
+  end
+
+  it 'routes switch-page with the notebook, actual page and live index while isolating viewers' do
+    notebook = gtk::Notebook.new
+    pages = %w[One Two Three].map { |name| gtk::Label.new("#{name} content") }
+    pages.each_with_index { |page, i| notebook.append_page(page, gtk::Label.new(%w[One Two Three][i])) }
+    seen = []
+    notebook.signal_connect('switch-page') { |widget, page, index| seen << [widget, page, index] }
+    notebook.set_current_page(1)
+    notebook.set_current_page(1)
+    expect(seen).to eq([[notebook, pages[1], 1]])
+    _window, page = show(notebook)
+    first, other = connect(page, 'tabs-one'), connect(page, 'tabs-two')
+    props = ->(viewer) { nodes(viewer).find { |node| node['type'] == 'tabs' }.fetch('props') }
+    expect(send_event(page, first, :tabs, 'select', { index: 2, tab: props.call(first)['headers'][2]['key'] })).to eq(:queued)
+    drain_models
+    expect(seen.last).to eq([notebook, pages[2], 2])
+    count = seen.length
+    send_event(page, first, :tabs, 'select', { index: 2, tab: props.call(first)['headers'][2]['key'] })
+    drain_models
+    expect(seen.length).to eq(count)
+    service.runtime.refresh(page)
+    expect(props.call(first)['selected']).to eq(2)
+    expect(props.call(other)['selected']).to eq(1)
+    before = seen.length
+    notebook.remove_page(0)
+    expect(seen.length).to eq(before)
+    notebook.set_current_page(1)
+    expect(seen.last).to eq([notebook, pages[2], 1])
+    notebook.remove_page(1)
+    expect(seen.last).to eq([notebook, pages[1], 0])
+    expect(notebook.children).to eq([pages[1]])
+  end
+
+  it 'projects combo presentation per row and rejects edits disabled by boolean model sensitivity' do
+    values = gtk::ListStore.new(String, TrueClass)
+    enabled, disabled = values.append, values.append
+    enabled[0], enabled[1] = 'Old', true
+    disabled[0], disabled[1] = 'Old', false
+    options = gtk::ListStore.new(String)
+    options.append[0] = 'New'
+    renderer = gtk::CellRendererCombo.new
+    renderer.model = options
+    renderer.text_column = 0
+    renderer.has_entry = false
+    renderer.editable = true
+    column = gtk::TreeViewColumn.new('Choice', renderer, text: 0, sensitive: 1)
+    column.expand = true
+    column.set_cell_data_func(renderer) do |_column, cell, _model, iter|
+      cell.foreground_rgba = scope::Gdk::RGBA.new(1, 0, 0, 1)
+      cell.foreground_set = iter[1]
+    end
+    view = gtk::TreeView.new(values)
+    view.append_column(column)
+    view.selection.mode = gtk::SELECTION_NONE
+    edited = []
+    renderer.signal_connect('edited') { |_cell, path, value| edited << path; values.get_iter(path)[0] = value }
+    _window, page = show(view)
+    viewer = connect(page, 'sensitive-cells')
+    props = nodes(viewer).find { |node| node['type'] == 'table' }.fetch('props')
+    expect(props['selection']).to eq('none')
+    expect(props['columns'][0]['expand']).to be(true)
+    expect(props['rows'][0]).not_to have_key('cell_disabled')
+    expect(props['rows'][0]['cell_foregrounds'].size).to eq(1)
+    expect(props['rows'][1]['cell_disabled']).to eq([column.key])
+    expect(props['rows'][1]).not_to have_key('cell_foregrounds')
+    send_event(page, viewer, :table, 'cell_edit', { row: disabled.key, column: column.key, value: 'New' })
+    drain_models
+    expect(edited).to be_empty
+    expect(disabled[0]).to eq('Old')
+    expect(viewer.messages.last['type']).to eq('refusal')
+    send_event(page, viewer, :table, 'cell_edit', { row: enabled.key, column: column.key, value: 'New' })
+    drain_models
+    expect(edited).to eq(['0'])
+    expect(enabled[0]).to eq('New')
+    expect(renderer.project_cell('Literal')).to eq(['Literal', nil])
+    expect { column.expand = :yes }.to raise_error(gtk::UnsupportedOperation)
+    expect { renderer.foreground_set = 1 }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'refuses a sensitivity binding to a non-boolean model column' do
+    model = gtk::ListStore.new(String)
+    model.append[0] = 'Name'
+    view = gtk::TreeView.new(model)
+    column = gtk::TreeViewColumn.new('Name', gtk::CellRendererText.new, text: 0, sensitive: 0)
+    view.append_column(column)
+    expect { view.materialize }.to raise_error(gtk::UnsupportedOperation, /sensitive/)
+  end
+
+  it 'delivers combo changes with distinct choice iterators before edited text without premutating rows' do
+    model = gtk::ListStore.new(String)
+    row = model.append
+    row[0] = 'Original'
+    choices = gtk::ListStore.new(String, Integer)
+    a, b = choices.append, choices.append
+    a[0], a[1], b[0], b[1] = 'Duplicate', 1, 'Duplicate', 2
+    renderer = gtk::CellRendererCombo.new
+    renderer.model = choices
+    renderer.text_column = 0
+    renderer.editable = true
+    calls = []
+    renderer.signal_connect('changed') do |cell, path, choice|
+      expect(cell).to equal(renderer)
+      expect(choice.model).to equal(choices)
+      calls << [:changed, choices.get_value(choice, 1), model.get_iter(path)[0]]
+      model.get_iter(path)[0] = choice[0]
+    end
+    renderer.signal_connect('edited') { |_cell, _path, text| calls << [:edited, text] }
+    view = gtk::TreeView.new(model)
+    column = gtk::TreeViewColumn.new('Choice', renderer, text: 0)
+    view.append_column(column)
+    _window, page = show(view)
+    viewer = connect(page, 'choice-identities')
+    editor = nodes(viewer).find { |node| node['type'] == 'table' }['props']['columns'][0]['editor']
+    expect(editor['option_labels']).to be(true)
+    expect(editor['options']).to eq([{ 'value' => a.key, 'label' => 'Duplicate' }, { 'value' => b.key, 'label' => 'Duplicate' }])
+    send_event(page, viewer, :table, 'cell_edit', { row: row.key, column: column.key, value: b.key })
+    drain_models
+    expect(calls).to eq([[:changed, 2, 'Original'], [:edited, 'Duplicate']])
+    expect(row[0]).to eq('Duplicate')
+    choices.remove(b)
+    renderer.emit_edit('0', b.key)
+    expect(calls.length).to eq(2)
+    replacement = gtk::ListStore.new(String)
+    replacement.append[0] = 'Duplicate'
+    renderer.model = replacement
+    renderer.emit_edit('0', a.key)
+    expect(calls.length).to eq(2)
+  end
+
+  it 'rolls back failed combo changed handlers and resolves sorted target paths at dispatch' do
+    model = gtk::ListStore.new(String)
+    zulu, alpha = model.append, model.append
+    zulu[0], alpha[0] = 'Zulu', 'Alpha'
+    choices = gtk::ListStore.new(String)
+    choice = choices.append
+    choice[0] = 'New'
+    renderer = gtk::CellRendererCombo.new
+    renderer.model = choices
+    renderer.editable = true
+    seen = []
+    renderer.signal_connect('changed') do |_cell, path, selected|
+      seen << [path, model.get_iter(path).key, selected.key]
+      model.get_iter(path)[0] = selected[0]
+      raise 'abort changed'
+    end
+    edited = []
+    renderer.signal_connect('edited') { edited << true }
+    view = gtk::TreeView.new(model)
+    column = gtk::TreeViewColumn.new('Choice', renderer, text: 0)
+    view.append_column(column)
+    model.set_sort_column_id(0, :ascending)
+    _window, page = show(view)
+    viewer = connect(page, 'failed-choice')
+    send_event(page, viewer, :table, 'cell_edit', { row: zulu.key, column: column.key, value: choice.key })
+    drain_models
+    expect(seen).to eq([['1', zulu.key, choice.key]])
+    expect(zulu[0]).to eq('Zulu')
+    expect(edited).to be_empty
+  end
+
+  it 'disconnects combo callbacks without retaining stale rebuild context or removing other listeners' do
+    combo = gtk::ComboBoxText.new
+    %w[First Second].each { |text| combo.append_text(text) }
+    calls = []
+    id = combo.signal_connect('changed') { calls << :old }
+    retained = combo.signal_connect('changed') { calls << :retained }
+    expect(combo.signal_handler_disconnect(id)).to equal(combo)
+    replacement = combo.signal_connect('changed') { calls << :new }
+    combo.active = 0
+    expect(calls).to eq(%i[retained new])
+    foreign = gtk::ComboBoxText.new.signal_connect('changed') {}
+    [id, foreign, '1', nil].each do |invalid|
+      expect { combo.signal_handler_disconnect(invalid) }.to raise_error(gtk::UnsupportedOperation)
+    end
+    expect([id, retained, replacement].uniq.length).to eq(3)
+    combo.signal_handler_disconnect(replacement)
+    combo.remove_all
+    combo.append_text('Rebuilt')
+    combo.signal_connect('changed') { calls << :rebuilt }
+    combo.active = 0
+    expect(calls.last(2)).to eq(%i[retained rebuilt])
+    combo.destroy
+    expect { combo.signal_handler_disconnect(retained) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'suppresses combo callbacks disconnected during an existing emission snapshot' do
+    combo = gtk::ComboBoxText.new
+    combo.append_text('One')
+    calls = []
+    later = nil
+    combo.signal_connect('changed') { calls << :first; combo.signal_handler_disconnect(later) }
+    later = combo.signal_connect('changed') { calls << :removed }
+    combo.active = 0
+    expect(calls).to eq([:first])
+  end
+
+  it 'returns actual hidden Notebook pages with GTK index semantics without changing selection or ownership' do
+    notebook = gtk::Notebook.new
+    expect(notebook.get_nth_page(0)).to be_nil
+    expect(notebook.get_nth_page(-1)).to be_nil
+    pages = %w[First Second Third].map { |name| gtk::Label.new("#{name} content") }
+    pages.each_with_index { |page, i| notebook.append_page(page, gtk::Label.new("Tab #{i}")) }
+    pages[1].no_show_all = true
+    pages[1].hide
+    notebook.set_current_page(2)
+    expect(notebook.get_nth_page(1)).to equal(pages[1])
+    [-1, -2, -100].each { |index| expect(notebook.get_nth_page(index)).to equal(pages[2]) }
+    expect(notebook.get_nth_page(3)).to be_nil
+    expect(notebook.get_nth_page(2**128)).to be_nil
+    expect(notebook.send(:read, :selected)).to eq(2)
+    expect(pages.map(&:parent)).to eq([notebook] * 3)
+    [nil, '1', 1.5].each { |index| expect { notebook.get_nth_page(index) }.to raise_error(gtk::UnsupportedOperation) }
+    notebook.remove_page(0)
+    expect(notebook.get_nth_page(0)).to equal(pages[1])
+    expect(notebook.get_nth_page(1)).to equal(pages[2])
+    notebook.destroy
+    expect { notebook.get_nth_page(0) }.to raise_error(gtk::UnsupportedOperation)
   end
 end

@@ -194,7 +194,7 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
-            if (page = root_for(node).page) && node.cid && node.published && !(node.type == :tabs && @viewer && @dirty_roots[root_for(node)])
+            if (page = root_for(node).page) && node.cid && node.published && !(%i[tabs select].include?(node.type) && @viewer && @dirty_roots[root_for(node)])
               target = [page, node.cid, name]
               next
             end
@@ -251,6 +251,16 @@ module Lich
             proposed = node.dup
             proposed.props = validated
             node.children.each { |child| validate_placement!(proposed, node!(child), child) }
+            if node.type == :select && name == :options
+              # A second rebuild can retire a choice staged before delivery.
+              # Reconcile pending drafts with the same empty fallback as defaults.
+              retired = node.props[:options].map { |option| option[:value] } - validated[:options].map { |option| option[:value] }
+              @viewer_values.each do |(viewer, pending_handle, property), pending_value|
+                next unless pending_handle.equal?(handle) && property == :value && retired.include?(pending_value)
+
+                @viewer_values[[viewer, handle, property]] = validated[:empty_value] || validated[:options].first&.fetch(:value)
+              end
+            end
             node.props = validated
             assign_child_slots!(node) if named_children?(node)
           end
@@ -316,6 +326,34 @@ module Lich
         raise attributed_error('child index is out of range', parent, :index)
       end
 
+      # Replaces one ordinary container child without publishing an intermediate tree.
+      # Invalid ownership/cycles leave both children and their placement unchanged.
+      def replace_child(parent_handle, previous_handle, replacement_handle)
+        @mutex.synchronize do
+          parent, replacement = node!(parent_handle), node!(replacement_handle)
+          previous = node!(previous_handle) if previous_handle
+          valid = Contract.schema(parent.type)[:children] == :many && !replacement.parent &&
+                  (!previous || previous.parent.equal?(parent_handle))
+          ancestor = parent
+          while ancestor
+            valid &&= !ancestor.equal?(replacement)
+            ancestor = ancestor.parent && node!(ancestor.parent)
+          end
+          raise attributed_error('replacement requires an unparented child and its actual previous sibling', parent_handle) unless valid
+
+          validate_placement!(parent, replacement, replacement_handle)
+          expected = parent.children.length + (previous ? 0 : 1)
+          raise attributed_error('component has too many children', parent_handle) if expected > Contract::BOUNDS[:children]
+          index = previous ? parent.children.index(previous_handle) : parent.children.length
+          parent.children.delete(previous_handle) if previous
+          previous.parent = nil if previous
+          parent.children.insert(index, replacement_handle)
+          replacement.parent = parent_handle
+          dirty!(root_for(parent))
+        end
+        nil
+      end
+
       # Replaces a tabs page/header collection atomically, preserving retained handles.
       # Viewer selections are reconciled by stable header key on delivery.
       def layout_tabs(parent, children:, names:, headers:)
@@ -339,7 +377,7 @@ module Lich
           remap = proc do |index|
             old_key = old_headers&.dig(index, :key)
             found = headers.index { |header| header[:key] == old_key } if old_key
-            found || index.clamp(0, [names.length - 1, 0].max)
+            Contract.visible_tab_index(headers, found || index.clamp(0, [names.length - 1, 0].max))
           end
           props = props.merge(selected: remap.call(tabs.props[:selected] || 0)).freeze
           pending = @viewer_values.select { |(_viewer, handle, name), _value| handle.equal?(parent) && name == :selected }
