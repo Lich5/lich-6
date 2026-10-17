@@ -117,10 +117,28 @@ module Lich
               callback = proc { |*args| handler.call(*args) if @signal_connections.key?(id) }
               (@signals[:widget_drop] ||= []) << [signal, callback]
               @signal_connections[id] = [:widget_drop, callback]
+              @transfer_revision = (@transfer_revision || 0) + 1
+              write(:drag_source, "widget-drag-#{id}") if source_signal
               bind_event(:widget_drop) if @handle && @props[:drag_destination]
               id
             end
           end
+
+          # Source handlers are shadow callbacks, not standalone core bindings.
+          # Rotate their published identity and rebind destinations on retirement.
+          def disconnect_signal_handler(id)
+            session.style_operation(self, :signal_handler_disconnect) do
+              transfer = @signal_connections[id]&.first == :widget_drop
+              result = super
+              if transfer
+                @transfer_revision = (@transfer_revision || 0) + 1
+                write(:drag_source, "widget-drag-#{Widget.send(:next_signal_id)}") if @props[:drag_source]
+                bind_event(:widget_drop) if @handle && @props[:drag_destination]
+              end
+              result
+            end
+          end
+          private :disconnect_signal_handler
 
           # Geometry is viewer measurement data scoped to the accepted callback.
           def allocation
@@ -134,8 +152,12 @@ module Lich
             return super unless event == :widget_drop
             return unless @props[:drag_destination]
 
+            revision = @transfer_revision
             session.port.bind(@handle, event, proc do |event_context|
-              session.callback(event_context, terminal: true, widget: self) { dispatch_widget_drop(event_context) }
+              session.callback(event_context, terminal: true, widget: self) do
+                session.refuse(self, :widget_drop) unless @transfer_revision == revision
+                dispatch_widget_drop(event_context)
+              end
             end)
           end
 
@@ -167,7 +189,8 @@ module Lich
 
           def dispatch_widget_drop(event)
             payload = event.payload
-            component = event.page.last_render.tree.each.find { |node| node.cid == payload[:source] }
+            admitted = event.render || event.page.last_render
+            component = admitted.tree.each.find { |node| node.cid == payload[:source] }
             key = component&.props&.fetch(:drag_source, nil)
             pending = [toplevel]
             source = nil

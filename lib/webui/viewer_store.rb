@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'securerandom'
+require 'monitor'
 require_relative 'component'
 require_relative 'protocol'
 
@@ -9,10 +10,13 @@ module Lich
     # Per-page viewer attachments and viewer-local state.
     class ViewerStore
       RECONNECT_WINDOW = 60
+      WIDGET_ADMISSION_WINDOW = 30
+      Admission = Data.define(:render, :widget_revision, :accepted_at)
       Snapshot = Data.define(:page, :viewer_id, :render, :values, :input_requests)
 
       class Attachment
         attr_accessor :connection_id, :render, :delivered_generation, :expires_at
+        attr_accessor :widget_signature, :widget_generation, :widget_started_at, :widget_revision, :widget_request
         attr_reader :viewer_id, :resume_token, :address, :page, :values, :delivered_read_only, :input_requests
 
         # Creates independent viewer identity, resume capability, and local state for a page.
@@ -29,6 +33,8 @@ module Lich
           @render = nil
           @delivered_generation = nil
           @expires_at = nil
+          @widget_signature = @widget_generation = @widget_started_at = @widget_request = nil
+          @widget_revision = 0
         end
       end
 
@@ -38,7 +44,7 @@ module Lich
         @clock = clock
         @by_connection = {}
         @by_resume = {}
-        @mutex = Mutex.new
+        @mutex = Monitor.new
       end
 
       # Attaches one viewer per connection/page pair, or resumes a disconnected one.
@@ -89,6 +95,7 @@ module Lich
           attachments = @by_connection.each_value.select { |attachment| attachment.connection_id == connection_id }.uniq
           attachments.each do |attachment|
             attachment.expires_at = @clock.call + RECONNECT_WINDOW
+            retire_widget_admission!(attachment)
           end
           @by_connection.delete_if { |(candidate, _address), _attachment| candidate == connection_id }
           attachments
@@ -198,6 +205,15 @@ module Lich
           current = attachment.delivered_generation
           next if current && render.generation < current
 
+          signature = widget_signature(render)
+          now = @clock.call
+          changed = signature != attachment.widget_signature
+          if changed || !attachment.widget_started_at || now - attachment.widget_started_at >= WIDGET_ADMISSION_WINDOW
+            attachment.widget_revision += 1 if changed
+            attachment.widget_signature = signature
+            attachment.widget_generation = signature && render.generation
+            attachment.widget_started_at = now
+          end
           previous_components = attachment.render ? attachment.render.tree.each.to_h { |node| [node.cid, node] } : {}
           attachment.render = render
           attachment.delivered_generation = render.generation
@@ -212,6 +228,48 @@ module Lich
             retained = selected.find { |node| previous.include?([node.cid, :checked]) } || selected.first
             select_radio_option!(attachment, retained)
           end
+        end
+      end
+
+      # Serializes event validation and queue admission with delivery/detachment.
+      # The yielded runtime work may enqueue callbacks, but never runs script code.
+      # Only unchanged widget-transfer authority can outlive a paint generation;
+      # one compressed epoch is retained per viewer, never a render history.
+      # @yieldparam admission [Admission] optional transfer render and queued-drop authority
+      # @return [Object] runtime admission result, or :queued for a duplicate request
+      # @raise [Protocol::Refusal] for obsolete generations or a departed viewer
+      def admit_event(attachment, message)
+        @mutex.synchronize do
+          unless live_attachment?(attachment)
+            raise Protocol::Refusal.new(:attachment, 'viewer is no longer attached')
+          end
+          widget_drop = message[:event].to_s == 'widget_drop'
+          generation = message[:generation]
+          current = attachment.delivered_generation
+          compatible = widget_drop && attachment.widget_generation && generation.is_a?(Integer) &&
+                       generation.between?(attachment.widget_generation, current) &&
+                       @clock.call - attachment.widget_started_at < WIDGET_ADMISSION_WINDOW &&
+                       attachment.render.submissions.fetch(message[:cid], []).empty?
+          unless generation == current || compatible
+            raise Protocol::Refusal.new(:stale_generation, 'stale generation')
+          end
+          request = message[:request] if widget_drop && message[:request].is_a?(Integer)
+          return :queued if request && attachment.widget_request && request <= attachment.widget_request
+
+          admission = Admission.new(widget_drop ? attachment.render : nil, attachment.widget_revision, @clock.call)
+          result = yield admission
+          attachment.widget_request = request if request && result == :queued
+          result
+        end
+      end
+
+      # Checks queued transfers without holding the store lock during script code.
+      # The captured callback/render retain admission-time identity; later state
+      # changes retire queued work instead of selecting a replacement source.
+      def widget_admission_current?(attachment, admission)
+        @mutex.synchronize do
+          live_attachment?(attachment) && attachment.widget_revision == admission.widget_revision &&
+            @clock.call - admission.accepted_at < WIDGET_ADMISSION_WINDOW
         end
       end
 
@@ -330,6 +388,36 @@ module Lich
       end
 
       private
+
+      def live_attachment?(attachment)
+        @by_connection[[attachment.connection_id, attachment.address]].equal?(attachment) && !attachment.expires_at
+      end
+
+      def retire_widget_admission!(attachment)
+        attachment.widget_signature = attachment.widget_generation = attachment.widget_started_at = attachment.widget_request = nil
+        attachment.widget_revision += 1
+      end
+
+      # Transfer descendants retain all authored properties/bindings, so geometry
+      # or meaning changes invalidate old measured insertion intent. Ancestors
+      # retain their state and child order; unrelated sibling text paints do not.
+      # Shared immutable property references keep the retained projection bounded
+      # by the already validated component tree; no viewer input values are copied.
+      def widget_signature(render)
+        bindings = render.bindings.each_with_object({}) do |((cid, event), callback), grouped|
+          (grouped[cid] ||= {})[event] = callback
+        end
+        project = lambda do |node, inside|
+          transfer = inside || node.props[:drag_source] || node.props[:drag_destination]
+          children = node.children.filter_map { |child| project.call(child, transfer) }
+          next if !transfer && children.empty?
+
+          [node.cid, node.type, node.props, node.slot, node.placement, node.children.map(&:cid),
+           transfer ? bindings[node.cid] : nil, render.submissions[node.cid], children]
+        end
+        tree = project.call(render.tree, false)
+        [tree, render.facilities] if tree
+      end
 
       # Single-line HTML inputs strip line breaks; textareas normalize them.
       # Compare browser representations without modifying authoritative text.
@@ -476,6 +564,7 @@ module Lich
         attachment.delivered_read_only.clear
         attachment.render = nil
         attachment.delivered_generation = nil
+        retire_widget_admission!(attachment)
       end
 
       # Deletes only mappings to this exact attachment object, including superseded aliases.

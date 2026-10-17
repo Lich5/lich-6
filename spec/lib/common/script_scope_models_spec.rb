@@ -2254,7 +2254,15 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     data.set_text('Spirit Barrier')
     expect(data.text).to eq('Spirit Barrier')
     calls.clear
+    admitted = page.last_render
+    previous_binding = admitted.bindings[[to['cid'], :widget_drop]]
     target.signal_connect('drag-drop') { raise 'drop callback failed' }
+    retired_context = Lich::WebUI::Runtime::EventContext.new(
+      nil, page, admitted.tree.each.find { |node| node.cid == to['cid'] }, :widget_drop, payload, nil, admitted
+    )
+    expect { previous_binding.call(retired_context) }.to raise_error(gtk::UnsupportedOperation, /operation=widget_drop/)
+    expect(calls).to be_empty
+    wait_for { !page.last_render.bindings[[to['cid'], :widget_drop]].equal?(previous_binding) }
     deliver.call(payload)
     expect(calls.last(2)).to eq([:leave, :end])
     expect(child.instance_variable_defined?(:@transfer_allocation)).to be(false)
@@ -2325,6 +2333,35 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
       expect(moves).to eq((mode == :manual || (mode == :received && text && text.length <= 8192)) ? [mode] : [])
       expect(child.instance_variable_defined?(:@transfer_allocation)).to be(false)
     end
+  end
+
+  it 'retires source and destination authority when live shadow drag handlers change' do
+    source, target = gtk::EventBox.new, gtk::Box.new(:vertical)
+    descriptor = gtk::TargetEntry.new('text/plain', :same_app, 0)
+    source.drag_source_set(:button1, [descriptor], :move)
+    target.drag_dest_set(1, [descriptor], :move)
+    box = gtk::Box.new(:vertical)
+    box.add(source); box.add(target)
+    target_handler = target.signal_connect('drag-drop') {}
+    _window, page = show(box)
+    viewer = connect(page, 'transfer-authority')
+    source_key = -> { nodes(viewer).find { |node| node['props']['drag_source'] }['props']['drag_source'] }
+    original = source_key.call
+    admitted = page.last_render
+    before_source, before_target = admitted.tree.each.select { |node| node.props[:drag_source] || node.props[:drag_destination] }
+    old_context = Lich::WebUI::Runtime::EventContext.new(
+      nil, page, before_target, :widget_drop, { source: before_source.cid, x: 1, y: 1, allocations: [] }, nil, admitted
+    )
+    id = source.signal_connect('drag-data-get') { |_widget, _context, data| data.set_text('New source') }
+    expect { target.send(:dispatch_widget_drop, old_context) }.to raise_error(gtk::UnsupportedOperation, /operation=widget_drop/)
+    wait_for { source_key.call != original }
+    connected = source_key.call
+    source.send(:disconnect_signal_handler, id)
+    wait_for { source_key.call != connected }
+    target_cid = nodes(viewer).find { |node| node['props']['drag_destination'] }['cid']
+    original_binding = page.last_render.bindings[[target_cid, :widget_drop]]
+    target.send(:disconnect_signal_handler, target_handler)
+    wait_for { !page.last_render.bindings[[target_cid, :widget_drop]].equal?(original_binding) }
   end
 
   it 'refuses widget transfer protocols outside their owner, types and lifecycle' do

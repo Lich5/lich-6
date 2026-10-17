@@ -1414,7 +1414,30 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     root.add(row); root.add(status); root.add(ticker); root.add(release); root.add(release_status); window.add(root)
     tick = 0
     scope.const_get(:GLib)::Timeout.add(25) { tick += 1; ticker.text = "Tick #{tick}"; true }
-    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority17-widget-drag')
+    page = show(window)
+    overtaken = 0
+    phases = []
+    allow(service.runtime).to receive(:log).and_wrap_original do |method, level, message|
+      phases << message if message.start_with?('WebUI widget_drop phase=')
+      method.call(level, message)
+    end
+    # Force the previously flaky wire ordering for every actual browser drop:
+    # even a retry would be overtaken. The real timer and native drag stay active.
+    allow(service.runtime).to receive(:handle).and_wrap_original do |method, connection, message|
+      if message[:type] == 'event' && message[:event] == 'widget_drop'
+        2.times { service.runtime.refresh(page) }
+        overtaken += 1
+      end
+      method.call(connection, message)
+    end
+    begin
+      WebUIBrowser.check(service: service, page: page, scenario: 'priority17-widget-drag')
+    rescue RuntimeError => error
+      raise RuntimeError, "#{error.message}\nWidget server admission: \n#{phases.join("\n")}", cause: error
+    end
+    expect(overtaken).to eq(2)
+    expect(phases.grep(/phase=queued/).length).to eq(2)
+    expect(phases.grep(/phase=completed/).length).to eq(2)
     expect(calls).to eq([:begin, :motion, :get, :drop, [:received, 'Spirit Barrier'], :leave, :end] * 2)
     expect(releases).to eq(1)
     expect(ability.parent).to equal(pool)
