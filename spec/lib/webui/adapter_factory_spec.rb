@@ -8,6 +8,49 @@ require 'timeout'
 RSpec.describe 'core-owned adapter hosting' do
   after { Lich::WebUI.reset! }
 
+  it 'approves configured and legacy data assets through the production factory without approving unrelated roots' do
+    Dir.mktmpdir('webui-host-roots-') do |directory|
+      home = File.join(directory, 'home')
+      configured = File.join(directory, 'relocated-data')
+      legacy = File.join(home, 'data', 'uberBarWiz')
+      scripts = File.join(home, 'scripts')
+      outside = File.join(directory, 'outside')
+      FileUtils.mkdir_p([configured, legacy, scripts, outside])
+      stub_const('LICH_DIR', home)
+      stub_const('DATA_DIR', configured)
+      Lich::WebUI.reset!
+      host = Lich::WebUI.service
+      owner = Struct.new(:name).new('UberBarWiz')
+      File.binwrite(File.join(legacy, 'StatusBAR.png'), 'fixture image bytes')
+      File.binwrite(File.join(outside, 'private.png'), 'outside')
+      File.symlink(File.join(outside, 'private.png'), File.join(legacy, 'escape.png'))
+      File.symlink(outside, File.join(legacy, 'escape-directory'))
+      expect(host.register_files('legacy', legacy, owner: owner, script_root: scripts)).to eq('/files/legacy/')
+      expect(host.register_files('configured', configured, owner: owner, script_root: scripts)).to eq('/files/configured/')
+      expect(host.file_service.resolve('legacy', 'StatusBAR.png')&.first).to eq(File.realpath(File.join(legacy, 'StatusBAR.png')))
+      expect(host.file_service.resolve('legacy', 'escape.png')).to be_nil
+      expect(host.file_service.resolve('legacy', '../private.png')).to be_nil
+      expect { host.register_files('outside', outside, owner: owner, script_root: scripts) }.to raise_error(Lich::WebUI::Error, /outside registered/)
+      expect { host.register_files('escape-directory', File.join(legacy, 'escape-directory'), owner: owner, script_root: scripts) }.to raise_error(Lich::WebUI::Error, /outside registered/)
+      host.terminate_owner(owner)
+      expect(host.file_service.resolve('legacy', 'StatusBAR.png')).to be_nil
+      Lich::WebUI.reset!
+    end
+  end
+
+  it 'does not create missing optional data roots while initializing the host' do
+    Dir.mktmpdir('webui-host-missing-') do |directory|
+      missing = File.join(directory, 'missing')
+      stub_const('LICH_DIR', missing)
+      stub_const('DATA_DIR', File.join(missing, 'relocated'))
+      Lich::WebUI.reset!
+      expect { Lich::WebUI.service }.not_to raise_error
+      expect(File.exist?(missing)).to be(false)
+      expect(Lich::WebUI.application_asset_roots).to eq([File.realpath(Lich::WebUI::Service::ASSETS_DIR)])
+      Lich::WebUI.reset!
+    end
+  end
+
   it 'orders queued owner work with native callbacks on the same dispatcher' do
     owner = Object.new
     host = Lich::WebUI.service

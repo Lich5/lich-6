@@ -71,6 +71,143 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(barrier.pop(timeout: 5)).to be(true)
   end
 
+  it 'filters browser and programmatic selection in owner context without committing rejected or failing proposals' do
+    model = gtk::ListStore.new(String)
+    rows = %w[Allowed Denied Failing].map { |name| model.append.tap { |iter| iter[0] = name } }
+    view = table(model)
+    calls, changed = [], []
+    selection = view.selection
+    selection.set_select_function do |received, store, path, selected|
+      expect(received).to equal(selection)
+      expect(store).to equal(model)
+      name = store.get_iter(path)[0]
+      calls << [name, selected]
+      raise 'predicate failure' if name == 'Failing'
+      name != 'Denied'
+    end
+    selection.signal_connect('changed') { changed << selection.selected&.[](0) }
+    selection.select_iter(rows[1])
+    expect(selection.selected).to be_nil
+    selection.select_iter(rows[0])
+    expect(selection.selected[0]).to eq('Allowed')
+    expect { selection.select_iter(rows[2]) }.to raise_error('predicate failure')
+    expect(selection.selected[0]).to eq('Allowed')
+    _window, page = show(view)
+    first = connect(page, 'predicate-one')
+    other = connect(page, 'predicate-two')
+    props = ->(viewer) { nodes(viewer).find { |node| node['type'] == 'table' }.fetch('props') }
+    events_before = changed.dup
+    before = first.messages.size
+    expect(send_event(page, first, :table, 'selection_change', { rows: [rows[1].key] })).to eq(:queued)
+    wait_for { first.messages.size > before }
+    expect(props.call(first)['selected']).to eq([rows[0].key])
+    expect(changed).to eq(events_before)
+    before = first.messages.size
+    expect(send_event(page, first, :table, 'selection_change', { rows: [rows[2].key] })).to eq(:queued)
+    wait_for { first.messages.size > before }
+    expect(props.call(first)['selected']).to eq([rows[0].key])
+    expect(changed).to eq(events_before)
+    selection.set_select_function { |_selection, _model, _path, _selected| true }
+    expect(send_event(page, first, :table, 'selection_change', { rows: [rows[1].key] })).to eq(:queued)
+    wait_for { changed.last == 'Denied' }
+    # This transport double has no optimistic DOM. Request a snapshot explicitly;
+    # successful unchanged acceptance deliberately does not repaint the browser.
+    service.runtime.refresh(page)
+    expect(props.call(first)['selected']).to eq([rows[1].key])
+    expect(props.call(other)['selected']).to eq([rows[0].key])
+    expect(changed.last).to eq('Denied')
+    expect(calls).to include(['Allowed', true], ['Denied', false], ['Failing', false])
+    selection.set_select_function { selection.select_iter(rows[0]); true }
+    expect { selection.select_iter(rows[1]) }.to raise_error(gtk::UnsupportedOperation, /select_function_recursion/)
+    selection.set_select_function { true }
+    selection.select_iter(rows[1])
+    expect(selection.selected[0]).to eq('Denied')
+  end
+
+  it 'retains vetoed multi-selection removals and browse membership using current sorted paths' do
+    model = gtk::ListStore.new(String)
+    first, second = model.append, model.append
+    first[0], second[0] = 'Zulu', 'Alpha'
+    view = table(model)
+    view.selection.mode = :multiple
+    view.selection.select_all
+    seen = []
+    view.selection.set_select_function do |_selection, store, path, selected|
+      seen << [path.to_s, store.get_iter(path)[0], selected]
+      store.get_iter(path)[0] != 'Zulu'
+    end
+    model.set_sort_column_id(0, :ascending)
+    view.selection.unselect_all
+    expect(view.selection.selected_rows.first.map(&:to_s)).to eq(['1'])
+    expect(seen).to include(['1', 'Zulu', true], ['0', 'Alpha', true])
+    view.selection.mode = :browse
+    view.selection.unselect_all
+    expect(view.selection.selected[0]).to eq('Zulu')
+    model.remove(first)
+    expect(view.selection.selected[0]).to eq('Alpha')
+  end
+
+  it 'projects cell callbacks with isolated literal text and foregrounds across rows and columns' do
+    model = gtk::ListStore.new(String, TrueClass)
+    first, second = model.append, model.append
+    first[0], first[1] = 'First', true
+    second[0], second[1] = 'Second', false
+    renderer = gtk::CellRendererText.new
+    view = gtk::TreeView.new(model)
+    column = gtk::TreeViewColumn.new('Projected', renderer, text: 0)
+    column.set_cell_data_func(renderer) do |received, cell, store, iter|
+      expect(received).to equal(column)
+      expect(store).to equal(model)
+      cell.text = "<#{store.get_value(iter, 0)}>"
+      cell.foreground_rgba = scope.const_get(:Gdk)::RGBA.new(1, 0, 0, 1) if iter[1]
+    end
+    view.append_column(column)
+    other = gtk::TreeViewColumn.new('Plain', renderer, text: 0)
+    view.append_column(other)
+    _window, page = show(view)
+    viewer = connect(page, 'cell-projection')
+    rendered = -> { nodes(viewer).find { |node| node['type'] == 'table' }.fetch('props').fetch('rows') }
+    expect(rendered.call[0]['cells']).to eq(column.key => '<First>', other.key => 'First')
+    expect(rendered.call[0]['cell_foregrounds']).to eq([{ 'column' => column.key, 'color' => { 'r' => 255, 'g' => 0, 'b' => 0, 'a' => 1.0 } }])
+    expect(rendered.call[1].fetch('cell_foregrounds', [])).to be_empty
+    key = first.key
+    first[0] = 'Updated'
+    wait_for { rendered.call[0]['cells'][column.key] == '<Updated>' }
+    expect(rendered.call[0]['key']).to eq(key)
+    expect(model.rows.map { |iter| iter[0] }).to eq(%w[Updated Second])
+    expect { column.set_cell_data_func(renderer) {} }.to raise_error(gtk::UnsupportedOperation)
+    expect { renderer.project_cell('Failed') { renderer.text = 'Temporary'; raise 'source error' } }.to raise_error('source error')
+    expect(renderer.text).to be_nil
+    expect(renderer.project_cell('Next')).to eq(['Next', nil])
+  end
+
+  it 'keeps column minimums and tooltips bounded and dispatches custom header callbacks independently of model sorting' do
+    model = gtk::ListStore.new(String)
+    model.append[0] = 'Original'
+    view = table(model)
+    column = view.columns.first
+    column.min_width = 120
+    column.clickable = true
+    column.set_tooltip_text('Sort by name')
+    calls = []
+    column.signal_connect('clicked') { |received| calls << received; model.rows.first[0] = 'Clicked' }
+    view.tooltip_text = 'Inventory'
+    _window, page = show(view)
+    viewer = connect(page, 'header-click')
+    props = nodes(viewer).find { |node| node['type'] == 'table' }['props']
+    expect(props['columns'].first).to include('min_width' => 120, 'activatable' => true, 'sortable' => false, 'tooltip' => 'Sort by name')
+    expect(props['tooltip']).to eq('Inventory')
+    expect(send_event(page, viewer, :table, 'column_activate', { column: column.key })).to eq(:queued)
+    wait_for { calls.size == 1 }
+    expect(calls).to eq([column])
+    expect(model.rows.first[0]).to eq('Clicked')
+    column.min_width = 160
+    [-1, 65_537, 1.5].each { |value| expect { column.min_width = value }.to raise_error(gtk::UnsupportedOperation) }
+    expect(column.definition[:min_width]).to eq(160)
+    column.clickable = false
+    expect(column.definition[:activatable]).to be(false)
+  end
+
   it 'maps hexadecimal RGBA and italic markup into bounded literal presentation' do
     rgba = scope.const_get(:Gdk)::RGBA
     expect(rgba.parse('#d3d3d3').to_h).to eq(r: 211, g: 211, b: 211, a: 1.0)
@@ -95,6 +232,163 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     end
   end
 
+  [[2, 0, 1, 0], [1, 0, 0, 0], [1, 1, 1, 0], [1, 2, 1, 0]].each do |chosen, removed, retained, default|
+    it "PR63 remaps a saved notebook selection #{chosen} after removing page #{removed} without collapsing defaults" do
+      notebook = gtk::Notebook.new
+      %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name + ' content'), gtk::Label.new(name)) }
+      saved = Queue.new
+      save = gtk::Button.new('Save')
+      save.signal_connect('clicked') { saved << notebook.send(:read, :selected) }
+      _window, page = show(notebook, save)
+      viewer, other = connect(page, 'saved'), connect(page, 'independent')
+      headers = nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers']
+      send_event(page, viewer, :tabs, 'select', { index: chosen, tab: headers[chosen]['key'] })
+      wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == chosen }
+      send_event(page, viewer, :button, 'activate', {})
+      expect(saved.pop(timeout: 2)).to eq(chosen)
+      notebook.remove_page(removed)
+      wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'].length == 2 }
+      expect(notebook.send(:read, :selected)).to eq(retained)
+      expect(notebook.send(:component_props)[:selected]).to eq(default)
+      expect(nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(retained)
+      expect(nodes(other).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(default)
+    end
+  end
+
+  it 'PR63 preserves both notebook selection stores when a post-Save structural update refuses' do
+    notebook = gtk::Notebook.new
+    %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name), gtk::Label.new(name)) }
+    saved = Queue.new
+    save = gtk::Button.new('Save')
+    save.signal_connect('clicked') { saved << true }
+    _window, page = show(notebook, save)
+    viewer = connect(page, 'saved')
+    headers = nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers']
+    send_event(page, viewer, :tabs, 'select', { index: 2, tab: headers[2]['key'] })
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == 2 }
+    send_event(page, viewer, :button, 'activate', {})
+    expect(saved.pop(timeout: 2)).to be(true)
+    allow(notebook.session.port).to receive(:layout_tabs).and_raise(Lich::WebUI::Error, 'rejected structure')
+    expect { notebook.remove_page(0) }.to raise_error(Lich::WebUI::Error, /rejected structure/)
+    expect(notebook.n_pages).to eq(3)
+    expect(notebook.send(:read, :selected)).to eq(2)
+    expect(notebook.send(:component_props)[:selected]).to eq(0)
+  end
+
+  it 'PR63 remaps explicit post-Save choices through empty and reopened notebooks without inventing commits' do
+    notebook = gtk::Notebook.new
+    %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name), gtk::Label.new(name)) }
+    expect(notebook.instance_variable_get(:@committed)).not_to have_key(:selected)
+    notebook.remove_page(2)
+    expect(notebook.instance_variable_get(:@committed)).not_to have_key(:selected)
+    saved = Queue.new
+    save = gtk::Button.new('Save')
+    save.signal_connect('clicked') { notebook.set_current_page(1); saved << true }
+    _window, page = show(notebook, save)
+    viewer = connect(page, 'saved')
+    send_event(page, viewer, :button, 'activate', {})
+    expect(saved.pop(timeout: 2)).to be(true)
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == 1 }
+    notebook.remove_page(0)
+    expect(notebook.send(:read, :selected)).to eq(0)
+    notebook.remove_page(0)
+    expect(notebook.send(:read, :selected)).to eq(0)
+    notebook.append_page(gtk::Label.new('New content'), gtk::Label.new('New'))
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'] == ['New'] }
+    expect(notebook.send(:read, :selected)).to eq(0)
+  end
+
+  it 'owns bounded custom tab labels separately and detaches reusable pages atomically' do
+    notebook = gtk::Notebook.new
+    label = gtk::Label.new('Main')
+    label.override_color(:normal, scope.const_get(:Gdk)::RGBA.new(1, 0, 0, 1))
+    wrapper = gtk::EventBox.new.add(label)
+    page = gtk::Label.new('Content')
+    expect(notebook.append_page(page, wrapper)).to eq(0)
+    expect(notebook.n_pages).to eq(1)
+    expect(notebook.children).to eq([page])
+    expect(wrapper.parent).to equal(notebook)
+    expect(label.parent).to equal(wrapper)
+    expect(notebook.send(:component_props)[:headers].first[:foreground][:r]).to eq(255)
+    expect { notebook.append_page(gtk::Label.new('Duplicate'), wrapper) }.to raise_error(gtk::UnsupportedOperation)
+    expect { notebook.append_page(notebook, gtk::Label.new('Cycle')) }.to raise_error(gtk::UnsupportedOperation)
+    expect { notebook.append_page(gtk::Label.new('Wrong'), gtk::EventBox.new) }.to raise_error(gtk::UnsupportedOperation)
+    expect(notebook.n_pages).to eq(1)
+    notebook.remove_page(-1)
+    expect(notebook.n_pages).to eq(0)
+    expect([page.parent, wrapper.parent]).to eq([nil, nil])
+    expect(page.destroyed?).to be(false)
+    expect(notebook.append_page(page, wrapper)).to eq(0)
+    notebook.destroy
+    expect([wrapper.destroyed?, label.destroyed?, page.destroyed?]).to eq([true, true, true])
+    expect { notebook.remove_page(0) }.to raise_error(gtk::UnsupportedOperation)
+  end
+
+  it 'preserves independent viewer tab identities and live color across removals' do
+    notebook = gtk::Notebook.new
+    pages = %w[First Second Third].map { |name| gtk::Label.new(name + ' content') }
+    labels = %w[First Second Third].map { |name| gtk::Label.new(name) }
+    pages.zip(labels).each { |page, label| notebook.append_page(page, gtk::EventBox.new.add(label)) }
+    _window, page = show(notebook)
+    first, second = connect(page, 'first'), connect(page, 'second')
+    headers = nodes(first).find { |node| node['type'] == 'tabs' }['props']['headers']
+    send_event(page, first, :tabs, 'select', { index: 1, tab: headers[1]['key'] })
+    send_event(page, second, :tabs, 'select', { index: 2, tab: headers[2]['key'] })
+    wait_for { nodes(second).find { |node| node['type'] == 'tabs' }['props']['selected'] == 2 }
+    notebook.remove_page(0)
+    wait_for { nodes(first).find { |node| node['type'] == 'tabs' }['props']['names'] == %w[Second Third] }
+    expect(nodes(first).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(0)
+    expect(nodes(second).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(1)
+    labels[1].override_color(:normal, scope.const_get(:Gdk)::RGBA.new(0, 1, 0, 1))
+    wait_for { nodes(first).find { |node| node['type'] == 'tabs' }.dig('props', 'headers', 0, 'foreground', 'g') == 255 }
+    expect(nodes(second).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(1)
+    expect { labels[1].text = 'x' * 513 }.to raise_error(gtk::UnsupportedOperation)
+    expect(labels[1].text).to eq('Second')
+    labels[1].destroy
+    wait_for { nodes(first).find { |node| node['type'] == 'tabs' }['props']['names'] == ['Third'] }
+    notebook.remove_page(0)
+    wait_for { nodes(second).find { |node| node['type'] == 'tabs' }['props']['names'].empty? }
+    expect(nodes(second).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(0)
+    notebook.append_page(pages[0], labels[0].parent)
+    wait_for { nodes(first).find { |node| node['type'] == 'tabs' }['props']['names'] == ['First'] }
+  end
+
+  it 'routes custom tab presses to the original wrapper and selects newly appended pages in the same callback' do
+    notebook = gtk::Notebook.new
+    wrapper = gtk::EventBox.new.add(gtk::Label.new('Main'))
+    observed = Queue.new
+    consumed = Queue.new
+    wrapper.signal_connect('button-press-event') do |widget, event|
+      if event.button == scope.const_get(:Gdk)::BUTTON_MIDDLE
+        notebook.append_page(gtk::Label.new('Added content'), gtk::Label.new('Added'))
+        notebook.set_current_page(notebook.n_pages - 1)
+        observed << [widget, event.button, event.x, event.event_type, notebook.n_pages, notebook.send(:read, :selected)]
+      elsif event.button == scope.const_get(:Gdk)::BUTTON_SECONDARY
+        notebook.remove_page(-1)
+        observed << [widget, event.button]
+      end
+      true
+    end
+    wrapper.signal_connect('button-press-event') { consumed << true }
+    notebook.append_page(gtk::Label.new('Main content'), wrapper)
+    _window, page = show(notebook)
+    viewer = connect(page, 'tabs')
+    header = nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers'].first
+    payload = { tab: header['key'], x: 12, y: 20, time: 1, state: 0, button: 2, click_count: 1 }
+    send_event(page, viewer, :tabs, 'tab_pointer', payload)
+    result = observed.pop(timeout: 2)
+    expect(result).to eq([wrapper, 2, 12, scope.const_get(:Gdk)::EventType::BUTTON_PRESS, 2, 1])
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == 1 }
+    send_event(page, viewer, :tabs, 'tab_pointer', payload.merge(button: 3))
+    expect(observed.pop(timeout: 2)).to eq([wrapper, 3])
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'] == ['Main'] }
+    expect(consumed).to be_empty
+    wrapper.destroy
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'].empty? }
+    send_event(page, viewer, :tabs, 'tab_pointer', payload)
+    expect(observed).to be_empty
+  end
+
   it 'accepts top notebook position spellings without changing tab content, handles or viewer selection' do
     notebook = gtk::Notebook.new
     expect(notebook.set_tab_pos(:top)).to equal(notebook)
@@ -105,7 +399,7 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     viewer = connect(page, 'top-tabs')
     handle = notebook.materialize
     children = notebook.children
-    send_event(page, viewer, :tabs, 'select', { index: 1 })
+    send_event(page, viewer, :tabs, 'select', { index: 1, tab: nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers'][1]['key'] })
     wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }.dig('props', 'selected') == 1 }
     expect(notebook.set_tab_pos(gtk::PositionType::TOP)).to equal(notebook)
     notebook.tab_pos = :top

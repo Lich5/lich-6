@@ -67,6 +67,136 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     flatten(render.fetch('tree')).find { |node| node['type'] == type.to_s }
   end
 
+  it 'bounds initial Paned pixels to the measured resize policy and refuses live resets' do
+    split = compatibility::Paned.new(:horizontal)
+    split.pack1(compatibility::Label.new('First'), true, false)
+    split.pack2(compatibility::Label.new('Second'), false, true)
+    split.position = 700
+    expect(split.send(:component_props)).to include(position_pixels: 700, resize_side: :first)
+    [-1, 65_537, 1.5, '700'].each { |value| expect { split.position = value }.to raise_error(compatibility::UnsupportedOperation) }
+    window = compatibility::Window.new
+    window.add(split)
+    show(window)
+    expect { split.set_position(600) }.to raise_error(compatibility::UnsupportedOperation)
+    expect(split.send(:component_props)[:position_pixels]).to eq(700)
+    unsupported = compatibility::Paned.new(:horizontal)
+    unsupported.pack1(compatibility::Label.new('First'), true, false)
+    unsupported.pack2(compatibility::Label.new('Second'), true, true)
+    expect { unsupported.position = 700 }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'preserves EventBox tab clicks, live color and page operations in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    notebook = compatibility::Notebook.new
+    status = compatibility::Label.new('No tab command')
+    gdk = scope.const_get(:Gdk)
+    main_label = compatibility::Label.new('Main')
+    main_label.override_color(:normal, gdk::RGBA.new(1, 0, 0, 1))
+    main = compatibility::EventBox.new.add(main_label)
+    bag_page = nil
+    add_bag = proc do
+      bag_page = compatibility::Label.new('Bag contents')
+      label = compatibility::Label.new('Bag')
+      wrapper = compatibility::EventBox.new.add(label)
+      wrapper.signal_connect('button-press-event') do |widget, event|
+        next unless event.event_type == gdk::EventType::BUTTON_PRESS
+        if event.button == gdk::BUTTON_SECONDARY
+          notebook.remove_page(notebook.children.index(bag_page))
+          status.text = 'Bag closed'
+        elsif event.button == gdk::BUTTON_MIDDLE
+          status.text = widget.equal?(wrapper) ? 'Bag middle command' : 'Wrong tab widget'
+        end
+      end
+      notebook.append_page(bag_page, wrapper)
+    end
+    main.signal_connect('button-press-event') do |_widget, event|
+      if event.button == gdk::BUTTON_SECONDARY
+        notebook.remove_page(-1) while notebook.n_pages > 1
+        status.text = 'Other tabs closed'
+      elsif event.button == gdk::BUTTON_MIDDLE
+        status.text = 'Main middle command'
+      end
+    end
+    notebook.append_page(compatibility::Label.new('Main contents'), main)
+    add_bag.call
+    recolor = compatibility::Button.new('Green tab')
+    recolor.signal_connect('clicked') { main_label.override_color(:normal, gdk::RGBA.new(0, 1, 0, 1)) }
+    reopen = compatibility::Button.new('Reopen bag')
+    reopen.signal_connect('clicked') { add_bag.call; notebook.set_current_page(notebook.n_pages - 1) }
+    box = compatibility::Box.new(:vertical, 4)
+    [notebook, status, recolor, reopen].each { |widget| box.add(widget) }
+    WebUIBrowser.check(service: service, page: show(compatibility::Window.new('Notebook tabs').add(box)), scenario: 'priority15-notebook')
+    expect(notebook.n_pages).to eq(1)
+    expect(main_label.send(:component_props)[:foreground][:g]).to eq(255)
+  end
+
+  it 'preserves filtered selection and initial pixel splits across updates and resizing in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Priority 15 follow-up')
+    window.set_default_size(1000, 600)
+    model = compatibility::ListStore.new(String)
+    %w[Allowed Denied Failing].each { |name| model.append[0] = name }
+    view = compatibility::TreeView.new(model)
+    view.append_column(compatibility::TreeViewColumn.new('Choice', compatibility::CellRendererText.new, text: 0))
+    view.selection.set_select_function do |_selection, store, path, _selected|
+      name = store.get_iter(path)[0]
+      raise 'predicate failure' if name == 'Failing'
+      name == 'Allowed'
+    end
+    status = compatibility::Label.new('No accepted selection')
+    view.selection.signal_connect('changed') { status.text = "Accepted: #{view.selection.selected[0]}" }
+    split = compatibility::Paned.new(:horizontal)
+    split.pack1(view, true, false)
+    split.pack2(status, false, true)
+    split.position = 700
+    WebUIBrowser.check(service: service, page: show(window.add(split)), scenario: 'priority15-followup')
+  end
+
+  it 'renders Priority 15 cell colors, minimum widths, custom headers and word-character wrapping in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Priority 15')
+    box = compatibility::Box.new(:vertical, 4)
+    model = compatibility::ListStore.new(String, TrueClass)
+    first, second = model.append, model.append
+    first[0], first[1] = '<b>Alpha</b>', true
+    second[0], second[1] = 'Beta', false
+    view = compatibility::TreeView.new(model)
+    view.tooltip_text = 'Inventory help'
+    cell = compatibility::CellRendererText.new
+    column = compatibility::TreeViewColumn.new('Custom order', cell, text: 0)
+    column.min_width = 160
+    column.fixed_width = 90
+    column.resizable = true
+    column.clickable = true
+    column.set_tooltip_text('Custom header help')
+    column.set_cell_data_func(cell) do |_column, renderer, store, iter|
+      renderer.text = store.get_value(iter, 0)
+      renderer.foreground_rgba = scope.const_get(:Gdk)::RGBA.new(1, 0, 0, 1) if iter[1]
+    end
+    column.signal_connect('clicked') do
+      first[0] = 'Zulu'
+      column.min_width = 240
+      model.set_sort_column_id(0, :ascending)
+    end
+    view.append_column(column)
+    log = compatibility::TextView.new
+    log.editable = false
+    log.wrap_mode = compatibility::WrapMode::WORD_CHAR
+    log.tooltip_text = 'Wrapped log'
+    log.set_size_request(160, 80)
+    log.buffer.text = 'x' * 120
+    editor = compatibility::TextView.new
+    editor.wrap_mode = :word_char
+    editor.set_size_request(160, 80)
+    editor.buffer.text = 'y' * 120
+    nowrap = compatibility::Button.new('Disable wrap')
+    nowrap.signal_connect('clicked') { log.wrap_mode = :none; editor.wrap_mode = :none }
+    [view, log, editor, nowrap].each { |widget| box.add(widget) }
+    window.add(box)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'priority15-tree-text')
+    expect(model.rows.map { |iter| iter[0] }).to eq(%w[Beta Zulu])
+  end
+
   it 'accepts legacy markup and width setters with bounded named sizes' do
     label = compatibility::Label.new('<b>Ready</b>')
     label.set_use_markup(true)
@@ -496,6 +626,138 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect { buffer.insert(compatibility::TextBuffer.new.end_iter, 'wrong') }.to raise_error(compatibility::UnsupportedOperation)
     expect { buffer.get_iter_at_offset(1) }.to raise_error(compatibility::UnsupportedOperation)
     expect { buffer.insert_markup(buffer.end_iter, '<b>lost</b>') }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'advances the insertion iterator before notifications and preserves it on refusal' do
+    buffer = compatibility::TextBuffer.new
+    buffer.text = 'ab'
+    iterator = buffer.get_iter_at_offset(1)
+    offsets = []
+    buffer.signal_connect('changed') { offsets << iterator.offset }
+    buffer.insert(iterator, [233, 128512].pack('U*'))
+    expect(iterator.offset).to eq(3)
+    expect(buffer.text.length).to eq(4)
+    expect(offsets).to eq([3])
+    expect { buffer.insert(iterator, 'x' * 65_537) }.to raise_error(compatibility::UnsupportedOperation)
+    expect(iterator.offset).to eq(3)
+    expect(buffer.text.length).to eq(4)
+  end
+
+  it 'supports the complete append/end-mark/scroll/delete sequence and rejects foreign or retired marks' do
+    view = compatibility::TextView.new
+    view.editable = false
+    buffer = view.buffer
+    buffer.text = "old\n" * 999
+    3.times do
+      iterator = buffer.end_iter
+      buffer.insert(iterator, [233].pack('U') + " appended\n")
+      expect(iterator.offset).to eq(buffer.char_count)
+      expect(buffer.line_count).to eq(1000)
+      mark = buffer.create_mark(nil, iterator, false)
+      expect(view.scroll_mark_onscreen(mark)).to equal(view)
+      expect(buffer.delete_mark(mark)).to equal(buffer)
+      expect { view.scroll_mark_onscreen(mark) }.to raise_error(compatibility::UnsupportedOperation)
+      expect { buffer.delete_mark(mark) }.to raise_error(compatibility::UnsupportedOperation)
+    end
+    expect(view.send(:component_props)[:follow]).to be(true)
+    expect { buffer.create_mark('named', buffer.end_iter, false) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { buffer.create_mark(nil, buffer.start_iter, false) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { buffer.create_mark(nil, buffer.end_iter, true) }.to raise_error(compatibility::UnsupportedOperation)
+    other = compatibility::TextBuffer.new
+    foreign = other.create_mark(nil, other.end_iter, false)
+    expect { buffer.delete_mark(foreign) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { view.scroll_mark_onscreen(foreign) }.to raise_error(compatibility::UnsupportedOperation)
+    mark = buffer.create_mark(nil, buffer.end_iter, false)
+    buffer.text = ''
+    buffer.insert(buffer.end_iter, 'replacement')
+    expect(view.scroll_mark_onscreen(mark)).to equal(view)
+    view.buffer = other
+    expect { view.scroll_mark_onscreen(mark) }.to raise_error(compatibility::UnsupportedOperation)
+    buffer.delete_mark(mark)
+    view.destroy
+    expect { view.scroll_mark_onscreen(foreign) }.to raise_error(compatibility::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(Object.new)
+    expect { other.delete_mark(foreign) }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'applies selected colors live without changing another table or viewer selection' do
+    model = compatibility::ListStore.new(String)
+    model.append[0] = 'First'
+    model.append[0] = 'Second'
+    view = compatibility::TreeView.new(model)
+    view.append_column(compatibility::TreeViewColumn.new('Choice', compatibility::CellRendererText.new, text: 0))
+    other = compatibility::TreeView.new(model)
+    other.append_column(compatibility::TreeViewColumn.new('Other', compatibility::CellRendererText.new, text: 0))
+    rgba = scope.const_get(:Gdk)::RGBA
+    color = rgba.new(0.2, 0.4, 0.6, 0.5)
+    view.override_background_color(:selected, color)
+    window = compatibility::Window.new
+    window.add(view).add(other)
+    page = show(window)
+    first, second = connect(page, 'one'), connect(page, 'two')
+    table = page.last_render.tree.each.find { |node| node.type == :table }
+    key = model.rows.first.key
+    send_event(page, first, table, 'selection_change', rows: [key])
+    # Drain accepted selection before the explicit color update publishes it.
+    # The fake connection has no optimistic DOM and acceptance needs no repaint.
+    accepted = Queue.new
+    service.runtime.dispatch(owner: owner) { accepted << true }
+    expect(accepted.pop(timeout: 2)).to be(true)
+    view.override_background_color(:selected, rgba.new(0, 1, 0, 1))
+    wait_for { rendered_node(first, :table)['props']['selection_background']['g'] == 255 }
+    expect(rendered_node(first, :table)['props']['selected']).to eq([key])
+    expect(rendered_node(second, :table)['props']['selected']).to eq([])
+    expect(other.send(:component_props)).not_to have_key(:selection_background)
+    [:active, :prelight].each do |state|
+      expect { view.override_background_color(state, color) }.to raise_error(compatibility::UnsupportedOperation)
+    end
+    expect { view.override_background_color(:selected, '#fff') }.to raise_error(compatibility::UnsupportedOperation)
+    expect(view.send(:component_props)[:selection_background]).to eq(rgba.new(0, 1, 0, 1).to_h)
+    view.destroy
+    expect { view.override_background_color(:selected, color) }.to raise_error(compatibility::UnsupportedOperation)
+    allow(Lich::Common::Script).to receive(:current).and_return(Object.new)
+    expect { other.override_background_color(:selected, color) }.to raise_error(compatibility::UnsupportedOperation)
+  end
+
+  it 'shows end-mark scrolling and live selected fills in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Log and selected color')
+    box = compatibility::Box.new(:vertical, 4)
+    model = compatibility::ListStore.new(String)
+    %w[First Second].each { |value| model.append[0] = value }
+    rgba = scope.const_get(:Gdk)::RGBA
+    views = 2.times.map do |index|
+      view = compatibility::TreeView.new(model)
+      view.tooltip_text = index.zero? ? 'Custom selection' : 'Default selection'
+      cell = compatibility::CellRendererText.new
+      cell.background = '#ffffff'
+      column = compatibility::TreeViewColumn.new('Choice', cell, text: 0)
+      column.set_cell_data_func(cell) { |_column, renderer, _store, _iter| renderer.foreground_rgba = rgba.new(1, 0, 0, 1) }
+      view.append_column(column)
+      view.selection.select_iter(model.rows.first)
+      view.override_background_color(:selected, rgba.new(0.2, 0.4, 0.6, 1)) if index.zero?
+      box.add(view)
+      view
+    end
+    log = compatibility::TextView.new
+    log.editable = false
+    log.buffer.text = "Initial line\n" * 150
+    scroller = compatibility::ScrolledWindow.new
+    scroller.set_size_request(400, 100)
+    scroller.add(log)
+    append = compatibility::Button.new('Append marked line')
+    append.signal_connect('clicked') do
+      iterator = log.buffer.end_iter
+      log.buffer.insert(iterator, "Marked final line\n")
+      mark = log.buffer.create_mark(nil, iterator, false)
+      log.scroll_mark_onscreen(mark)
+      log.buffer.delete_mark(mark)
+      views.first.override_background_color(:selected, rgba.new(0, 1, 0, 1))
+    end
+    clear = compatibility::Button.new('Clear log')
+    clear.signal_connect('clicked') { log.buffer.text = '' }
+    [scroller, append, clear].each { |widget| box.add(widget) }
+    WebUIBrowser.check(service: service, page: show(window.add(box)), scenario: 'priority15-log-style')
   end
 
   it 'keeps independent buffer ownership and preserves replaced buffers' do

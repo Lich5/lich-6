@@ -1547,6 +1547,31 @@ test('live input retains newer typing and caret through an older reply, then acc
   assert.equal(input().value, '', 'an acknowledged callback may deliberately clear the field');
 });
 
+test('table presentation keeps minimum widths, literal row colors and custom header activation independent of sorting', t => {
+  const { dom, page, sent } = fixture(); t.after(() => dom.window.close());
+  page.bindings.inventory = ['column_activate'];
+  const wrapper = dom.window.LichWebUI.render(page, { type: 'table', cid: 'inventory', props: {
+    columns: [{ key: 'name', label: 'Custom name', width: 50, min_width: 160, resizable: true,
+      activatable: true, tooltip: 'Sort by name' }],
+    rows: [{ key: 'one', cells: { name: '<literal>' },
+      cell_foregrounds: [{ column: 'name', color: { r: 255, g: 0, b: 0, a: 1 } }] }]
+  } });
+  dom.window.document.body.append(wrapper);
+  assert.equal(wrapper.querySelector('col').style.width, '160px');
+  assert.equal(wrapper.querySelector('td').style.color, 'rgb(255, 0, 0)');
+  assert.equal(wrapper.querySelector('td').textContent, '<literal>');
+  assert.equal(wrapper.querySelector('td').children.length, 0);
+  assert.equal(wrapper.querySelector('th').title, 'Sort by name');
+  wrapper.querySelector('th button').click();
+  const event = sent.find(message => message.event === 'column_activate');
+  assert.deepEqual(event.payload, { column: 'name' });
+  assert.equal(sent.some(message => message.event === 'sort_change'), false);
+  const handle = wrapper.querySelector('[role="separator"]');
+  handle.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+  assert.equal(wrapper.querySelector('col').style.width, '160px');
+  assert.equal(handle.getAttribute('aria-valuemin'), '160');
+});
+
 test('automatic columns fit their allocation independently of long cells while authored and dragged widths survive', async t => {
   const { dom, page } = fixture(); t.after(() => dom.window.close());
   const { document, KeyboardEvent } = dom.window;
@@ -2009,4 +2034,121 @@ test('disabled Markdown links have no navigation target and live enablement rest
   assert.equal(wrapper.querySelector('a').rel, 'noopener noreferrer');
   publish(3, false, '[Other port](http://127.0.0.1:9090/wiki)');
   assert.equal(dom.window.document.querySelector('[data-cid="wiki"] a'), null);
+});
+
+test('table selection backgrounds remain scoped across live updates and default restoration', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'colors' }] });
+  const table = (cid, color) => ({ type: 'table', cid, props: {
+    columns: [{ key: 'name', label: 'Name', background: { r: 255, g: 255, b: 255, a: 1 } }],
+    rows: [{ key: 'a', cells: { name: 'Alpha' } }], selection: 'single', selected: ['a'],
+    ...(color ? { selection_background: color } : {})
+  } });
+  const render = (generation, color) => receive({ type: 'render', page: 'colors', generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [table('custom', color), table('default')] } });
+  render(1, { r: 51, g: 102, b: 153, a: 0.5 });
+  const color = cid => dom.window.document.querySelector(`[data-cid="${cid}"] table`).style.getPropertyValue('--selection-background');
+  assert.equal(color('custom'), 'rgba(51, 102, 153, 0.5)');
+  assert.equal(color('default'), '');
+  render(2, { r: 0, g: 255, b: 0, a: 1 });
+  assert.equal(color('custom'), 'rgba(0, 255, 0, 1)');
+  assert.equal(color('default'), '');
+  render(3);
+  assert.equal(color('custom'), '');
+});
+
+test('custom tab headers keep stable pointer targets, colors and primary selection', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'tabs' }] });
+  const render = (generation, color) => receive({ type: 'render', page: 'tabs', generation,
+    bindings: { tabs: ['select', 'tab_pointer'] }, tree: { type: 'page', cid: 'root', props: {}, children: [{
+      type: 'tabs', cid: 'tabs', props: { names: ['Main'], selected: 0,
+        headers: [{ key: 'stable-main', pointer_events: true, foreground: color }] },
+      children: [{ type: 'text', cid: 'body', slot: 'Main', props: { content: 'Content' } }]
+    }] } });
+  render(1, { r: 255, g: 0, b: 0, a: 1 });
+  let button = dom.window.document.querySelector('[role="tab"]');
+  assert.equal(button.style.color, 'rgb(255, 0, 0)');
+  const event = new dom.window.MouseEvent('pointerdown', { button: 2, clientX: 8, clientY: 9, bubbles: true, cancelable: true });
+  button.dispatchEvent(event);
+  assert.equal(event.defaultPrevented, true);
+  const press = sent.find(item => item.event === 'tab_pointer');
+  assert.deepEqual(press.payload, { tab: 'stable-main', x: 8, y: 9, button: 3, time: Math.floor(event.timeStamp), state: 0, click_count: 1 });
+  assert.equal(sent.filter(item => item.event === 'select').length, 0);
+  button.click();
+  assert.deepEqual(sent.find(item => item.event === 'select').payload, { index: 0, tab: 'stable-main' });
+  render(2, { r: 0, g: 255, b: 0, a: 1 });
+  button = dom.window.document.querySelector('[role="tab"]');
+  assert.equal(button.style.color, 'rgb(0, 255, 0)');
+});
+
+test('plain actions retain focus across redraws without joining submitted input values', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'action-focus' }] });
+  const render = generation => receive({ type: 'render', page: 'action-focus', generation,
+    bindings: { close: ['activate'] }, submissions: { close: ['draft'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'text_input', cid: 'draft', props: { value: 'Initial' } },
+        { type: 'button', cid: 'close', props: { label: 'Close' } }
+      ]
+    } });
+  render(1);
+  dom.window.document.querySelector('input').value = 'Edited';
+  dom.window.document.querySelector('button').focus();
+  render(2);
+  const close = dom.window.document.querySelector('button');
+  assert.equal(dom.window.document.activeElement, close);
+  close.click();
+  const activations = sent.filter(message => message.event === 'activate');
+  assert.equal(activations.length, 1);
+  assert.deepEqual(activations[0].submission, ['Edited']);
+});
+
+test('action focus restoration rejects retired, disabled, hidden and inert targets', t => {
+  for (const state of ['retired', 'disabled', 'hidden', 'inert', 'changed-type']) {
+    const { dom, receive } = fixture(); t.after(() => dom.window.close());
+    receive({ type: 'hello', pages: [{ address: state }] });
+    const action = { type: 'button', cid: 'action', props: { label: 'Action' } };
+    const render = (generation, children, props = {}) => receive({ type: 'render', page: state, generation,
+      tree: { type: 'page', cid: 'root', props, children } });
+    render(1, [action]);
+    dom.window.document.querySelector('button').focus();
+    if (state === 'retired') render(2, []);
+    else if (state === 'changed-type') render(2, [{ type: 'text_input', cid: 'action', props: { value: 'Replacement' } }]);
+    else if (state === 'inert') render(2, [{ type: 'tabs', cid: 'tabs', props: { names: ['Current', 'Other'], selected: 0, size_to_all: true },
+      children: [{ type: 'text', cid: 'current', slot: 'Current', props: { content: 'Current' } },
+        { type: 'stack', cid: 'other', slot: 'Other', props: {}, children: [action] }] }]);
+    else render(2, [{ ...action, props: { ...action.props, [state]: true } }]);
+    assert.equal(dom.window.document.activeElement, dom.window.document.body, state);
+  }
+});
+
+test('redrawing a different page cannot steal a focused action with the same local cid', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'one' }, { address: 'two' }] });
+  const render = (page, generation) => receive({ type: 'render', page, generation,
+    tree: { type: 'page', cid: 'root', props: {}, children: [{ type: 'button', cid: 'action', props: { label: page } }] } });
+  render('one', 1); render('two', 1);
+  const action = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === 'one');
+  action.focus(); render('two', 2);
+  assert.equal(dom.window.document.activeElement, action);
+});
+
+test('plain action focus yields to a new explicit server focus request', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  dom.window.CSS = { escape: value => value };
+  receive({ type: 'hello', pages: [{ address: 'action-server-focus' }] });
+  const render = (generation, revision) => receive({ type: 'render', page: 'action-server-focus', generation,
+    facilities: { focus: 'server-target', focus_revision: revision }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'text_input', cid: 'server-target', props: { value: 'Server focus' } },
+        { type: 'button', cid: 'action', props: { label: 'Action' } }
+      ]
+    } });
+  render(1, 1);
+  dom.window.document.querySelector('button').focus();
+  render(2, 1);
+  assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('button'));
+  render(3, 2);
+  assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('input'));
 });

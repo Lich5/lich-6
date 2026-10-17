@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.36.0'
+      VERSION = '2.39.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -158,7 +158,7 @@ module Lich
         divider: %i[key hidden margin width tone],
         text: %i[key tooltip hidden align margin width height emphasis tone],
         markdown: %i[key disabled hidden align margin width],
-        log: %i[key hidden align margin width height],
+        log: %i[key tooltip hidden align margin width height],
         progress: %i[key tooltip hidden align margin width height tone],
         image: %i[key tooltip hidden align margin width height],
         button: %i[key tooltip disabled hidden align margin width min_height emphasis tone],
@@ -172,7 +172,7 @@ module Lich
         number_input: %i[key tooltip disabled hidden align margin width tone sensitive],
         slider: %i[key tooltip disabled hidden align margin width tone],
         select: %i[key tooltip disabled hidden align margin width min_height tone sensitive],
-        table: %i[key disabled hidden align margin width height min_height],
+        table: %i[key tooltip disabled hidden align margin width height min_height],
         dialog: %i[key width height min_height tone],
         composite: %i[key tooltip hidden align margin width height],
       }.freeze
@@ -262,7 +262,7 @@ module Lich
             size_to_all: property(BOOL, default: false),
             show_tabs: property(BOOL, default: true),
           }, children: { kind: :named_from_property, property: :names },
-          events: { select: event(record(index: property(integer(min: 0), required: true)), structural: true) }, value: nil,
+          events: { select: event(record(index: property(integer(min: 0), required: true), tab: property(IDENT)), structural: true) }, value: nil,
         },
         expander: {
           properties: { label: property(SHORT, required: true), open: property(BOOL, default: false, scope: :viewer) },
@@ -311,7 +311,7 @@ module Lich
           properties: {
             lines: property(array(union(string(:log_line), array(string(:log_line), max: BOUNDS[:collection])), max: BOUNDS[:log_lines]), required: true),
             max_lines: property(integer(min: 1, max: BOUNDS[:log_lines]), required: true),
-            follow: property(BOOL, default: true), wrap: property(enum(:word, :none), default: :word),
+            follow: property(BOOL, default: true), wrap: property(enum(:word, :word_char, :none), default: :word),
           }, children: :none, events: {}, value: nil,
         },
         progress: {
@@ -387,7 +387,7 @@ module Lich
         textarea: {
           properties: {
             read_only: property(BOOL, default: false), cursor_visible: property(BOOL, default: true),
-            wrap: property(enum(:word, :none), default: :word), follow: property(BOOL, default: false),
+            wrap: property(enum(:word, :word_char, :none), default: :word), follow: property(BOOL, default: false),
             label: property(SHORT), value: property(string(:multiline_text), required: true, scope: :viewer),
             rows: property(integer(min: 1, max: 64), default: 5),
             max_length: property(integer(min: 1, max: 65_536)),
@@ -453,6 +453,8 @@ module Lich
       TABLE_COLUMN = record(
         key: property(IDENT, required: true), label: property(SHORT, required: true),
         align: property(enum(:start, :center, :end), default: 'start'), width: property(GEOMETRY),
+        min_width: property(integer(min: 0, max: 65_536)), tooltip: property(string(:body_text)),
+        activatable: property(BOOL, default: false),
         sortable: property(BOOL, default: false), resizable: property(BOOL, default: false),
         editor: property(scalar(:editor), default: nil),
         background: property(RGBA),
@@ -465,7 +467,9 @@ module Lich
         cells: property(scalar(:cell_map), required: true),
         # Preserve numeric ordering when the visible cells include formatting.
         sort_cells: property(scalar(:cell_map)),
-        background_disabled: property(array(IDENT, max: BOUNDS[:table_columns]))
+        background_disabled: property(array(IDENT, max: BOUNDS[:table_columns])),
+        cell_foregrounds: property(array(record(column: property(IDENT, required: true),
+                                                color: property(RGBA, required: true)), max: BOUNDS[:table_columns]))
       ).freeze
 
       TABLE_PROPERTIES = {
@@ -484,6 +488,7 @@ module Lich
         columns: property(array(TABLE_COLUMN, min: 1, max: BOUNDS[:table_columns]), required: true),
         rows: property(array(TABLE_ROW, max: BOUNDS[:table_rows]), required: true),
         selection: property(enum(:none, :single, :browse, :multi), default: 'none'),
+        selection_background: property(RGBA),
         selected: property(array(IDENT, max: BOUNDS[:table_rows]), scope: :viewer),
         sortable: property(BOOL, default: false),
         sort: property(record(
@@ -496,6 +501,7 @@ module Lich
       }.freeze
 
       TABLE_EVENTS = {
+        column_activate: event(record(column: property(IDENT, required: true))),
         row_drop: event(record(source: property(CID, required: true), row: property(IDENT, required: true)), terminal: true),
         row_activate: event(record(row: property(IDENT, required: true), column: property(IDENT)), terminal: true),
         # Cursor and selection changes are already visible in the client. An
@@ -683,6 +689,15 @@ module Lich
             if %i[page text image group progress table stack button].include?(type)
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
+            end
+            if type == :tabs
+              base[:properties][:headers] = property(array(record(
+                                                             key: property(IDENT, required: true), foreground: property(RGBA),
+                                                             pointer_events: property(BOOL, default: false), disabled: property(BOOL, default: false)
+                                                           ), max: BOUNDS[:collection]))
+              pointer = deep_dup(POINTER_EVENT)
+              pointer[:payload][:fields][:tab] = property(IDENT, required: true)
+              base[:events][:tab_pointer] = pointer
             end
             if type == :group
               base[:events][:dismiss] = event(nil, lifecycle: true)

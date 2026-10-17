@@ -418,6 +418,9 @@ module Lich
         end
         snapshot = build_submission(attachment, component, message)
         return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
+        if component.type == :table && message[:event].to_sym == :selection_change && callback.respond_to?(:prepare_selection)
+          return dispatch_guarded_selection(attachment, component.cid, payload)
+        end
 
         attachment.page.observe_window_geometry(payload) if component.type == :page && message[:event].to_sym == :configure
         if component.type == :page && message[:event].to_sym == :configure && payload[:monitors]
@@ -448,6 +451,41 @@ module Lich
         raise Protocol::Refusal.new(:overflow, 'viewer event queue overflow')
       ensure
         snapshot&.discard_sensitive! unless dispatched
+      end
+
+      # Evaluate guarded proposals in owner order against current live selection.
+      # Rejection/failure never commits a proposed value. Refresh also restores
+      # optimistic browser selection after a veto; no second draft store exists.
+      def dispatch_guarded_selection(attachment, cid, payload)
+        @dispatcher.enqueue(owner: attachment.page.owner, page_id: attachment.page.id,
+                            viewer_id: attachment.viewer_id, cid: cid, event: :selection_change, coalescable: true) do
+          live = begin
+            @viewers.attachment_for_viewer(attachment.page, attachment.viewer_id)
+          rescue Error
+            nil
+          end
+          next unless live.equal?(attachment)
+          component = attachment.render.tree.each.find { |node| node.cid == cid }
+          callback = attachment.render.bindings[[cid, :selection_change]]
+          next unless component && callback.respond_to?(:prepare_selection)
+
+          context = EventContext.new(attachment.viewer_id, attachment.page, component, :selection_change, payload, nil)
+          previous = @viewers.property(attachment, component, :selected) || []
+          restore = true
+          begin
+            proposed = callback.prepare_selection(context)
+            accepted = @validator.validate_event!(:table, :selection_change, proposed, props: component.props,
+                                                  owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: cid)
+            @viewers.update(attachment, component, :selection_change, accepted)
+            callback.call(context.with(payload: accepted)) unless accepted[:rows] == previous
+            # Keep the failure default until the changed callback also succeeds.
+            # Accepted browser state needs no restoration paint when it matches.
+            restore = accepted[:rows] != payload[:rows]
+          ensure
+            schedule_refresh(attachment.page) if restore
+          end
+        end
+        :queued
       end
 
       # Selects a radio member atomically and dispatches deselection before selection.

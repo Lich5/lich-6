@@ -71,8 +71,24 @@ module Lich
             @registry = Registry.new
           end
           @registry ||= Registry.new
-          @service ||= Service.new(registry: @registry, geometry_store: window_geometry_store)
+          @service ||= Service.new(registry: @registry, geometry_store: window_geometry_store,
+                                   application_roots: application_asset_roots)
         end
+      end
+
+      # Host configuration approves data assets, independently of any script's
+      # requested image path. Legacy scripts may still use LICH_DIR/data even
+      # when --data-dir relocates DATA_DIR. Missing optional roots are not created.
+      # FileService retains canonical containment and owner-scoped image routes.
+      def application_asset_roots
+        candidates = [Service::ASSETS_DIR]
+        candidates << DATA_DIR if defined?(DATA_DIR)
+        candidates << File.join(LICH_DIR, 'data') if defined?(LICH_DIR)
+        candidates.filter_map do |path|
+          File.realpath(path) if File.directory?(path)
+        rescue SystemCallError
+          nil
+        end.uniq
       end
 
       # Builds geometry persistence scoped to the current game and character.

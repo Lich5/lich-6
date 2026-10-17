@@ -201,6 +201,36 @@ RSpec.describe Lich::WebUI::Validator do
     expect { validator.validate_component!(:composite, composite, **context) }.not_to raise_error
   end
 
+  it 'validates bounded RGBA table selection backgrounds without accepting raw CSS' do
+    valid = { r: 51, g: 102, b: 153, a: 0.5 }
+    props = valid_properties[:table].merge(selection_background: valid)
+    expect { validator.validate_component!(:table, props, **context) }.not_to raise_error
+    ['red', { r: 256, g: 0, b: 0, a: 1 }, { r: 0, g: 0, b: 0, a: -1 }, valid.merge(css: 'red')].each do |color|
+      expect { validator.validate_component!(:table, props.merge(selection_background: color), **context) }
+        .to raise_error(Lich::WebUI::Error)
+    end
+  end
+
+  it 'validates tab header identity, color and pointer eligibility' do
+    props = { names: ['Main'], headers: [{ key: 'main', foreground: { r: 255, g: 0, b: 0, a: 1 }, pointer_events: true }] }
+    expect { validator.validate_component!(:tabs, props, **context) }.not_to raise_error
+    [[], [{ key: 'a' }, { key: 'a' }], [{ key: 'main', foreground: 'red' }]].each do |headers|
+      expect { validator.validate_component!(:tabs, props.merge(headers: headers), **context) }.to raise_error(Lich::WebUI::Error)
+    end
+  end
+
+  it 'rejects stale tab identities and disabled custom tab gestures' do
+    pointer = { tab: 'current', x: 1, y: 2, button: 3, time: 0, state: 0 }
+    props = { names: ['Current'], headers: [{ key: 'current', pointer_events: true }] }
+    expect { validator.validate_event!(:tabs, :tab_pointer, pointer, props: props, **context) }.not_to raise_error
+    expect { validator.validate_event!(:tabs, :tab_pointer, pointer.merge(tab: 'removed'), props: props, **context) }.to raise_error(Lich::WebUI::Error)
+    expect { validator.validate_event!(:tabs, :select, { index: 0, tab: 'removed' }, props: props, **context) }.to raise_error(Lich::WebUI::Error)
+    expect { validator.validate_event!(:tabs, :select, { index: 0 }, props: props, **context) }.to raise_error(Lich::WebUI::Error)
+    props[:headers][0][:disabled] = true
+    expect { validator.validate_event!(:tabs, :tab_pointer, pointer, props: props, **context) }.to raise_error(Lich::WebUI::Error)
+    expect { validator.validate_event!(:tabs, :select, { index: 0, tab: 'current' }, props: props, **context) }.to raise_error(Lich::WebUI::Error)
+  end
+
   it 'enforces boundary values without clamping' do
     expect { validator.validate_component!(:stack, { gap: 64 }, **context) }.not_to raise_error
     expect { validator.validate_component!(:stack, { gap: 65 }, **context) }
@@ -267,6 +297,27 @@ RSpec.describe Lich::WebUI::Validator do
                          ])
     expect { validator.validate_component!(:table, cyclic, **context) }
       .to raise_error(Lich::WebUI::SchemaViolationError, /parent cycle/)
+  end
+
+  it 'bounds table presentation and authorizes only displayed activatable header targets' do
+    props = { columns: [{ key: 'name', label: 'Name', min_width: 120, activatable: true, tooltip: 'Literal help' }],
+              rows: [{ key: 'one', cells: { name: '<literal>' },
+                       cell_foregrounds: [{ column: 'name', color: { r: 255, g: 0, b: 0, a: 1.0 } }] }] }
+    normalized = validator.validate_component!(:table, props, **context)
+    expect(validator.validate_event!(:table, :column_activate, { column: 'name' }, props: normalized, **context)).to eq(column: 'name')
+    ['missing', nil].each do |key|
+      expect { validator.validate_event!(:table, :column_activate, { column: key }, props: normalized, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    blocked = validator.validate_component!(:table, props.merge(columns: [{ key: 'name', label: 'Name' }]), **context)
+    expect { validator.validate_event!(:table, :column_activate, { column: 'name' }, props: blocked, **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    [-1, 65_537, 2.5].each do |width|
+      expect { validator.validate_component!(:table, props.merge(columns: [{ key: 'name', label: 'Name', min_width: width }]), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
+    row = props[:rows].first
+    [row[:cell_foregrounds] * 2, [{ column: 'missing', color: { r: 0, g: 0, b: 0, a: 1 } }],
+     [{ column: 'name', color: 'red' }]].each do |colors|
+      expect { validator.validate_component!(:table, props.merge(rows: [row.merge(cell_foregrounds: colors)]), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+    end
   end
 
   it 'refuses disabled composite events' do

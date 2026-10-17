@@ -366,6 +366,13 @@ module Lich
         end
         BUTTON_PRESS_MASK = EventMask::BUTTON_PRESS_MASK
         BUTTON_PRIMARY = 1
+        BUTTON_MIDDLE = 2
+        BUTTON_SECONDARY = 3
+        module EventType
+          BUTTON_PRESS = :button_press
+          BUTTON2_PRESS = :button2_press
+        end
+
         module WindowState
           ICONIFIED = 1 << 1
         end
