@@ -8,6 +8,7 @@ const scenario = process.env.WEBUI_TEST_SCENARIO;
 // do not capture websocket frames, so without this a lost event (for example a
 // Close that never reaches the server) leaves no evidence in CI.
 const wire = [];
+const interactions = [];
 const wireStart = Date.now();
 function record(direction, data) {
   const raw = String(data).slice(0, 200);
@@ -22,15 +23,27 @@ function record(direction, data) {
         .join(' ') || raw;
     } catch (_error) { /* non-JSON frame: keep the truncated text */ }
   }
-  wire.push(`${String(Date.now() - wireStart).padStart(6)}ms ${direction} ${summary}`);
+  const entry = `${String(Date.now() - wireStart).padStart(6)}ms ${direction} ${summary}`;
+  wire.push(entry);
+  // Render frames can be fragmented; keep only identified interaction traffic.
+  if (direction === '->' || direction === 'console' || /^type=(refusal|reply|error)(?: |$)/.test(summary)) {
+    interactions.push(entry);
+    if (interactions.length > 100) interactions.shift();
+  }
   if (wire.length > 200) wire.shift();
 }
 
-test.afterEach(async ({}, testInfo) => {
+test.afterEach(async ({ page }, testInfo) => {
+  if (scenario === 'priority17-widget-drag' && !page.isClosed()) {
+    const body = JSON.stringify(await page.evaluate(() => window.fixtureDragEvents || []), null, 2);
+    await testInfo.attach('widget-drag-events.json', { body, contentType: 'application/json' });
+    if (testInfo.status !== testInfo.expectedStatus) console.log(`Widget drag events: ${body}`);
+  }
   if (testInfo.status === testInfo.expectedStatus) return;
   const body = wire.join('\n');
   console.log(`WebUI wire log (${scenario}, last ${wire.length} entries):\n${body}`);
   await testInfo.attach('webui-wire.log', { body, contentType: 'text/plain' });
+  await testInfo.attach('webui-interactions.log', { body: interactions.join('\n'), contentType: 'text/plain' });
 });
 
 test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
@@ -49,6 +62,50 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('response', response => {
     if (response.request().resourceType() === 'document') documents.push(response);
   });
+  if (scenario === 'priority17-widget-drag') {
+    // Observe real browser events without dispatching or changing their behavior.
+    // Keep gesture evidence separate from the 25 ms render traffic ring buffer.
+    await page.addInitScript(() => {
+      window.fixtureDragEvents = [];
+      window.fixtureRenderCount = 0;
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', event => {
+            let message;
+            try { message = JSON.parse(event.data); } catch { return; }
+            if (message.type !== 'render') return;
+            window.fixtureRenderCount += 1;
+            // Reproduce the old detached-element sample using an actual render.
+            window.fixtureRedraw = () => this.dispatchEvent(new MessageEvent('message', { data: event.data }));
+          });
+        }
+      };
+      const remember = entry => {
+        window.fixtureDragEvents.push(entry);
+        if (window.fixtureDragEvents.length > 80) window.fixtureDragEvents.shift();
+      };
+      for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'dragstart', 'dragover', 'drop', 'dragend']) {
+        document.addEventListener(type, event => {
+          const surface = event.target.closest?.('[data-cid]');
+          const source = document.querySelector('[data-widget-drag-source]');
+          const rect = source?.getBoundingClientRect();
+          const sourceHit = event.target.closest?.('[data-widget-drag-source]');
+          if (type === 'pointerdown') window.fixturePressedSource = sourceHit;
+          const entry = { type, trusted: event.isTrusted, target: surface?.dataset.cid,
+            destination: event.target.closest?.('[data-widget-drag-destination]')?.dataset.cid,
+            x: event.clientX, y: event.clientY, source: source?.dataset.cid, sourceHit: !!sourceHit,
+            sourceConnected: source?.isConnected,
+            rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+          // One dragover per destination is enough to establish the boundary.
+          const previous = window.fixtureDragEvents.at(-1);
+          if (type === 'dragover' && previous?.type === type && previous.target === entry.target) return;
+          remember(entry);
+        }, true);
+      }
+    });
+  }
   if (scenario === 'shim-manatimer') {
     // Chrome verifies the existing presentation request; native host behavior is
     // checked separately in the actual macOS WebKit window.
@@ -371,15 +428,16 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(selected.locator('td')).toHaveCSS('color', 'rgb(255, 0, 0)');
   } else if (scenario === 'priority15-followup') {
     const split = page.locator('.webui-split');
-    const panes = split.locator(':scope > .split-pane');
     const divider = split.locator(':scope > .split-handle');
     const table = split.locator('table');
     const allowed = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Allowed', exact: true }) });
     const denied = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Denied', exact: true }) });
     const failing = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Failing', exact: true }) });
-    const rightWidth = () => panes.last().evaluate(el => el.getBoundingClientRect().width);
+    // Resolve and measure in one task, then wait for the requested 1000 - 700
+    // - 1 pixel allocation. A visible pane can still precede its first RAF.
+    const rightWidth = () => page.evaluate(() => document.querySelector('.webui-split > .split-pane:last-child')?.getBoundingClientRect().width ?? 0);
+    await expect.poll(async () => Math.abs(await rightWidth() - 299)).toBeLessThanOrEqual(2);
     const initial = await rightWidth();
-    expect(initial).toBeGreaterThan(50);
     await allowed.click();
     await expect(allowed).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByText('Accepted: Allowed', { exact: true })).toBeVisible();
@@ -389,9 +447,9 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await failing.click();
     await expect(failing).toHaveAttribute('aria-selected', 'false');
     await expect(allowed).toHaveAttribute('aria-selected', 'true');
-    expect(Math.abs(await rightWidth() - initial)).toBeLessThanOrEqual(2);
+    await expect.poll(async () => Math.abs(await rightWidth() - initial)).toBeLessThanOrEqual(2);
     await page.setViewportSize({ width: 1100, height: 700 });
-    expect(Math.abs(await rightWidth() - initial)).toBeLessThanOrEqual(2);
+    await expect.poll(async () => Math.abs(await rightWidth() - initial)).toBeLessThanOrEqual(2);
     await divider.focus();
     await divider.press('ArrowLeft');
     await expect.poll(rightWidth).toBeGreaterThan(initial + 2);
@@ -1189,34 +1247,64 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await expect(page.getByText('Plain replacement', { exact: true })).toBeVisible();
     await expect(spans).toHaveCount(0);
   } else if (scenario === 'priority17-widget-drag') {
-    const source = () => page.locator('[data-widget-drag-source]');
     const targets = page.locator('[data-widget-drag-destination]');
     const status = page.getByText(/^Moves \d+; unlocked$/);
     await expect(status).toHaveText('Moves 0; unlocked');
     // An external drop cannot supply the page-local drag state.
     await targets.nth(1).dispatchEvent('drop', { dataTransfer: await page.evaluateHandle(() => new DataTransfer()) });
     await expect(status).toHaveText('Moves 0; unlocked');
-    const bounds = await source().evaluate(element => element.getBoundingClientRect().toJSON());
-    await page.mouse.move(bounds.x + 8, bounds.y + 8);
-    await page.mouse.down();
-    await page.mouse.move(bounds.x + 35, bounds.y + 35, { steps: 8 });
+    // Reproduce the acquisition boundary: a legitimate render detaches a
+    // previously resolved element and its rectangle becomes zero. Never use
+    // that old ElementHandle to choose native mouse coordinates below.
+    const retired = await page.evaluate(() => {
+      const element = document.querySelector('[data-widget-drag-source]');
+      window.fixtureRedraw();
+      return { connected: element.isConnected, width: element.getBoundingClientRect().width };
+    });
+    expect(retired).toEqual({ connected: false, width: 0 });
+    const count = type => page.evaluate(type => window.fixtureDragEvents.filter(event => event.type === type && event.trusted).length, type);
+    const beginDrag = async () => {
+      const starts = await count('dragstart');
+      // A single browser task measures the current source, using its interior
+      // rather than offsets that can leave a 15 px-high Linux label.
+      const point = await page.evaluate(() => {
+        const rect = document.querySelector('[data-widget-drag-source]').getBoundingClientRect();
+        return { x: rect.x + rect.width / 3, y: rect.y + rect.height / 2, width: rect.width, height: rect.height };
+      });
+      expect(point.width).toBeGreaterThan(0); expect(point.height).toBeGreaterThan(0);
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+      expect(await page.evaluate(() => window.fixtureDragEvents.findLast(event => event.type === 'pointerdown')?.sourceHit)).toBe(true);
+      const renders = await page.evaluate(() => window.fixtureRenderCount);
+      // Prove the real timer delivers a render while the pressed source lives.
+      await expect.poll(() => page.evaluate(() => window.fixtureRenderCount)).toBeGreaterThan(renders);
+      expect(await page.evaluate(() => window.fixturePressedSource?.isConnected)).toBe(true);
+      await page.mouse.move(point.x + Math.min(20, point.width / 4), point.y, { steps: 4 });
+      await expect.poll(() => count('dragstart')).toBe(starts + 1);
+    };
+    const ends = await count('dragend');
+    await beginDrag();
     await page.keyboard.press('Escape');
     await page.mouse.up();
+    await expect.poll(() => count('dragend')).toBe(ends + 1);
+    expect(await count('drop')).toBe(0);
     await expect(status).toHaveText('Moves 0; unlocked');
-    // Locator dragTo waits for two animation frames of stability, which a
-    // legitimate 25 ms meter refresh deliberately prevents before pointerdown.
     const moveTo = async index => {
-      // Measure both endpoints in one browser task; a timer can replace the
-      // DOM between separate locator measurements and yield a detached node.
-      const { start, end } = await page.evaluate(index => ({
-        start: document.querySelector('[data-widget-drag-source]').getBoundingClientRect().toJSON(),
-        end: document.querySelectorAll('[data-widget-drag-destination]')[index].getBoundingClientRect().toJSON()
-      }), index);
-      await page.mouse.move(start.x + 10, start.y + 10);
-      await page.mouse.down();
-      await page.mouse.move(start.x + 30, start.y + 20, { steps: 4 });
-      await page.mouse.move(end.x + 40, end.y + 140, { steps: 8 });
+      const drops = await count('drop');
+      const marker = await page.evaluate(() => window.fixtureDragEvents.length);
+      await beginDrag();
+      const end = await page.evaluate(index => {
+        const element = document.querySelectorAll('[data-widget-drag-destination]')[index];
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height * 0.75, cid: element.dataset.cid };
+      }, index);
+      await page.mouse.move(end.x, end.y, { steps: 8 });
+      // Chromium needs a destination dragover before mouseup can produce drop.
+      await page.mouse.move(end.x + 1, end.y);
+      await expect.poll(() => page.evaluate(({ marker, cid }) => window.fixtureDragEvents.slice(marker)
+        .some(event => event.type === 'dragover' && event.trusted && event.destination === cid), { marker, cid: end.cid })).toBe(true);
       await page.mouse.up();
+      await expect.poll(() => count('drop')).toBe(drops + 1);
     };
     await moveTo(1);
     await expect(status).toHaveText('Moves 1; unlocked');
