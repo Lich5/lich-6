@@ -153,6 +153,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       };
       document.addEventListener('dragstart', event => {
         window.fixtureDragSource = event.target;
+        window.fixtureDragStarts = (window.fixtureDragStarts || 0) + 1;
       }, true);
     });
   }
@@ -492,16 +493,22 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     const footer = save.locator('..');
     const combo = page.getByRole('combobox');
     const cid = await save.getAttribute('data-cid');
+    /**
+     * Waits for connected footer geometry without weakening layout tolerances.
+     * @param {number} gap Required inter-button spacing in pixels.
+     * @returns {Promise<void>} Resolves when both buttons align in the live footer.
+     */
     const checkFooter = async gap => {
-      const sizes = await footer.evaluate(el => ({
-        right: el.getBoundingClientRect().right,
-        buttons: [...el.querySelectorAll('button')].map(button => {
-          const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right };
-        }),
-      }));
-      expect(sizes.buttons).toHaveLength(2);
-      expect(Math.abs(sizes.buttons[1].left - sizes.buttons[0].right - gap)).toBeLessThanOrEqual(1);
-      expect(Math.abs(sizes.right - sizes.buttons[1].right)).toBeLessThanOrEqual(1);
+      await expect.poll(() => footer.evaluate(el => {
+        const buttons = [...el.querySelectorAll('button')];
+        if (!el.isConnected || buttons.length !== 2) return null;
+        const rect = el.getBoundingClientRect();
+        const [first, second] = buttons.map(button => button.getBoundingClientRect());
+        if (![rect, first, second].every(box => box.width > 0 && box.height > 0)) return null;
+        return { count: buttons.length, gap: second.left - first.right, end: rect.right - second.right };
+      }).then(sizes => sizes !== null && sizes.count === 2 &&
+        Math.abs(sizes.gap - gap) <= 1 && Math.abs(sizes.end) <= 1),
+      { message: 'connected footer must retain two buttons, spacing and end alignment' }).toBe(true);
     };
     await expect(combo.locator('option:checked')).toHaveText('-- select spell --');
     await checkFooter(10);
@@ -1524,10 +1531,16 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       }, { message: 'drag geometry must be visible after background redraws' }).toBe(true);
       return box;
     };
+    const starts = await page.evaluate(() => window.fixtureDragStarts || 0);
     const sourceBox = await visibleBox(empty.locator('tbody tr'));
     await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
     await page.mouse.down();
     await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 15, sourceBox.y + sourceBox.height / 2, { steps: 5 });
+    await expect.poll(() => page.evaluate(() => window.fixtureDragStarts || 0)).toBe(starts + 1);
+    // Signal the Ruby fixture only after Chrome starts the real third drag.
+    // This local test handshake excludes browser startup from synchronization.
+    const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    require('node:fs').writeFileSync(controls.drag_ready, 'ready');
     // Wait for the finite server-render batch while still holding the native
     // gesture. Finish churn before dropping, preserving the one-stale-retry contract.
     await expect.poll(() => page.evaluate(() => window.fixtureDragRenderBatchFinished === true)).toBe(true);

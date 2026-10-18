@@ -567,39 +567,46 @@ RSpec.describe 'bounded Gtk Builder compatibility' do
     expect(YAML.unsafe_load_file(File.join(@settings_directory, 'ewaggle.yaml'))).to include(sonic_armor: 'Full Plate', start_at: 90)
   end
 
-  it 'preserves ewaggle search, transfers, choice edits and original save callbacks in Chrome', browser: true do
-    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
-    form = original_ewaggle
-    runner = Thread.new { form.start }
-    page = nil
-    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
-    # After the return transfer, simulate incremental/background renders during
-    # the third native drag. Keep original list/save callbacks unchanged.
-    churn = Thread.new do
-      saw_two = false
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
-      loop do
-        count = form['cast_list_store'].size
-        saw_two ||= count == 2
-        break if saw_two && count == 1
-        if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-          raise Timeout::Error, "EWaggle render churn did not observe the return transfer (saw_two=#{saw_two}, rows=#{count})"
-        end
-        sleep 0.005
-      end
+  # Emits a finite render batch after the browser starts its third native drag.
+  # The browser's bounded run owns the wait lifetime; its ensure kills and joins
+  # this worker, so browser startup cannot exhaust a separate fixture deadline.
+  # @param form [Object] original EWaggle form with its unchanged callbacks
+  # @param signal [String] temporary file written by the browser test after dragstart
+  # @return [Thread] worker whose exceptions propagate when joined
+  def ewaggle_drag_renders(form, signal)
+    Thread.new do
+      Thread.current.report_on_exception = false
+      sleep 0.005 until File.exist?(signal)
       100.times do |index|
         title = index == 99 ? 'EWaggle drag fixture complete' : "EWaggle drag fixture #{index}"
         gtk.queue { form['main'].title = title unless form['main'].destroyed? }
         sleep 0.01
       end
     end
-    # Join propagates the diagnostic after browser cleanup; avoid duplicate thread output.
-    churn.report_on_exception = false
-    begin
-      WebUIBrowser.check(service: service, page: page, scenario: 'shim-ewaggle')
-    ensure
-      churn.kill
-      churn.join
+  end
+
+  it 'preserves ewaggle search, transfers, choice edits and original save callbacks in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    form = original_ewaggle
+    runner = Thread.new { form.start }
+    page = nil
+    Timeout.timeout(3) { sleep 0.005 until (page = service.registry.pages_for(owner).first)&.last_render }
+    Dir.mktmpdir('ewaggle-drag-') do |directory|
+      signal = File.join(directory, 'drag-ready')
+      churn = ewaggle_drag_renders(form, signal)
+      begin
+        WebUIBrowser.check(service: service, page: page, scenario: 'shim-ewaggle', controls: { drag_ready: signal })
+      ensure
+        browser_error = $!
+        churn.kill
+        begin
+          churn.join
+        rescue StandardError => error
+          raise unless browser_error
+
+          warn "EWaggle render fixture also failed: #{error.class}: #{error.message}"
+        end
+      end
     end
     drain_gtk
     runner.join(2)
