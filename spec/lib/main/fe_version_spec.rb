@@ -55,6 +55,11 @@ RSpec.describe '--fe-version' do
       expect(parse("--fe-version=#{value}")[:fe_version]).to eq(value)
     end
 
+    it 'stores --keep-fe-string, the proxy handshake kill switch' do
+      expect(parse('--keep-fe-string', '--genie')[:keep_fe_string]).to be(true)
+      expect(parse('--genie')).not_to have_key(:keep_fe_string)
+    end
+
     it 'leaves fe_version nil when the flag is absent' do
       expect(parse('--saga', '--without-frontend')[:fe_version]).to be_nil
     end
@@ -126,10 +131,23 @@ RSpec.describe '--fe-version' do
       game.define_singleton_method(:sent) { @sent ||= [] }
       game.define_singleton_method(:_puts) { |str| sent << str }
       stub_const('Game', game)
-      $_CLIENTBUFFER_ = []
       ARGV.replace(['--without-frontend'])
     end
 
+    # run_handshake appends to $_CLIENTBUFFER_. Swap in a fresh array, then
+    # restore the original object: spec_helper owns it when it is loaded, and
+    # this file can also run on its own, where the global starts out nil.
+    around do |example|
+      saved_clientbuffer = $_CLIENTBUFFER_
+      $_CLIENTBUFFER_ = []
+      example.run
+    ensure
+      $_CLIENTBUFFER_ = saved_clientbuffer
+    end
+
+    # Runs the extracted launch block with controlled arguments.
+    # @param argv_options [Hash] launch options to update
+    # @return [Object] the launch block result in the isolated harness
     def run(argv_options)
       harness_class.new(argv_options).run_handshake
     end
@@ -170,7 +188,7 @@ RSpec.describe '--fe-version' do
       $frontend = 'saga'
       allow(Lich).to receive(:log)
       run(fe_version: 'saga-0.10.2')
-      expect(Lich).to have_received(:log).with('info: sending client string: /FE:WRAYTH /VERSION:saga-0.10.2 /P:SAGA /XML')
+      expect(Lich).to have_received(:log).with('info: client string sent to game: /FE:WRAYTH /VERSION:saga-0.10.2 /P:SAGA /XML')
     end
   end
 

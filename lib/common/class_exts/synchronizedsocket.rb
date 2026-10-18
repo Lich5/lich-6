@@ -69,6 +69,7 @@ module Lich
       # @param role [Symbol] whether failure should end the session or only the
       #   detachable connection
       # @param write_queue_capacity [Integer] maximum pending writes
+      # @return [void] initializes isolated instance state
       def initialize(delegate, role: :primary, write_queue_capacity: DEFAULT_WRITE_QUEUE_CAPACITY)
         raise ArgumentError, "unknown socket role: #{role.inspect}" unless ROLES.include?(role)
         unless write_queue_capacity.is_a?(Integer) && write_queue_capacity.positive?
@@ -81,6 +82,7 @@ module Lich
         @alive = true
         @role = role
         @write_queue_capacity = write_queue_capacity
+        @declared_capabilities = nil
       end
 
       # Whether the socket is usable for I/O.
@@ -146,6 +148,23 @@ module Lich
         @write_queue.push([:stop, [], nil], true) if @write_queue.is_a?(Queue)
       rescue ThreadError
         nil
+      end
+
+      # The rich-stream capabilities this client declared with a
+      # SET_FRONTEND_CAPS line (see Lich::Common::ClientCapabilities), or nil
+      # when it has not declared any. Set by the client's reader thread and read
+      # by the game thread; the value is a frozen Array replaced whole, so a
+      # reader sees either the old set or the new one.
+      #
+      # @return [Array<Symbol>, nil]
+      def declared_capabilities
+        @declared_capabilities
+      end
+
+      # @param capabilities [Array<Symbol>, nil]
+      # @return [Array<Symbol>, nil] a frozen copy of the declaration, or nil to use defaults
+      def declared_capabilities=(capabilities)
+        @declared_capabilities = capabilities.nil? ? nil : capabilities.dup.freeze
       end
 
       # Delegates all non-write methods to the underlying socket.
