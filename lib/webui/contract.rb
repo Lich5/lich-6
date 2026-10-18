@@ -182,7 +182,7 @@ module Lich
         tooltip: property(string(:body_text)),
         disabled: property(BOOL),
         hidden: property(BOOL),
-        opacity: property(number(min: 0.0, max: 1.0), default: 1.0),
+        opacity: property(number(min: 0.0, max: 1.0)),
         align: property(enum(*ALIGNS)),
         margin: property(union(integer(min: 0, max: 512), record(
                                                             top: property(integer(min: 0, max: 512)),

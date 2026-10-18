@@ -2544,6 +2544,30 @@ test('control opacity preserves rich-row layout flags, child actions and explici
   assert.equal(dom.window.document.querySelector('[data-cid="spacer"]').style.opacity, '0');
   render(2, 1);
   assert.equal(dom.window.document.querySelector('[data-cid="row"]').style.opacity, '1');
+  render(3, undefined);
+  assert.equal(dom.window.document.querySelector('[data-cid="row"]').style.opacity, '');
+});
+
+test('omitted and reset opacity preserve shipped stylesheet text dimming', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  const style = dom.window.document.createElement('style');
+  style.textContent = fs.readFileSync(path.resolve(__dirname, '../../lib/webui/assets/app.css'), 'utf8');
+  dom.window.document.head.append(style);
+  receive({ type: 'hello', pages: [{ address: 'alpha' }] });
+  const render = (generation, opacity) => receive({ type: 'render', page: 'alpha', generation,
+    bindings: {}, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'text', cid: 'text:subtle', props: { content: 'Subtle', emphasis: 'subtle', opacity } },
+      { type: 'text', cid: 'text:frontend-detected', props: { content: 'Detected', opacity } }
+    ] } });
+  let generation = 0;
+  for (const opacity of [undefined, 1, 0.35, undefined]) {
+    render(++generation, opacity);
+    for (const [cid, fallback] of [['text:subtle', '0.72'], ['text:frontend-detected', '0.75']]) {
+      const element = dom.window.document.querySelector(`[data-cid="${cid}"]`);
+      assert.equal(element.style.opacity, opacity === undefined ? '' : String(opacity));
+      assert.equal(dom.window.getComputedStyle(element).opacity, opacity === undefined ? fallback : String(opacity));
+    }
+  }
 });
 
 test('button crossing survives redraw, suppresses disabled/hidden tracking and retires removed bindings', t => {

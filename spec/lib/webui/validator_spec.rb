@@ -10,6 +10,7 @@ RSpec.describe Lich::WebUI::Validator do
 
   it 'bounds per-control alpha independently of whole-window presentation' do
     { stack: {}, button: { label: 'Action' }, text: { content: 'Item' } }.each do |type, base|
+      expect(validator.validate_component!(type, base, **context)).not_to have_key(:opacity)
       [0, 0.35, 0.45, 1].each do |alpha|
         expect(validator.validate_component!(type, base.merge(opacity: alpha), **context)[:opacity]).to eq(alpha)
       end

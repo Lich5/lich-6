@@ -1983,6 +1983,7 @@ module Lich
               color = Color.parse_markup(background[2])
               session.refuse(self, :set_markup) unless color
               replace_markup_font(background: color)
+              write(:font_style, :normal)
               return write(:content, CGI.unescapeHTML(background[3]))
             end
             if (italic = value.match(/\A<i>([^<>]*)<\/i>\z/m))

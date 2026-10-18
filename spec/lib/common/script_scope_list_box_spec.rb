@@ -165,6 +165,22 @@ RSpec.describe 'bounded rich list compatibility' do
     end
   end
 
+  [false, true].each do |live|
+    it "clears prior italic markup when applying a whole-label background with live=#{live}" do
+      label = gtk::Label.new
+      label.set_markup('<i>Item</i>')
+      handle = label.materialize if live
+      label.set_markup("<span background='#3c9c3c'>Found &amp; kept</span>")
+      props = label.send(:component_props)
+      expect(props).to include(content: 'Found & kept', font_style: :normal)
+      expect(props[:background]).to include(r: 60, g: 156, b: 60)
+      handle ||= label.materialize
+      expect(label.session.port.get(handle, :font_style)).to eq('normal')
+      expect(label.session.port.get(handle, :content)).to eq('Found & kept')
+      expect(label.session.port.get(handle, :background)).to include(r: 60, g: 156, b: 60)
+    end
+  end
+
   it 'cleans current list style contexts on destruction while detached lists remain reusable' do
     parent = gtk::Box.new(:vertical)
     list = gtk::ListBox.new

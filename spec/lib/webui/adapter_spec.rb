@@ -357,6 +357,20 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(adapter.get(text, :wrap)).to be true
   end
 
+  it 'restores absent opacity after explicit overrides without changing component identity' do
+    { stack: {}, button: { label: 'Action' }, text: { content: 'Subtle', emphasis: :subtle } }.each do |type, props|
+      handle = adapter.create(type, props)
+      expect(adapter.get(handle, :opacity)).to be_nil
+      [0, 0.35, 1].each do |alpha|
+        adapter.set(handle, :opacity, alpha)
+        expect(adapter.get(handle, :opacity)).to eq(alpha)
+        adapter.set(handle, :opacity, described_class::UNSET)
+        expect(adapter.get(handle, :opacity)).to be_nil
+      end
+      expect(adapter.get(handle, :emphasis)).to eq('subtle') if type == :text
+    end
+  end
+
   it 'refuses unsetting required, viewer, sensitive and unknown properties' do
     targets = [[:text, { content: 'Retained' }, :content], [:text_input, { value: 'Retained' }, :value],
                [:password_input, {}, :value]]
