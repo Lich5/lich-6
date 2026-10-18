@@ -359,16 +359,6 @@ module Lich
           end
         end
 
-        # Delegates entry.dat migration to the existing entry store with the selected mode.
-        # @param mode [Symbol, String] desired encryption mode
-        # @param master_password [String, nil] master password for enhanced encryption
-        # @see Authentication::EntryStore.migrate_from_legacy
-        def migrate_legacy(mode, master_password: nil)
-          @entry_store.migrate_from_legacy(
-            data_dir, encryption_mode: mode.to_sym, master_password: master_password
-          )
-        end
-
         # Re-encrypts enhanced-mode accounts after validating the current master password.
         # Each decrypted buffer is scrubbed; a failed write attempts to restore the old keychain value.
         # @return [Boolean] whether validation, keychain storage, and catalog write succeeded

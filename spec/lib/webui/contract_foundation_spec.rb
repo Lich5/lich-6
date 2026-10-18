@@ -42,6 +42,11 @@ RSpec.describe 'WebUI contract foundation' do
     expect(events.reject { |_name, definition| definition[:lifecycle] }.map { |name, _| name.to_s } & names).to be_empty
   end
 
+  it 'provides a browser renderer for every advertised component type' do
+    source = File.read(File.join(LIB_DIR, 'webui/assets/app.js'))
+    contract::TYPES.each { |type| expect(source).to match(/    #{type}\(_?page, component\)/), "missing renderer: #{type}" }
+  end
+
   it 'refuses unknown types and unsupported major versions' do
     expect { contract.schema(:invented) }.to raise_error(Lich::WebUI::UnknownTypeError, /invented/)
     expect { contract.negotiate!('3.0.0') }.to raise_error(Lich::WebUI::VersionError, /unsupported contract major/)

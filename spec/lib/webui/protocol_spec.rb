@@ -2,8 +2,39 @@
 
 require_relative '../../spec_helper'
 require 'webui/protocol'
+require 'webui/websocket'
+require 'webui/validator'
+require 'stringio'
 
 RSpec.describe Lich::WebUI::Protocol do
+  it 'round-trips maximum multiline fields through validation, JSON and masked frames' do
+    validator = Lich::WebUI::Validator.new
+    ['a', "\u{1f512}", "\u0000", "\n", '"', "\\"].each do |character| # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+      value = character * Lich::WebUI::Contract::BOUNDS[:multiline_text]
+      validator.validate_input_value!(:textarea, value, props: { value: '' }, owner: 'fixture', page_id: 'form', cid: 'notes')
+      raw = JSON.generate(type: 'event', page: 'form', cid: 'notes', event: 'change', generation: 1, payload: { value: value })
+      frame = Lich::WebUI::WebSocket.encode_client_frame(raw)
+      decoded = Lich::WebUI::WebSocket.read_frame(StringIO.new(frame))
+      expect(described_class.parse_client_message(decoded.payload)[:payload][:value]).to eq(value)
+    end
+  end
+
+  it 'enforces aggregate and payload budgets independently of envelope size' do
+    limits = Lich::WebUI::Contract::WIRE_LIMITS
+    base = { type: 'event', page: 'form', cid: 'save', event: 'activate', generation: 1 }
+    # Array brackets and string quotes account for the final four bytes.
+    at_limit = ['a' * (limits[:submission_bytes] - 4)]
+    expect(described_class.parse_client_message(JSON.generate(base.merge(submission: at_limit)))[:submission]).to eq(at_limit)
+    expect { described_class.parse_client_message(JSON.generate(base.merge(submission: [at_limit.first + 'a']))) }
+      .to raise_error(described_class::Refusal, /submission exceeds/)
+    expect { described_class.parse_client_message(JSON.generate(base.merge(payload: { value: 'a' * limits[:event_payload_bytes] }))) }
+      .to raise_error(described_class::Refusal, /payload exceeds/)
+    greeting = JSON.parse(described_class.hello(viewer_id: 'test', pages: []))
+    expect(greeting['limits']).to eq(limits.transform_keys(&:to_s))
+    source = File.read(File.join(LIB_DIR, 'webui/assets/app.js'))
+    limits.each { |name, value| expect(source).to include("#{name}: #{value}") }
+  end
+
   it 'accepts a bounded request correlation number, never client routing authority' do
     event = { type: 'event', page: 'page-abc', cid: 'page:form/button:save', event: 'activate', generation: 1, request: 42 }
     expect(described_class.parse_client_message(JSON.generate(event))[:request]).to eq(42)
@@ -41,7 +72,7 @@ RSpec.describe Lich::WebUI::Protocol do
   it 'refuses malformed, oversized, and unsupported-version messages atomically' do
     expect { described_class.parse_client_message('{') }
       .to raise_error(Lich::WebUI::Protocol::Refusal) { |error| expect(error.reason).to eq(:malformed) }
-    expect { described_class.parse_client_message('x' * 65_537) }
+    expect { described_class.parse_client_message('x' * (described_class::MAX_MESSAGE_BYTES + 1)) }
       .to raise_error(Lich::WebUI::Protocol::Refusal) { |error| expect(error.reason).to eq(:frame_size) }
     expect do
       described_class.parse_client_message(JSON.generate(type: 'attach', page: 'page-abc', version: '3.0.0'))

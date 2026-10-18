@@ -50,12 +50,6 @@ module Lich
         @values.filter_map { |cid, value| cid if value.is_a?(SensitiveValue) }.freeze
       end
 
-      # Reports whether this snapshot has been committed.
-      # @return [Boolean]
-      def committed?
-        @committed
-      end
-
       # Disposes any unused sensitive carriers; safe after normal consumption as well.
       # @return [nil]
       def discard_sensitive!

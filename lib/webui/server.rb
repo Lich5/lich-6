@@ -111,12 +111,6 @@ module Lich
         @mutex.synchronize { running_locked? }
       end
 
-      # Counts currently live WebSocket connections under the server mutex.
-      # @return [Integer]
-      def connection_count
-        @mutex.synchronize { @connections.count(&:alive?) }
-      end
-
       # Issues a single-use expiring credential for a validated local redirect target.
       # Treat the returned URL as a secret; it establishes the browser session cookie.
       # @param to [String] local target path; invalid targets fall back to /
@@ -527,20 +521,16 @@ module Lich
         end
       end
 
-      # Processes bounded text/ping frames until close, EOF, or a protocol refusal.
+      # Processes bounded text messages and interleaved pings until close, EOF or refusal.
       # @return [void]
       def websocket_loop(connection)
         while connection.alive?
           next unless IO.select([connection.socket], nil, nil, WS_POLL_INTERVAL)
 
-          frame = WebSocket.read_frame(connection.socket)
+          frame = WebSocket.read_message(connection.socket) { |control| connection.send_pong(control.payload) if control.ping? }
           break unless frame
           break if frame.close?
-          if frame.ping?
-            connection.send_pong(frame.payload)
-          elsif frame.text?
-            dispatch_message(connection, frame.payload)
-          end
+          dispatch_message(connection, frame.payload) if frame.text?
         end
       rescue WebSocket::ProtocolError => error
         log(:warning, "WebUI websocket refusal=#{error.class}")
@@ -624,10 +614,6 @@ module Lich
         return mode == 'navigate' if request[:path] == '/auth' || request[:path] == '/'
 
         %w[no-cors same-origin cors].include?(mode)
-      end
-
-      def websocket_upgrade?(request)
-        request && request[:path] == '/ws' && request[:headers]['upgrade'].to_s.casecmp('websocket').zero?
       end
 
       # Writes a bounded-handler response with common CSP, no-referrer, and nosniff headers.

@@ -5,6 +5,28 @@ require 'stringio'
 require 'webui/websocket'
 
 RSpec.describe Lich::WebUI::WebSocket do
+  it 'assembles split UTF-8 and handles interleaved control frames' do
+    # The split lies inside a supplementary Unicode codepoint.
+    bytes = [0x1f512].pack('U').b
+    wire = described_class.encode_client_frame(bytes.byteslice(0, 2), final: false)
+    wire << described_class.encode_client_frame('ping', opcode: described_class::OPCODE_PING)
+    wire << described_class.encode_client_frame(bytes.byteslice(2, 2), opcode: described_class::OPCODE_CONTINUATION)
+    controls = []
+    message = described_class.read_message(StringIO.new(wire)) { |frame| controls << frame.payload }
+    expect(message.payload).to eq(bytes.force_encoding(Encoding::UTF_8))
+    expect(controls).to eq(['ping'])
+  end
+
+  it 'refuses invalid fragment sequencing and aggregate overflow before reading a body' do
+    start = described_class.encode_client_frame('part', final: false)
+    continuation = described_class.encode_client_frame('end', opcode: described_class::OPCODE_CONTINUATION)
+    [continuation, start, start + described_class.encode_client_frame('new'),
+     described_class.encode_client_frame('ping', opcode: described_class::OPCODE_PING, final: false),
+     start + [0x80, 0xff, described_class::MAX_CLIENT_PAYLOAD_BYTES].pack('CCQ>')].each do |wire|
+      expect { described_class.read_message(StringIO.new(wire)) }.to raise_error(described_class::ProtocolError)
+    end
+  end
+
   it 'round-trips bounded masked client and unmasked server frames' do
     client_frame = described_class.encode_client_frame('hello')
     server_frame = described_class.encode_frame('world')
@@ -40,10 +62,10 @@ RSpec.describe Lich::WebUI::WebSocket do
   end
 
   it 'refuses an oversized frame from its length header before reading the body', security_id: 'sec-frame-size' do
-    frame = [0x81, 0xFF, 65_537].pack('CCQ>')
+    frame = [0x81, 0xFF, described_class::MAX_CLIENT_PAYLOAD_BYTES + 1].pack('CCQ>')
 
     expect { described_class.read_frame(StringIO.new(frame)) }
-      .to raise_error(Lich::WebUI::WebSocket::ProtocolError, /exceeds 65536/)
+      .to raise_error(Lich::WebUI::WebSocket::ProtocolError, /exceeds 2097152/)
   end
 
   it 'refuses unmasked, binary, fragmented, and invalid UTF-8 client frames' do

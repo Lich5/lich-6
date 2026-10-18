@@ -7,6 +7,39 @@ require_relative '../../support/webui_browser'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'WebUI browser bootstrap', browser: true do
+  it 'round-trips slider and maximum multiline edits and retains oversized form drafts' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    service = Lich::WebUI::Service.new
+    changes = []
+    saved = []
+    status = 'Ready'
+    volume = 2
+    page = nil
+    page = Lich::WebUI::Page.new(owner: Object.new, id: 'contract-inputs', title: 'Contract inputs') do
+      slider = slider(key: 'volume', label: 'Volume', min: 0, max: 10, step: 0.5, value: volume,
+                      on: { change: proc { |event| volume = event.payload[:value]; changes << volume } })
+      notes = 3.times.map do |index|
+        textarea(key: "notes#{index}", label: "Notes #{index}", value: '',
+                 on: { change: proc { |event| changes << event.payload[:value] } })
+      end
+      button(key: 'save', label: 'Save', submit: [slider, *notes], on: { activate: proc { |event|
+        saved << event.submission.cids.map { |cid| event.submission[cid] }
+        status = "Saved #{saved.length}"
+        service.refresh(page)
+      } })
+      text(key: 'status', content: status)
+    end
+    service.registry.register(page)
+    WebUIBrowser.check(service: service, page: page, scenario: 'contract-inputs')
+    expect(changes).to include(2.5, 'a' * 65_536, "\u{1f512}" * 65_536, "\u0000" * 65_536) # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+    expect(saved.first).to eq([2.5, "\u0000" * 65_536, '', ''])
+    expect(saved.last).to eq([2.5, 'smaller', 'smaller', 'smaller'])
+    expect(saved.size).to eq(2)
+  ensure
+    service&.stop
+  end
+
   it 'keeps the launcher unlock password editable inside its modal through retry and cancel' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 

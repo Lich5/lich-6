@@ -2,6 +2,7 @@
 
 require 'base64'
 require 'digest/sha1'
+require_relative 'contract'
 
 module Lich
   module WebUI
@@ -9,6 +10,7 @@ module Lich
     module WebSocket
       HANDSHAKE_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
       MAX_PAYLOAD_BYTES = 65_536
+      MAX_CLIENT_PAYLOAD_BYTES = Contract::WIRE_LIMITS[:message_bytes]
 
       OPCODE_CONTINUATION = 0x0
       OPCODE_TEXT = 0x1
@@ -21,7 +23,8 @@ module Lich
 
       class ProtocolError < StandardError; end
 
-      Frame = Data.define(:opcode, :payload) do
+      # Decoded frame data; final identifies the last fragment of a message.
+      Frame = Data.define(:opcode, :payload, :final) do
         # Identifies a text-message opcode for JSON protocol dispatch.
         # @return [Boolean]
         def text? = opcode == OPCODE_TEXT
@@ -31,9 +34,6 @@ module Lich
         # Identifies a ping control frame requiring an echoed pong.
         # @return [Boolean]
         def ping? = opcode == OPCODE_PING
-        # Identifies a pong control frame without interpreting its payload as JSON.
-        # @return [Boolean]
-        def pong? = opcode == OPCODE_PONG
       end
 
       module_function
@@ -90,14 +90,15 @@ module Lich
       # The deterministic default mask is for fixtures, not a production browser client.
       # @param payload [Object] payload converted to binary text
       # @param opcode [Integer] frame opcode
+      # @param final [Boolean] whether this is the final message fragment
       # @param mask_key [String] exactly four mask bytes
       # @return [String] binary frame
-      def encode_client_frame(payload, opcode: OPCODE_TEXT, mask_key: "\x01\x02\x03\x04".b)
+      def encode_client_frame(payload, opcode: OPCODE_TEXT, final: true, mask_key: "\x01\x02\x03\x04".b)
         raise ArgumentError, 'mask_key must contain four bytes' unless mask_key.bytesize == 4
         data = payload.to_s.b
-        raise ProtocolError, 'client frame too large' if data.bytesize > MAX_PAYLOAD_BYTES
+        raise ProtocolError, 'client frame too large' if data.bytesize > MAX_CLIENT_PAYLOAD_BYTES
 
-        head = [0x80 | opcode].pack('C')
+        head = [(final ? 0x80 : 0) | opcode].pack('C')
         head << if data.bytesize < 126
                   [0x80 | data.bytesize].pack('C')
                 elsif data.bytesize <= 65_535
@@ -108,12 +109,15 @@ module Lich
         head << mask_key << unmask(data, mask_key)
       end
 
-      # Reads one bounded, unfragmented frame and validates text encoding/control limits.
+      # Reads one bounded frame and validates masking, opcode and control limits.
+      # Client frames admit the protocol envelope budget; server frames stay 64 KiB.
       # @param io [#read] input stream
       # @param require_mask [Boolean] require client masking; false for test-client reads
+      # @param allow_fragments [Boolean] defer message assembly and UTF-8 validation to read_message
+      # @param remaining [Integer] remaining aggregate message byte budget
       # @return [Frame, nil] decoded frame, or nil at clean EOF
       # @raise [ProtocolError] for invalid or unsupported frames
-      def read_frame(io, require_mask: true)
+      def read_frame(io, require_mask: true, allow_fragments: false, remaining: MAX_CLIENT_PAYLOAD_BYTES)
         head = read_exact(io, 2)
         return nil unless head
 
@@ -125,23 +129,60 @@ module Lich
         length = byte2 & 0x7F
 
         raise ProtocolError, 'reserved bits are set' unless rsv.zero?
-        raise ProtocolError, 'fragmented frames are unsupported' unless fin
-        raise ProtocolError, 'unsupported opcode' unless ALLOWED_OPCODES.include?(opcode)
+        raise ProtocolError, 'fragmented frames are unsupported' unless fin || allow_fragments
+        allowed = allow_fragments ? OUTBOUND_OPCODES : ALLOWED_OPCODES
+        raise ProtocolError, 'unsupported opcode' unless allowed.include?(opcode)
+        raise ProtocolError, 'control frames cannot be fragmented' if opcode >= OPCODE_CLOSE && !fin
         raise ProtocolError, 'client frames must be masked' if require_mask && !masked
 
         length = read_exact!(io, 2).unpack1('n') if length == 126
         length = read_exact!(io, 8).unpack1('Q>') if length == 127
-        raise ProtocolError, "frame exceeds #{MAX_PAYLOAD_BYTES} bytes" if length > MAX_PAYLOAD_BYTES
+        limit = require_mask ? MAX_CLIENT_PAYLOAD_BYTES : MAX_PAYLOAD_BYTES
+        raise ProtocolError, "frame exceeds #{limit} bytes" if length > limit
+        raise ProtocolError, 'message exceeds aggregate byte limit' if opcode < OPCODE_CLOSE && length > remaining
         raise ProtocolError, 'control frame exceeds 125 bytes' if opcode >= OPCODE_CLOSE && length > 125
 
         mask_key = read_exact!(io, 4) if masked
         payload = length.zero? ? +'' : read_exact!(io, length)
         payload = unmask(payload, mask_key) if masked
-        if opcode == OPCODE_TEXT
+        if opcode == OPCODE_TEXT && !allow_fragments
           payload.force_encoding(Encoding::UTF_8)
           raise ProtocolError, 'text frame is not valid UTF-8' unless payload.valid_encoding?
         end
-        Frame.new(opcode, payload)
+        Frame.new(opcode, payload, fin)
+      end
+
+      # Reassembles bounded client text messages, permitting interleaved controls.
+      # UTF-8 is checked after assembly because fragments may split a codepoint.
+      # @param io [#read] client stream
+      # @yield [frame] interleaved control for immediate transport handling
+      # @yieldparam frame [Frame] ping or pong received between data fragments
+      # @return [Frame, nil] complete text, close control, or clean EOF
+      # @raise [ProtocolError] for invalid sequencing, encoding, truncation or size
+      def read_message(io)
+        data = nil
+        loop do
+          frame = read_frame(io, allow_fragments: true, remaining: MAX_CLIENT_PAYLOAD_BYTES - (data&.bytesize || 0))
+          raise ProtocolError, 'stream ended mid-message' if !frame && data
+          return frame unless frame
+          return frame if frame.close?
+          if frame.opcode >= OPCODE_CLOSE
+            yield frame if block_given?
+            next
+          end
+          if frame.opcode == OPCODE_TEXT
+            raise ProtocolError, 'new text during fragmented message' if data
+            data = frame.payload.b
+          else
+            raise ProtocolError, 'unexpected continuation frame' unless data
+            data << frame.payload
+          end
+          next unless frame.final
+
+          data.force_encoding(Encoding::UTF_8)
+          raise ProtocolError, 'text message is not valid UTF-8' unless data.valid_encoding?
+          return Frame.new(OPCODE_TEXT, data, true)
+        end
       end
 
       # Applies the repeating four-byte XOR mask (also usable to mask fixture payloads).
