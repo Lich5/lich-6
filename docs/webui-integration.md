@@ -202,12 +202,21 @@ conversion candidate.
 
 Each script binding has independent local variables. Trusted scripts evaluate
 inside `Lich::Common::ScriptScope`: bare top-level methods and constants live in
-that shared script scope, not on `Object` or `Lich::Common`. They are not isolated
-per script. An absolute lookup such as `::MyHelper` does not find a script-scope
-constant, and explicitly reopening a global class does not import script helpers.
-Label-based scripts retain their own receiver for instance methods while sharing
-the lexical constant boundary. This differs from the former global binding;
-it is not a Ruby sandbox.
+that shared script scope. They are not isolated per script. Public core constants
+are aliased into the scope so bare class reopening patches the original core
+class, including core classes loaded after activation. Aliases do not alter core
+class ancestry.
+
+A temporary compatibility bridge exposes script-declared constants through
+absolute lookup and presence checks, and forwards otherwise missing public
+helpers on their original receivers. Existing receiver methods take precedence.
+Plugin names and aliases to plugin modules/classes are excluded. Exports and
+legacy helper calls emit attributed, once-per-name migration notices. Prefer
+lexical or `Lich::Common::ScriptScope` constant lookup in new scripts. Retire the
+bridge only after supported consumers migrate, the agreed corpus has no bridge
+uses, and the owner approves removal. Label-based scripts retain their own
+receiver for instance methods while sharing the lexical constant boundary.
+This is not a Ruby sandbox.
 
 New script-owned nested classes and modules receive script helpers. For inherited
 classes, real superclass methods take precedence and only declared public script

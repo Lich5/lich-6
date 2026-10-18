@@ -12,7 +12,7 @@ module Lich
           # Ruby-GNOME uses underscore names for some native extensions even
           # when their Ruby entrypoints use hyphens; guard both before loading.
           NATIVE_FEATURE = %r{
-            (?:\A|/)(?:gtk[234]|gdk[234]?|gdk_pixbuf2|glib2|gio2|gi|
+            \A(?:gtk[234]|gdk[234]?|gdk_pixbuf2|glib2|gio2|gi|
             gobject[-_]introspection|cairo(?:[-_]gobject)?|pango|atk)
             (?:\.(?:rb|so|bundle|dll))?(?:/|\z)|\Agtk(?:\.rb)?\z
           }ix
@@ -26,7 +26,7 @@ module Lich
           # @raise [UnsupportedOperation] when a native dependency is requested
           def self.handled?(feature, operation, location)
             path = File.path(feature).tr('\\', '/')
-            return false unless NATIVE_FEATURE.match?(path)
+            return false unless native_feature?(path)
 
             owner = if defined?(Script)
                       Script.respond_to?(:current_without_pause) ? Script.current_without_pause : Script.current
@@ -35,6 +35,24 @@ module Lich
 
             raise UnsupportedOperation,
                   "script=#{owner&.name || 'none'} operation=#{operation} feature=#{path} source=#{location}: native GTK loading is disabled; use the bounded script shim or native WebUI"
+          end
+
+          # Resolve feature roots against Ruby's load paths rather than matching
+          # arbitrary ancestor directory names in an installation path.
+          # Direct entrypoint filenames remain reserved, including absolute loads.
+          def self.native_feature?(path)
+            absolute = path.start_with?('/') || path.match?(/\A[A-Za-z]:\//)
+            return true if !absolute && NATIVE_FEATURE.match?(path.sub(%r{\A(?:\./)+}, ''))
+            return true if NATIVE_FEATURE.match?(File.basename(path))
+
+            roots = $LOAD_PATH.dup
+            if defined?(Gem) && Gem.respond_to?(:loaded_specs)
+              roots.concat(Gem.loaded_specs.values.flat_map(&:full_require_paths))
+            end
+            roots.any? do |root|
+              prefix = File.expand_path(root).tr('\\', '/').sub(%r{/+\z}, '') + '/'
+              path.start_with?(prefix) && NATIVE_FEATURE.match?(path.delete_prefix(prefix))
+            end
           end
 
           # Covers bare loaders, explicit Kernel calls and loads in helper files.
