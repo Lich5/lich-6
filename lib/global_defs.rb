@@ -1434,6 +1434,10 @@ def get?
   Script.current.gets?
 end
 
+# Reads buffered downstream lines, normalizing room blocks for plain-text callers.
+# @param lines [Array<String>] input stream lines or buffer selectors
+# @param core [Boolean] whether the caller may access raw core history
+# @return [Array<String>, nil, false] matching buffered lines, nil for no match, or false without a script
 def reget(*lines, core: false)
   unless (script = Script.current) || core.eql?(true)
     respond('--- reget: Unable to identify calling script.')
@@ -1446,6 +1450,9 @@ def reget(*lines, core: false)
     history = $_SERVERBUFFER_.dup.join("\n")
   end
   unless script&.want_downstream_xml || core.eql?(true)
+    # Saga-identity <room> blocks get the legacy layout first, as in strip_xml,
+    # so reget returns the same room lines in both stream dialects.
+    history = Lich::Common::RoomBlock.legacy_shape(history)
     history.gsub!(/<pushStream id=["'](?:spellfront|inv|bounty|society)["'][^>]*\/>.*?<popStream[^>]*>/m, '')
     history.gsub!(/<stream id="Spells">.*?<\/stream>/m, '')
     history.gsub!(/<(compDef|inv|component|right|left|spell|prompt)[^>]*>.*?<\/\1>/m, '')
@@ -2020,6 +2027,7 @@ $link_highlight_end = ''
 $speech_highlight_start = ''
 $speech_highlight_end = ''
 
+require File.join(LIB_DIR, 'common', 'room_block.rb')
 require File.join(LIB_DIR, 'common', 'markup.rb')
 
 # Frontend markup translation lives in Lich::Common::Markup. These six names
@@ -2183,6 +2191,9 @@ def detachable_client_frontend?(name)
   ARGV.include?('--without-frontend') && Frontend.client == name
 end
 
+# Handles detachable client control lines and game input until disconnect.
+# @param client [Lich::Common::SynchronizedSocket] attaching client connection
+# @return [void] dispatches input and cleans up the disconnected client
 def handle_detachable_client(client)
   unless detachable_client_frontend?('genie') || detachable_client_frontend?('saga')
     Thread.new { detachable_client_send_init(client) }
@@ -2194,6 +2205,9 @@ def handle_detachable_client(client)
       Frontend.set_from_client(Regexp.last_match(1).to_i) if defined?(Frontend) && detachable_client_primary?(client)
       next
     end
+    # SET_FRONTEND_CAPS: the rich-stream rewrites this client handles itself
+    # (https://github.com/elanthia-online/lich-5/blob/612d91d680e3f304264a74699e9d5c9968cc48bc/docs/frontend-capability-declaration.md). Never sent to the game.
+    next if Lich::Common::ClientCapabilities.declare(client, client_string)
 
     # Detachable exits run script shutdown inline, so the watchdog must be armed
     # before that potentially blocking path. Route through the shared dispatch so

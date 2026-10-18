@@ -3,6 +3,10 @@
 require 'openssl'
 require_relative 'common/shutdown_log'
 require_relative 'common/game_transport'
+require_relative 'common/room_block'
+require_relative 'common/markup'
+require_relative 'common/room_description_filter'
+require_relative 'common/client_capabilities'
 
 # Modernized version of games.rb with separated DR and GS functionality
 # Original module carve out from lich.rbw
@@ -185,12 +189,44 @@ module Lich
           raise NotImplementedError, "#{self.class} must implement #clean_serverstring"
         end
 
+        # Shared by both games; override in a subclass only if a game's stream handling diverges.
+        # @param server_string [String] original game-server fragment
+        # @return [String] the line with balanced combat stream markers
         def handle_combat_tags(server_string)
-          raise NotImplementedError, "#{self.class} must implement #handle_combat_tags"
+          if @combat_count > 0
+            @end_combat_tags.each do |tag|
+              if server_string.include?(tag)
+                server_string = server_string.gsub(tag, "<popStream id=\"combat\" />" + tag) unless server_string.include?("<popStream id=\"combat\" />")
+                @combat_count -= 1
+              end
+              if server_string.include?("<pushStream id=\"combat\" />")
+                server_string = server_string.gsub("<pushStream id=\"combat\" />", "")
+              end
+            end
+          end
+
+          increment_combat_count(server_string)
+          server_string
         end
 
+        # Closes transient atmospherics streams and removes broken empty streams.
+        # @param server_string [String] original game-server fragment
+        # @return [String] the line with corrected atmospherics stream markers
         def handle_atmospherics(server_string)
-          raise NotImplementedError, "#{self.class} must implement #handle_atmospherics"
+          if @atmospherics
+            @atmospherics = false
+            server_string.prepend('<popStream id="atmospherics" />') unless server_string =~ /<popStream id="atmospherics" \/>/
+          end
+
+          if server_string =~ /<pushStream id="familiar" \/><prompt time="[0-9]+">&gt;<\/prompt>/ # Cry For Help spell is broken...
+            server_string.sub!('<pushStream id="familiar" />', '')
+          elsif server_string =~ /<pushStream id="atmospherics" \/><prompt time="[0-9]+">&gt;<\/prompt>/ # pet pigs in DragonRealms are broken...
+            server_string.sub!('<pushStream id="atmospherics" />', '')
+          elsif (server_string =~ /<pushStream id="atmospherics" \/>/)
+            @atmospherics = true
+          end
+
+          server_string
         end
 
         def get_documentation_url
@@ -209,6 +245,22 @@ module Lich
           raise NotImplementedError, "#{self.class} must implement #process_room_display"
         end
 
+        # Rewrites a client-bound line for front ends that predate parts of
+        # this game's stream. Runs on the client path only, once per distinct
+        # client capability set, after the downstream hooks and the <room>
+        # rewrite and before the Wizard conversion (sf_to_wiz). No change
+        # unless the game overrides it.
+        # @param alt_string [String] the server string on its way to the client
+        # @param _capabilities [Array<Symbol>, nil] the client's rich-stream
+        #   capabilities (Lich::Common::ClientCapabilities); nil means the
+        #   session's set (ClientCapabilities.session_default)
+        # @return [String] the string to send
+        def adapt_for_frontend(alt_string, _capabilities = nil)
+          alt_string
+        end
+
+        # Returns the shared combat stream nesting count.
+        # @return [Integer] the number of currently open combat streams
         def combat_count
           @combat_count
         end
@@ -343,13 +395,17 @@ module Lich
     #
     # Ox also fires the callback for Simu's routine almost-XML -- bare text and
     # multiple top-level elements ('text not terminated', 'multiple top level
-    # elements'), nested quotes ('no attribute value'), unescaped ampersands
-    # ('Invalid special character sequence'), missing </d> end tags ('Start End
-    # Mismatch: ... not closed') -- none of which match these patterns, so they
-    # stay tolerated. The message prefix matters: 'Unexpected Character: element
-    # not closed' (a start tag that never got its '>') is truncation, while the
-    # similarly worded 'Start End Mismatch: element ... not closed' (an element
-    # missing its end tag) is routine.
+    # elements'), unescaped ampersands ('Invalid special character sequence'),
+    # missing </d> end tags ('Start End Mismatch: ... not closed') -- none of
+    # which match these patterns, so they stay tolerated. Nested quotes are the
+    # exception: alongside 'no attribute value' they can also report 'document
+    # not terminated' and 'element not closed' on a complete line, which is why
+    # process_xml_data repairs them before checking.
+    #
+    # The message prefix matters: 'Unexpected Character: element not closed' (a
+    # start tag that never got its '>') is truncation, while the similarly
+    # worded 'Start End Mismatch: element ... not closed' (an element missing
+    # its end tag) is routine.
     #
     # 'attribute value not in quotes' is intentionally NOT here: it fires on a
     # *complete* unquoted-attribute line (<a x=y>), so matching it false-resets a
@@ -1038,6 +1094,9 @@ module Lich
           Lich.log("info: logged in as #{XMLData.game}:#{XMLData.name}")
         end
 
+        # Parses and repairs a game fragment before publishing inventory observations.
+        # @param server_string [String] original game-server fragment
+        # @return [void] parses the fragment and recovers from malformed or desynchronized XML
         def process_xml_data(server_string)
           begin
             # Ox is a permissive parser: it handles Simu's not-quite-XML stream
@@ -1054,14 +1113,24 @@ module Lich
             # ASCII for this (high-byte-scrubbed) stream, so retagging to
             # Windows-1252 was a divergence and caused entity corruption.
             Ox.sax_parse(XMLData, server_string, convert_special: false, symbolize: false, skip: :skip_none)
+            # Repair first: a nested quote can also make Ox report desync-class
+            # errors ("document not terminated", "element not closed" -- e.g. an
+            # inventoryManager long value of a sleek black book titled "Style: Do
+            # you have it?"), so the desync check judges the repaired parse,
+            # never the junk one.
+            unrepaired = repair_malformed_attributes_and_reparse(server_string)
             check_stream_desync!(XMLData.sax_parse_errors)
-            repair_malformed_attributes_and_reparse(server_string)
           rescue GameStreamDesyncError => e
             # A truncated/desynced fragment. Ox never raises on malformed stream
             # content -- it reports via the error callback, and check_stream_desync!
             # promotes truncation-class errors to this exception. Log and reset
-            # rather than killing the server thread.
-            Lich.log "warning: stream desync (#{e.message}); resetting XMLData: #{server_string.inspect}"
+            # rather than killing the server thread. A repair didn't save the
+            # line, so undo it: the log, Inventory.observe and the clients get
+            # the fragment as the server sent it. Say so, since the repair has
+            # already logged a "fixed to" line for the edit being undone.
+            server_string.replace(unrepaired) if unrepaired
+            undone = unrepaired ? ' (repair logged above undone)' : ''
+            Lich.log "warning: stream desync (#{e.message}); resetting XMLData#{undone}: #{server_string.inspect}"
             XMLData.reset
             return
           end
@@ -1102,9 +1171,15 @@ module Lich
         # repaired in the rescue; Ox tolerates them, so drive the repair off its
         # error report -- only the rare flagged line pays the cost. Apply the
         # repairs; if any changed the line, drop the junk the first parse committed
-        # and parse once more, ignoring any errors on that pass so we never loop.
+        # and parse once more (never again, so it can't loop). The repair runs
+        # before the desync check, which then judges this second parse's errors:
+        # a line the repair fixes is kept, a truncated one still resets (and
+        # process_xml_data restores it from the returned original).
         # Escaped &apos;/&quot; round-trip back to the literal char via
         # XmlEntities.decode and the front-end's own entity decoding.
+        #
+        # @param server_string [String] the line, repaired in place
+        # @return [String, nil] the line as received when a repair changed it, else nil
         def repair_malformed_attributes_and_reparse(server_string)
           return unless XMLData.sax_parse_errors.any? { |message| NO_ATTRIBUTE_VALUE_ERROR.match?(message) }
 
@@ -1116,6 +1191,7 @@ module Lich
           XMLData.reset
           XMLData.sax_parse_errors.clear
           Ox.sax_parse(XMLData, server_string, convert_special: false, symbolize: false, skip: :skip_none)
+          before
         end
 
         # The server sends a malformed <settingsInfo ... space not found .../> (an
@@ -1134,39 +1210,131 @@ module Lich
           @@settings_init_needed = true
         end
 
+        # Sends one server string to every client, after the downstream hooks
+        # (which, like XMLParser and scripts, see the stream as the server sent
+        # it). Each client gets the rich-stream rewrites its capabilities call
+        # for (Lich::Common::ClientCapabilities): the string is rewritten once
+        # per distinct capability set, then finished once per distinct result,
+        # so clients that share a set (the usual case: one set for all) cost
+        # one pass, as before per-client capabilities.
+        # @param server_string [String] original game-server fragment
+        # @return [void] sends the adapted output unless a hook suppresses it
         def process_downstream_hooks(server_string)
-          if (alt_string = DownstreamHook.run(server_string))
-            process_room_information(alt_string)
+          dragonrealms = XMLData.game =~ /^DR/
+          # Followed before the hooks, so a hook that squelches the game's
+          # reply to FLAG DESCRIPTION or the FLAG listing (DRInfomon's quiet
+          # startup query) does not hide it from the filter, and whatever the
+          # setting, so turning it on applies at once.
+          Lich::Common::RoomDescriptionFilter.observe(server_string) if dragonrealms
+          return unless (alt_string = DownstreamHook.run(server_string))
 
-            # Handle frontend-specific modifications
-            if Frontend.client.eql?('genie') && alt_string =~ /^<streamWindow id='room' title='Room' subtitle=" - \[.*\] \((?:\d+|\*\*)\)"/
-              alt_string.sub!(/] \((?:\d+|\*\*)\)/) { "]" }
-            end
+          # DragonRealms ignores FLAG DESCRIPTION OFF in the Saga-identity
+          # stream's <room> block (a game bug). Opted in, every client gets the
+          # character's room without its description, before the per-client
+          # rewrites so both layouts come out as the legacy stream sends them.
+          if dragonrealms && Lich::Common::RoomDescriptionFilter.descriptions_off? &&
+             alt_string.include?('<room>') && Lich.follow_description_flag
+            alt_string = Lich::Common::RoomDescriptionFilter.apply(alt_string, room_id: XMLData.room_id, room_exits: XMLData.room_exits)
+          end
 
-            if Frontend.client.eql?('frostbite') && alt_string =~ /^<streamWindow id='main' title='Story' subtitle=" - \[.*\] \((?:\d+|\*\*)\)"/
-              alt_string.sub!(/] \((?:\d+|\*\*)\)/) { "]" }
-            end
+          outputs = []
+          Lich::Common::ClientCapabilities.group(client_write_targets).each do |capabilities, clients|
+            line = rich_stream_rewrite(alt_string, capabilities)
+            same = outputs.find { |output| output[:line] == line }
+            same ? same[:clients].concat(clients) : outputs << { line: line, clients: clients }
+          end
 
-            # Handle room number display
-            if @room_number_after_ready && alt_string =~ /<prompt /
-              alt_string = @game_instance ? @game_instance.process_room_display(alt_string) : alt_string
-              @room_number_after_ready = false
-            end
-
-            # Handle frontend-specific conversions
-            if Frontend.supports_gsl?
-              alt_string = sf_to_wiz(alt_string)
-            end
-            # Handle prefix origin sentinel if FE supports it
-            alt_string = prefix_origin_sentinel(alt_string) if Frontend.supports_sentinel?
-
-            # Send to client
-            send_to_client(alt_string)
+          # Every result starts the finishing steps from the same room-number
+          # state; they make the same decision for each, since no rewrite adds
+          # or removes the room-name start or the prompt they look for. So with
+          # N distinct results on a prompt line, process_room_display runs N
+          # times: its Map.current lookups and any StringProc timeto in
+          # room_stringproc_entries are evaluated once per result.
+          room_number_after_ready = @room_number_after_ready
+          outputs.each do |output|
+            @room_number_after_ready = room_number_after_ready
+            send_to_client(finish_client_line(output[:line]), output[:clients])
           end
         end
 
+        # The rewrites that depend on a client's capabilities.
+        #
+        # The Saga-identity stream's inline <room> block reaches only front
+        # ends that render it (:room_element, Saga); every other front end gets
+        # the legacy roomName/roomDesc layout it already handles. Rewritten
+        # after DownstreamHook.run, so script hooks see the block as the server
+        # sent it, and before the Wizard conversion (sf_to_wiz), which keys on
+        # that layout; the room-number display (process_room_information)
+        # handles either.
+        # They also get the legacy <compass> line the Saga-identity stream
+        # dropped, except Wizard/Avalon (GSL), which get exits from XMLParser's
+        # GSL codes and would see the line as a blank one.
+        #
+        # Then the game's own rewrites (GameInstance#adapt_for_frontend):
+        # DragonRealms' links and creature bold go only to front ends that
+        # handle them (:game_links, :double_bold); the rest get the legacy
+        # line. After the <room> rewrite, which keeps the parts' markup, and
+        # before sf_to_wiz, which turns each bold into a GSL code. GemStone
+        # keeps the base no-op.
+        #
+        # Never modifies alt_string: the other capability sets start from it.
+        #
+        # @param alt_string [String] the server string after the downstream hooks
+        # @param capabilities [Array<Symbol>] the client's rich-stream capabilities
+        # @return [String] alt_string itself when nothing applies, else a new string
+        def rich_stream_rewrite(alt_string, capabilities)
+          if alt_string.include?('<room>') && !capabilities.include?(:room_element)
+            alt_string = if Frontend.supports_gsl?
+                           Lich::Common::RoomBlock.legacy_shape(alt_string)
+                         else
+                           Lich::Common::RoomBlock.legacy_shape_with_compass(alt_string)
+                         end
+          end
+          alt_string = @game_instance.adapt_for_frontend(alt_string, capabilities) if @game_instance
+          alt_string
+        end
+
+        # The steps that follow the session's front end ($frontend), whatever
+        # the client's capabilities: room-number display, the Genie and
+        # Frostbite subtitle edits, Wizard's GSL conversion and the origin
+        # sentinel.
+        #
+        # @param alt_string [String] a rewritten server string (may be modified in place)
+        # @return [String] the bytes to write to the client
+        def finish_client_line(alt_string)
+          process_room_information(alt_string)
+
+          # Handle frontend-specific modifications
+          if Frontend.client.eql?('genie') && alt_string =~ /^<streamWindow id='room' title='Room' subtitle=" - \[.*\] \((?:\d+|\*\*)\)"/
+            alt_string.sub!(/] \((?:\d+|\*\*)\)/) { "]" }
+          end
+
+          if Frontend.client.eql?('frostbite') && alt_string =~ /^<streamWindow id='main' title='Story' subtitle=" - \[.*\] \((?:\d+|\*\*)\)"/
+            alt_string.sub!(/] \((?:\d+|\*\*)\)/) { "]" }
+          end
+
+          # Handle room number display
+          if @room_number_after_ready && alt_string =~ /<prompt /
+            alt_string = @game_instance ? @game_instance.process_room_display(alt_string) : alt_string
+            @room_number_after_ready = false
+          end
+
+          # Handle frontend-specific conversions
+          if Frontend.supports_gsl?
+            alt_string = sf_to_wiz(alt_string)
+          end
+          # Handle prefix origin sentinel if FE supports it
+          alt_string = prefix_origin_sentinel(alt_string) if Frontend.supports_sentinel?
+          alt_string
+        end
+
+        # Updates room-number display state for a legacy or rich room view.
+        # @param alt_string [String] outbound client fragment
+        # @return [String, nil] the room line, or nil when this is not a room view
         def process_room_information(alt_string)
-          if alt_string =~ /^(<pushStream id="familiar" ifClosedStyle="watching"\/>)?(?:<resource picture="\d+"\/>|<popBold\/>)?<style id="roomName"\s+\/>/
+          # The legacy roomName style, or the Saga-identity <room> block (see
+          # Lich::Common::RoomBlock); the room-number rewrites work on either.
+          if alt_string =~ /^(<pushStream id="familiar" ifClosedStyle="watching"\/>)?(?:<resource picture="\d+"\/>|<popBold\/>)?(?:<style id="roomName"\s+\/>|<room>)/
             if (Lich.display_lichid == true || Lich.display_uid == true || Lich.hide_uid_flag == true)
               @game_instance ? @game_instance.modify_room_display(alt_string) : alt_string
             end
@@ -1175,14 +1343,25 @@ module Lich
           end
         end
 
-        def send_to_client(alt_string)
+        # Writes one string to each live client in clients.
+        # @param alt_string [String] the finished bytes
+        # @param clients [Array] defaults to every client that receives game output
+        # @return [void] queues output for each live destination
+        def send_to_client(alt_string, clients = client_write_targets)
+          clients.each { |client| client.write(alt_string) if client.alive? }
+        end
+
+        # The clients that receive game output: every attached detachable
+        # client, else the primary client. While a detachable client is
+        # attached, the primary gets none.
+        #
+        # @return [Array] a snapshot; the registry may change while it is used
+        def client_write_targets
           detachable_clients = $_DETACHABLE_CLIENT_REGISTRY_&.snapshot || []
           detachable_clients = [$_DETACHABLE_CLIENT_] if detachable_clients.empty? && $_DETACHABLE_CLIENT_
-          if !detachable_clients.empty?
-            detachable_clients.each { |client| client.write(alt_string) if client.alive? }
-          elsif $_CLIENT_
-            $_CLIENT_.write(alt_string)
-          end
+          return detachable_clients unless detachable_clients.empty?
+
+          $_CLIENT_ ? [$_CLIENT_] : []
         end
 
         def handle_thread_error(error)
@@ -1355,40 +1534,6 @@ module Lich
         server_string
       end
 
-      def handle_combat_tags(server_string)
-        if @combat_count > 0
-          @end_combat_tags.each do |tag|
-            if server_string.include?(tag)
-              server_string = server_string.gsub(tag, "<popStream id=\"combat\" />" + tag) unless server_string.include?("<popStream id=\"combat\" />")
-              @combat_count -= 1
-            end
-            if server_string.include?("<pushStream id=\"combat\" />")
-              server_string = server_string.gsub("<pushStream id=\"combat\" />", "")
-            end
-          end
-        end
-
-        increment_combat_count(server_string)
-        server_string
-      end
-
-      def handle_atmospherics(server_string)
-        if @atmospherics
-          @atmospherics = false
-          server_string.prepend('<popStream id="atmospherics" />') unless server_string =~ /<popStream id="atmospherics" \/>/
-        end
-
-        if server_string =~ /<pushStream id="familiar" \/><prompt time="[0-9]+">&gt;<\/prompt>/ # Cry For Help spell is broken...
-          server_string.sub!('<pushStream id="familiar" />', '')
-        elsif server_string =~ /<pushStream id="atmospherics" \/><prompt time="[0-9]+">&gt;<\/prompt>/ # pet pigs in DragonRealms are broken...
-          server_string.sub!('<pushStream id="atmospherics" />', '')
-        elsif (server_string =~ /<pushStream id="atmospherics" \/>/)
-          @atmospherics = true
-        end
-
-        server_string
-      end
-
       def get_documentation_url
         "https://gswiki.play.net/Lich:Software/Installation"
       end
@@ -1489,47 +1634,18 @@ module Lich
         server_string
       end
 
-      def handle_combat_tags(server_string)
-        if @combat_count > 0
-          @end_combat_tags.each do |tag|
-            if server_string.include?(tag)
-              server_string = server_string.gsub(tag, "<popStream id=\"combat\" />" + tag) unless server_string.include?("<popStream id=\"combat\" />")
-              @combat_count -= 1
-            end
-            if server_string.include?("<pushStream id=\"combat\" />")
-              server_string = server_string.gsub("<pushStream id=\"combat\" />", "")
-            end
-          end
-        end
-
-        increment_combat_count(server_string)
-        server_string
-      end
-
-      def handle_atmospherics(server_string)
-        if @atmospherics
-          @atmospherics = false
-          server_string.prepend('<popStream id="atmospherics" />') unless server_string =~ /<popStream id="atmospherics" \/>/
-        end
-
-        if server_string =~ /<pushStream id="familiar" \/><prompt time="[0-9]+">&gt;<\/prompt>/ # Cry For Help spell is broken...
-          server_string.sub!('<pushStream id="familiar" />', '')
-        elsif server_string =~ /<pushStream id="atmospherics" \/><prompt time="[0-9]+">&gt;<\/prompt>/ # pet pigs in DragonRealms are broken...
-          server_string.sub!('<pushStream id="atmospherics" />', '')
-        elsif (server_string =~ /<pushStream id="atmospherics" \/>/)
-          @atmospherics = true
-        end
-
-        server_string
-      end
-
       def get_documentation_url
         "https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich"
       end
 
+      # Processes DragonRealms data using the original server line.
+      # @param server_string [String] original game-server fragment
+      # @param _stripped_server [String, nil] unused legacy stripped-line argument
+      # @return [void] lets DRParser update game state and inline output
       def process_game_specific_data(server_string, _stripped_server = nil)
         # Parse directly to allow inline modifications (e.g., inline exp display)
-        # The parser modifies server_string in place via line.replace()
+        # The parser modifies server_string in place via server_line.replace();
+        # its patterns match a link-stripped copy (DRParser.match_line)
         DRParser.parse(server_string)
       end
 
@@ -1593,6 +1709,28 @@ module Lich
           end
         end
 
+        alt_string
+      end
+
+      # DragonRealms' links and bold go only to clients whose capabilities
+      # include them (:game_links, :double_bold); the rest get the legacy line.
+      # Without :double_bold a client also loses the single bold around a
+      # creature in action and assess lines, which the legacy stream sent
+      # plain; it runs first, while the link it keys on is still there.
+      # GemStone sends links under both client identities, so it keeps the
+      # base no-op. Doubled bold appears only in the GemStone captures recorded
+      # under the Saga identity; whether it depends on the identity is not
+      # known. Never modifies alt_string.
+      # @param alt_string [String] the server string on its way to the client
+      # @param capabilities [Array<Symbol>, nil] the client's rich-stream
+      #   capabilities; nil means the session's set
+      # @return [String] the string to send
+      # @see Lich::GameBase::GameInstance::Base#adapt_for_frontend
+      def adapt_for_frontend(alt_string, capabilities = nil)
+        capabilities ||= Lich::Common::ClientCapabilities.session_default
+        alt_string = Lich::Common::Markup.strip_link_bold(alt_string) unless capabilities.include?(:double_bold)
+        alt_string = Lich::Common::Markup.strip_game_links(alt_string) unless capabilities.include?(:game_links)
+        alt_string = Lich::Common::Markup.collapse_double_bold(alt_string) unless capabilities.include?(:double_bold)
         alt_string
       end
 

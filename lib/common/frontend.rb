@@ -17,7 +17,7 @@ module Lich
   module Common
     module Frontend
       PLATFORM_KEYS = %i[darwin linux windows unsupported].freeze
-      CAPABILITY_VOCABULARY = %i[xml gsl streams mono room_window sentinel].freeze
+      CAPABILITY_VOCABULARY = %i[xml gsl streams mono room_window sentinel room_element game_links double_bold].freeze
       BUILT_IN_DEFINITION_FILES = [
         %w[stormfront wrayth],
         %w[profanity profanity],
@@ -548,6 +548,37 @@ module Lich
         has_capability?(fe, :room_window)
       end
 
+      # Whether the front end renders the Saga-identity stream's inline <room>
+      # block itself. Others get it rewritten to the legacy roomName/roomDesc
+      # layout (see Lich::Common::RoomBlock).
+      # Reads the front end's table only; each client's set comes from ClientCapabilities.
+      # @param fe [String, nil] frontend catalog name
+      # @return [Boolean] whether the frontend renders room blocks
+      def self.supports_room_element?(fe = $frontend)
+        has_capability?(fe, :room_element)
+      end
+
+      # Whether the front end handles DragonRealms' <a exist> object links.
+      # Others get them stripped to the legacy text (Markup.strip_game_links).
+      # Reads the front end's table only; each client's set comes from ClientCapabilities.
+      # @param fe [String, nil] frontend catalog name
+      # @return [Boolean] whether the frontend renders game links
+      def self.supports_game_links?(fe = $frontend)
+        has_capability?(fe, :game_links)
+      end
+
+      # Whether the front end handles DragonRealms' creature bold: the doubled
+      # <pushBold/><pushBold/> around linked creatures in room-object listings
+      # and the single pair around them in action and assess lines. Others get
+      # the legacy line: one pair in the listings (Markup.collapse_double_bold)
+      # and none elsewhere (Markup.strip_link_bold).
+      # Reads the front end's table only; each client's set comes from ClientCapabilities.
+      # @param fe [String, nil] frontend catalog name
+      # @return [Boolean] whether the frontend renders nested creature bold
+      def self.supports_double_bold?(fe = $frontend)
+        has_capability?(fe, :double_bold)
+      end
+
       # The running session also gets the sentinel when --sentinel asked for
       # it, so a client can identify as another frontend (stormfront, for the
       # scripts that test for it) and still receive the origin marker.
@@ -605,9 +636,132 @@ module Lich
         base.sub(%r{/VERSION:\S+}) { "/VERSION:#{version}" }
       end
 
+      # A front end's own handshake line, as it reaches Lich's proxy: an
+      # optional <c> prefix (Frostbite), an optional leading slash (Genie sends
+      # "FE:WRAYTH ..."), FE:<name>, and a /XML token. The line ending is kept.
+      PROXY_HANDSHAKE_LINE = %r{\A(?<prefix>(?:<c>)?)/?FE:\S+[^\r\n]*?[ \t]/XML(?=[ \t\r\n]|\z)[^\r\n]*(?<eol>\r?\n)?\z}i
+
+      # The handshake to forward for the line a proxied front end sent (the line
+      # after the login key). A front end's own handshake is replaced with
+      # client_string(version, frontend:), so every proxied session asks the game
+      # for the stream Lich sends Wizard, Frostbite and --without-frontend, and
+      # Lich's adapters (RoomBlock, Markup) reshape it for the front end. $frontend
+      # is not touched: it comes from the launch arguments, so capability
+      # lookups still answer for the real front end.
+      #
+      # Forwarded unchanged:
+      # - a line that is not an /XML handshake (a key, a command, a plain-text client);
+      # - a handshake that already names the same /P: platform as the replacement,
+      #   so Saga keeps its own /VERSION:;
+      # - any handshake when keep is true (--keep-fe-string or Lich.keep_fe_string).
+      #
+      # Logs the line received and the line forwarded, with the reason
+      # (log_client_string).
+      #
+      # @param line [String, nil] the line as read from the front end
+      # @param version [String, nil] the --fe-version value
+      # @param keep [Boolean] forward the front end's own handshake
+      # @param frontend [String, nil] the front end, for its registry :client_string
+      # @return [String, nil] the line to forward
+      def self.proxy_handshake(line, version: nil, keep: false, frontend: client)
+        log_client_string(:frontend, line)
+        forwarded, note = proxy_handshake_decision(line, version, keep, frontend)
+        log_client_string(:game, forwarded, note: note)
+        forwarded
+      end
+
+      # The line proxy_handshake forwards, and why, for its log line.
+      # @return [Array(String, String)] the line to forward and the reason
+      # @param line [String] stream or handshake line
+      # @param version [String, nil] frontend version override
+      # @param keep [Boolean] whether to retain the original handshake
+      # @param frontend [String, nil] frontend identity
+      def self.proxy_handshake_decision(line, version, keep, frontend)
+        match = PROXY_HANDSHAKE_LINE.match(line.to_s)
+        return [line, 'forwarded unchanged: not a client string'] unless match
+        return [line, "the front end's own: --keep-fe-string or Lich.keep_fe_string"] if keep
+
+        replacement = client_string(version, frontend: frontend)
+        platform = handshake_platform(line)
+        return [line, "the front end's own: it already asks for /P:#{platform}"] if platform&.casecmp?(handshake_platform(replacement).to_s)
+
+        ["#{match[:prefix]}#{replacement}#{match[:eol]}", CLIENT_STRING_REPLACED_NOTE]
+      end
+      private_class_method :proxy_handshake_decision
+
+      # The /P: value of a handshake line, or nil.
+      # @param line [String]
+      # @return [String, nil]
+      def self.handshake_platform(line)
+        line[%r{[ \t]/P:(\S+)}i, 1]
+      end
+      private_class_method :handshake_platform
+
+      # --- Client String Logging ---------------------------------
+      # Longest client string log_client_string echoes; the rest is elided.
+      CLIENT_STRING_LOG_LIMIT = 160
+
+      # The shape of a front end's handshake line (optional <c>, optional
+      # slash, FE:), the only kind of line log_client_string echoes.
+      LOGGABLE_CLIENT_STRING = %r{\A(?:<c>)?/?FE:}i
+
+      CLIENT_STRING_LOG_LABELS = { frontend: 'from front end', game: 'sent to game' }.freeze
+
+      # log_client_string's note when Lich sent its client string in place of
+      # the front end's (proxy_handshake, send_handshake).
+      CLIENT_STRING_REPLACED_NOTE = "Lich's, in place of the front end's"
+
+      # Log one side of the login handshake: the client string the front end
+      # sent Lich (:frontend) or the one Lich sent the game (:game).
+      #
+      # Every login path logs through here, and only the version/handshake line
+      # is ever passed in, never the login key that precedes it. A line that is
+      # not shaped like a handshake is still withheld (only its length is
+      # logged): proxy_handshake forwards whatever a front end sent in that
+      # slot, and that could be a key.
+      #
+      # @param source [Symbol] :frontend or :game
+      # @param line [String, nil] the line as read or sent
+      # @param note [String, nil] why this string, appended in parentheses
+      # @return [void]
+      def self.log_client_string(source, line, note: nil)
+        message = "info: client string #{CLIENT_STRING_LOG_LABELS.fetch(source)}: #{loggable_client_string(line)}"
+        message += " (#{note})" if note
+        Lich.log message
+      end
+
+      # A client string as log_client_string writes it: the first line only,
+      # without its line ending, control characters and invalid UTF-8 shown
+      # as ?, capped at CLIENT_STRING_LOG_LIMIT characters; "(none)" for nil,
+      # and only the length of a line that is not shaped like a handshake.
+      # @param line [String, nil]
+      # @return [String]
+      def self.loggable_client_string(line)
+        return '(none)' if line.nil?
+
+        # Sockets read BINARY, where scrub is a no-op; read the bytes as UTF-8.
+        text = line.to_s.dup.force_encoding(Encoding::UTF_8).scrub('?')
+        first = text[/\A[^\r\n]*/]
+        after = text[first.length..].delete("\r\n").length
+        return "(withheld: not a client string, #{first.length + after} characters)" unless first.match?(LOGGABLE_CLIENT_STRING)
+
+        first = first.gsub(/[[:cntrl:]]/, '?')
+        if first.length > CLIENT_STRING_LOG_LIMIT
+          first = "#{first[0, CLIENT_STRING_LOG_LIMIT]}... (#{first.length - CLIENT_STRING_LOG_LIMIT} more characters)"
+        end
+        first += " (#{after} characters after a line break withheld)" if after.positive?
+        first
+      end
+      private_class_method :loggable_client_string
+
       # Send version string, ready signals, and setup commands to the game server.
-      # Used during login handshake for wizard/avalon/frostbite frontends.
+      # Used during login handshake for wizard/avalon/frostbite frontends, whose
+      # own version line is discarded. Logs the version string as sent in place
+      # of the front end's (log_client_string).
+      # @param version_string [String] generated handshake line
+      # @return [void] writes the handshake and setup commands
       def self.send_handshake(version_string)
+        log_client_string(:game, version_string, note: CLIENT_STRING_REPLACED_NOTE)
         $_CLIENTBUFFER_.push(version_string.dup)
         Game._puts(version_string)
         2.times do

@@ -12,8 +12,9 @@
 # A single Lich process is booted once per fixture. The loopback server first
 # sends the fixture's header section once (the real server handshake, incl.
 # settingsInfo so Lich initializes as the right game), then performs N timed
-# runs: each run floods the fixture's body block(s) followed by a sentinel, and
-# the elapsed time from "flood begins" to "sentinel seen on stdout" is recorded.
+# runs: each run floods the fixture's body block(s), in chunks (see CHUNK_LINES),
+# followed by a sentinel, and the elapsed time from "flood begins" to "sentinel
+# seen on stdout" is recorded.
 # Booting Lich once per fixture keeps many runs cheap and excludes boot cost
 # from every sample.
 #
@@ -45,11 +46,23 @@ require 'fileutils'
 require 'optparse'
 require 'timeout'
 require 'tmpdir'
+require 'rbconfig'
 
 REPO = File.expand_path(__dir__)
 FIXTURE_DIR = File.join(REPO, 'benchmark', 'fixtures')
 MARKER = '### benchmark:body-repeats-below ###'
 SENTINEL = 'LICH_BENCH_SENTINEL_END'
+CHUNK_SENTINEL = 'LICH_BENCH_CHUNK_END'
+# Lich's game reader feeds a bounded parser queue (Game::SERVER_QUEUE_CAPACITY,
+# 4096 records) and treats overflow as unrecoverable. A run's flood is therefore
+# sent in chunks of at most this many lines; each chunk ends with
+# CHUNK_SENTINEL and the next is sent only once Lich has echoed it, i.e. once
+# the chunk has been fully parsed. Keep this well under the queue capacity.
+# The measured elapsed includes those N-1 drain-and-echo stalls (the parser
+# sits idle while each echo round-trips), so lines/s understates steady-state
+# throughput. It is not comparable with figures from before the queue was
+# bounded (#1459) or with figures taken at a different CHUNK_LINES.
+CHUNK_LINES = 2_000
 CLOCK = Process::CLOCK_MONOTONIC
 
 options = {
@@ -103,6 +116,9 @@ end
 
 # Run the whole benchmark for one fixture in a single Lich process. Returns an
 # array of per-run measurement hashes (warmup runs excluded).
+# @param fx [Hash] parsed fixture and measured-size metadata
+# @param opts [Hash] benchmark run configuration
+# @return [Array<Hash>] measured runs excluding warmups
 def benchmark(fx, opts)
   tmp = File.join(Dir.tmpdir, "lich_bench_#{Process.pid}")
   FileUtils.rm_rf(tmp)
@@ -111,12 +127,14 @@ def benchmark(fx, opts)
   body_payload = fx[:body] * fx[:iterations]
   body_bytes   = body_payload.bytesize
   body_lines   = fx[:body_lines] * fx[:iterations]
+  body_chunks  = body_payload.lines.each_slice(CHUNK_LINES).map(&:join)
 
   server  = TCPServer.new('127.0.0.1', 0)
   port    = server.addr[1]
   trigger = Queue.new # main -> server: :go / :stop
   starts  = Queue.new # server -> main: t_start per run
   dones   = Queue.new # reader -> main: [t_end, bytes, lines] per run
+  acks    = Queue.new # reader -> server: one per echoed CHUNK_SENTINEL
 
   srv = Thread.new do
     conn = server.accept
@@ -136,7 +154,16 @@ def benchmark(fx, opts)
     loop do
       break if trigger.pop == :stop
       starts.push(Process.clock_gettime(CLOCK))
-      conn.write(body_payload)
+      body_chunks.each_with_index do |chunk, i|
+        conn.write(chunk)
+        next if i == body_chunks.length - 1
+
+        # Wait for Lich to finish parsing this chunk before sending the next, so
+        # the bounded parser queue never overflows (see CHUNK_LINES).
+        conn.write("#{CHUNK_SENTINEL}\r\n")
+        conn.flush
+        Timeout.timeout(120) { acks.pop }
+      end
       conn.write("#{SENTINEL}\r\n")
       conn.flush
     end
@@ -154,12 +181,12 @@ def benchmark(fx, opts)
   game_flag = fx[:game_code] == 'DR' ? '--dragonrealms' : '--gemstone'
 
   args = [
-    'bundle', 'exec', 'ruby', 'lich.rbw',
+    RbConfig.ruby, 'lich.rbw',
     "--data=#{tmp}/data", "--temp=#{tmp}/temp", "--logs=#{tmp}/logs",
     "--scripts=#{tmp}/scripts", "--maps=#{tmp}/maps", "--backup=#{tmp}/backup",
     '-g', "127.0.0.1:#{port}", '--pipe', '--no-gtk', game_flag
   ]
-  env = { 'BUNDLE_WITHOUT' => 'gtk:vscode:profanity' }
+  env = {}
 
   results = []
   Open3.popen2e(env, *args, chdir: REPO) do |stdin, stdout_err, wait_thr|
@@ -176,6 +203,10 @@ def benchmark(fx, opts)
         bytes += chunk.bytesize
         lines += chunk.count("\n")
         buf << chunk
+        while (idx = buf.index(CHUNK_SENTINEL))
+          acks.push(true)
+          buf = buf[(idx + CHUNK_SENTINEL.length)..] || +''
+        end
         while (idx = buf.index(SENTINEL))
           # Output after the sentinel belongs to the next run, not this one;
           # subtract the trailing bytes/lines and carry them forward so a

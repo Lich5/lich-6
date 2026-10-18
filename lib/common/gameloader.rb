@@ -12,10 +12,13 @@ module Lich
         require File.join(LIB_DIR, 'common', 'hmr.rb')
       end
 
+      # Loads GemStone modules, including its parser delta.
+      # @return [void] loads the GemStone modules and starts watchers
       def self.gemstone
         self.common_before
         require File.join(LIB_DIR, 'gemstone', 'sk.rb')
         require File.join(LIB_DIR, 'common', 'map', 'map_gs.rb')
+        require File.join(LIB_DIR, 'gemstone', 'xml_delta.rb')
         require File.join(LIB_DIR, 'gemstone', 'effects.rb')
         require File.join(LIB_DIR, 'gemstone', 'bounty.rb')
         require File.join(LIB_DIR, 'gemstone', 'claim.rb')
@@ -56,9 +59,12 @@ module Lich
         self.common_after
       end
 
+      # Loads DragonRealms modules, including its parser delta.
+      # @return [void] loads the DragonRealms modules and starts watchers
       def self.dragon_realms
         self.common_before
         require File.join(LIB_DIR, 'common', 'map', 'map_dr.rb')
+        require File.join(LIB_DIR, 'dragonrealms', 'xml_delta.rb')
         require File.join(LIB_DIR, 'attributes', 'char.rb')
         require File.join(LIB_DIR, 'dragonrealms', 'dependency', 'settings_config.rb')
         require File.join(LIB_DIR, 'dragonrealms', 'drinfomon.rb')

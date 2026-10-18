@@ -62,6 +62,7 @@ module Lich
 
         # CLI flags that should never be interpreted as game-instance selectors.
         NON_INSTANCE_FLAGS = %w[
+          keep-fe-string
           login gui no-gui without-frontend headless reconnect reconnected save
           genie frostbite wrayth saga suks sentinel pipe no-wine no-gtk debug
         ].freeze
@@ -73,7 +74,7 @@ module Lich
           home data scripts temp maps logs backup lib
           script-dir data-dir temp-dir map-dir log-dir backup-dir lib-dir active-session-dir
           hosts-dir hosts-file account password character frontend frontend-command
-          detachable-client reconnect-delay game wine wine-prefix fe-version
+          detachable-client reconnect-delay game wine wine-prefix fe-version frontend-caps
         ].freeze
 
         # Legacy realm and name mappings intentionally retain retired codes for
