@@ -25,6 +25,142 @@ module Lich
       extend self
 
       @adopt_nested_constants = false
+      @core_aliases = {}
+      @legacy_constants = {}
+      @legacy_helpers = {}
+      @legacy_notices = {}
+      @plugin_names = []
+      @plugin_modules = []
+
+      # Compatibility exports contain only script declarations, never plugins.
+      # Retirement: migrate supported legacy consumers, verify zero bridge uses
+      # in the agreed corpus, then obtain owner approval before removing this bridge.
+      module LegacyConstants; end
+
+      # Existing Object/Core methods take precedence over legacy script helpers.
+      # Binding the method to the original receiver preserves helpers such as
+      # Numeric#percent_of without including ScriptScope into Object or core classes.
+      module LegacyHelpers
+        # Forwards a missing public script helper with the original receiver.
+        # @param name [Symbol] requested helper name
+        # @param args [Array<Object>] positional arguments
+        # @param kwargs [Hash] keyword arguments
+        # @param block [Proc, nil] block forwarded to the helper
+        # @return [Object] helper result or the next missing-method handler result
+        # @raise [NoMethodError] when no handler answers the call
+        def method_missing(name, *args, **kwargs, &block)
+          return super unless ScriptScope.legacy_helper?(name)
+
+          ScriptScope.legacy_notice(:helper, name)
+          ScriptScope.instance_method(name).bind_call(self, *args, **kwargs, &block)
+        end
+
+        # Advertises eligible public helpers while preserving ancestor lookup.
+        # @param name [Symbol] requested method name
+        # @param include_private [Boolean] forwarded to the ancestor handler
+        # @return [Boolean] whether a helper or ancestor handler answers
+        def respond_to_missing?(name, include_private = false)
+          ScriptScope.legacy_helper?(name) || super
+        end
+      end
+
+      # Late core definitions must be visible before a script reopens them.
+      module CoreConstants
+        # Refreshes core aliases after a constant is added while scope is active.
+        # @param name [Symbol] newly defined core constant
+        # @return [void]
+        def const_added(name)
+          super
+          ScriptScope.sync_core_constants! if ScriptScope.active?
+        end
+      end
+
+      # Registers declarations made after plugin boot for legacy lookup.
+      # @param name [Symbol] newly defined instance method
+      # @return [void]
+      def self.method_added(name)
+        @legacy_helpers[name] = true if @adopt_nested_constants
+        super
+      end
+
+      # Checks that a registered legacy helper remains public and directly defined.
+      # @param name [Symbol] requested helper name
+      # @return [Boolean] whether the helper can be forwarded
+      def self.legacy_helper?(name)
+        @legacy_helpers.key?(name) && public_instance_methods(false).include?(name)
+      end
+
+      # Emits one migration notice per kind/name, without script values.
+      # Logging failures do not interrupt script execution.
+      # @param kind [Symbol] export category, such as :helper or :constant
+      # @param name [Symbol] exported name
+      # @return [void]
+      def self.legacy_notice(kind, name)
+        key = [kind, name]
+        return if @legacy_notices[key]
+
+        @legacy_notices[key] = true
+        source = caller_locations.find { |location| location.path.end_with?('.lic') }
+        location = source ? "#{File.basename(source.path)}:#{source.lineno}" : 'script scope'
+        Lich.log("warning: legacy script #{kind}=#{name} source=#{location}; migrate to ScriptScope lookup") if Lich.respond_to?(:log)
+      rescue StandardError
+        nil
+      end
+
+      # Aliases are refreshed without changing the core objects' ancestors.
+      # Never overwrite a plugin or a script-owned constant.
+      # @return [void]
+      def self.sync_core_constants!
+        public_names = Lich::Common.constants(false) - [:ScriptScope]
+        @core_aliases.keys.each do |name|
+          next if public_names.include?(name) && Lich::Common.const_get(name, false).equal?(@core_aliases[name])
+
+          remove_const(name) if const_defined?(name, false) && const_get(name, false).equal?(@core_aliases[name])
+          @core_aliases.delete(name)
+        end
+        public_names.each do |name|
+          next if const_defined?(name, false) || Lich::Common.autoload?(name)
+
+          value = Lich::Common.const_get(name, false)
+          @core_aliases[name] = value
+          const_set(name, value)
+        end
+      end
+
+      # Export actual aliases so Ruby's defined? and const_defined? agree with
+      # absolute lookup. Missing-method/constant hooks alone cannot do that.
+      # Clears stale exports before excluding core, plugin and existing Object names.
+      # @param name [Symbol] script constant name
+      # @param value [Object] current constant value
+      # @return [void]
+      def self.export_legacy_constant(name, value)
+        if @legacy_constants.delete(name)
+          LegacyConstants.send(:remove_const, name)
+        end
+        return if @core_aliases.key?(name) || @plugin_names.include?(name)
+        if value.is_a?(Module)
+          module_name = Module.instance_method(:name).bind_call(value).to_s
+          return if @plugin_modules.any? { |plugin| value.equal?(plugin) || module_name.start_with?("#{plugin.name}::") }
+        end
+        return if Object.const_defined?(name)
+
+        LegacyConstants.const_set(name, value)
+        @legacy_constants[name] = true
+        legacy_notice(:constant, name)
+      end
+
+      # Keeps explicit removal and subsequent redefinition from leaving stale exports.
+      # @param name [Symbol, String] constant to remove from script scope
+      # @return [Object] removed constant value
+      # @raise [NameError] when the constant is not defined directly on this scope
+      def self.remove_const(name)
+        value = super
+        if @legacy_constants.delete(name.to_sym)
+          LegacyConstants.send(:remove_const, name)
+        end
+        value
+      end
+      private_class_method :remove_const
 
       # Reports whether script-owned nested classes/modules receive scoped helpers.
       # @return [Boolean] whether new constants belong to scripts rather than plugins loaded by {.activate!}
@@ -49,6 +185,7 @@ module Lich
         #
         # Runs for every constant defined on a module that extends {Nesting}; anything defined
         # before {.activate!} (or that is not a Module) is passed straight to +super+.
+        # Top-level script declarations also update eligible legacy constant exports.
         # Only a definition named inside this namespace is adopted; aliases to
         # existing core/script classes keep their original ancestry.
         #
@@ -58,6 +195,7 @@ module Lich
           return super unless ScriptScope.adopt_nested_constants?
 
           value = const_get(name)
+          ScriptScope.export_legacy_constant(name, value) if equal?(ScriptScope)
           return super unless value.is_a?(Module)
           # A constant alias is not a class/module definition. Adopting an alias
           # such as MyCmp = ::Comparable would change unrelated core ancestors.
@@ -117,13 +255,22 @@ module Lich
 
       # Loads every plugin and routes trusted scripts through this scope.
       # Idempotent. Scripts already running keep the binding they started with.
+      # Captures plugin exclusions, synchronizes core aliases and installs the
+      # legacy lookup hooks before accepting script-owned declarations.
       #
       # @return [Boolean] true once active
       def self.activate!
         @activation_mutex.synchronize do
           return true if @active
 
+          @legacy_helpers = public_instance_methods(false).to_h { |name| [name, true] }
           Dir[PLUGIN_GLOB].sort.each { |boot| require boot }
+          @plugin_names = constants(false) - @core_aliases.keys
+          @plugin_modules = @plugin_names.filter_map { |name| value = const_get(name, false); value if value.is_a?(Module) }
+          sync_core_constants!
+          Object.include(LegacyConstants)
+          Object.prepend(LegacyHelpers)
+          Lich::Common.singleton_class.prepend(CoreConstants)
           @adopt_nested_constants = true
           @active = true
         end
@@ -137,9 +284,11 @@ module Lich
 
       # A fresh binding whose constant lookup starts in this module. Created by
       # a method call so every script gets its own local-variable table.
+      # Synchronizes core aliases before exposing the binding.
       #
       # @return [Binding] a new binding whose self is this module
       def self.script_binding
+        sync_core_constants!
         Proc.new {}.binding
       end
 
@@ -157,9 +306,11 @@ module Lich
       end
 
       # Creates a fresh receiver/binding for label-based scripts, retaining scoped constants.
+      # Synchronizes core aliases before constructing the receiver.
       # This preserves evaluation semantics; it does not restrict arbitrary Ruby execution.
       # @return [Binding]
       def self.untrusted_binding
+        sync_core_constants!
         Sandbox.new.script_binding
       end
     end

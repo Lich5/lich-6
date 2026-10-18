@@ -7,6 +7,36 @@ require_relative '../../support/webui_browser'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'WebUI browser bootstrap', browser: true do
+  it 'keeps the launcher unlock password editable inside its modal through retry and cancel' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    require_relative '../../login_spec_helper'
+    require 'common/webui_launcher'
+    service = Lich::WebUI::Service.new
+    launcher = Lich::Common::WebUILauncher.allocate
+    modal = { kind: :unlock, error: nil }
+    received = []
+    page = nil
+    launcher.define_singleton_method(:unlock_response) do |event, cid|
+      if event.payload[:button] == 'cancel'
+        modal = nil
+      else
+        event.submission.fetch(cid).consume { |value| received << value.dup }
+        modal[:error] = 'Master password was not accepted.'
+      end
+      service.refresh(page)
+    end
+    page = Lich::WebUI::Page.new(owner: launcher, id: 'unlock', title: 'Launcher unlock') do |ui|
+      launcher.send(:render_modal, ui, modal) if modal
+      ui.text(content: 'Unlock cancelled') unless modal
+    end
+    service.registry.register(page)
+    WebUIBrowser.check(service: service, page: page, scenario: 'launcher-unlock')
+    expect(received).to eq(['fixture-password'])
+  ensure
+    service&.stop
+  end
+
   it 'restores stylesheet opacity after explicit component overrides are removed' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 

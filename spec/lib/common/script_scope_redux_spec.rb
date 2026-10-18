@@ -54,7 +54,8 @@ RSpec.describe Lich::Common::ScriptScope do
       ancestors = [Comparable, String, Integer].map(&:ancestors)
       eval('def scope_alias_probe; :leaked; end; RuntimeComparable = ::Comparable', scope.script_binding)
       abort 'core ancestors changed' unless [Comparable, String, Integer].map(&:ancestors) == ancestors
-      abort 'helper leaked into core' if ''.respond_to?(:scope_alias_probe) || 1.respond_to?(:scope_alias_probe)
+      abort 'helper installed on core' if String.instance_methods(false).include?(:scope_alias_probe) || Integer.instance_methods(false).include?(:scope_alias_probe)
+      abort 'scope mixed into core' if String.ancestors.include?(scope) || Integer.ancestors.include?(scope)
     RUBY
     # A regression must not contaminate the parent suite's core ancestors.
     output, status = Open3.capture2e(RbConfig.ruby, '-I', File.expand_path('../../../lib', __dir__),
@@ -84,5 +85,49 @@ RSpec.describe Lich::Common::ScriptScope do
     expect(eval('def scope_redux_helper; 42; end; scope_redux_helper', binding)).to eq(42)
   ensure
     described_class.send(:remove_method, :scope_redux_helper) if described_class.instance_methods(false).include?(:scope_redux_helper)
+  end
+  it 'preserves core reopening and legacy lookup across sequential scripts without exporting plugins' do
+    source = <<~'RUBY'
+      module Lich::Common
+        class ScopeChar
+          def self.core = :core
+        end
+      end
+      scope = Lich::Common::ScriptScope
+      scope.activate!
+      original = Lich::Common::ScopeChar
+      ancestors = original.ancestors
+      eval('class ScopeChar; def self.polyfill = :patched; end', scope.script_binding, 'polyfill.lic')
+      abort 'shadowed core class' unless eval('ScopeChar.core', scope.script_binding) == :core
+      abort 'core patch missing' unless original.polyfill == :patched && original.ancestors == ancestors
+      # Game-specific classes can arrive after the first script has started.
+      module Lich::Common
+        class ScopeMap
+          def self.core = :map
+        end
+      end
+      eval('class ScopeMap; def self.route = :route; end', scope.script_binding, 'map.lic')
+      abort 'late core shadow' unless Lich::Common::ScopeMap.route == :route
+      eval('LegacyNumber = 42; class LegacyHelper; end; def percent_of(total:) = self * 100 / total', scope.script_binding, 'helpers.lic')
+      result = eval('[defined?(::LegacyHelper), Object.const_defined?(:LegacyHelper), ::LegacyNumber, 10.percent_of(total: 20)]', scope.script_binding, 'consumer.lic')
+      abort result.inspect unless result == ['constant', true, 42, 50]
+      eval('PluginAlias = Gtk; WidgetAlias = Gtk::Window', scope.script_binding)
+      abort 'aliased plugin export' if Object.const_defined?(:PluginAlias) || Object.const_defined?(:WidgetAlias)
+      scope.const_set(:LegacyHelper, scope::Gtk)
+      abort 'stale export after plugin reassignment' if Object.const_defined?(:LegacyHelper)
+      abort 'plugin export' if Object.const_defined?(:Gtk) || Object.const_defined?(:GLib) || Object.const_defined?(:LegacyHelpers)
+      abort 'scope mixed into core' if String.ancestors.include?(scope) || Integer.ancestors.include?(scope)
+      scope.send(:remove_const, :LegacyNumber)
+      abort 'stale export' if Object.const_defined?(:LegacyNumber)
+      scope.send(:remove_method, :percent_of)
+      abort 'stale helper' if 10.respond_to?(:percent_of)
+      eval('LegacyNumber = 43; def percent_of(total:) = :replacement', scope.script_binding)
+      abort 'stale redefinition' unless ::LegacyNumber == 43 && 10.percent_of(total: 20) == :replacement
+      eval('def to_s = :wrong', scope.script_binding)
+      abort 'overrode real method' unless 10.to_s == '10'
+    RUBY
+    output, status = Open3.capture2e(RbConfig.ruby, '-I', File.expand_path('../../../lib', __dir__),
+                                     '-rcommon/script_scope', '-e', source)
+    expect(status.success?).to be(true), output
   end
 end

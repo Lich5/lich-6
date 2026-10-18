@@ -312,6 +312,9 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
         FileUtils.mkdir_p(File.join(root, 'custom'))
         stub_const('SCRIPT_DIR', root)
         FileUtils.mkdir_p(File.join(root, 'gtk3'))
+        # The fixture represents an actual dependency feature root, not an
+        # arbitrary installation ancestor whose name happens to match GTK.
+        $LOAD_PATH.unshift(root)
         native_file = File.join(root, 'gtk3', 'loader.rb')
         File.write(native_file, 'raise "native sentinel executed"')
         File.write(File.join(root, 'native_helper.rb'), "Kernel.require #{native_file.dump}\n")
@@ -321,6 +324,8 @@ RSpec.describe 'Lich::Common::Script lifecycle extensions' do
         expect(child).not_to be_completed_successfully
         expect(child.exit_error).to be_a(Lich::Common::ScriptScope::Gtk::UnsupportedOperation)
         expect(child.exit_error.message).to match(/script=boundary.*require.*gtk3\/loader.*native_helper\.rb:1/)
+      ensure
+        $LOAD_PATH.delete(root)
       end
     end
   end

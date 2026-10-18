@@ -497,6 +497,11 @@ module Lich
         end
       end
 
+      # Builds the character editor, retaining a removed frontend for explicit repair.
+      # @param ui [WebUI::TreeBuilder] builder receiving the form widgets
+      # @param state [Hash] account, entry and available-frontend snapshot
+      # @return [void]
+      # @api private
       def render_character_form(ui, state)
         launcher = self
         options = state[:accounts].map { |account| { value: account, label: account } }
@@ -508,12 +513,16 @@ module Lich
           account = select(**account_props)
           name = text_input(key: 'character-name', label: 'Character', value: draft&.char_name.to_s)
           game = select(key: 'character-game', label: 'Game', options: GAMES, value: draft&.game_code || 'GS3')
+          frontend_options = state[:frontend_options].map(&:dup)
+          if draft && !frontend_options.any? { |option| option[:value] == draft.frontend }
+            frontend_options << { value: draft.frontend, label: "#{draft.frontend} (removed; choose a replacement)" }
+          end
           frontend_props = {
-            key: 'character-frontend', label: 'Frontend', options: state[:frontend_options],
+            key: 'character-frontend', label: 'Frontend', options: frontend_options,
             disabled: state[:frontend_options].empty?
           }
-          unless state[:frontend_options].empty?
-            frontend_props[:value] = draft&.frontend || state[:frontend_options].first[:value]
+          unless frontend_options.empty?
+            frontend_props[:value] = draft&.frontend || frontend_options.first[:value]
           end
           frontend = select(**frontend_props)
           custom = text_input(key: 'character-custom', label: 'Custom Launch', value: draft&.custom_launch.to_s)
@@ -583,16 +592,24 @@ module Lich
         end
       end
 
+      # Builds the active launcher dialog and binds its response handler.
+      # Unlock input belongs to the dialog and is submitted on its response.
+      # @param ui [WebUI::TreeBuilder] builder receiving the dialog widgets
+      # @param modal [Hash] dialog kind and optional error or confirmation body
+      # @return [void]
+      # @api private
       def render_modal(ui, modal)
         launcher = self
         case modal[:kind]
         when :unlock
-          secret = ui.password_input(key: 'unlock-master', label: 'Master Password')
-          ui.dialog(key: 'unlock-dialog', title: 'Enter Master Password', body: modal[:error],
-                    no_viewer: :abort, buttons: [
-                      { id: 'cancel', label: 'Cancel' }, { id: 'unlock', label: 'Unlock', variant: 'primary' },
-                    ], submit: [secret],
-                    on: { response: ->(event) { launcher.unlock_response(event, secret.cid) } })
+          secret = nil
+          dialog = ui.dialog(key: 'unlock-dialog', title: 'Enter Master Password', body: modal[:error].to_s,
+                             no_viewer: :abort, cancel_button: 'cancel', default_button: 'unlock', buttons: [
+                               { id: 'cancel', label: 'Cancel' }, { id: 'unlock', label: 'Unlock', variant: 'primary' },
+                             ], on: { response: ->(event) { launcher.unlock_response(event, secret.cid) } }) do
+            secret = password_input(key: 'unlock-master', label: 'Master Password')
+          end
+          ui.submit(dialog, [secret])
         when :confirm_delete
           ui.dialog(key: 'delete-dialog', title: 'Confirm Removal', body: modal[:body], no_viewer: :abort,
                     buttons: [{ id: 'cancel', label: 'Cancel' }, { id: 'remove', label: 'Remove', variant: 'danger' }],
@@ -1350,9 +1367,22 @@ module Lich
         @catalog_error = error.message
       end
 
+      # Refreshes an open page, preserving its prior screen on WebUI render errors.
+      # Reports bounded structural diagnostics and independent recovery feedback
+      # without logging submitted values or attempting a recursive render.
+      # @return [void]
+      # @api private
       def refresh
         @service.refresh(@page) if @page && lifecycle != :closed
-      rescue Lich::WebUI::Error
+      rescue Lich::WebUI::Error => error
+        # Exception messages can contain submitted values. Log only structural
+        # attribution and use the independent notifier, never another render.
+        details = %i[page_id cid field].map do |key|
+          value = error.public_send(key).to_s.gsub(/[^a-zA-Z0-9_:\/.\[\]-]/, '?')[0, 256]
+          "#{key}=#{value}"
+        end.join(' ')
+        log_diagnostic(:error, "WebUI launcher render refused error=#{error.class} #{details}")
+        report_feedback('The launcher could not display the change. The previous screen is retained. Retry or restart the launcher; see the debug log for the affected field.')
         nil
       end
 

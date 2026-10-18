@@ -27,6 +27,7 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
     it "refuses #{feature} before executing a direct subload" do
       Dir.mktmpdir('gtk-direct-subload') do |root|
         stub_const('GTK_SUBLOAD_EXECUTED', [])
+        $LOAD_PATH.unshift(root)
         target = File.join(root, "#{feature}.rb")
         FileUtils.mkdir_p(File.dirname(target))
         File.write(target, 'GTK_SUBLOAD_EXECUTED << true')
@@ -34,6 +35,8 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
         expect { Kernel.require(target) }.to raise_error(scope::Gtk::UnsupportedOperation, /native GTK loading is disabled/)
         expect(GTK_SUBLOAD_EXECUTED).to be_empty
         expect($LOADED_FEATURES).not_to include(target)
+      ensure
+        $LOAD_PATH.delete(root)
       end
     end
   end
@@ -91,5 +94,20 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
   it 'keeps Kernel instance loaders private and explicit module loaders public' do
     expect(Kernel.private_instance_methods).to include(:require, :require_relative, :load)
     expect(Kernel.public_methods).to include(:require, :require_relative, :load)
+  end
+  it 'loads ordinary files beneath GTK-like installation directories without widening native admission' do
+    Dir.mktmpdir('ordinary-install') do |root|
+      stub_const('ORDINARY_INSTALL_EVENTS', [])
+      %w[Gi ATK Cairo pango gdk].each do |directory|
+        base = File.join(root, directory, 'lich', 'lib')
+        FileUtils.mkdir_p(base)
+        File.write(File.join(base, 'child.rb'), 'ORDINARY_INSTALL_EVENTS << :child')
+        File.write(File.join(base, 'parent.rb'), "require_relative 'child'\n")
+        expect(Kernel.require(File.join(base, 'parent.rb'))).to be(true)
+        expect(Kernel.load(File.join(base, 'child.rb'), true)).to be(true)
+      end
+      expect(ORDINARY_INSTALL_EVENTS).to eq([:child] * 10)
+      expect(scope::Gtk::RequireBoundary.handled?('C:\\Users\\ATK\\Lich\\lib\\games.rb', :load, caller_locations.first)).to be(false)
+    end
   end
 end

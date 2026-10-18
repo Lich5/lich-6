@@ -373,6 +373,60 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(alternate.send(:render_state)[:modal]).to be_nil
   end
 
+  it 'renders the real initial unlock, retry and cancel with the password inside the modal' do
+    page = launcher.send(:build_page)
+    launcher.instance_variable_set(:@page, page)
+    allow(service).to receive(:refresh) { |target| target.render }
+    catalog.require_master = true
+    launcher.saved_launch(event, 'entry-0')
+    initial = page.last_render
+    dialog = initial.tree.each.find { |node| node.type == :dialog }
+    secret = dialog.children.find { |node| node.type == :password_input }
+    expect(dialog.props[:body]).to eq('')
+    expect(initial.submissions[dialog.cid]).to eq([secret.cid])
+    catalog.master_valid = false
+    initial.bindings.fetch([dialog.cid, :response]).call(event({ secret.cid => viewer_secret('wrong') }, payload: { button: 'unlock' }))
+    expect(page.last_render.tree.each.find { |node| node.type == :dialog }.props[:body]).to match(/not accepted/)
+    page.last_render.bindings.fetch([dialog.cid, :response]).call(event({}, payload: { button: 'cancel' }))
+    expect(page.last_render.tree.each.map(&:type)).not_to include(:dialog)
+    expect(feedback).to be_empty
+  end
+
+  it 'keeps removed frontend metadata repairable and requires an explicit valid replacement' do
+    catalog.entries_value = [entry.with(frontend: 'removed-custom')]
+    launcher.refresh_catalog
+    launcher.instance_variable_set(:@draft_entry_key, 'entry-0')
+    page = launcher.send(:build_page)
+    control = page.render.tree.each.find { |node| node.cid.end_with?('select:character-frontend') }
+    expect(control.props[:value]).to eq('removed-custom')
+    expect(control.props[:options]).to include(hash_including(value: 'removed-custom', label: /removed/))
+    values = { 'text_input:character-name' => 'Aldor', 'select:character-game' => 'GS3',
+               'select:character-frontend' => 'removed-custom', 'select:character-account' => 'DOUG' }
+    launcher.save_character(event(values))
+    expect(catalog.calls.none? { |call| call.first == :update_character }).to be(true)
+    launcher.save_character(event(values.merge('select:character-frontend' => 'stormfront')))
+    expect(catalog.calls).to include([:update_character, 'entry-0', hash_including(frontend: 'stormfront')])
+  end
+
+  it 'reports refused renders independently and redacts exception messages without recursively rendering' do
+    page = launcher.send(:build_page)
+    launcher.instance_variable_set(:@page, page)
+    page.render
+    prior = page.last_render
+    failure = Lich::WebUI::SchemaViolationError.new('password-canary secret-url', page_id: 'launcher', cid: 'dialog:unlock', field: 'body')
+    allow(service).to receive(:refresh).and_raise(failure)
+    launcher.send(:refresh)
+    expect(service).to have_received(:refresh).once
+    expect(page.last_render).to equal(prior)
+    expect(messages.last.last).to include('SchemaViolationError', 'field=body', 'cid=dialog:unlock')
+    expect(feedback.last).to include('previous screen is retained')
+    expect([messages, feedback].inspect).not_to include('password-canary', 'secret-url')
+    allow(launcher).to receive(:report_feedback).and_call_original
+    launcher.instance_variable_set(:@recovery, ->(_message) { raise 'notifier unavailable' })
+    expect { launcher.send(:refresh) }.not_to raise_error
+    expect(service).to have_received(:refresh).twice
+  end
+
   it 'runs manual authentication, selection, save, favorite, and launch through core collaborators' do
     connect = event({ 'account' => 'doug', 'password' => viewer_secret('manual-canary') })
     launcher.manual_connect(connect, 'account', 'password')

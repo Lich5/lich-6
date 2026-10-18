@@ -55,7 +55,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['native-opacity-reset', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['launcher-unlock', 'native-opacity-reset', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -153,6 +153,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       };
       document.addEventListener('dragstart', event => {
         window.fixtureDragSource = event.target;
+        window.fixtureDragStarts = (window.fixtureDragStarts || 0) + 1;
       }, true);
     });
   }
@@ -492,16 +493,22 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     const footer = save.locator('..');
     const combo = page.getByRole('combobox');
     const cid = await save.getAttribute('data-cid');
+    /**
+     * Waits for connected footer geometry without weakening layout tolerances.
+     * @param {number} gap Required inter-button spacing in pixels.
+     * @returns {Promise<void>} Resolves when both buttons align in the live footer.
+     */
     const checkFooter = async gap => {
-      const sizes = await footer.evaluate(el => ({
-        right: el.getBoundingClientRect().right,
-        buttons: [...el.querySelectorAll('button')].map(button => {
-          const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right };
-        }),
-      }));
-      expect(sizes.buttons).toHaveLength(2);
-      expect(Math.abs(sizes.buttons[1].left - sizes.buttons[0].right - gap)).toBeLessThanOrEqual(1);
-      expect(Math.abs(sizes.right - sizes.buttons[1].right)).toBeLessThanOrEqual(1);
+      await expect.poll(() => footer.evaluate(el => {
+        const buttons = [...el.querySelectorAll('button')];
+        if (!el.isConnected || buttons.length !== 2) return null;
+        const rect = el.getBoundingClientRect();
+        const [first, second] = buttons.map(button => button.getBoundingClientRect());
+        if (![rect, first, second].every(box => box.width > 0 && box.height > 0)) return null;
+        return { count: buttons.length, gap: second.left - first.right, end: rect.right - second.right };
+      }).then(sizes => sizes !== null && sizes.count === 2 &&
+        Math.abs(sizes.gap - gap) <= 1 && Math.abs(sizes.end) <= 1),
+      { message: 'connected footer must retain two buttons, spacing and end alignment' }).toBe(true);
     };
     await expect(combo.locator('option:checked')).toHaveText('-- select spell --');
     await checkFooter(10);
@@ -1256,6 +1263,18 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       await help.close();
       await expect(parentInput).toHaveValue('Retained parent input');
     }
+  } else if (scenario === 'launcher-unlock') {
+    const dialog = page.getByRole('dialog');
+    const password = dialog.locator('input[type="password"]');
+    await expect(password).toBeVisible();
+    await password.fill('fixture-password');
+    await expect(password).toBeFocused();
+    await dialog.getByRole('button', { name: 'Unlock', exact: true }).click();
+    await expect(dialog).toContainText('Master password was not accepted.');
+    await expect(password).toBeEditable();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText('Unlock cancelled')).toBeVisible();
   } else if (scenario === 'native-opacity-reset') {
     const targets = [
       ['text:subtle', '0.72'], ['text:frontend-detected', '0.75'],
@@ -1512,10 +1531,16 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       }, { message: 'drag geometry must be visible after background redraws' }).toBe(true);
       return box;
     };
+    const starts = await page.evaluate(() => window.fixtureDragStarts || 0);
     const sourceBox = await visibleBox(empty.locator('tbody tr'));
     await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
     await page.mouse.down();
     await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 15, sourceBox.y + sourceBox.height / 2, { steps: 5 });
+    await expect.poll(() => page.evaluate(() => window.fixtureDragStarts || 0)).toBe(starts + 1);
+    // Signal the Ruby fixture only after Chrome starts the real third drag.
+    // This local test handshake excludes browser startup from synchronization.
+    const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS);
+    require('node:fs').writeFileSync(controls.drag_ready, 'ready');
     // Wait for the finite server-render batch while still holding the native
     // gesture. Finish churn before dropping, preserving the one-stale-retry contract.
     await expect.poll(() => page.evaluate(() => window.fixtureDragRenderBatchFinished === true)).toBe(true);
