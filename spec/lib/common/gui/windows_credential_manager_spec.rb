@@ -161,15 +161,14 @@ RSpec.describe Lich::Common::GUI::WindowsCredentialManager do
     end
 
     context 'with special characters in password' do
-      # rubocop:disable Custom/AsciiOnlySource -- Intentional Unicode password fixtures exercise credential encoding.
+      # Escapes retain real accented Latin and Chinese passwords at runtime.
       special_passwords = [
         'p@ssw0rd!',
-        'pässwörd',
-        '密码',
+        "p\u{e4}ssw\u{f6}rd", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+        "\u{5bc6}\u{7801}", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
         "p'ss\"w@rd",
         'p\nw\t\r'
       ]
-      # rubocop:enable Custom/AsciiOnlySource
 
       special_passwords.each do |special_pass|
         it "handles password with special characters: #{special_pass.inspect}" do
@@ -309,14 +308,13 @@ RSpec.describe Lich::Common::GUI::WindowsCredentialManager do
         allow(described_class).to receive(:available?).and_return(true)
         allow(Lich).to receive(:log)
 
+        # Escapes retain Cyrillic credential fields for UTF-8 to UTF-16 conversion.
         # Store credential with UTF-8 string to test encoding
-        # rubocop:disable Custom/AsciiOnlySource -- Intentional Unicode strings exercise UTF-16LE boundary conversion.
         result = described_class.store_credential(
-          'тест.service',
-          'пользователь',
-          'пароль'
+          "\u{442}\u{435}\u{441}\u{442}.service", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+          "\u{43f}\u{43e}\u{43b}\u{44c}\u{437}\u{43e}\u{432}\u{430}\u{442}\u{435}\u{43b}\u{44c}", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+          "\u{43f}\u{430}\u{440}\u{43e}\u{43b}\u{44c}" # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
         )
-        # rubocop:enable Custom/AsciiOnlySource
 
         expect([true, false]).to include(result)
       end

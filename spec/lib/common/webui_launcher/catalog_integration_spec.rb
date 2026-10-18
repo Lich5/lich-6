@@ -56,6 +56,24 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     expect(reloaded.entries).to be_empty
   end
 
+  it 'edits one launch configuration without changing credentials or favorite metadata' do
+    path = File.join(data_dir, 'entry.yaml')
+    original = YAML.safe_load_file(path)
+    original['master_password_validation_test'] = 'opaque-validation'
+    character = original['accounts']['DOUG']['characters'].first
+    character['is_favorite'] = true
+    character['favorite_order'] = 3
+    original['accounts']['DOUG']['characters'] << character.merge('custom_launch' => '/opt/other-client')
+    File.write(path, YAML.dump(original))
+    selected = catalog.entries.find { |entry| entry.custom_launch.nil? }
+    expect(catalog.update_character(selected.key, selected.to_h.merge(frontend: 'profanity'))).to be(true)
+    expected = Marshal.load(Marshal.dump(original))
+    expected['accounts']['DOUG']['characters'].first.merge!('frontend' => 'profanity', 'custom_launch' => nil, 'custom_launch_dir' => nil)
+    expect(YAML.safe_load_file(path)).to eq(expected)
+    expect(catalog.update_character('stale-key', selected.to_h)).to be(false)
+    expect(YAML.safe_load_file(path)).to eq(expected)
+  end
+
   it 'reports an indeterminate favorite state when persistence fails' do
     entry = catalog.entries.first
     allow(catalog).to receive(:write_yaml).and_return(false)
@@ -281,13 +299,13 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     end
 
     %i[plaintext standard enhanced].each do |mode|
-      it "migrates real legacy data through the catalog in #{mode} mode" do
+      it "migrates real legacy data through EntryStore and reads it through the catalog in #{mode} mode" do
         master = mode == :enhanced ? 'synthetic-migration-master' : nil
         manager = Lich::Common::GUI::MasterPasswordManager
         expect(manager).not_to receive(:retrieve_master_password)
         expect(manager).not_to receive(:store_master_password)
 
-        expect(catalog.migrate_legacy(mode, master_password: master)).to be(true)
+        expect(Lich::Common::Authentication::EntryStore.migrate_from_legacy(data_dir, encryption_mode: mode, master_password: master)).to be(true)
 
         saved = YAML.safe_load_file(yaml_path)
         expect(saved['encryption_mode']).to eq(mode.to_s)

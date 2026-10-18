@@ -325,7 +325,8 @@ test('horizontal status runs never wrap and middle ellipsis responds to measured
   Object.defineProperty(name, 'scrollWidth', { get: () => name.textContent.length * 8 });
   name.clientWidth = 48;
   f.frame();
-  assert.equal(name.textContent, 'abc…ij');
+  // Check the actual Unicode ellipsis, using ASCII source spelling.
+  assert.equal(name.textContent, 'abc\u2026ij');
   assert.equal(name.attributes['aria-label'], 'abcdefghij');
   name.clientWidth = 100; observers[0].callback();
   assert.equal(name.textContent, 'abcdefghij');
@@ -335,7 +336,7 @@ test('horizontal status runs never wrap and middle ellipsis responds to measured
   assert.equal(observers[1].disconnected, true);
 });
 
-test('middle ellipsis retains a long Pango label’s preferred width when its text shortens', () => {
+test('middle ellipsis retains a long Pango label\u2019s preferred width when its text shortens', () => {
   const f = fixture('name'), observers = [];
   f.window.getComputedStyle = () => ({ maxWidth: '82.1484px' });
   f.window.ResizeObserver = class {
@@ -359,10 +360,10 @@ test('middle ellipsis retains a long Pango label’s preferred width when its te
   assert.equal(group.style.maxWidth, '100%');
   assert.equal(name.style.width, '110px');
   assert.equal(name.style.maxWidth, 'calc(100% - 10px)');
-  assert.match(name.textContent, /…/);
+  assert.match(name.textContent, /\u2026/);
   name.clientWidth = 60; observers[0].callback();
   assert.equal(name.style.width, '110px');
-  assert.match(name.textContent, /…/);
+  assert.match(name.textContent, /\u2026/);
 });
 
 test('colored progress receives the source color, fraction and 24px height', () => {

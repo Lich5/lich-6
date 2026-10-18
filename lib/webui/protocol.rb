@@ -7,7 +7,7 @@ module Lich
   module WebUI
     # Strict, server-routed WebUI wire envelopes.
     module Protocol
-      MAX_MESSAGE_BYTES = 65_536
+      MAX_MESSAGE_BYTES = Contract::WIRE_LIMITS[:message_bytes]
       TYPES = %w[attach detach event].freeze
       FIELDS = {
         'attach' => %i[type page version resume],
@@ -34,12 +34,14 @@ module Lich
 
       module_function
 
-      # Serializes the greeting with server version, viewer ID, and page descriptors.
+      # Serializes server version, viewer ID, pages and negotiated input byte budgets.
+      # @param viewer_id [String] assigned viewer identity
+      # @param pages [Array<Hash>] visible page descriptors
       # @return [String] JSON wire message
       def hello(viewer_id:, pages:)
         JSON.generate(
           type: 'hello', contract_version: Contract::VERSION,
-          viewer: viewer_id, pages: pages
+          viewer: viewer_id, pages: pages, limits: Contract::WIRE_LIMITS
         )
       end
 
@@ -100,6 +102,7 @@ module Lich
         missing = REQUIRED.fetch(type) - message.keys
         raise Refusal.new(:malformed, "message is missing #{missing.first}") unless missing.empty?
 
+        validate_budgets!(message)
         validate_common!(message)
         validate_type!(message)
         deep_freeze_containers(message)
@@ -119,6 +122,20 @@ module Lich
         expected.bytes.zip(actual.bytes) { |left, right| result |= left ^ right }
         result.zero?
       end
+
+      # Bounds serialized event data separately from routing-envelope overhead.
+      # @param message [Hash] parsed client envelope
+      # @return [void]
+      # @raise [Refusal] if payload or aggregate submission exceeds its byte budget
+      def validate_budgets!(message)
+        { payload: :event_payload_bytes, submission: :submission_bytes }.each do |field, limit|
+          next unless message.key?(field)
+          next if JSON.generate(message[field]).bytesize <= Contract::WIRE_LIMITS.fetch(limit)
+
+          raise Refusal.new(:frame_size, "#{field} exceeds the serialized byte limit; reduce the input size")
+        end
+      end
+      private_class_method :validate_budgets!
 
       def validate_common!(message)
         unless message[:page].is_a?(String) && message[:page].match?(Contract::IDENTIFIER)

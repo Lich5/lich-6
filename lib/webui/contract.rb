@@ -9,6 +9,10 @@ module Lich
       VERSION = '2.49.0'
       MAJOR_VERSION = 2
 
+      # Serialized UTF-8 JSON budgets. A maximum-length field can require six
+      # bytes per character when escaped; the envelope has separate headroom.
+      WIRE_LIMITS = { message_bytes: 2_097_152, event_payload_bytes: 524_288, submission_bytes: 1_048_576 }.freeze
+
       TYPES = %i[
         page group stack columns grid tabs expander split overlay scroll divider
         text markdown log progress image
@@ -44,7 +48,7 @@ module Lich
         tree_depth: 64,
         geometry: (-65_536..65_536),
         timeout: (1..86_400),
-        event_payload_bytes: 65_536,
+        event_payload_bytes: WIRE_LIMITS[:event_payload_bytes],
       }.freeze
 
       module_function

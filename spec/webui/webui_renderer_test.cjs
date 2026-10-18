@@ -2692,3 +2692,56 @@ test('text insets stay inside log/editor controls and static documents retain th
   assert.equal(scroll.scrollTop, 900);
   assert.equal(document.querySelector('.webui-log').style.paddingLeft, '0px');
 });
+
+test('sliders use numeric changes, disabled admission and terminal submissions', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'slider-form' }] });
+  receive({ type: 'render', page: 'slider-form', generation: 1,
+    bindings: { volume: ['change'], locked: ['change'], save: ['activate'] }, submissions: { save: ['volume'] },
+    tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'slider', cid: 'volume', props: { label: 'Volume', min: 0, max: 10, step: 0.5, value: 2 } },
+      { type: 'slider', cid: 'locked', props: { label: 'Locked', min: 0, max: 10, step: 1, value: 3, disabled: true } },
+      { type: 'button', cid: 'save', props: { label: 'Save' } }
+    ] } });
+  const range = dom.window.document.querySelector('[data-cid="volume"] input');
+  assert.equal(range.type, 'range');
+  assert.equal(range.min, '0'); assert.equal(range.max, '10'); assert.equal(range.step, '0.5');
+  range.value = '7.5'; range.dispatchEvent(new dom.window.Event('input'));
+  range.dispatchEvent(new dom.window.Event('change'));
+  assert.deepEqual(sent.filter(m => m.cid === 'volume').map(m => m.payload), [{ value: 7.5 }]);
+  const locked = dom.window.document.querySelector('[data-cid="locked"] input');
+  assert.equal(locked.disabled, true);
+  locked.value = '4'; locked.dispatchEvent(new dom.window.Event('input'));
+  assert.equal(sent.some(m => m.cid === 'locked'), false);
+  dom.window.document.querySelector('[data-cid="save"]').click();
+  assert.deepEqual(sent.find(m => m.cid === 'save').submission, [7.5]);
+});
+
+test('maximum multiline values fit while oversized aggregate submissions retain drafts and retry', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'large-form' }] });
+  const tree = { type: 'page', cid: 'root', props: {}, children: [
+    ...[0, 1, 2].map(i => ({ type: 'textarea', cid: `notes${i}`, props: { value: '' } })),
+    { type: 'button', cid: 'save', props: { label: 'Save' } }
+  ] };
+  const frame = generation => ({ type: 'render', page: 'large-form', generation, tree,
+    bindings: { notes0: ['change'], save: ['activate'] }, submissions: { save: ['notes0', 'notes1', 'notes2'] } });
+  receive(frame(1));
+  const input = () => dom.window.document.querySelector('[data-cid="notes0"] textarea');
+  for (const character of ['a', '\u{1f512}', '\u0000', '\\', '"', '\n']) {
+    const value = character.repeat(65536);
+    input().value = value; input().dispatchEvent(new dom.window.Event('input'));
+    assert.equal(sent.at(-1).payload.value, value);
+    assert.ok(Buffer.byteLength(JSON.stringify(sent.at(-1))) < 2097152);
+  }
+  for (const control of dom.window.document.querySelectorAll('textarea')) control.value = '\u0000'.repeat(65536);
+  const count = sent.length;
+  dom.window.document.querySelector('[data-cid="save"]').click();
+  assert.equal(sent.length, count, 'oversized submission never reaches transport');
+  assert.match(dom.window.document.querySelector('#notifications').textContent, /edits are retained/);
+  receive(frame(2));
+  assert.equal(input().value, '\u0000'.repeat(65536), 'redraw preserves rejected drafts');
+  for (const control of dom.window.document.querySelectorAll('textarea')) control.value = 'smaller';
+  dom.window.document.querySelector('[data-cid="save"]').click();
+  assert.deepEqual(sent.at(-1).submission, ['smaller', 'smaller', 'smaller']);
+});
