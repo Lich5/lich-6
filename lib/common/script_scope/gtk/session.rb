@@ -50,7 +50,7 @@ module Lich
           # @api private
           def register_style_context(context)
             style_operation(context, :style_context) do
-              @style_contexts ||= {}.compare_by_identity
+              @style_contexts ||= Lich::WebUI::WeakIdentityMap.new
               refuse(context, :style_context) if @style_contexts.size >= Lich::WebUI::Contract::BOUNDS[:components]
               @style_contexts[context] = true
             end

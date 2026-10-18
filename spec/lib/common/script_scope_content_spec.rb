@@ -315,6 +315,155 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     expect(link.sensitive?).to be(false)
   end
 
+  it 'renders populated nonselecting rich lists with alpha, recall styling and independent controls in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    window = compatibility::Window.new('Merchantical rich list fixture')
+    root = compatibility::Box.new(:vertical)
+    lists = 2.times.map { compatibility::ListBox.new }
+    names = ['Locked sword', 'Unlocked gem']
+    crossing = compatibility::Label.new('Crossings 0/0')
+    entered = left = 0
+    root.add(crossing)
+    lists.each_with_index do |list, index|
+      list.selection_mode = :none
+      row = compatibility::ListBoxRow.new
+      row.activatable = row.selectable = false
+      row.opacity = index.zero? ? 1 : 0.35
+      content = compatibility::Box.new(:vertical)
+      detail = compatibility::Frame.new
+      detail.no_show_all = true
+      detail.visible = false
+      recall = compatibility::Label.new
+      recall.set_markup("<span foreground='#aaa' font_family='monospace' size='small'>Recall #{index}</span>")
+      detail.add(recall)
+      recall.show
+      action = compatibility::Button.new.add(compatibility::Label.new(names[index]))
+      if index.zero?
+        action.signal_connect('enter-notify-event') { entered += 1; crossing.text = "Crossings #{entered}/#{left}" }
+        action.signal_connect('leave-notify-event') { left += 1; crossing.text = "Crossings #{entered}/#{left}" }
+      end
+      action.opacity = 0.45
+      action.signal_connect('clicked') { detail.visible = !detail.visible? }
+      content.add(action)
+      content.add(compatibility::Entry.new) if index.zero?
+      cue = compatibility::Label.new
+      cue.set_markup("<span background='#3c9c3c'>Found</span>")
+      content.add(cue)
+      content.add(detail)
+      list.add(row.add(content))
+      root.add(list)
+    end
+    remove = compatibility::Button.new('Remove locked list')
+    remove.signal_connect('clicked') { root.remove(lists.first) }
+    root.add(remove)
+    spacer = compatibility::Button.new('Alignment spacer')
+    spacer.opacity = 0
+    spacer.sensitive = false
+    root.add(spacer)
+    window.add(root)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'merchantical-list')
+  end
+
+  it 'keeps Notebook help actions independent of four indexed pages through live replacement in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    notebook = compatibility::Notebook.new
+    %w[Stock Sale Queue Ledger].each { |name| notebook.append_page(compatibility::Label.new("#{name} content"), compatibility::Label.new(name)) }
+    status = compatibility::Label.new('Help idle')
+    start = compatibility::Button.new('Start action')
+    start.signal_connect('clicked') { status.text = 'Start activated' }
+    help_label = compatibility::Label.new
+    help_label.set_markup("<b><span foreground='#d4af37'>Shop help</span></b>")
+    help = compatibility::Button.new.add(help_label)
+    help.tooltip_text = 'Help on every page'
+    count = 0
+    help.signal_connect('clicked') { count += 1; status.text = "Help #{count}" }
+    notebook.set_action_widget(start, :start)
+    notebook.set_action_widget(help, :end)
+    root = compatibility::Box.new(:vertical)
+    root.add(notebook)
+    root.add(status)
+    controls = {
+      'Replace help'            => proc { notebook.set_action_widget(compatibility::Button.new('Replacement'), :end) },
+      'Restore help'            => proc { notebook.set_action_widget(help, :end) },
+      'Toggle help sensitivity' => proc { help.sensitive = !help.sensitive? },
+      'Toggle help visibility'  => proc { help.visible = !help.visible? },
+      'Toggle selectors'        => proc { notebook.show_tabs = notebook.send(:component_props)[:show_tabs] == false },
+      'Remove first page'       => proc { notebook.remove_page(0) }
+    }
+    controls.each do |label, callback|
+      button = compatibility::Button.new(label)
+      button.signal_connect('clicked', &callback)
+      root.add(button)
+    end
+    window = compatibility::Window.new('Merchantical Notebook actions').add(root)
+    WebUIBrowser.check(service: service, page: show(window), scenario: 'merchantical-notebook-actions')
+    expect(notebook.n_pages).to eq(3)
+    expect(count).to eq(5)
+  end
+
+  it 'opens and closes independent help documents while preserving parent input and static scroll in Chrome', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    main = compatibility::Window.new('Merchantical help fixture')
+    root = compatibility::Box.new(:vertical)
+    entry = compatibility::Entry.new
+    entry.placeholder_text = 'Parent draft'
+    status = compatibility::Label.new('Help idle')
+    repaint = compatibility::Button.new('Refresh parent')
+    refreshes = 0
+    repaint.signal_connect('clicked') { refreshes += 1; status.text = "Parent refresh #{refreshes}" }
+    open = compatibility::Button.new('Open help')
+    children = []
+    closed = 0
+    open.signal_connect('clicked') do
+      help = compatibility::Window.new('Fixture help')
+      help.set_default_size(560, 520)
+      help.transient_for = main
+      help.set_window_position(:center_on_parent)
+      help.keep_above = true
+      outer = compatibility::Box.new(:vertical)
+      scroll = compatibility::ScrolledWindow.new
+      scroll.set_size_request(400, 180)
+      inner = compatibility::Box.new(:vertical)
+      inner.margin = 16
+      title = compatibility::Label.new
+      title.set_markup('<b>Help heading</b>')
+      text = compatibility::TextView.new
+      text.editable = false
+      text.cursor_visible = false
+      text.wrap_mode = :word
+      text.left_margin = 4
+      text.buffer.text = 80.times.map { |index| "Help line #{index}" }.join("\n")
+      inner.add(title).add(text)
+      scroll.add(inner)
+      outer.add(scroll)
+      refresh = compatibility::Button.new('Refresh help')
+      refresh.signal_connect('clicked') { title.text = 'Help refreshed' }
+      follow = compatibility::Button.new('Follow end')
+      follow.signal_connect('clicked') { text.scroll_to_iter(text.buffer.end_iter, 0.0, true, 0, 0) }
+      close = compatibility::Button.new('Close help')
+      close.signal_connect('clicked') { help.destroy }
+      help.signal_connect('destroy') { closed += 1 }
+      [refresh, follow, close].each { |widget| outer.add(widget) }
+      help.add(outer).show_all
+      children << help
+      # Publication runs after this callback; a timer observes completion without blocking its owner.
+      scope.const_get(:GLib, false)::Timeout.add(10) do
+        page = service.registry.pages_for(owner).find { |candidate| candidate.title == 'Fixture help' }
+        if page&.last_render
+          status.text = "Help page: #{service.registry.address_for(page)}"
+          false
+        else
+          true
+        end
+      end
+    end
+    [entry, open, repaint, status].each { |widget| root.add(widget) }
+    WebUIBrowser.check(service: service, page: show(main.add(root)), scenario: 'merchantical-help-window')
+    expect(children.size).to eq(2)
+    expect(closed).to eq(2)
+    expect(children.all?(&:destroyed?)).to be(true)
+  end
+
   it 'updates subclass Frame captions and shadow transitions without replacing child handles' do
     frame = Class.new(compatibility::Frame).new('Initial')
     entry = compatibility::Entry.new

@@ -151,7 +151,7 @@ RSpec.describe 'Original tpick setup acceptance' do
   it 'retains the explicit optional image-window boundary' do
     tpick = original
     tpick.instance_variable_set(:@show_images, true)
-    expect { tpick.create_information_window }.to raise_error(gtk::UnsupportedOperation, /operation=transient_for= source=tpick.lic:2751/)
+    expect { tpick.create_information_window }.to raise_error(gtk::UnsupportedOperation, /operation=Justification source=tpick.lic:2771/)
   end
 
   it 'opens complete information for live browser acceptance', browser: true do

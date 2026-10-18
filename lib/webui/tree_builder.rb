@@ -342,7 +342,13 @@ module Lich
                 when :named_from_property then draft.props.fetch(rule.fetch(:property)).map(&:to_s)
                 else []
                 end
-        actual = draft.children.map { |child| child.slot&.to_s }
+        children = draft.children
+        if draft.type == :tabs
+          actions, children = children.partition { |child| child.placement.key?(:tab_action) }
+          sides = actions.map { |child| child.placement[:tab_action].to_s }
+          child_violation!(draft, 'tab actions must be unique and have no page slot') if sides.uniq.length != sides.length || actions.any?(&:slot)
+        end
+        actual = children.map { |child| child.slot&.to_s }
         child_violation!(draft, 'named children require a slot') if actual.any?(&:nil?)
         child_violation!(draft, 'child slot is unknown') unless (actual - slots).empty?
         child_violation!(draft, 'child slots must be unique') unless actual.uniq.length == actual.length

@@ -413,6 +413,33 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     end
   end
 
+  it 'preserves independent viewer and committed page selections while replacing tab actions' do
+    notebook = gtk::Notebook.new
+    %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name), gtk::Label.new(name)) }
+    help = gtk::Button.new('Help')
+    observed = Queue.new
+    help.signal_connect('clicked') { observed << notebook.send(:read, :selected) }
+    notebook.set_action_widget(help, :end)
+    _window, page = show(notebook)
+    viewer, other = connect(page, 'actions-one'), connect(page, 'actions-two')
+    headers = nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['headers']
+    send_event(page, viewer, :tabs, 'select', { index: 2, tab: headers[2]['key'] })
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected'] == 2 }
+    send_event(page, viewer, :button, 'activate', {})
+    expect(observed.pop(timeout: 2)).to eq(2)
+    notebook.set_action_widget(gtk::Button.new('Replacement'), :end)
+    wait_for { nodes(viewer).any? { |node| node['props']['label'] == 'Replacement' } }
+    expect(notebook.send(:read, :selected)).to eq(2)
+    expect(notebook.send(:component_props)[:selected]).to eq(0)
+    expect(nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(2)
+    expect(nodes(other).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(0)
+    notebook.remove_page(0)
+    wait_for { nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['names'].length == 2 }
+    expect(notebook.send(:read, :selected)).to eq(1)
+    expect(nodes(viewer).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(1)
+    expect(nodes(other).find { |node| node['type'] == 'tabs' }['props']['selected']).to eq(0)
+  end
+
   it 'PR63 preserves both notebook selection stores when a post-Save structural update refuses' do
     notebook = gtk::Notebook.new
     %w[A B C].each { |name| notebook.append_page(gtk::Label.new(name), gtk::Label.new(name)) }

@@ -338,7 +338,6 @@ module Lich
             unless @handle
               retained = @buffer.text
               @log = !value
-              @props[:follow] = @log
               apply_buffer_text(retained)
             end
             @editable = value
@@ -368,6 +367,22 @@ module Lich
             write(:wrap, value)
           end
           alias wrap_mode= set_wrap_mode
+
+          # Text insets belong inside the view, independently of outer widget margins.
+          # Read-only documents retain their scroll position until explicitly asked to follow.
+          %i[left right].each do |side|
+            define_method("set_#{side}_margin") do |value|
+              session.style_operation(self, :text_margin) do
+                valid = !destroyed? && value.is_a?(Integer) && value.between?(0, 64)
+                session.refuse(self, :text_margin) unless valid
+                write(:"padding_#{side}", value)
+              end
+              self
+            end
+            alias_method :"#{side}_margin=", :"set_#{side}_margin"
+            define_method(:"#{side}_margin") { read(:"padding_#{side}") || 0 }
+            alias_method :"get_#{side}_margin", :"#{side}_margin"
+          end
 
           # False uses the browser's normal Tab/Shift-Tab focus navigation.
           # Inserting literal tabs would require a distinct editor interaction.

@@ -3,6 +3,7 @@
 require 'cgi'
 require 'rexml/document'
 require 'uri'
+require 'weakref'
 require_relative 'label_markup'
 
 module Lich
@@ -118,6 +119,22 @@ module Lich
               @style_context ||= StyleContext.new(self)
             end
           end
+
+          # Changes subtree alpha without hiding, disabling or reallocating it.
+          # @param value [Numeric] finite opacity in 0..1
+          # @return [Widget] self
+          def set_opacity(value)
+            session.style_operation(self, :opacity=) do
+              valid = (value.is_a?(Integer) || value.is_a?(Float) && value.finite?) && value.between?(0, 1)
+              session.refuse(self, :opacity=) unless valid && !destroyed? && %i[stack button text].include?(component_type)
+              write(:opacity, value)
+            end
+            self
+          end
+          alias opacity= set_opacity
+
+          # @return [Numeric] retained alpha, defaulting to fully opaque
+          def opacity = @props.fetch(:opacity, 1.0)
 
           # Appends a same-session child through the shared single-parent/cycle checks.
           # @return [Widget] self
@@ -362,7 +379,7 @@ module Lich
                 props.each { |key, value| session.port.set(handle, key, value) unless previous[key] == value }
                 widget.instance_variable_set(:@published_layout, props)
               end
-              pending.concat(widget.children)
+              pending.concat(widget.send(:owned_children))
             end
           end
 
@@ -506,10 +523,18 @@ module Lich
 
             # Build descendants before the page starts scheduling delivery. A
             # long script constructor must not publish a half-built window.
-            child_handles = @children.map(&:materialize)
+            descendants = owned_children
+            child_handles = descendants.map(&:materialize)
             @handle = session.port.create(component_type, component_props.merge(placement: @placement || {}))
             @published_layout = layout_props
-            child_handles.each { |child| session.port.attach(@handle, child) }
+            descendants.zip(child_handles).each do |child, handle|
+              placement = child_placement(child)
+              if placement
+                session.port.attach(@handle, handle, placement: placement)
+              else
+                session.port.attach(@handle, handle)
+              end
+            end
             optional = %i[key_press key_release blur] + (is_a?(RadioButton) ? [:activate] : [])
             (builtin_events + signal_map.values + @signals.keys).uniq.reject { |event| %i[show map realize].include?(event) || (optional.include?(event) && !@signals.key?(event)) }.each { |event| bind_event(event) }
             @handle
@@ -570,7 +595,7 @@ module Lich
             return self if no_show_all?
 
             show
-            @children.each(&:show_all)
+            owned_children.each(&:show_all)
             self
           end
 
@@ -599,7 +624,7 @@ module Lich
 
             @destroyed = true
             @style_context&.send(:close)
-            @children.dup.each(&:mark_destroyed)
+            owned_children.dup.each(&:mark_destroyed)
             begin
               @emitting_destroy = true
               @destroy_handlers&.dup&.each { |handler| session.cleanup(self) { handler.call(self) } }
@@ -619,12 +644,16 @@ module Lich
             if property && @handle && !@destroyed
               @committed[property] = session.with_widget(self) { session.port.get(@handle, property) }
             end
-            @children.each(&:commit_inputs)
+            owned_children.each(&:commit_inputs)
           end
 
           protected
 
           attr_writer :parent
+
+          # Auxiliary owned widgets participate in lifetime/render traversal without becoming public children.
+          def owned_children = @children
+          def child_placement(_child) = nil
 
           def forget_child(child)
             @children.delete(child)
@@ -793,6 +822,41 @@ module Lich
           # @return [String]
           def title = read(:title)
 
+          # Retains a non-owning same-script parent hint; native stacking is host-controlled.
+          # This is not containment, modality or destroy-with-parent ownership.
+          # @param parent [Window, nil] live logical parent; nil clears the association
+          # @return [Window] self
+          def set_transient_for(parent)
+            session.style_operation(self, :transient_for=) do
+              session.refuse(self, :transient_for=) if destroyed?
+              if parent
+                valid = parent.is_a?(Window) && parent.session.equal?(session) && !parent.destroyed?
+                ancestor = parent if valid
+                while ancestor
+                  valid &&= !ancestor.equal?(self)
+                  break unless valid
+                  ancestor = ancestor.transient_for
+                end
+                session.refuse(self, :transient_for=) unless valid
+              end
+              @transient_parent = parent && WeakRef.new(parent)
+              session.degrade(:window_transient_parent, 'logical parent retained; native parent-child stacking is host-controlled') if parent
+            end
+            self
+          end
+          alias transient_for= set_transient_for
+
+          # @return [Window, nil] live logical parent, never an ownership edge
+          def transient_for
+            session.style_operation(self, :transient_for) do
+              target = @transient_parent&.__getobj__
+              target if !destroyed? && target && !target.destroyed?
+            rescue WeakRef::RefError
+              @transient_parent = nil
+            end
+          end
+          alias get_transient_for transient_for
+
           # A HeaderBar is a separate first child; the normal content stays intact.
           # Live replacement preserves both the page handle and detached titlebar.
           def set_titlebar(bar)
@@ -873,14 +937,28 @@ module Lich
             self
           end
 
-          # Accepts the legacy center hint without promising host placement control.
+          # Retains bounded placement intent without overriding saved or host geometry.
+          # Parent centering needs a live logical parent; exact native placement is not promised.
+          # @param value [Symbol] :center or :center_on_parent
           # @return [Window] self
-          # @raise [UnsupportedOperation] for other position tokens
           def set_window_position(value)
-            session.refuse(self, :set_window_position) unless value == :center
-            session.degrade(:window_position, 'initial placement is controlled by the browser host')
+            session.style_operation(self, :set_window_position) do
+              valid = %i[center center_on_parent].include?(value) && !destroyed?
+              valid &&= !transient_for.nil? if value == :center_on_parent
+              session.refuse(self, :set_window_position) unless valid
+              @window_position = value
+              if value == :center_on_parent
+                session.degrade(:window_parent_position, 'parent-relative centering is host-controlled; saved geometry and host placement take precedence')
+              else
+                session.degrade(:window_position, 'initial placement is controlled by the browser host')
+              end
+            end
             self
           end
+
+          # @return [Symbol, nil] requested hint, not observed native coordinates
+          def window_position = @window_position
+          alias get_window_position window_position
 
           alias set_position set_window_position
 
@@ -1465,6 +1543,7 @@ module Lich
             @props[:names] = []
             @props[:selected] = 0
             @tabs = []
+            @actions = {}
             @props[:headers] = []
           end
 
@@ -1511,6 +1590,44 @@ module Lich
             write(:show_tabs, value)
           end
           alias set_show_tabs show_tabs=
+
+          # Owns an auxiliary tab-strip widget independently of indexed pages.
+          # Replacement and nil clearing detach the old widget for reuse; publication refusal is atomic.
+          # @param widget [Widget, nil] live unparented widget from this session
+          # @param position [Symbol] :start or :end
+          # @return [Notebook] self
+          def set_action_widget(widget, position)
+            session.style_operation(self, :set_action_widget) do
+              session.refuse(self, :set_action_widget) if destroyed? || !%i[start end].include?(position)
+              previous = @actions[position]
+              return self if widget.equal?(previous)
+              if widget
+                valid = widget.is_a?(Widget) && !widget.is_a?(Window) && widget.session.equal?(session) && !widget.destroyed? && !widget.parent
+                ancestor = self
+                while ancestor
+                  valid &&= !ancestor.equal?(widget)
+                  ancestor = ancestor.parent
+                end
+                session.refuse(self, :set_action_widget) unless valid
+              end
+              candidate = widget ? @actions.merge(position => widget) : @actions.except(position)
+              session.port.layout_tab_actions(@handle, actions: candidate.transform_values(&:materialize)) if @handle
+              previous.send(:parent=, nil) if previous
+              widget.send(:parent=, self) if widget
+              @actions = candidate
+              session.refresh_label_styles
+              refresh_layout!
+            end
+            self
+          end
+
+          # @return [Widget, nil] current action; never an indexed page
+          def get_action_widget(position)
+            session.style_operation(self, :get_action_widget) do
+              session.refuse(self, :get_action_widget) unless %i[start end].include?(position)
+              @actions[position]
+            end
+          end
 
           # Pages require an explicit paired header; generic container mutation
           # cannot bypass the atomic notebook collection path.
@@ -1597,6 +1714,8 @@ module Lich
           end
 
           def remove(child)
+            side = @actions.key(child)
+            return set_action_widget(nil, side) if side
             index = @children.index(child)
             session.refuse(self, :remove) unless index
             remove_page(index)
@@ -1612,9 +1731,17 @@ module Lich
               release_header(entry)
               entry[:widget].mark_destroyed
             end
+            @actions.clear
           end
 
           protected
+
+          def owned_children = @children + @actions.values
+
+          def child_placement(child)
+            side = @actions.key(child)
+            { tab_action: side.to_s } if side
+          end
 
           def component_type = :tabs
           def input_property = :selected
@@ -1653,6 +1780,8 @@ module Lich
           end
 
           def forget_child(child)
+            side = @actions.key(child)
+            return set_action_widget(nil, side) if side
             entry = @tabs.find { |item| item[:page].equal?(child) || item[:widget].equal?(child) }
             entry ? remove_page(@tabs.index(entry)) : super
           end
@@ -1848,6 +1977,14 @@ module Lich
             value = value.dup.force_encoding(Encoding::UTF_8)
             session.refuse(self, :set_markup) unless value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:display_text]
             return set_link_markup(value) if value.include?('<a ') || @link_markup
+            # Merchantical's located-item cue colors one entire literal label.
+            # Reuse the shared background property, not raw HTML or fragment CSS.
+            if (background = value.match(/\A<span background=(['"])([^'"<>]*)\1>([^<>]*)<\/span>\z/m))
+              color = Color.parse_markup(background[2])
+              session.refuse(self, :set_markup) unless color
+              replace_markup_font(background: color)
+              return write(:content, CGI.unescapeHTML(background[3]))
+            end
             if (italic = value.match(/\A<i>([^<>]*)<\/i>\z/m))
               text = italic[1].dup.force_encoding(Encoding::UTF_8)
               session.refuse(self, :set_markup) unless text.valid_encoding?

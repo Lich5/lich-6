@@ -2522,3 +2522,149 @@ test('outside releases and blur invalidate local release gestures and flush hold
   fire('pointerdown', inner); fire('pointerup', inner);
   assert.deepEqual(sent.filter(message => message.event === 'pointer_release').map(message => message.cid), ['inner']);
 });
+
+test('control opacity preserves rich-row layout flags, child actions and explicit reset', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'list' }] });
+  const render = (generation, opacity) => receive({ type: 'render', page: 'list', generation,
+    bindings: { action: ['activate'] }, tree: { type: 'page', cid: 'root', props: {}, children: [
+      { type: 'stack', cid: 'row', props: { opacity }, children: [
+        { type: 'button', cid: 'action', props: { label: 'Action', opacity: 0.45 } },
+        { type: 'text', cid: 'spacer', props: { content: 'Spacer', opacity: 0 } }
+      ] }
+    ] } });
+  render(1, 0.35);
+  const row = dom.window.document.querySelector('[data-cid="row"]');
+  assert.equal(row.style.opacity, '0.35');
+  assert.equal(row.hidden, false);
+  assert.equal(row.inert, undefined);
+  const action = dom.window.document.querySelector('button');
+  assert.equal(action.style.opacity, '0.45'); action.click();
+  assert.equal(sent.filter(message => message.event === 'activate').length, 1);
+  assert.equal(dom.window.document.querySelector('[data-cid="spacer"]').style.opacity, '0');
+  render(2, 1);
+  assert.equal(dom.window.document.querySelector('[data-cid="row"]').style.opacity, '1');
+});
+
+test('button crossing survives redraw, suppresses disabled/hidden tracking and retires removed bindings', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const { document, MouseEvent } = dom.window;
+  const frames = [];
+  dom.window.requestAnimationFrame = callback => frames.push(callback);
+  let hit = null;
+  document.elementFromPoint = () => hit;
+  receive({ type: 'hello', pages: [{ address: 'crossing' }] });
+  const render = (generation, disabled = false, present = true) => receive({ type: 'render', page: 'crossing', generation,
+    bindings: present ? { button: ['pointer_enter', 'pointer_leave', 'activate'] } : {},
+    tree: { type: 'page', cid: 'root', props: {}, children: present ? [
+      { type: 'button', cid: 'button', props: { label: 'Action', disabled } }
+    ] : [] } });
+  const button = () => document.querySelector('[data-cid="button"]');
+  const enter = element => element.dispatchEvent(new MouseEvent('pointerenter', { clientX: 10, clientY: 10 }));
+  const events = () => sent.filter(message => message.type === 'event').map(message => message.event);
+  render(1, true);
+  enter(button());
+  render(2);
+  hit = button();
+  enter(button());
+  assert.deepEqual(events(), ['pointer_enter'], 'disabled enter must not poison re-enabled hover');
+  render(3);
+  hit = button();
+  frames.splice(0).forEach(callback => callback());
+  enter(button());
+  assert.deepEqual(events(), ['pointer_enter'], 'redraw under the pointer must not replay crossing');
+  hit = null;
+  button().dispatchEvent(new MouseEvent('pointerleave', { clientX: 200, clientY: 200 }));
+  assert.deepEqual(events(), ['pointer_enter', 'pointer_leave']);
+  const root = document.querySelector('[data-cid="root"]');
+  root.hidden = true;
+  enter(button());
+  root.hidden = false;
+  enter(button());
+  assert.deepEqual(events(), ['pointer_enter', 'pointer_leave', 'pointer_enter'], 'hidden enter must not poison tracking');
+  const retired = button();
+  render(4, false, false);
+  enter(retired);
+  retired.dispatchEvent(new MouseEvent('pointerleave'));
+  frames.splice(0).forEach(callback => callback());
+  assert.deepEqual(events(), ['pointer_enter', 'pointer_leave', 'pointer_enter']);
+  receive({ type: 'page_closed', page: 'crossing' });
+  enter(retired);
+  assert.equal(events().length, 3, 'retired listeners must not activate or send crossing');
+});
+
+test('tab actions are independent typed children in every tab layout and never indexed panels', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const { document } = dom.window;
+  receive({ type: 'hello', pages: [{ address: 'actions' }] });
+  const children = [
+    { type: 'button', cid: 'start', placement: { tab_action: 'start' }, props: { label: 'Before' } },
+    { type: 'text', cid: 'one', slot: 'end', props: { content: 'Page one' } },
+    { type: 'text', cid: 'two', slot: 'Other', props: { content: 'Page two' } },
+    { type: 'button', cid: 'help', placement: { tab_action: 'end' }, props: { label: 'Help' } }
+  ];
+  const render = (generation, props = {}, cid = 'tabs') => receive({ type: 'render', page: 'actions', generation,
+    bindings: { help: ['activate'], [cid]: ['select'] }, tree: { type: 'page', cid: 'root', props: { density: 'compact' }, children: [
+      { type: 'tabs', cid, props: { names: ['end', 'Other'], selected: 1, ...props }, children }
+    ] } });
+  for (const [index, props, cid] of [[1, {}, 'tabs'], [2, { size_to_all: true }, 'tabs'], [3, {}, 'saved-account-tabs']]) {
+    render(index, props, cid);
+    const tabs = document.querySelector('[data-component-type="tabs"]');
+    const panels = tabs.querySelectorAll('.tab-panel');
+    assert.equal(panels.length, 2);
+    assert.equal(panels[0].hidden, true);
+    assert.equal(panels[1].hidden, false);
+    assert.equal(tabs.querySelectorAll('[role="tab"]').length, 2);
+    assert.equal(tabs.querySelector('[role="tablist"]').contains(document.querySelector('[data-cid="help"]')), false);
+    assert.equal(tabs.querySelector('.tab-action-start').textContent, 'Before');
+    document.querySelector('[data-cid="help"]').click();
+    const event = sent.filter(message => message.type === 'event').at(-1);
+    assert.equal(event.event, 'activate');
+    assert.equal(event.cid, 'help');
+  }
+  render(4, { show_tabs: false, size_to_all: true });
+  assert.equal(document.querySelector('.tab-header').hidden, true);
+  assert.equal(document.querySelectorAll('.tab-panel')[1].hidden, false);
+  render(5, { disabled: true });
+  assert.equal(document.querySelector('[data-component-type="tabs"]').inert, true);
+  receive({ type: 'page_closed', page: 'actions' });
+  assert.equal(document.querySelector('[data-cid="help"]'), null);
+});
+
+test('text insets stay inside log/editor controls and static documents retain their scroll until follow is requested', t => {
+  const { dom, receive } = fixture(); t.after(() => dom.window.close());
+  const { document, Event } = dom.window;
+  const frames = [];
+  dom.window.requestAnimationFrame = callback => frames.push(callback);
+  const drain = () => { for (let frame = 0; frame < 3; frame++) frames.splice(0).forEach(callback => callback()); };
+  receive({ type: 'hello', pages: [{ address: 'help' }] });
+  const render = (generation, follow = false, inset = 4) => receive({ type: 'render', page: 'help', generation, tree: {
+    type: 'page', cid: 'root', props: {}, children: [
+      { type: 'scroll', cid: 'scroll', props: {}, children: [
+        { type: 'log', cid: 'document', props: { lines: ['Static help'], max_lines: 1000, follow,
+          margin: { left: 12 }, padding_left: inset, padding_right: 7 } }
+      ] },
+      { type: 'textarea', cid: 'editor', props: { value: 'Text', padding_left: inset, padding_right: 7 } }
+    ]
+  } });
+  render(1); drain();
+  let scroll = document.querySelector('[data-cid="scroll"]');
+  assert.equal(scroll.scrollTop, 0);
+  const log = document.querySelector('.webui-log');
+  assert.equal(log.style.paddingLeft, '4px');
+  assert.equal(log.style.marginLeft, '12px');
+  const editor = document.querySelector('textarea');
+  assert.equal(editor.style.paddingLeft, '4px');
+  assert.equal(editor.style.paddingRight, '7px');
+  assert.equal(editor.parentElement.style.paddingLeft, '');
+  scroll.scrollTop = 120; scroll.dispatchEvent(new Event('scroll'));
+  render(2); drain();
+  scroll = document.querySelector('[data-cid="scroll"]');
+  assert.equal(scroll.scrollTop, 120);
+  render(3, true, 0);
+  scroll = document.querySelector('[data-cid="scroll"]');
+  Object.defineProperty(scroll, 'scrollHeight', { value: 900 });
+  drain();
+  assert.equal(scroll.scrollTop, 900);
+  assert.equal(document.querySelector('.webui-log').style.paddingLeft, '0px');
+});
