@@ -10,11 +10,20 @@ RSpec.describe 'adapter handle ownership' do
   let(:viewer) { Struct.new(:viewer_id).new('one') }
   let(:adapter) { Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
 
-  before { allow(service.runtime).to receive(:schedule_render) }
+  before do
+    adapter # Initialize memoized dependencies before allocation workers use them.
+    allow(service.runtime).to receive(:schedule_render)
+  end
   after { service.stop }
 
   def collect
     3.times { GC.start(full_mark: true, immediate_sweep: true) }
+  end
+
+  # Retire the construction stack before GC; return weak observations only.
+  # Thread#value joins the worker and propagates construction failures.
+  def off_construction_stack(&work)
+    Thread.new(&work).value
   end
 
   def orphan(parent, publish: false)
@@ -76,7 +85,7 @@ RSpec.describe 'adapter handle ownership' do
 
   it 'collects abandoned detached graphs including callbacks and pending drafts' do
     parent = adapter.create(:stack, {})
-    references = 80.times.map { orphan(parent) }
+    references = off_construction_stack { 80.times.map { orphan(parent) } }
     collect
     expect(references.none?(&:weakref_alive?)).to be(true)
     adapter.send(:prune_bindings!)
@@ -86,7 +95,7 @@ RSpec.describe 'adapter handle ownership' do
 
   it 'collects published rebuild generations after replacement snapshots release callbacks' do
     root = adapter.create(:page, title: 'Rebuild')
-    references = 40.times.map { orphan(root, publish: true) }
+    references = off_construction_stack { 40.times.map { orphan(root, publish: true) } }
     collect
     expect(references.none?(&:weakref_alive?)).to be(true)
     adapter.send(:prune_bindings!)
@@ -98,19 +107,38 @@ RSpec.describe 'adapter handle ownership' do
   it 'bounds dead string lookup metadata through normal binding churn' do
     parent = adapter.create(:stack, {})
     3.times do
-      64.times { orphan(parent) }
+      references = off_construction_stack { 64.times.map { orphan(parent) } }
       collect
+      expect(references.none?(&:weakref_alive?)).to be(true)
     end
     # This normal binding reaches the next maintenance boundary, without
     # invoking the private sweep or forcing GC in production code.
-    64.times { orphan(parent) }
+    off_construction_stack { 64.times.map { orphan(parent) } }
     expect(adapter.instance_variable_get(:@bindings).size).to be <= 64
+  end
+
+  it 'prunes dead lookup entries at the binding boundary while preserving the live binding' do
+    button = adapter.create(:button, label: 'Live')
+    calls = []
+    callback = proc { calls << :activated }
+    adapter.bind(button, :activate, callback)
+    bindings = adapter.instance_variable_get(:@bindings)
+    bindings['retired-binding'] = double('collected binding reference', weakref_alive?: false)
+
+    62.times { adapter.bind(button, :activate, callback) }
+    expect(bindings).to have_key('retired-binding')
+    token = adapter.bind(button, :activate, callback)
+    expect(bindings.keys).to eq([token])
+    context = Lich::WebUI::Runtime::EventContext.new(nil, nil, nil, :activate, {}, nil)
+    adapter.send(:binding_record, token.dup).last.call(context)
+    expect(calls).to eq([:activated])
+    expect(adapter.unbind(token.dup)).to be_nil
   end
 
   it 'retains only live explicit-destruction diagnostics and collects old tombstones' do
     handle = adapter.create(:text, content: 'Retained tombstone')
     adapter.destroy(handle)
-    references = 20.times.map { tombstone }
+    references = off_construction_stack { 20.times.map { tombstone } }
     collect
     expect(references.none?(&:weakref_alive?)).to be(true)
     expect { adapter.destroy(handle) }.to raise_error(Lich::WebUI::Error, /already destroyed/)
@@ -140,7 +168,7 @@ RSpec.describe 'adapter handle ownership' do
 
   it 'does not retain abandoned detached targets through focus bookkeeping' do
     root = adapter.create(:page, title: 'Focus retirement')
-    reference = abandoned_focus(root)
+    reference = off_construction_stack { abandoned_focus(root) }
     collect
     expect(reference.weakref_alive?).not_to be(true)
     adapter.send(:flush!)
