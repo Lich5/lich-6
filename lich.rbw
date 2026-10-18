@@ -75,6 +75,8 @@ Lich::Common::FrontendSettings.load!(data_dir: DATA_DIR)
 require File.join(LIB_DIR, 'common', 'frontend_launcher.rb')
 require File.join(LIB_DIR, 'internal_api', 'active_sessions.rb')
 require File.join(LIB_DIR, 'api', 'active_sessions.rb')
+# Native authoring is available before script plugins; loading starts no host.
+require File.join(LIB_DIR, 'api', 'webui.rb')
 require File.join(LIB_DIR, 'update.rb')
 
 # TODO: Need to split out initiatilzation functions to move require to top of file
