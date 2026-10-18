@@ -497,6 +497,11 @@ module Lich
         end
       end
 
+      # Builds the character editor, retaining a removed frontend for explicit repair.
+      # @param ui [WebUI::TreeBuilder] builder receiving the form widgets
+      # @param state [Hash] account, entry and available-frontend snapshot
+      # @return [void]
+      # @api private
       def render_character_form(ui, state)
         launcher = self
         options = state[:accounts].map { |account| { value: account, label: account } }
@@ -587,6 +592,12 @@ module Lich
         end
       end
 
+      # Builds the active launcher dialog and binds its response handler.
+      # Unlock input belongs to the dialog and is submitted on its response.
+      # @param ui [WebUI::TreeBuilder] builder receiving the dialog widgets
+      # @param modal [Hash] dialog kind and optional error or confirmation body
+      # @return [void]
+      # @api private
       def render_modal(ui, modal)
         launcher = self
         case modal[:kind]
@@ -1356,6 +1367,11 @@ module Lich
         @catalog_error = error.message
       end
 
+      # Refreshes an open page, preserving its prior screen on WebUI render errors.
+      # Reports bounded structural diagnostics and independent recovery feedback
+      # without logging submitted values or attempting a recursive render.
+      # @return [void]
+      # @api private
       def refresh
         @service.refresh(@page) if @page && lifecycle != :closed
       rescue Lich::WebUI::Error => error

@@ -27,7 +27,7 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
     it "refuses #{feature} before executing a direct subload" do
       Dir.mktmpdir('gtk-direct-subload') do |root|
         stub_const('GTK_SUBLOAD_EXECUTED', [])
-        allow($LOAD_PATH).to receive(:dup).and_return([root, *$LOAD_PATH])
+        $LOAD_PATH.unshift(root)
         target = File.join(root, "#{feature}.rb")
         FileUtils.mkdir_p(File.dirname(target))
         File.write(target, 'GTK_SUBLOAD_EXECUTED << true')
@@ -35,6 +35,8 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
         expect { Kernel.require(target) }.to raise_error(scope::Gtk::UnsupportedOperation, /native GTK loading is disabled/)
         expect(GTK_SUBLOAD_EXECUTED).to be_empty
         expect($LOADED_FEATURES).not_to include(target)
+      ensure
+        $LOAD_PATH.delete(root)
       end
     end
   end
