@@ -152,6 +152,7 @@ module Lich
         end
 
         # Rejects stale, hidden, child-owned or unrelated application handles.
+        # Releases the UTF-16 class-name buffer on success, rejection or exception.
         # @param hwnd [Fiddle::Pointer, Integer] candidate native window handle
         # @param pid [Integer] retained browser process identity
         # @param visible [Boolean] require visibility during discovery only
@@ -165,18 +166,20 @@ module Lich
           @win32.GetWindowThreadProcessId(hwnd, owner)
           return false unless owner.unpack1('L') == pid
 
-          buffer = Fiddle::Pointer.malloc(512)
-          length = @win32.GetClassNameW(hwnd, buffer, 255)
-          length.positive? && buffer[0, length * 2].force_encoding('UTF-16LE').encode('UTF-8') == 'Chrome_WidgetWin_1'
+          Fiddle::Pointer.malloc(512, Fiddle::RUBY_FREE) do |buffer|
+            length = @win32.GetClassNameW(hwnd, buffer, 255)
+            length.positive? && buffer[0, length * 2].force_encoding('UTF-16LE').encode('UTF-8') == 'Chrome_WidgetWin_1'
+          end
         end
 
         # Applies changed topmost, alpha and visibility without taking focus.
-        # The controller mutex must be held; PID ownership is rechecked before writing.
+        # The controller mutex must be held. Unchanged requests need no native
+        # work; changed requests recheck PID ownership before any native write.
         # @api private
         # @return [void]
         def apply
-          return unless owned?(@hwnd, @pid, visible: false)
           return if @applied == @desired
+          return unless owned?(@hwnd, @pid, visible: false)
 
           # HWND_TOPMOST is a pointer-sized -1, not a Windows 32-bit long.
           target = Fiddle::Pointer.new(@desired[:always_on_top] ? HWND_TOPMOST : HWND_NOTOPMOST)

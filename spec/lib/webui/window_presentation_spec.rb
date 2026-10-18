@@ -145,6 +145,55 @@ RSpec.describe Lich::WebUI::WindowPresentation::Controller do
     expect(win32.positions.length).to eq(1)
   end
 
+  it 'releases class-name buffers after repeated ownership checks and native errors' do
+    buffers = []
+    allow(win32).to receive(:GetClassNameW).and_wrap_original do |original, hwnd, buffer, length|
+      buffers << buffer
+      original.call(hwnd, buffer, length)
+    end
+    controller.start(42)
+    workers.shift.call
+    100.times { |index| controller.update(render(index + 2, page: { opacity: index.even? ? 0.4 : 0.6 })) }
+    expect(buffers.length).to eq(102)
+    expect(buffers).to all(be_freed)
+
+    allow(win32).to receive(:GetClassNameW) do |_hwnd, buffer, _length|
+      buffers << buffer
+      raise 'native class lookup failed'
+    end
+    expect(Lich::WebUI::WindowPresentation).to receive(:warn_failure).with(an_instance_of(RuntimeError))
+    controller.update(render(103, page: { opacity: 0.8 }))
+    expect(buffers.last).to be_freed
+  end
+
+  it 'releases the class-name buffer when discovery rejects a non-Chromium window' do
+    buffers = []
+    allow(win32).to receive(:GetClassNameW) do |_hwnd, buffer, _length|
+      buffers << buffer
+      0
+    end
+    controller.start(42)
+    workers.shift.call
+    expect(buffers).not_to be_empty
+    expect(buffers).to all(be_freed)
+    expect(win32.positions).to be_empty
+  end
+
+  it 'skips native work for unchanged renders but rechecks ownership before changed writes' do
+    controller.start(42)
+    workers.shift.call
+    allow(win32).to receive(:GetClassNameW).and_call_original
+    allow(win32).to receive(:IsWindow).and_call_original
+    100.times { |index| controller.update(render(index + 2)) }
+    expect(win32.positions.length).to eq(1)
+    win32.windows[0][1] = 99
+    expect(win32).not_to have_received(:GetClassNameW)
+    expect(win32).not_to have_received(:IsWindow)
+    controller.update(render(102, page: { opacity: 0.5 }))
+    expect(win32).to have_received(:IsWindow).once
+    expect(win32.positions.length).to eq(1)
+  end
+
   it 'reports native failures instead of treating them as successful presentation' do
     win32.fail_position = true
     expect(Lich::WebUI::WindowPresentation).to receive(:warn_failure).with(an_instance_of(Lich::WebUI::Error))
