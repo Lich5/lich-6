@@ -144,7 +144,7 @@ RSpec.describe Lich::WebUI::Adapter do
 
   it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :replace_child, :set_overlay_pass_through, :monitor_geometry, :focus, :place
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :layout_tab_actions, :replace_child, :set_overlay_pass_through, :monitor_geometry, :focus, :place
     )
   end
 
@@ -355,6 +355,20 @@ RSpec.describe Lich::WebUI::Adapter do
     text = adapter.create(:text, content: 'Wrapping', wrap: false)
     adapter.set(text, :wrap, described_class::UNSET)
     expect(adapter.get(text, :wrap)).to be true
+  end
+
+  it 'restores absent opacity after explicit overrides without changing component identity' do
+    { stack: {}, button: { label: 'Action' }, text: { content: 'Subtle', emphasis: :subtle } }.each do |type, props|
+      handle = adapter.create(type, props)
+      expect(adapter.get(handle, :opacity)).to be_nil
+      [0, 0.35, 1].each do |alpha|
+        adapter.set(handle, :opacity, alpha)
+        expect(adapter.get(handle, :opacity)).to eq(alpha)
+        adapter.set(handle, :opacity, described_class::UNSET)
+        expect(adapter.get(handle, :opacity)).to be_nil
+      end
+      expect(adapter.get(handle, :emphasis)).to eq('subtle') if type == :text
+    end
   end
 
   it 'refuses unsetting required, viewer, sensitive and unknown properties' do

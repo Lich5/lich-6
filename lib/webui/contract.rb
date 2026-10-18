@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.46.0'
+      VERSION = '2.49.0'
       MAJOR_VERSION = 2
 
       TYPES = %i[
@@ -147,7 +147,7 @@ module Lich
       ATTRIBUTE_APPLICABILITY = {
         page: %i[key disabled width height min_height],
         group: %i[key tooltip disabled hidden align margin width height min_height tone],
-        stack: %i[key tooltip disabled hidden align margin width height],
+        stack: %i[key tooltip disabled hidden align margin width height opacity],
         columns: %i[key disabled hidden align margin width height],
         grid: %i[key tooltip disabled hidden align margin width height],
         tabs: %i[key tooltip disabled hidden align margin width height],
@@ -156,12 +156,12 @@ module Lich
         overlay: %i[key disabled hidden align margin width height],
         scroll: %i[key tooltip disabled hidden align margin width height min_height],
         divider: %i[key hidden margin width tone],
-        text: %i[key tooltip hidden align margin width height emphasis tone],
+        text: %i[key tooltip hidden align margin width height emphasis tone opacity],
         markdown: %i[key disabled hidden align margin width],
         log: %i[key tooltip hidden align margin width height],
         progress: %i[key tooltip hidden align margin width height tone],
         image: %i[key tooltip hidden align margin width height],
-        button: %i[key tooltip disabled hidden align margin width min_height emphasis tone],
+        button: %i[key tooltip disabled hidden align margin width min_height emphasis tone opacity],
         toggle: %i[key tooltip disabled hidden align margin width tone],
         checkbox: %i[key tooltip disabled hidden align margin width tone],
         radio: %i[key tooltip disabled hidden align margin width tone],
@@ -182,6 +182,7 @@ module Lich
         tooltip: property(string(:body_text)),
         disabled: property(BOOL),
         hidden: property(BOOL),
+        opacity: property(number(min: 0.0, max: 1.0)),
         align: property(enum(*ALIGNS)),
         margin: property(union(integer(min: 0, max: 512), record(
                                                             top: property(integer(min: 0, max: 512)),
@@ -262,6 +263,7 @@ module Lich
             size_to_all: property(BOOL, default: false),
             show_tabs: property(BOOL, default: true),
           }, children: { kind: :named_from_property, property: :names },
+          child_properties: { tab_action: property(enum(:start, :end)) },
           events: { select: event(record(index: property(integer(min: 0), required: true), tab: property(IDENT)), structural: true) }, value: nil,
         },
         expander: {
@@ -737,13 +739,13 @@ module Lich
                                                               y: property(integer(min: -2_147_483_647, max: 2_147_483_647), required: true)
                                                             ), scope: :viewer)
             end
-            if %i[number_input group].include?(type)
+            if %i[number_input group button].include?(type)
               base[:events][:pointer_enter] = event(nil, ordered: true)
             end
             if type == :stack
               base[:events][:pointer_enter] = event(nil, ordered: true)
             end
-            if %i[group number_input stack].include?(type)
+            if %i[group number_input stack button].include?(type)
               base[:events][:pointer_leave] = event(nil, ordered: true)
             end
             if type == :tabs
@@ -761,6 +763,9 @@ module Lich
             # A layout request is a minimum, not a fixed allocation. Native
             # conversions opt in without changing existing width semantics.
             base[:properties][:min_width] = property(integer(min: 0, max: 65_536)) if ATTRIBUTE_APPLICABILITY.fetch(type).include?(:width)
+            if %i[log textarea].include?(type)
+              base[:properties].merge!(padding_left: property(integer(min: 0, max: 64)), padding_right: property(integer(min: 0, max: 64)))
+            end
             base[:properties].merge!(COMPOSITE_PROPERTIES) if type == :composite
             # Grid-child allocation is distinct from text alignment. Single-child
             # frames use their existing content_align property instead.

@@ -2,6 +2,8 @@
 
 require 'securerandom'
 require 'monitor'
+require 'weakref'
+require_relative 'weak_identity_map'
 require_relative 'contract'
 require_relative 'errors'
 require_relative 'page'
@@ -25,6 +27,16 @@ module Lich
       end
 
       class Handle
+        # The retained public token owns its payload even through a weak index.
+        def initialize
+          @state = []
+        end
+
+        def retain(node)
+          @state[0] = node
+        end
+        private :retain
+
         # Keeps diagnostic output opaque instead of exposing adapter internals.
         # @return [String]
         def inspect = '#<Lich::WebUI::Adapter::Handle opaque>'
@@ -33,6 +45,7 @@ module Lich
       private_constant :Handle
 
       Node = Struct.new(:type, :props, :placement, :children, :parent, :slot, :bindings, :page, :cid, :published, :handle,
+                        :callbacks, :viewer_values, :focus,
                         keyword_init: true)
       private_constant :Node
 
@@ -49,11 +62,10 @@ module Lich
         @viewer = viewer
         @validator = validator
         @on_publish = on_publish
-        @nodes = {}.compare_by_identity
-        @destroyed = {}.compare_by_identity
+        @nodes = WeakIdentityMap.new
+        @destroyed = WeakIdentityMap.new
         @bindings = {}
-        @viewer_values = {}
-        @focus_requests = {}.compare_by_identity
+        @binding_operations = 0
         @focus_sequence = 0
         @dirty_roots = {}.compare_by_identity
         @mutex = Monitor.new
@@ -69,7 +81,7 @@ module Lich
           raise attributed_error('focus requires a focusable page descendant', target_handle, :focus) unless valid
           raise attributed_error('focus revision exhausted', root_handle, :focus) if @focus_sequence >= 2_147_483_647
 
-          @focus_requests[root] = [target_handle, @focus_sequence += 1]
+          root.focus = [WeakRef.new(target_handle), @focus_sequence += 1]
           dirty!(root)
         end
         nil
@@ -87,6 +99,9 @@ module Lich
           candidate = child.dup
           candidate.placement = symbolize(placement).freeze
           validate_placement!(parent, candidate, child_handle)
+          if parent.type == :tabs && candidate.placement[:tab_action]&.to_s != child.placement[:tab_action]&.to_s
+            raise attributed_error('change tab action roles through layout_tab_actions', child_handle, :placement)
+          end
           child.placement = candidate.placement
           dirty!(root_for(parent))
         end
@@ -114,9 +129,10 @@ module Lich
         )
         node = Node.new(
           type: normalized, props: validated, placement: symbolize(placement).freeze, children: [], parent: nil, slot: nil,
-          bindings: {}, page: nil, handle: handle
+          bindings: {}, callbacks: {}, viewer_values: {}, page: nil, handle: handle
         )
         @mutex.synchronize do
+          handle.send(:retain, node)
           @nodes[handle] = node
           dirty!(node) if normalized == :page
         end
@@ -142,13 +158,13 @@ module Lich
           end
           if definition[:scope] == :viewer
             selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
-            pending = [selected.to_s, handle, name] if selected
-            return deep_copy(@viewer_values[pending]) if pending && @viewer_values.key?(pending)
+            pending = [selected.to_s, name] if selected
+            return deep_copy(node.viewer_values[pending]) if pending && node.viewer_values.key?(pending)
             if (page = root_for(node).page) && node.cid && node.published
               target = [page, node.cid, name]
               next
             end
-            return deep_copy(@viewer_values.fetch([viewer!, handle, name], node.props[name]))
+            return deep_copy(node.viewer_values.fetch([viewer!, name], node.props[name]))
           end
 
           # Window measurements are captured before callback dispatch. Exit
@@ -206,7 +222,7 @@ module Lich
               # Once published, the normal explicit-viewer rule above applies.
               node.props = node.props.merge(name => validated).freeze
             else
-              @viewer_values[[viewer!, handle, name]] = validated
+              node.viewer_values[[viewer!, name]] = validated
             end
           else
             candidate = value.equal?(UNSET) ? node.props.except(name) : node.props.merge(name => value)
@@ -255,10 +271,10 @@ module Lich
               # A second rebuild can retire a choice staged before delivery.
               # Reconcile pending drafts with the same empty fallback as defaults.
               retired = node.props[:options].map { |option| option[:value] } - validated[:options].map { |option| option[:value] }
-              @viewer_values.each do |(viewer, pending_handle, property), pending_value|
-                next unless pending_handle.equal?(handle) && property == :value && retired.include?(pending_value)
+              node.viewer_values.each do |(viewer, property), pending_value|
+                next unless property == :value && retired.include?(pending_value)
 
-                @viewer_values[[viewer, handle, property]] = validated[:empty_value] || validated[:options].first&.fetch(:value)
+                node.viewer_values[[viewer, property]] = validated[:empty_value] || validated[:options].first&.fetch(:value)
               end
             end
             node.props = validated
@@ -294,7 +310,6 @@ module Lich
           unless position.between?(0, parent_node.children.length)
             raise attributed_error('child index is out of range', parent, :index)
           end
-          validate_child_capacity!(parent, parent_node)
           child_rule = Contract.schema(parent_node.type)[:children]
           if child_rule.is_a?(Hash) && child_rule[:types] && !child_rule[:types].include?(child_node.type)
             raise attributed_error('child type is not permitted', child)
@@ -306,6 +321,8 @@ module Lich
           end
           candidate.placement = symbolize(placement).freeze if placement
           validate_placement!(parent_node, candidate, child)
+          raise attributed_error('tab actions cannot be pages', child) if parent_node.type == :tabs && candidate.placement.key?(:tab_action) && candidate.type == :page
+          validate_child_capacity!(parent, parent_node, candidate)
           parent_node.children.insert(position, child)
           child_node.placement = candidate.placement
           child_node.parent = parent
@@ -386,6 +403,9 @@ module Lich
             raise attributed_error('foreign or cyclic tab child', handle) if (child.parent && child.parent != parent) || root_for(tabs).equal?(child)
             child
           end
+          actions = tabs.children.select { |handle| node!(handle).placement.key?(:tab_action) }
+          raise attributed_error('action cannot also be a tab page', parent) if candidates.any? { |child| child.placement.key?(:tab_action) }
+          raise attributed_error('component has too many children', parent) if children.length + actions.length > Contract::BOUNDS[:children]
           old_headers = tabs.props[:headers]
           remap = proc do |index|
             old_key = old_headers&.dig(index, :key)
@@ -393,20 +413,67 @@ module Lich
             Contract.visible_tab_index(headers, found || index.clamp(0, [names.length - 1, 0].max))
           end
           props = props.merge(selected: remap.call(tabs.props[:selected] || 0)).freeze
-          pending = @viewer_values.select { |(_viewer, handle, name), _value| handle.equal?(parent) && name == :selected }
+          pending = tabs.viewer_values.select { |(_viewer, name), _value| name == :selected }
           before_props, before_children = tabs.props, tabs.children.dup
           involved = (tabs.children + children).uniq.to_h { |handle| [handle, [node!(handle).parent, node!(handle).slot]] }
           begin
-            (tabs.children - children).each { |handle| node!(handle).parent = node!(handle).slot = nil }
-            tabs.props, tabs.children = props, children.dup
+            (tabs.children - children - actions).each { |handle| node!(handle).parent = node!(handle).slot = nil }
+            tabs.props, tabs.children = props, children + actions
             candidates.each { |child| child.parent = parent }
             assign_child_slots!(tabs)
-            pending.each { |key, index| @viewer_values[key] = remap.call(index) }
+            pending.each { |key, index| tabs.viewer_values[key] = remap.call(index) }
             dirty!(root_for(tabs))
           rescue StandardError
             tabs.props, tabs.children = before_props, before_children
-            pending.each { |key, index| @viewer_values[key] = index }
+            pending.each { |key, index| tabs.viewer_values[key] = index }
             involved.each { |handle, (owner, slot)| node!(handle).parent, node!(handle).slot = owner, slot }
+            raise
+          end
+        end
+        nil
+      end
+
+      # Atomically replaces the two auxiliary tab-strip roles without touching pages or selection.
+      # Removed actions remain reusable; refused publication restores every ownership edge.
+      # @param parent [Handle] tabs container
+      # @param actions [Hash{Symbol => Handle}] optional :start and :end action widgets
+      # @return [nil]
+      def layout_tab_actions(parent, actions:)
+        @mutex.synchronize do
+          tabs = node!(parent)
+          valid = tabs.type == :tabs && actions.is_a?(Hash) && (actions.keys - %i[start end]).empty? && actions.values.uniq.length == actions.length
+          raise attributed_error('unique start/end tab actions required', parent) unless valid
+
+          previous = tabs.children.select { |handle| node!(handle).placement.key?(:tab_action) }
+          pages = tabs.children - previous
+          raise attributed_error('component has too many children', parent) if pages.length + actions.length > Contract::BOUNDS[:children]
+          actions.each_value do |handle|
+            child = node!(handle)
+            valid = child.type != :page && (!child.parent || previous.include?(handle)) && !root_for(tabs).equal?(child)
+            raise attributed_error('action must be unparented or already owned by these tabs', handle) unless valid
+          end
+          involved = (previous + actions.values).uniq.to_h do |handle|
+            child = node!(handle)
+            [handle, [child.parent, child.slot, child.placement]]
+          end
+          before = tabs.children
+          begin
+            previous.each do |handle|
+              child = node!(handle)
+              child.parent = child.slot = nil
+              child.placement = child.placement.except(:tab_action).freeze
+            end
+            tabs.children = pages + actions.values
+            actions.each do |side, handle|
+              child = node!(handle)
+              child.parent, child.slot = parent, nil
+              child.placement = child.placement.merge(tab_action: side.to_s).freeze
+              validate_placement!(tabs, child, handle)
+            end
+            dirty!(root_for(tabs))
+          rescue StandardError
+            tabs.children = before
+            involved.each { |handle, state| node!(handle).parent, node!(handle).slot, node!(handle).placement = state }
             raise
           end
         end
@@ -490,10 +557,18 @@ module Lich
           index = parent_node.children.index(child)
           raise attributed_error('component is not a child of parent', child) unless index
 
+          if parent_node.type == :tabs && child_node.placement.key?(:tab_action)
+            actions = parent_node.children.reject { |handle| handle.equal?(child) }.filter_map do |handle|
+              side = node!(handle).placement[:tab_action]
+              [side.to_sym, handle] if side
+            end.to_h
+            return layout_tab_actions(parent, actions: actions)
+          end
           parent_node.children.delete_at(index)
           child_node.parent = nil
           child_node.slot = nil
           child_node.placement = child_node.placement.except(:pass_through).freeze if parent_node.type == :overlay
+          child_node.placement = child_node.placement.except(:tab_action).freeze if parent_node.type == :tabs
           assign_child_slots!(parent_node)
           dirty!(root_for(parent_node))
         end
@@ -521,6 +596,7 @@ module Lich
             )
           end
           binding_id = "binding-#{SecureRandom.hex(16)}".freeze
+          node.callbacks.delete(node.bindings[name])
           @bindings.delete(node.bindings[name])
           callback = proc do |context|
             reconcile_submission(context) if context.submission
@@ -531,7 +607,11 @@ module Lich
           if node.type == :table && name == :selection_change && callable.respond_to?(:prepare_selection)
             callback.define_singleton_method(:prepare_selection) { |context| callable.prepare_selection(context) }
           end
-          @bindings[binding_id] = [handle, name, callback]
+          record = [handle, name, callback]
+          node.callbacks[binding_id] = record
+          @bindings[binding_id] = WeakRef.new(record)
+          @binding_operations += 1
+          prune_bindings! if (@binding_operations % 64).zero?
           node.bindings[name] = binding_id
           dirty!(root_for(node))
           binding_id
@@ -543,11 +623,14 @@ module Lich
       # @return [nil]
       def unbind(binding_id)
         @mutex.synchronize do
-          handle, event, = @bindings.delete(binding_id.to_s) || raise(
+          record = binding_record(binding_id.to_s)
+          @bindings.delete(binding_id.to_s)
+          handle, event, = record || raise(
             attributed_error('unknown binding', nil, binding_id)
           )
           node = node!(handle)
           node.bindings.delete(event)
+          node.callbacks.delete(binding_id.to_s)
           dirty!(root_for(node))
         end
         nil
@@ -624,12 +707,13 @@ module Lich
           delivered = root.page.last_render.tree.each.to_h { |component| [component.cid, true] }
           @mutex.synchronize do
             changes = []
-            @viewer_values.delete_if do |(viewer, handle, name), value|
-              child = @nodes[handle]
-              next false unless child && root_for(child).equal?(root) && delivered.key?(child.cid)
+            @nodes.each_value do |child|
+              next unless root_for(child).equal?(root) && delivered.key?(child.cid)
 
-              changes << [viewer, child.cid, name, value]
-              true
+              child.viewer_values.delete_if do |(viewer, name), value|
+                changes << [viewer, child.cid, name, value]
+                true
+              end
             end
             # Seed before allowing live writes through Page#set. Otherwise a
             # newer write can be overwritten by this older unpublished value.
@@ -674,7 +758,8 @@ module Lich
         scope = input_cids(snapshot, "page:#{adapter_page_id(node)}")
         render_snapshot(builder, snapshot, scope)
         @mutex.synchronize do
-          handle, revision = @focus_requests[node]
+          reference, revision = node.focus
+          handle = weak_value(reference)
           target = @nodes[handle]
           if target && target.cid && root_for(target).equal?(node)
             builder.focus(target.cid)
@@ -683,13 +768,13 @@ module Lich
         end
       end
 
-      # Captures ordered properties, bindings, slots, and descendants under the adapter monitor.
+      # Captures properties, bindings, slots, placement and descendants under the adapter monitor.
       # @return [Array] render snapshot tuples
       def snapshot_children(node)
         node.children.map do |handle|
           child = @nodes.fetch(handle)
-          bindings = child.bindings.to_h { |event, id| [event, @bindings.fetch(id).last] }
-          [child, child.props.merge(key: handle_label(handle)), child.slot, bindings, snapshot_children(child)]
+          bindings = child.bindings.to_h { |event, id| [event, child.callbacks.fetch(id).last] }
+          [child, child.props.merge(key: handle_label(handle)), child.slot, bindings, snapshot_children(child), child.placement]
         end
       end
 
@@ -708,9 +793,9 @@ module Lich
       # @return [void]
       def render_snapshot(builder, snapshot, scope)
         adapter = self
-        snapshot.each do |child, props, slot, bindings, children|
+        snapshot.each do |child, props, slot, bindings, children, placement|
           terminal = (Contract.schema(child.type)[:events].keys & %i[activate submit response]).any?
-          draft = builder.component(child.type, slot: slot, placement: child.placement, on: bindings, submit: terminal ? scope : nil, **props) do
+          draft = builder.component(child.type, slot: slot, placement: placement, on: bindings, submit: terminal ? scope : nil, **props) do
             adapter.send(:render_snapshot, self, children, scope)
           end
           @mutex.synchronize { child.cid = draft.cid }
@@ -729,7 +814,7 @@ module Lich
             next unless node && root_for(node).page.equal?(context.page)
 
             binding = node&.bindings&.[](:change)
-            @bindings[binding]&.last if binding
+            node.callbacks[binding]&.last if binding
           end
           next unless callback
 
@@ -738,8 +823,28 @@ module Lich
         end
       end
 
+      # Resolves weak binding discovery while a live node owns the record.
+      # Missing or collected IDs never route to a replacement binding.
+      def binding_record(id)
+        record = weak_value(@bindings[id])
+        @bindings.delete(id) unless record
+        record
+      end
+
+      # Strong locals pin weak payloads through each operation/snapshot.
+      def weak_value(reference)
+        reference&.__getobj__
+      rescue WeakRef::RefError
+        nil
+      end
+
+      # Bound metadata churn without forcing GC or running script finalizers.
+      def prune_bindings!
+        @bindings.delete_if { |_id, reference| !reference.weakref_alive? }
+      end
+
       def callbacks_for(node)
-        node.bindings.to_h { |event, binding_id| [event, @bindings.fetch(binding_id).last] }
+        node.bindings.to_h { |event, binding_id| [event, node.callbacks.fetch(binding_id).last] }
       end
 
       # Child layout belongs to its parent schema. Validate before attaching so
@@ -806,8 +911,13 @@ module Lich
 
       def assign_child_slots!(parent)
         rule = Contract.schema(parent.type)[:children]
-        parent.children.each_with_index do |child_handle, index|
+        index = 0
+        parent.children.each do |child_handle|
           child = node!(child_handle)
+          if parent.type == :tabs && child.placement.key?(:tab_action)
+            child.slot = nil
+            next
+          end
           child.slot = case rule
                        when Hash
                          case rule[:kind]
@@ -816,13 +926,25 @@ module Lich
                          when :named_from_property then parent.props.fetch(rule[:property])[index]&.to_s
                          end
                        end
+          index += 1
         end
       end
 
-      def validate_child_capacity!(handle, node)
+      def validate_child_capacity!(handle, node, candidate)
         rule = Contract.schema(node.type)[:children]
         return unless rule.is_a?(Hash)
 
+        if node.type == :tabs
+          raise attributed_error('component has too many children', handle) if node.children.length >= Contract::BOUNDS[:children]
+          children = node.children.map { |child| node!(child) }
+          if candidate.placement.key?(:tab_action)
+            side = candidate.placement[:tab_action].to_s
+            raise attributed_error('tab action position occupied', handle) if children.any? { |child| child.placement[:tab_action]&.to_s == side }
+            return
+          end
+          return if children.count { |child| !child.placement.key?(:tab_action) } < node.props[:names].length
+          raise attributed_error('component has too many children', handle)
+        end
         expected = case rule[:kind]
                    when :named then rule[:slots].length
                    when :named_dynamic then node.props.fetch(rule[:count_property])
@@ -847,10 +969,14 @@ module Lich
       # @return [void]
       def destroy_node!(handle)
         node = @nodes.delete(handle)
-        @focus_requests.delete_if { |root, (target, _revision)| root.equal?(node) || target.equal?(handle) }
+        node.focus = nil
         node.children.each { |child| destroy_node!(child) }
         node.bindings.each_value { |binding_id| @bindings.delete(binding_id) }
-        @viewer_values.delete_if { |(_viewer, candidate, _property), _value| candidate.equal?(handle) }
+        node.viewer_values.clear
+        node.callbacks.clear
+        node.bindings.clear
+        node.children.clear
+        handle.send(:retain, nil)
         @destroyed[handle] = true
       end
 

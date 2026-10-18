@@ -49,7 +49,7 @@ module Lich
           # Captures the creating owner; retained providers cannot cross sessions.
           def initialize
             @session = Gtk.session
-            @contexts = {}.compare_by_identity
+            @contexts = Lich::WebUI::WeakIdentityMap.new
             @state = :unloaded
             @label_rules = []
           end
@@ -318,6 +318,14 @@ module Lich
         # Named colors are limited to the observed spell palettes and boon tip.
         # No browser CSS parsing, URLs, functions, or arbitrary style strings.
         module Color
+          # Markup spans also use three-digit RGB literals; other color APIs
+          # retain their existing accepted spellings.
+          # @return [Hash, nil] bounded literal color, never CSS
+          def self.parse_markup(value)
+            value = '#' + value.delete_prefix('#').chars.map { |digit| digit * 2 }.join if value.match?(/\A#[0-9a-fA-F]{3}\z/)
+            parse(value)
+          end
+
           NAMES = {
             'white' => 'ffffff', 'black' => '000000', 'red' => 'ff0000',
             'violet' => 'ee82ee', 'orchid' => 'da70d6', 'powderblue' => 'b0e0e6',

@@ -47,6 +47,24 @@ parallel_rspec -n 4 spec
   changes (the full parallel run only flags examples over 60s). Speed it up, or
   tag it `:slow` if the time is unavoidable.
 
+### Weak ownership checks
+
+The WebUI adapter ownership specs cover abandoned graph collection alongside
+retained detached widget reuse, callbacks, viewer drafts and focus reattachment.
+Construct abandoned graphs on a short-lived worker and join it before requesting
+GC on the example thread, returning only weak observation tokens. Initialize
+memoized test dependencies before starting the worker; `Thread#value` propagates
+worker failures. Returning from a helper on the collecting thread alone does not
+eliminate conservative stack roots on every platform.
+
+Keep pruning-boundary assertions independent of GC timing by supplying a
+controlled dead reference, while retaining real collection/churn integration
+checks and live callback checks. A metadata bound applies after earlier records
+are actually collected; it is not a bound on live records awaiting collection.
+Do not replace these checks with relaxed thresholds, sleeps or production GC.
+When changing the harness, confirm that deliberate strong-retention and
+disabled-pruning mutations still fail, and validate with parallel workers.
+
 ## WebUI JavaScript Tests
 
 From the repository root, install the locked test dependencies and run every

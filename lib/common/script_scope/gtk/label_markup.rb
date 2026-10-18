@@ -60,8 +60,12 @@ module Lich
                 inherited.merge(scale: scale)
               end
             when 'span'
-              refuse if attributes.empty? || (attributes.keys - %w[foreground weight size font_desc letter_spacing]).any?
+              refuse if attributes.empty? || (attributes.keys - %w[foreground weight size font_desc font_family letter_spacing]).any?
               result = inherited.dup
+              if attributes['font_family']
+                refuse unless %w[monospace sans-serif serif].include?(attributes['font_family'])
+                result[:font_family] = attributes['font_family']
+              end
               if attributes['size']
                 sizes = %w[xx-small x-small small medium large x-large xx-large]
                 index = sizes.index(attributes['size'])
@@ -80,7 +84,7 @@ module Lich
                 result[:letter_spacing] = spacing.to_i / 1024.0
               end
               if attributes['foreground']
-                color = Color.parse(attributes['foreground'])
+                color = Color.parse_markup(attributes['foreground'])
                 refuse unless color
                 result[:foreground] = color
               end

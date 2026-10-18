@@ -8,6 +8,18 @@ RSpec.describe Lich::WebUI::Validator do
 
   let(:context) { { owner: 'spec-owner', page_id: 'spec-page', cid: 'test:component' } }
 
+  it 'bounds per-control alpha independently of whole-window presentation' do
+    { stack: {}, button: { label: 'Action' }, text: { content: 'Item' } }.each do |type, base|
+      expect(validator.validate_component!(type, base, **context)).not_to have_key(:opacity)
+      [0, 0.35, 0.45, 1].each do |alpha|
+        expect(validator.validate_component!(type, base.merge(opacity: alpha), **context)[:opacity]).to eq(alpha)
+      end
+      [-0.1, 1.1, Float::NAN, Float::INFINITY, '0.5'].each do |alpha|
+        expect { validator.validate_component!(type, base.merge(opacity: alpha), **context) }.to raise_error(Lich::WebUI::SchemaViolationError)
+      end
+    end
+  end
+
   it 'accepts effective Markdown sensitivity without adding arbitrary destination or HTML fields' do
     expect(validator.validate_component!(:markdown, { content: '[Wiki](https://example.org)', disabled: true }, **context))
       .to include(disabled: true)

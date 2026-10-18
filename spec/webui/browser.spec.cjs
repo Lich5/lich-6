@@ -55,7 +55,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['native-opacity-reset', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -1227,6 +1227,146 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.getByRole('button', { name: 'Update resources' }).click();
     await expect(rectangles.nth(1)).toHaveAttribute('width', '90');
     await expect(page.getByText('Revealed pool')).toBeVisible();
+  } else if (scenario === 'merchantical-help-window') {
+    const parentInput = page.getByPlaceholder('Parent draft');
+    await parentInput.fill('Retained parent input');
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await page.getByRole('button', { name: 'Open help', exact: true }).click();
+      const address = (await page.getByText(/^Help page: /).textContent()).replace('Help page: ', '');
+      const url = new URL(page.url()); url.searchParams.set('page', address);
+      const help = await context.newPage();
+      await help.goto(url.href);
+      await expect(help.getByText('Help heading', { exact: true })).toBeVisible();
+      const scroll = help.locator('.webui-scroll');
+      const log = help.locator('.webui-log');
+      await expect(log).toHaveCSS('padding-left', '4px');
+      await expect(scroll).toHaveJSProperty('scrollTop', 0);
+      await expect.poll(() => scroll.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+      await scroll.evaluate(element => { element.scrollTop = 160; });
+      await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(160);
+      await help.getByRole('button', { name: 'Refresh help' }).click();
+      await expect(help.getByText('Help refreshed', { exact: true })).toBeVisible();
+      await expect(scroll).toHaveJSProperty('scrollTop', 160);
+      await page.getByRole('button', { name: 'Refresh parent' }).click();
+      await expect(parentInput).toHaveValue('Retained parent input');
+      await help.getByRole('button', { name: 'Follow end' }).click();
+      await expect.poll(() => scroll.evaluate(element => element.scrollTop + element.clientHeight >= element.scrollHeight - 1)).toBe(true);
+      await help.getByRole('button', { name: 'Close help' }).click();
+      await expect(help.locator('.webui-log')).toHaveCount(0);
+      await help.close();
+      await expect(parentInput).toHaveValue('Retained parent input');
+    }
+  } else if (scenario === 'native-opacity-reset') {
+    const targets = [
+      ['text:subtle', '0.72'], ['text:frontend-detected', '0.75'],
+      ['stack:alpha-stack', '1'], ['button:alpha-button', '1']
+    ];
+    for (const [step, opacity] of [undefined, 1, 0.35, undefined].entries()) {
+      if (step) await page.getByRole('button', { name: 'Cycle opacity', exact: true }).click();
+      for (const [suffix, fallback] of targets) {
+        const element = page.locator(`[data-cid$="${suffix}"]`);
+        await expect(element).toHaveCSS('opacity', opacity === undefined ? fallback : String(opacity));
+        await expect.poll(() => element.evaluate(node => node.style.opacity))
+          .toBe(opacity === undefined ? '' : String(opacity));
+      }
+    }
+  } else if (scenario === 'native-notebook-actions') {
+    const notebook = page.locator('[data-component-type="tabs"]');
+    const help = page.getByRole('button', { name: 'Native help', exact: true });
+    await expect(notebook).toHaveAttribute('data-size-to-all', 'true');
+    const panels = notebook.locator(':scope > .tab-panel');
+    await expect(panels).toHaveCount(2);
+    await expect(panels.nth(0)).toHaveAttribute('inert', '');
+    expect((await panels.nth(1).boundingBox()).height).toBeGreaterThanOrEqual(240);
+    await expect(help).toBeVisible();
+    await help.click();
+    await expect(page.getByText('Native help activated', { exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Two', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('button', { name: 'Switch tab layout' }).click();
+    await expect(notebook).toHaveClass(/account-tabs-left/);
+    const header = notebook.locator(':scope > .tab-header');
+    const headerBox = await header.boundingBox();
+    const panelBox = await panels.nth(1).boundingBox();
+    expect(headerBox.x + headerBox.width).toBeLessThanOrEqual(panelBox.x + 1);
+    await expect(help).toBeVisible();
+    await expect(notebook.getByRole('tab')).toHaveCount(2);
+  } else if (scenario === 'merchantical-notebook-actions') {
+    const tabs = page.getByRole('tab');
+    const help = page.getByRole('button', { name: 'Shop help', exact: true });
+    await expect(tabs).toHaveCount(4);
+    await expect(page.getByRole('tablist').getByRole('button')).toHaveCount(0);
+    await expect(help).toHaveAttribute('title', 'Help on every page');
+    for (let index = 0; index < 4; index++) {
+      await tabs.nth(index).click();
+      await expect(tabs.nth(index)).toHaveAttribute('aria-selected', 'true');
+      await help.click();
+      await expect(page.getByText(`Help ${index + 1}`, { exact: true })).toBeVisible();
+      await expect(tabs.nth(index)).toHaveAttribute('aria-selected', 'true');
+    }
+    const cid = await help.getAttribute('data-cid');
+    await page.getByRole('button', { name: 'Replace help', exact: true }).click();
+    await expect(help).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Replacement', exact: true })).toBeVisible();
+    await expect(tabs.nth(3)).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('button', { name: 'Restore help', exact: true }).click();
+    await expect(help).toHaveAttribute('data-cid', cid);
+    await help.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByText('Help 5', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Toggle help sensitivity' }).click();
+    await expect(help).toBeDisabled();
+    await page.getByRole('button', { name: 'Toggle help sensitivity' }).click();
+    await expect(help).toBeEnabled();
+    await page.getByRole('button', { name: 'Toggle help visibility' }).click();
+    await expect(help).toBeHidden();
+    await page.getByRole('button', { name: 'Toggle help visibility' }).click();
+    await expect(help).toBeVisible();
+    await page.getByRole('button', { name: 'Toggle selectors' }).click();
+    await expect(help).toBeHidden();
+    await expect(page.getByText('Ledger content', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Toggle selectors' }).click();
+    await expect(help).toBeVisible();
+    await page.getByRole('button', { name: 'Remove first page' }).click();
+    await expect(tabs).toHaveCount(3);
+    await expect(page.getByRole('tab', { name: 'Ledger', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(help).toHaveAttribute('data-cid', cid);
+    await page.setViewportSize({ width: 480, height: 760 });
+    await expect(help).toBeInViewport();
+  } else if (scenario === 'merchantical-list') {
+    const locked = page.getByRole('button', { name: 'Locked sword', exact: true });
+    const unlocked = page.getByRole('button', { name: 'Unlocked gem', exact: true });
+    await page.mouse.move(0, 0);
+    const crossings = page.getByText(/^Crossings /);
+    await locked.hover();
+    await expect(crossings).toHaveText('Crossings 1/0');
+    // The enter callback redraws the page. A stationary pointer and movement
+    // inside the nested label must not manufacture another enter or a leave.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const labelBox = await locked.getByText('Locked sword', { exact: true }).boundingBox();
+    await page.mouse.move(labelBox.x + labelBox.width / 2 + 1, labelBox.y + labelBox.height / 2);
+    await expect(crossings).toHaveText('Crossings 1/0');
+    await expect(page.getByText('Recall 0', { exact: true })).toBeHidden();
+    await unlocked.hover();
+    await expect(crossings).toHaveText('Crossings 1/1');
+    await expect(locked).toHaveCSS('opacity', '0.45');
+    await expect(unlocked).toHaveCSS('opacity', '0.45');
+    const row = unlocked.locator('xpath=../..');
+    await expect(row).toHaveCSS('opacity', '0.35');
+    await expect(page.getByText('Recall 1', { exact: true })).not.toBeVisible();
+    await unlocked.click();
+    await expect(page.getByText('Recall 1', { exact: true })).toBeVisible();
+    await expect(page.locator('.webui-text-fragment').filter({ hasText: /^Recall 1$/ })).toHaveCSS('font-family', 'monospace');
+    await locked.click();
+    await expect(page.getByText('Recall 0', { exact: true })).toBeVisible();
+    await page.getByRole('textbox').fill('1K');
+    await expect(page.getByRole('textbox')).toHaveValue('1K');
+    await expect(page.getByText('Found', { exact: true }).first()).toHaveCSS('background-color', 'rgb(60, 156, 60)');
+    const spacer = page.getByRole('button', { name: 'Alignment spacer', exact: true });
+    await expect(spacer).toHaveCSS('opacity', '0');
+    await expect(spacer).toBeDisabled();
+    expect((await spacer.boundingBox()).height).toBeGreaterThan(0);
+    await page.getByRole('button', { name: 'Remove locked list' }).click();
+    await expect(locked).toHaveCount(0);
+    await expect(unlocked).toBeVisible();
   } else if (scenario === 'priority17-title-scroll') {
     const spans = page.locator('.webui-text-fragment');
     await expect(spans).toHaveCount(3);

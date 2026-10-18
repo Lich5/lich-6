@@ -698,8 +698,8 @@ other attached bars stale. Cross-owner attachment/mutation and unknown style
 methods refuse explicitly. Access to cached contexts also checks ownership and
 lifetime. Cached-cohort sizes and source-derived acceptance are recorded in the
 [acceptance report](webui-css-decoration-acceptance.md). Provider-load success alone
-does not establish whole-script support;
-unsupported widgets such as FlowBox and unrelated behavior still hard stop.
+does not establish whole-script support; unmapped methods and unsupported call
+shapes still hard stop.
 
 `Gtk::HeaderBar` composes existing boxes, labels and buttons into a client-area
 title row. `set_custom_title`/`custom_title=`, `set_title`/`title=`, `pack_start`,
@@ -724,6 +724,54 @@ to supported symbols; `Label#wrap_mode=` accepts `:word` and `:none`.
 Contract 2.18.0 permits empty tab names with selected index zero representing no
 active page. Empty tabs reject all select events. Notebook appends work after
 materialization; grid panels keep grid layout in viewport and hidden measurement.
+
+`Notebook#set_action_widget(widget, :start/:end)` owns an auxiliary control at
+either end of the tab strip; `get_action_widget` reads it and passing `nil`
+clears it. Actions are separate from indexed pages, page counts and selection.
+Replacement and removal detach the old widget for reuse, preserving its identity
+and callbacks. Action controls participate in materialization and destruction,
+but are not tab selectors or page panels. Invalid ownership or refused layout
+updates preserve the prior action and page state.
+
+### Rich lists and help windows
+
+`Gtk::ListBox` maps ordered `ListBoxRow` children onto vertical stacks. Only
+`:none` selection mode is supported; rows remain nonselectable and nonactivatable,
+and each row owns one content widget. Embedded controls own their interactions.
+Stack, button and text components accept finite opacity from 0 through 1 without
+changing visibility or sensitivity. Omitted opacity leaves stylesheet styling
+active; clearing an explicit override restores that styling. Explicit opacity 1
+still overrides stylesheet dimming. Button enter/leave notification signals map
+to pointer crossing events independently of activation. Disabled or hidden
+controls do not accumulate a suppressed enter that prevents a later valid enter.
+
+Label markup supports the bounded `font_family` values `monospace`, `sans-serif`
+and `serif`, including supported combined span attributes. A uniform whole-label
+background maps to a typed color; arbitrary per-range backgrounds and raw CSS
+remain outside this subset.
+
+Retained detached widgets and native adapter handles preserve children,
+callbacks, pending viewer values and style contexts for reattachment. Removal
+does not imply destruction. Discovery indexes, focus references and style-provider
+bookkeeping do not independently own abandoned detached graphs. Explicit
+destruction retires the subtree and its bindings; collection does not run script
+destroy callbacks or force GC in production.
+
+`Window#set_transient_for`/`transient_for=` records a weak, validated same-session
+parent; `transient_for`/`get_transient_for` reads it and `nil` clears it. This is
+not containment, modality or destroy-with-parent behavior. Self, cyclic, foreign
+and retired parents refuse. `set_window_position(:center_on_parent)` requires a
+live logical parent and retains a placement hint. Native parent-child stacking
+and exact parent-relative centering remain host-controlled, with explicit
+compatibility diagnostics; saved geometry retains its established precedence.
+
+`TextView` left/right text-margin setters, assignment forms and getters map to
+integer inner padding from 0 through 64, separately from outer widget margins.
+Read-only documents preserve scroll position instead of implicitly following
+the end; supported explicit end-iterator/end-mark requests still enable follow.
+The corresponding client and contract version is 2.49.0.
+
+### Pinned setup acceptance
 
 Pinned tpick v48 tests cover original welcome, complete default information setup,
 settings for Rogue/Warrior/Bard/Wizard, required cues, profile/default/save callbacks,

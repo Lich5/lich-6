@@ -12,6 +12,7 @@ require_relative 'models'
 require_relative 'tree_view'
 require_relative 'combo_box'
 require_relative 'inputs'
+require_relative 'list_box'
 require_relative 'dialogs'
 require_relative 'style'
 require_relative 'display_geometry'
@@ -50,6 +51,7 @@ module Lich
         # Bounded placement hint; the host retains control of initial placement.
         module WindowPosition
           CENTER = :center
+          CENTER_ON_PARENT = :center_on_parent
 
           # @raise [UnsupportedOperation] for position modes outside this facade
           def self.const_missing(name)

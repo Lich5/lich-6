@@ -7,6 +7,55 @@ require_relative '../../support/webui_browser'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'WebUI browser bootstrap', browser: true do
+  it 'restores stylesheet opacity after explicit component overrides are removed' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    service = Lich::WebUI::Service.new
+    owner = Object.new
+    alpha = nil
+    overrides = [1, 0.35, nil]
+    page = nil
+    change = proc { alpha = overrides.shift; service.refresh(page) }
+    page = Lich::WebUI::Page.new(owner: owner, id: 'opacity-reset', title: 'Opacity reset') do |ui|
+      props = alpha.nil? ? {} : { opacity: alpha }
+      ui.text key: 'subtle', content: 'Subtle', emphasis: :subtle, **props
+      ui.text key: 'frontend-detected', content: 'Detected', **props
+      ui.stack key: 'alpha-stack', **props do
+        text content: 'Stack content'
+      end
+      ui.button key: 'alpha-button', label: 'Alpha button', **props
+      ui.button label: 'Cycle opacity', on: { activate: change }
+    end
+    service.registry.register(page)
+    WebUIBrowser.check(service: service, page: page, scenario: 'native-opacity-reset')
+  ensure
+    service&.stop
+  end
+
+  it 'sizes and lays out native tab actions without changing indexed panels' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+    service = Lich::WebUI::Service.new
+    owner = Object.new
+    mode = :sized
+    status = 'Native help idle'
+    page = nil
+    switch = proc { mode = mode == :sized ? :account : :sized; service.refresh(page) }
+    help = proc { status = 'Native help activated'; service.refresh(page) }
+    page = Lich::WebUI::Page.new(owner: owner, id: 'native-tab-actions', title: 'Native tab actions', props: { density: :compact }) do |ui|
+      ui.tabs key: mode == :sized ? 'sized-tabs' : 'saved-account-tabs', names: %w[One Two], selected: 1, size_to_all: mode == :sized do
+        text key: 'one', content: 'A much larger sizing page', slot: 'One', height: 240
+        text key: 'two', content: 'Selected native page', slot: 'Two'
+        button key: 'help', label: 'Native help', placement: { tab_action: :end }, on: { activate: help }
+      end
+      ui.text content: status
+      ui.button label: 'Switch tab layout', on: { activate: switch }
+    end
+    service.registry.register(page)
+    WebUIBrowser.check(service: service, page: page, scenario: 'native-notebook-actions')
+  ensure
+    service&.stop
+  end
+
   it 'serves and decodes a BMP through the authenticated image route' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
