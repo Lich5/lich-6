@@ -1722,7 +1722,18 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       await expect(checkbox).not.toBeChecked();
       await checkbox.check();
       await expect(checkbox).toBeChecked();
-      await entry.fill('shim value');
+      await entry.fill('retained draft');
+      await page.getByRole('button', { name: 'Toggle editing', exact: true }).click();
+      await expect(entry).not.toBeEditable();
+      await expect(entry).toHaveValue('retained draft');
+      await page.getByRole('button', { name: 'Toggle editing', exact: true }).click();
+      await expect(entry).toBeEditable();
+      await expect(entry).toHaveValue('retained draft');
+      await entry.fill('saved while locked');
+      await page.getByRole('button', { name: 'Toggle editing', exact: true }).click();
+      await expect(entry).not.toBeEditable();
+      await expect(entry).toHaveValue('saved while locked');
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
     } else {
       const divider = page.locator('.webui-divider');
       await expect(divider).toBeVisible();
@@ -1730,8 +1741,8 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
       await expect(divider).toHaveCSS('margin-top', '0px');
       await expect(divider).toHaveCSS('margin-bottom', '0px');
       await entry.fill('shim separator');
+      await entry.press('Enter');
     }
-    await entry.press('Enter');
     await expect(entry).toHaveCount(0);
   }
   expect(errors).toEqual([]);

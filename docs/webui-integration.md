@@ -540,6 +540,44 @@ using the combo's single input rather than a separately rendered Entry. Removing
 the selected row clears that viewer's choice; unrelated choices and literal
 free text survive model updates. `active = -1` explicitly clears selection.
 
+The legacy `ComboBoxEntry.new` text form (also `nil` or `true`) reuses that
+editable combo and its stable entry. Model-based constructors are unsupported;
+`ComboBoxText.new(true)` is accepted as the observed legacy text-only selector
+spelling with a migration diagnostic; it does not create an editable entry.
+Other positional values and combinations with editable options are refused.
+`Entry#signal_emit('changed')` (or `:changed`) synchronously invokes the existing
+handlers without changing text, creating another input, or fabricating a browser
+event. Exceptions, disconnection and nested emissions retain the ordinary callback
+behavior. Other explicitly emitted signals and payload arguments are unsupported.
+Ordinary entries can change `editable` after display using the core read-only
+property; their handles and viewer values survive the change, and the server
+rejects read-only edits. Editable combo children retain their separate constructor-time
+editability restriction.
+
+Legacy spellings use the existing bounded projections: `Gdk.screen_width` and
+`screen_height` share the primary screen measurement/fallback; `Window::POS_CENTER`,
+`SHADOW_ETCHED_IN`, `SELECTION_SINGLE`, `EXPAND` and `FILL` name existing policies.
+`Box` accepts `:Horizontal`/`:Vertical`; `pack_start_defaults` expands and fills
+with zero padding, and `Table#attach_defaults` uses the normal default attachment.
+If a box is asked to pack a child already contained deeper in its own subtree,
+it reports and ignores that redundant request before changing padding or packing.
+The existing immediate parent and single rendered identity remain intact.
+Unrelated parents, ancestor cycles, other script owners and destroyed widgets
+remain refused.
+`modify_font` dispatches through the widget's font mapping, including
+`Pango::FontDescription::WEIGHT_BOLD`. `Gdk::Color.parse` accepts the bounded named
+and six-/twelve-digit RGB palette; `Entry#modify_base(STATE_NORMAL, color)` reports
+the existing browser-theme background omission. Arbitrary CSS is not accepted.
+`signal_connect_after` supports Notebook `switch-page` and Window `delete-event`:
+ordinary listeners run first, connection order holds within each phase, and a
+close veto prevents later listeners. Other after-signals are unsupported.
+
+Scheduled core refreshes may outlive a page closed by Save/Close. Such work is
+discarded when the exact page instance is no longer registered, including when
+a new page has reused its owner-local ID. Live-page refresh errors still surface;
+explicit refresh calls retain their closed-page refusal. Closing does not wait
+on a renderer from inside a callback.
+
 Contract **2.12.0** adds generic table `headers`, viewer-scoped `expanded` and
 `cursor` properties, browse selection, model-owned sorting, cursor events, and
 an optional activation column. Existing nested row expansion defaults remain

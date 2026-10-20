@@ -963,7 +963,15 @@ module Lich
       end
 
       def schedule_refresh(page)
-        schedule_render(page, owner: page.owner, delay: 0) { refresh(page) }
+        schedule_render(page, owner: page.owner, delay: 0) do
+          refresh(page)
+        rescue Error
+          # Closure may retire this exact page after the refresh was queued or
+          # admitted. Discard that obsolete work without joining a render thread
+          # from inside a close callback. Live-page errors still reach the logger;
+          # a replacement with the same owner/id never revives the retired page.
+          raise if @registry.pages_for(page.owner).any? { |registered| registered.equal?(page) }
+        end
       end
 
       # Runs coalesced work until clean/canceled and removes only its own scheduling record.

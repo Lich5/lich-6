@@ -1047,7 +1047,8 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(controls.find { |node| node['type'] == 'text' }['props']['content']).to eq('Score & deeds')
     expect(controls.find { |node| node['type'] == 'text_input' }['props']['read_only']).to be(true)
     expect(controls.find { |node| node['type'] == 'text_input' }['props']['has_frame']).to be(false)
-    expect { entry.set_editable(true) }.to raise_error(gtk::UnsupportedOperation)
+    entry.set_editable(true)
+    wait_for { nodes(viewer).find { |node| node['type'] == 'text_input' }['props']['read_only'] == false }
     expect { label.set_line_wrap_mode(:unsupported) }.to raise_error(gtk::UnsupportedOperation)
     ['Monospace 5', 'Monospace 49', 'Monospace 10; color:red', 10].each do |description|
       expect { scope.const_get(:Pango)::FontDescription.new(description) }.to raise_error(gtk::UnsupportedOperation)

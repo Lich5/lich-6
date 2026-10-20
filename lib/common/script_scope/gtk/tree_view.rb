@@ -17,6 +17,7 @@ module Lich
         end
 
         SELECTION_NONE = SelectionMode::NONE
+        SELECTION_SINGLE = SelectionMode::SINGLE
 
         # Legacy spelling uses the same validated model sorting implementation.
         SORT_ASCENDING = SortType::ASCENDING
