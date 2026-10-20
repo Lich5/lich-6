@@ -534,6 +534,49 @@ RSpec.describe Lich::WebUI::Runtime do
     worker&.join(2)
   end
 
+  it 'discards a queued refresh after close without refreshing a replacement page' do
+    entered, release = Queue.new, Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'close-refresh', title: 'Old') do
+      text(content: 'old')
+    end)
+    allow(runtime).to receive(:log)
+    allow(runtime).to receive(:refresh).and_wrap_original do |original, target|
+      entered << true
+      release.pop
+      original.call(target)
+    end
+    runtime.send(:schedule_refresh, page)
+    Timeout.timeout(2) { entered.pop }
+    worker = runtime.instance_variable_get(:@refresh_mutex).synchronize do
+      runtime.instance_variable_get(:@refresh_state).fetch(page)[:thread]
+    end
+    expect(runtime.close_page(page)).to equal(page)
+    replacement = registry.register(Lich::WebUI::Page.new(owner: owner, id: page.id, title: 'New') do
+      text(content: 'new')
+    end)
+    release << true
+    expect(worker.join(2)).to equal(worker)
+    expect(runtime).not_to have_received(:log)
+    expect(replacement.last_render).to be_nil
+    expect(runtime.instance_variable_get(:@refresh_state)).not_to have_key(page)
+    allow(runtime).to receive(:refresh).and_call_original
+    expect { runtime.refresh(page) }.to raise_error(Lich::WebUI::Error, /not registered/)
+    expect { runtime.refresh(replacement) }.not_to raise_error
+  ensure
+    release << true
+    worker&.join(2)
+  end
+
+  it 'still reports scheduled refresh failures for a registered page' do
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'live-refresh', title: 'Live') do
+      raise Lich::WebUI::Error, 'invalid live render'
+    end)
+    scheduled = nil
+    allow(runtime).to receive(:schedule_render) { |_key, **_options, &work| scheduled = work }
+    runtime.send(:schedule_refresh, page)
+    expect { scheduled.call }.to raise_error(Lich::WebUI::Error, 'invalid live render')
+  end
+
   it 'sends a coherent frame when a newer render arrives during serialization' do
     number = 0
     page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'frames', title: 'Frames') do

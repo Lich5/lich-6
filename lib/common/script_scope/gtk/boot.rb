@@ -40,6 +40,7 @@ module Lich
 
         # Legacy spelling reuses the existing bounded scroller inset policy.
         SHADOW_IN = :in
+        SHADOW_ETCHED_IN = :etched_in
 
         module Align
           START = :start
@@ -61,6 +62,7 @@ module Lich
 
         # Legacy nested spelling shares the same bounded host-placement hint.
         Window::Position = WindowPosition
+        Window::POS_CENTER = WindowPosition::CENTER
 
         module WindowType
           TOPLEVEL = :toplevel

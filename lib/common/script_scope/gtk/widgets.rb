@@ -111,6 +111,10 @@ module Lich
             write(:emphasis, font.weight == :bold ? :strong : :normal)
           end
 
+          # Legacy spelling dispatches through each control's typography mapping.
+          # @return [Widget] self
+          def modify_font(font) = override_font(font)
+
           # Returns the widget-local decoration facade without exposing DOM styling.
           # @return [StyleContext]
           def style_context
@@ -225,6 +229,20 @@ module Lich
                 bind_event(event) if @handle && !%i[show map realize].include?(event)
               end
               @signal_connections[id] = [event, handler]
+              id
+            end
+          end
+
+          # The supported after-signals observe selected tabs or an unhandled close.
+          # Normal listeners run first regardless of connection order.
+          # @return [Integer] disconnectable connection ID
+          def signal_connect_after(name, &block)
+            session.style_operation(self, :signal_connect_after) do
+              normalized = name.to_s.tr('-', '_')
+              valid = (is_a?(Notebook) && normalized == 'switch_page') || (is_a?(Window) && normalized == 'delete_event')
+              session.refuse(self, :signal_connect_after) unless valid
+              id = signal_connect(name, &block)
+              @signal_connections.fetch(id).last.instance_variable_set(:@gtk_after, true)
               id
             end
           end
@@ -721,13 +739,18 @@ module Lich
           # @return [Object, nil] last handler result, or the first close veto
           def emit_handlers(event, signal: nil)
             result = nil
-            @signals.fetch(event, []).dup.each do |name, handler|
+            ordered_handlers(event).each do |name, handler|
               next if signal && name != signal
 
               result = handler.call(self)
               break if event == :close && result == true
             end
             result
+          end
+
+          def ordered_handlers(event)
+            ordinary, after = @signals.fetch(event, []).partition { |_name, handler| !handler.instance_variable_get(:@gtk_after) }
+            ordinary + after
           end
 
           # Commits terminal input before invoking legacy save/close handlers.
@@ -1230,7 +1253,7 @@ module Lich
           def initialize(orientation = :horizontal, spacing = 0)
             super()
             # sloot uses GTK's numeric vertical enum in its Save button box.
-            orientation = { 0 => :horizontal, 1 => :vertical }.fetch(orientation, orientation)
+            orientation = { 0 => :horizontal, 1 => :vertical, Horizontal: :horizontal, Vertical: :vertical }.fetch(orientation, orientation)
             session.refuse(self, :new) unless %i[horizontal vertical].include?(orientation)
             @orientation = orientation
             @end_children = []
@@ -1251,6 +1274,11 @@ module Lich
             pack(child, packing, expand: expand, fill: fill, padding: padding, ending: false)
           end
 
+          # Legacy GTK defaults expand and fill the child with no extra padding.
+          # @param child [Widget] unparented child owned by this script
+          # @return [Box] self
+          def pack_start_defaults(child) = pack_start(child, expand: true, fill: true, padding: 0)
+
           # GTK packs each new end child before the previous end children.
           # hands_and_room depends on this to show right, left, then room.
           def pack_end(child, *packing, expand: true, fill: true, padding: 0)
@@ -1269,11 +1297,20 @@ module Lich
             expand = packing[0] if packing.length >= 1
             fill = packing[1] if packing.length >= 2
             padding = packing[2] if packing.length >= 3
-            child.set_border_width(padding) if padding.positive?
-            # Horizontal grouping and fixed requested widths carry the measured
-            # packing intent; browser layout owns excess-space distribution.
-            session.degrade(:packing, 'excess space follows browser layout') if expand != fill
-            session.synchronize do
+            session.style_operation(self, :pack_start) do
+              session.refuse(self, :pack_start) if destroyed? || !child.is_a?(Widget) || child.destroyed? || !child.session.equal?(session)
+              ancestor = child.parent
+              if ancestor && !ancestor.equal?(self)
+                ancestor = ancestor.parent until ancestor.nil? || ancestor.equal?(self)
+                if ancestor.equal?(self)
+                  session.source_warning(self, :pack_start, 'child already contained through another parent; redundant packing ignored')
+                  return self
+                end
+              end
+              child.set_border_width(padding) if padding.positive?
+              # Horizontal grouping and fixed requested widths carry the measured
+              # packing intent; browser layout owns excess-space distribution.
+              session.degrade(:packing, 'excess space follows browser layout') if expand != fill
               @end_children.select! { |widget| widget.parent.equal?(self) }
               previous_cols = [@children.length, 1].max
               growing = @handle && @orientation == :horizontal && !@children.include?(child)
@@ -1799,7 +1836,7 @@ module Lich
 
           def emit_switch(index)
             page = @tabs[index][:page]
-            @signals.fetch(:select, []).dup.each do |name, handler|
+            ordered_handlers(:select).each do |name, handler|
               break if destroyed? || page.destroyed? || !@children.include?(page)
               handler.call(self, page, index) if name == 'switch_page'
             end
@@ -2284,7 +2321,30 @@ module Lich
         end
 
         class Entry < Widget
-          # Creates an empty editable entry; read-only mode must be selected before materialization.
+          # Legacy base-color requests share the explicit themed-background omission.
+          # @param state [Symbol] normal state only
+          # @param colour [Gdk::Color] bounded legacy color value
+          # @return [Entry] self
+          def modify_base(state, colour)
+            session.style_operation(self, :modify_base) do
+              session.refuse(self, :modify_base) if destroyed? || !colour.is_a?(Gdk::Color)
+              override_background_color(state, colour.to_rgba)
+            end
+          end
+
+          # Explicit initialization notification uses the ordinary synchronous
+          # callback path, without changing text or fabricating a browser event.
+          # @param name [String, Symbol] only changed
+          # @return [nil] the GTK void-signal result
+          def signal_emit(name)
+            session.style_operation(self, :signal_emit) do
+              session.refuse(self, :signal_emit) if destroyed? || !["changed", :changed].include?(name)
+              emit_handlers(:change, signal: 'changed')
+            end
+            nil
+          end
+
+          # Creates an empty editable entry using the shared read-only property.
           def initialize
             super
             @props[:value] = ''
@@ -2359,11 +2419,15 @@ module Lich
           end
           alias set_alignment xalign=
 
-          # Sets server-owned read-only input behavior before a handle is allocated.
-          # @raise [UnsupportedOperation] after materialization
+          # Updates server-owned read-only behavior without replacing the input
+          # or its viewer draft. The core rejects subsequent read-only edits.
+          # @raise [UnsupportedOperation] for invalid values, ownership or lifetime
           def editable=(value)
-            session.refuse(self, :editable=) if @handle
-            @editable = !!value
+            session.style_operation(self, :editable=) do
+              session.refuse(self, :editable=) if destroyed? || ![true, false].include?(value)
+              write(:read_only, !value)
+              @editable = value
+            end
           end
           alias set_editable editable=
 

@@ -494,7 +494,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(window).not_to be_destroyed
   end
 
-  it 'keeps shim entry and checkbox defaults in legacy boxes while accepting browser values', browser: true do
+  it 'keeps shim entry and checkbox defaults while saving a locked browser draft', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
     window = compatibility.const_get(:Window).new('Shim entry width')
@@ -505,6 +505,20 @@ RSpec.describe 'bounded script compatibility pilot' do
     content.pack_start(checkbox)
     row.pack_start(entry, true, true, 0)
     content.pack_start(row, false, false, 0)
+    locked = false
+    toggle = compatibility::Button.new('Toggle editing')
+    toggle.signal_connect('clicked') do
+      locked = !locked
+      entry.editable = !locked
+    end
+    content.pack_start_defaults(toggle)
+    saved = []
+    save = compatibility::Button.new('Save')
+    save.signal_connect('clicked') do
+      saved << [entry.text, entry.send(:component_props)[:read_only]]
+      window.destroy
+    end
+    content.pack_start_defaults(save)
     frame = compatibility.const_get(:Frame).new('')
     frame.add(content)
     entry.signal_connect('activate') { window.destroy }
@@ -521,7 +535,8 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(page.last_render.tree.each.find { |node| node.type == :group }.props).to include(label: '')
     WebUIBrowser.check(service: service, page: page, scenario: 'shim-entry')
     expect(window).to be_destroyed
-    expect(entry.text).to eq('shim value')
+    expect(saved).to eq([['saved while locked', true]])
+    expect(entry.text).to eq('saved while locked')
     expect(checkbox.active?).to be(true)
   end
 

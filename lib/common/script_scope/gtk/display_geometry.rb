@@ -4,6 +4,13 @@ module Lich
   module Common
     module ScriptScope
       module Gdk
+        # Legacy module helpers share the owner-bound primary screen projection.
+        # @return [Integer] measured width or the existing nominal fallback
+        def self.screen_width = Screen.default.width
+
+        # @return [Integer] measured height or the existing nominal fallback
+        def self.screen_height = Screen.default.height
+
         # Shared ownership/refusal boundary for bounded display and cursor values.
         module DisplayValue
           attr_reader :session

@@ -16,6 +16,9 @@ module Lich
           FILL = 4
         end
 
+        EXPAND = AttachOptions::EXPAND
+        FILL = AttachOptions::FILL
+
         # Natural-sized children at bounded pixel coordinates, with no native GTK window.
         class Fixed < Widget
           include Container
@@ -183,6 +186,13 @@ module Lich
             child.send(:write, :margin, { left: xpadding, right: xpadding, top: ypadding, bottom: ypadding })
             @n_rows = [@n_rows, bottom].max
             add(child)
+          end
+
+          # Legacy convenience spelling uses the same default expansion and padding.
+          # @return [Table] self
+          def attach_defaults(child, left, right, top, bottom)
+            session.refuse(self, :attach_defaults) if is_a?(Grid)
+            attach(child, left, right, top, bottom)
           end
 
           protected

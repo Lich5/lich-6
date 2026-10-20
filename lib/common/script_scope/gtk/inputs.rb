@@ -116,8 +116,24 @@ module Lich
         class ComboBoxText < ComboBox
           # @param entry [Boolean] expose the combo's editable entry facade
           # @param has_entry [Boolean] legacy spelling of entry
-          def initialize(entry: false, has_entry: false)
+          # The observed GTK2-style true argument means a text-only selector,
+          # not an editable entry. Report this source migration at the boundary.
+          def initialize(*legacy, entry: false, has_entry: false)
+            unless legacy.empty?
+              Gtk.session.refuse(self, :new) unless legacy == [true] && entry == false && has_entry == false
+              Gtk.session.source_warning(self, :new, 'legacy text-only argument normalized; use ComboBoxText.new')
+            end
             super(nil, entry: entry, has_entry: has_entry)
+          end
+        end
+
+        # GTK2 text-entry convenience form; shares the existing editable combo.
+        class ComboBoxEntry < ComboBoxText
+          # @param text_only [Boolean, nil] default/true selects the text model
+          # @raise [UnsupportedOperation] for unimplemented model constructors
+          def initialize(text_only = true)
+            Gtk.session.refuse(self, :new) unless text_only.nil? || text_only == true
+            super(entry: true)
           end
         end
 

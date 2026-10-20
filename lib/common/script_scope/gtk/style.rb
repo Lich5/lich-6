@@ -12,6 +12,8 @@ module Lich
           def self.const_missing(name) = Gtk.session.refuse(self, name)
         end
 
+        STATE_NORMAL = StateFlags::NORMAL
+
         module StyleProvider
           PRIORITY_APPLICATION = 600
           PRIORITY_USER = 800
@@ -351,6 +353,28 @@ module Lich
       end
 
       module Gdk
+        # Legacy opaque colors reuse the bounded literal parser and typed RGBA values.
+        class Color
+          # @param value [String] supported name or six-/twelve-digit RGB literal
+          # @return [Color] immutable color token
+          def self.parse(value)
+            valid = value.is_a?(String) && value.valid_encoding? && value.ascii_only? && value.length <= 64
+            parsed = Gtk.const_get(:Color, false).parse(value) if valid
+            Gtk.session.refuse(self, :parse) unless parsed
+            new(parsed)
+          end
+
+          # @api private
+          def initialize(parsed)
+            @rgba = RGBA.new(*%i[r g b].map { |key| parsed.fetch(key) / 255.0 }, 1.0)
+            freeze
+          end
+          private_class_method :new
+
+          # @return [RGBA] typed value for the existing background-color disposition
+          def to_rgba = @rgba
+        end
+
         # Utility windows remain ordinary owned WebUI pages; native classification is host-controlled.
         module WindowTypeHint
           UTILITY = :utility
@@ -411,6 +435,8 @@ module Lich
       # They do not load Pango or expose arbitrary browser CSS.
       module Pango
         class FontDescription
+          WEIGHT_BOLD = :bold
+
           attr_reader :weight, :properties
 
           # Parses generic families and bounded point sizes without loading Pango.
