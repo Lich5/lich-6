@@ -12,7 +12,7 @@ require 'rbconfig'
 
 RSpec.describe 'macOS native host presentation' do
   before(:all) do
-    skip 'Set NATIVE_HOST=1 on macOS to run AppKit/WebKit regressions' unless ENV['NATIVE_HOST'] == '1' && RUBY_PLATFORM.include?('darwin')
+    next unless ENV['NATIVE_HOST'] == '1' && RUBY_PLATFORM.include?('darwin')
 
     @directory = Dir.mktmpdir('lich-native-presentation')
     root = File.expand_path('../../..', __dir__)
@@ -33,6 +33,10 @@ RSpec.describe 'macOS native host presentation' do
 
   after(:all) { FileUtils.remove_entry(@directory) if @directory }
 
+  before(:each, native_host: true) do
+    skip 'Set NATIVE_HOST=1 on macOS to run AppKit/WebKit regressions' unless @executable
+  end
+
   def check_presentation(steps, borderless: false)
     server = TCPServer.new('127.0.0.1', 0)
     port = server.addr[1]
@@ -43,7 +47,7 @@ RSpec.describe 'macOS native host presentation' do
       loop do
         client = server.accept
         request = client.gets
-        break unless request
+        next client.close unless request
 
         headers = {}
         while (line = client.gets) && line != "\r\n"
@@ -87,11 +91,30 @@ RSpec.describe 'macOS native host presentation' do
     worker&.kill if worker&.alive?
   end
 
-  it 'receives server reveals from initial hiding and repeated hide/show cycles' do
+  it 'serves a normal request after an empty connection closes' do
+    allow(Open3).to receive(:capture2e) do |_executable, address, _steps|
+      port = address.split(':').last.to_i
+      TCPSocket.open('127.0.0.1', port) do |client|
+        client.close_write
+        expect(IO.select([client], nil, nil, 2)).not_to be_nil
+        expect(client.read).to eq('')
+      end
+      TCPSocket.open('127.0.0.1', port) do |client|
+        client.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        expect(IO.select([client], nil, nil, 2)).not_to be_nil
+        expect(client.read).to include('HTTP/1.1 200 OK', 'new WebSocket')
+      end
+      ["Verified visible\n", instance_double(Process::Status, success?: true)]
+    end
+
+    check_presentation(['visible'])
+  end
+
+  it 'receives server reveals from initial hiding and repeated hide/show cycles', native_host: true do
     check_presentation(%w[hidden visible hidden visible hidden visible])
   end
 
-  it 'minimizes and restores a borderless window twice' do
+  it 'minimizes and restores a borderless window twice', native_host: true do
     check_presentation(%w[visible minimized visible minimized visible], borderless: true)
   end
 end
