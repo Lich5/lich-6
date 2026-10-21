@@ -679,7 +679,8 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     expect(child.parent).to be_nil
     expect { layout.move(child, 0, 0) }.to raise_error(gtk::UnsupportedOperation)
     expect { gtk::Layout.new(gtk::Adjustment.new, nil) }.to raise_error(gtk::UnsupportedOperation)
-    expect { layout.set_size(200, 300) }.to raise_error(gtk::UnsupportedOperation)
+    layout.set_size(200, 300)
+    expect([layout.width, layout.height]).to eq([200, 300])
     layout.destroy
     expect { layout.put(child, 0, 0) }.to raise_error(gtk::UnsupportedOperation)
   end

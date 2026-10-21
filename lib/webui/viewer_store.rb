@@ -252,7 +252,7 @@ module Lich
             raise Protocol::Refusal.new(:attachment, 'viewer is no longer attached')
           end
           widget_drop = message[:event].to_s == 'widget_drop'
-          return admit_release(attachment, message) { |admission| yield admission } if message[:event].to_s == 'pointer_release'
+          return admit_release(attachment, message) { |admission| yield admission } if %w[pointer_release pointer_motion].include?(message[:event].to_s)
 
           generation = message[:generation]
           current = attachment.delivered_generation
@@ -305,6 +305,14 @@ module Lich
             attachment.input_requests[component.cid] = request
           end
           case [component.type, event]
+          when [:overlay, :pointer_press], [:overlay, :pointer_motion], [:overlay, :pointer_release]
+            if component.props[:pointer_tracking]
+              attachment.values[[component.cid, :pointer_position]] = payload.slice(:x, :y, :state).freeze
+              # Start the bounded drag lifetime at press, not at an earlier paint.
+              if event == :pointer_press && payload[:button] == 1 && (epoch = attachment.release_epochs[component.cid])
+                epoch.started_at = @clock.call
+              end
+            end
           when [:radio_option, :change]
             select_radio_option!(attachment, component) if payload[:value]
             attachment.values[[component.cid, :checked]] = payload[:value]
@@ -468,7 +476,17 @@ module Lich
           boundary = [node.cid, node.type, node.props, node.slot, node.placement, node.children.map(&:cid)]
           children = node.children.map { |child| project.call(child, ancestors + [boundary]) }
           subtree = [boundary, bindings[node.cid], render.submissions[node.cid], children]
-          signatures[node.cid] = [subtree, ancestors, render.facilities] if bindings[node.cid]&.key?(:pointer_release)
+          if bindings[node.cid]&.key?(:pointer_release)
+            # A tracking canvas releases its own drag, not a child hit target.
+            # Marker paints and scrolling may change during that drag; ownership,
+            # visibility and the exact callbacks still delimit release authority.
+            signatures[node.cid] = if node.type == :overlay && node.props[:pointer_tracking]
+                                     [node.cid, bindings[node.cid], render.submissions[node.cid],
+                                      (ancestors + [boundary]).map { |item| [item[0], item[1], item[2].slice(:hidden, :disabled, :pointer_tracking, :pointer_events), item[3]] }]
+                                   else
+                                     [subtree, ancestors, render.facilities]
+                                   end
+          end
           subtree
         end
         project.call(render.tree, [])

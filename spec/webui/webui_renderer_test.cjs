@@ -24,6 +24,57 @@ function fixture() {
     receive: message => listeners.message({ data: JSON.stringify(message) }), disconnect: () => listeners.close() };
 }
 
+for (const ending of ['close', 'disconnect']) test(`replacing a tracked pointer retires it before the new press and cleans up on ${ending}`, t => {
+  const { dom, receive, sent, disconnect } = fixture(); t.after(() => dom.window.close());
+  const timers = new Set(), activeListeners = new Set();
+  const setTimeout = dom.window.setTimeout.bind(dom.window), clearTimeout = dom.window.clearTimeout.bind(dom.window);
+  dom.window.setTimeout = (callback, delay) => {
+    const id = setTimeout(callback, delay);
+    if (delay === 25000) timers.add(id);
+    return id;
+  };
+  dom.window.clearTimeout = id => { timers.delete(id); clearTimeout(id); };
+  const add = dom.window.addEventListener.bind(dom.window), remove = dom.window.removeEventListener.bind(dom.window);
+  const gestureEvents = new Set(['pointermove', 'pointerup', 'pointercancel', 'blur']);
+  dom.window.addEventListener = (name, callback, options) => {
+    if (gestureEvents.has(name)) activeListeners.add(callback);
+    add(name, callback, options);
+  };
+  dom.window.removeEventListener = (name, callback, options) => {
+    if (gestureEvents.has(name)) activeListeners.delete(callback);
+    remove(name, callback, options);
+  };
+  receive({ type: 'hello', pages: [{ address: 'canvas' }] });
+  receive({ type: 'render', page: 'canvas', generation: 1,
+    bindings: { drag: ['pointer_press', 'pointer_motion', 'pointer_release'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'overlay', cid: 'drag', props: { positioned: true, pointer_events: true, pointer_tracking: true }, children: [] }
+      ]
+    } });
+  const canvas = dom.window.document.querySelector('[data-cid="drag"]');
+  const pointer = (target, type, id, x) => {
+    const event = new dom.window.MouseEvent(type, { bubbles: true, clientX: x, clientY: 20, button: 0 });
+    Object.defineProperties(event, { pointerId: { value: id }, pointerType: { value: 'touch' } });
+    target.dispatchEvent(event);
+  };
+  const events = () => sent.filter(message => /^pointer_/.test(message.event)).map(message => [message.event, message.payload.x]);
+  pointer(canvas, 'pointerdown', 11, 100);
+  pointer(dom.window, 'pointermove', 11, 125);
+  pointer(canvas, 'pointerdown', 22, 200);
+  assert.deepEqual(events(), [['pointer_press', 100], ['pointer_release', 125], ['pointer_press', 200]]);
+  assert.equal(timers.size, 1);
+  pointer(dom.window, 'pointerup', 11, 140);
+  assert.equal(events().length, 3);
+  pointer(dom.window, 'pointermove', 22, 220);
+  if (ending === 'close') receive({ type: 'page_closed', page: 'canvas' });
+  else disconnect();
+  assert.deepEqual(events().at(-1), ['pointer_release', 220]);
+  assert.equal(timers.size, 0);
+  assert.equal(activeListeners.size, 0);
+  pointer(dom.window, 'pointerup', 22, 240);
+  assert.equal(events().length, 4);
+});
+
 test('native minimize measurements are deduplicated and listeners retire on close', t => {
   const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
   const bridge = { minimized: false, present() {} };
@@ -847,16 +898,18 @@ test('adding a row preserves typing and focus, while an explicit server edit win
   dom.window.close();
 });
 
-test('scroll reports real vertical dimensions and suppresses duplicate measurements', async () => {
+test('scroll reports both axes and suppresses duplicate measurements', async () => {
   const { dom, page, sent } = fixture();
   page.bindings.scroll = ['scrolled'];
   const element = dom.window.LichWebUI.render(page, {
-    type: 'scroll', cid: 'scroll', props: { scroll_position: 120 }, children: []
+    type: 'scroll', cid: 'scroll', props: { scroll_position: 120, scroll_position_x: 80 }, children: []
   });
-  Object.defineProperties(element, { scrollHeight: { value: 800 }, clientHeight: { value: 300 } });
+  Object.defineProperties(element, { scrollHeight: { value: 800 }, clientHeight: { value: 300 },
+    scrollWidth: { value: 1000 }, clientWidth: { value: 400 } });
   dom.window.document.body.append(element);
   await new Promise(resolve => dom.window.requestAnimationFrame(resolve));
-  assert.deepEqual(sent.at(-1).payload, { position: 120, upper: 800, page_size: 300 });
+  assert.deepEqual(sent.at(-1).payload, { position: 120, upper: 800, page_size: 300,
+    position_x: 80, upper_x: 1000, page_size_x: 400 });
   const count = sent.length;
   element.dispatchEvent(new dom.window.Event('scroll'));
   assert.equal(sent.length, count);
@@ -864,6 +917,27 @@ test('scroll reports real vertical dimensions and suppresses duplicate measureme
   element.dispatchEvent(new dom.window.Event('scroll'));
   assert.equal(sent.at(-1).payload.position, 140);
   dom.window.close();
+});
+
+test('explicit repeated scroll requests preserve manual movement on the other axis', async t => {
+  const { dom, page } = fixture(); t.after(() => dom.window.close());
+  const paint = async props => {
+    const element = dom.window.LichWebUI.render(page, { type: 'scroll', cid: 'axes', props, children: [] });
+    dom.window.document.body.replaceChildren(element);
+    await new Promise(resolve => dom.window.requestAnimationFrame(resolve));
+    return element;
+  };
+  let element = await paint({ initial_scroll: { x: 30, y: 40 }, scroll_position_x: 80, scroll_position: 120,
+    scroll_revision_x: 1, scroll_revision: 2 });
+  element.scrollTop = 250;
+  element.scrollLeft = 200;
+  element.dispatchEvent(new dom.window.Event('scroll'));
+  element = await paint({ scroll_position_x: 80, scroll_position: 120, scroll_revision_x: 3, scroll_revision: 2 });
+  assert.equal(element.scrollLeft, 80);
+  assert.equal(element.scrollTop, 250);
+  element = await paint({ scroll_position_x: 80, scroll_position: 120, scroll_revision_x: 3, scroll_revision: 4 });
+  assert.equal(element.scrollTop, 120);
+  assert.equal(element.scrollLeft, 80);
 });
 
 test('native map horizontal panning survives tree replacement without a new shim event', async () => {

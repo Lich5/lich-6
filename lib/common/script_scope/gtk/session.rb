@@ -195,7 +195,10 @@ module Lich
           # closed viewer; this object contains no transport or draft state.
           def viewer_id
             viewer, root = @callback_context&.drop(1)
-            @access_root && !@access_root.equal?(root) ? @window_viewers[@access_root] : viewer
+            return viewer unless @access_root && !@access_root.equal?(root)
+
+            pointer = @access_root.pointer_viewer if @access_root.is_a?(Window)
+            pointer || @window_viewers[@access_root]
           end
 
           # One script may own multiple windows with different attachments.

@@ -37,8 +37,13 @@ RSpec.describe 'bounded release admission' do
         state.instance_variable_get(:@order).each do |key|
           if key == 'release'
             next if state.instance_variable_get(:@removed)
-            stack(key: key, pointer_events: true, width: state.instance_variable_get(:@width),
-                  on: { pointer_release: state.instance_variable_get(:@callback) }) do
+            tracking = state.instance_variable_get(:@tracking)
+            properties = tracking ? { pointer_tracking: true } : {}
+            callbacks = { pointer_release: state.instance_variable_get(:@callback) }
+            callbacks[:pointer_motion] = state.instance_variable_get(:@callback) if tracking
+            callbacks[:pointer_press] = state.instance_variable_get(:@callback) if tracking
+            public_send(tracking ? :overlay : :stack, key: key, pointer_events: true, width: state.instance_variable_get(:@width),
+                        **properties, on: callbacks) do
               text(key: 'caption', content: state.instance_variable_get(:@caption))
             end
           else
@@ -76,6 +81,46 @@ RSpec.describe 'bounded release admission' do
     expect(@calls).to eq([@event[:cid]])
     expect(@logs.grep(/pointer_release phase=completed/).size).to eq(1)
     expect(@frames.none? { |frame| frame['type'] == 'refusal' }).to be(true)
+  end
+
+  it 'keeps tracked canvas measurements and release scoped through marker paints' do
+    @tracking = true
+    publish
+    @caption = 'Marker moved'
+    @width = 1200
+    paint
+    motion = @event.merge(event: 'pointer_motion', payload: { x: 90, y: 120, state: 1 })
+    expect(runtime.handle(@connection, motion)).to eq(:queued)
+    expect(runtime.handle(@connection, @event.merge(request: 2))).to eq(:queued)
+    drain
+    expect(@calls.size).to eq(2)
+    viewer = viewers.attachments_for(@page).first
+    canvas = viewer.render.tree.each.find { |node| node.type == :overlay }
+    expect(viewers.property(viewer, canvas, :pointer_position)).to eq(x: 12, y: 25, state: 0)
+    other = viewers.attach(connection_id: 'other', address: @address, page: @page)
+    viewers.deliver(other, viewer.render)
+    expect(viewers.property(other, canvas, :pointer_position)).to be_nil
+    @callback = proc { @calls << 'replacement' }
+    paint
+    expect(runtime.handle(@connection, @event.merge(request: 3))).to eq(:refused)
+    runtime.disconnect(@connection)
+    expect { viewers.attachment_for_viewer(@page, viewer.viewer_id) }.to raise_error(Lich::WebUI::Error)
+  end
+
+  it 'gives a new canvas drag its bounded lifetime even near an older paint expiry' do
+    @tracking = true
+    publish
+    @now += 29
+    expect(runtime.handle(@connection, @event.merge(event: 'pointer_press'))).to eq(:queued)
+    drain
+    @now += 24
+    paint
+    expect(runtime.handle(@connection, @event.merge(request: 2))).to eq(:queued)
+    drain
+    expect(@calls.size).to eq(2)
+    @now += 7
+    paint
+    expect(runtime.handle(@connection, @event.merge(request: 3))).to eq(:refused)
   end
 
   %i[binding order disabled hidden width caption removal aba].each do |change|

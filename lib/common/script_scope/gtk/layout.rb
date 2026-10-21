@@ -81,7 +81,7 @@ module Lich
         end
 
         # Bounded Layout positioning reuses Fixed; the canvas clips offscreen children.
-        # Native virtual-size and adjustment APIs are outside this facade.
+        # Virtual dimensions reuse the bounded overlay extent.
         class Layout < Fixed
           # @param hadjustment [nil] only browser-owned scrolling is supported
           # @param vadjustment [nil] only browser-owned scrolling is supported
@@ -90,7 +90,55 @@ module Lich
             super()
             session.refuse(self, :new) unless hadjustment.nil? && vadjustment.nil?
             @props[:clip_children] = true
-            session.degrade(:layout_scrolling, 'Layout positions and clips children; scrolling uses browser containers, not native adjustments')
+            @props[:pointer_tracking] = true
+          end
+
+          def set_size(width, height)
+            session.synchronize do
+              session.refuse(self, :set_size) unless [width, height].all? { |value| value.is_a?(Numeric) && value.finite? && value.between?(0, 65_536) }
+              write(:width, width.round)
+              write(:height, height.round)
+            end
+            self
+          end
+
+          def width = read(:width) || 0
+          def height = read(:height) || 0
+
+          # Queued polling keeps the drag's originating viewer until release.
+          def pointer_viewer = @pointer_press && @pointer_viewer
+
+          # Reads the current attachment's bounded window coordinates, never OS state.
+          def pointer_position
+            viewer = session.with_widget(self) { session.viewer_id }
+            session.refuse(self, :pointer_position) unless viewer == @pointer_viewer
+            @last_pointer = session.with_widget(self) { session.port.get(@handle, :pointer_position) } || @last_pointer
+            session.refuse(self, :pointer_position) unless @last_pointer && !destroyed?
+            @last_pointer
+          rescue Lich::WebUI::Error
+            raise unless @pointer_cancelled && @last_pointer
+            @last_pointer
+          end
+
+          # Detach cancels the script's drag loop using its original release handlers.
+          def cancel_pointer(viewer)
+            return unless @pointer_viewer == viewer && @pointer_press
+            @pointer_cancelled = true
+            event = @pointer_press
+            @pointer_press = nil
+            @signals.fetch(:pointer_release, []).dup.each { |_name, handler| handler.call(self, PointerEvent.new(**event.to_h.merge(released: true))) }
+          end
+
+          protected
+
+          def builtin_events = [:pointer_motion]
+
+          private
+
+          # GTK integer coordinates accept finite numeric script calculations.
+          def position(x, y)
+            session.refuse(self, :position) unless [x, y].all? { |value| value.is_a?(Numeric) && value.finite? && value.between?(-65_536, 65_536) }
+            super(x.to_i, y.to_i)
           end
         end
 
@@ -473,9 +521,10 @@ module Lich
         # not invent screen geometry or poll the browser synchronously.
         class ScrollAdjustment < Adjustment
           # Creates a viewer-measurement cache for one scroll container.
-          def initialize(scroll)
+          def initialize(scroll, axis = :vertical)
             super()
             @scroll = scroll
+            @axis = axis
             @measurements = {}
           end
 
@@ -503,18 +552,19 @@ module Lich
           # Reads the last measured viewport extent for the attributed viewer.
           # @return [Numeric] zero before measurement
           def page_size = measurement.fetch(:page_size, 0)
-          # Reads the cached vertical scroll position for the attributed viewer.
+          # Reads this axis's cached scroll position for the attributed viewer.
           # @return [Numeric] zero before measurement
           def value = measurement.fetch(:position, 0)
 
-          # Requests a finite, rounded vertical position and updates the local measurement cache.
+          # Requests a finite, rounded position and updates the local measurement cache.
           # @raise [UnsupportedOperation] for positions outside the transport bounds
           def value=(position)
             number = Float(position)
             @scroll.session.refuse(self, :value=) unless number.finite?
             target = number.round
-            @scroll.session.refuse(self, :value=) unless target.between?(0, 65_536)
-            @scroll.send(:write, :scroll_position, target)
+            @scroll.session.refuse(self, :value=) unless target.between?(-65_536, 65_536)
+            target = [target, 0].max
+            @scroll.request_position(@axis, target)
             measurement[:position] = target
           end
           alias set_value value=
@@ -580,7 +630,28 @@ module Lich
         class ScrolledWindow < Widget
           include Container
 
-          attr_reader :vadjustment
+          attr_reader :vadjustment, :hadjustment
+
+          # Browser viewport measurements supply the scroller's content allocation.
+          def allocation
+            width, height = @hadjustment.page_size, @vadjustment.page_size
+            if width.zero? && height.zero? && parent.is_a?(Window)
+              return parent.allocation
+            end
+            Window::Allocation.new(width, height)
+          end
+
+          # A shared sequence makes repeated same-position requests observable on either axis.
+          def request_position(axis, target)
+            unless session.with_widget(self) { session.viewer_id }
+              initial = (@props[:initial_scroll] || { x: 0, y: 0 }).merge(axis == :horizontal ? { x: target } : { y: target })
+              write(:initial_scroll, initial)
+              return
+            end
+            write(axis == :horizontal ? :scroll_position_x : :scroll_position, target)
+            @scroll_revision = (@scroll_revision || 0) + 1
+            write(axis == :horizontal ? :scroll_revision_x : :scroll_revision, @scroll_revision)
+          end
 
           # Explicit compatibility policy: accept :in but omit its inset decoration.
           # :none is already represented by the browser scroll container. Other shadow
@@ -600,6 +671,7 @@ module Lich
             super()
             session.refuse(self, :new) unless horizontal.nil? && vertical.nil?
             @vadjustment = ScrollAdjustment.new(self)
+            @hadjustment = ScrollAdjustment.new(self, :horizontal)
           end
 
           # Retains the GTK preference; browser/host chrome owns scrollbar presentation.
@@ -714,7 +786,7 @@ module Lich
           # @api private
           # @return [Boolean] allocation demand along the requested axis
           def expands?(axis)
-            return super unless @children.first.is_a?(Viewport)
+            return super unless @children.first.is_a?(Viewport) || @children.first.is_a?(Layout)
 
             explicit = axis == :horizontal ? @hexpand : @vexpand
             explicit.nil? ? true : explicit
@@ -727,14 +799,17 @@ module Lich
 
           def layout_props
             allocated = parent.is_a?(Window) || (parent.is_a?(Box) && parent.vertical?)
-            { fill: !!(allocated && @children.first.is_a?(Viewport) && expands?(:vertical)) }
+            { fill: !!(allocated && (@children.first.is_a?(Viewport) || @children.first.is_a?(Layout)) && expands?(:vertical)) }
           end
 
           def bind_event(event)
             return super unless event == :scrolled
 
             session.port.bind(@handle, :scrolled, proc do |context|
-              session.callback(context, widget: self) { @vadjustment.observe(context.viewer_id, context.payload) }
+              session.callback(context, widget: self) do
+                @vadjustment.observe(context.viewer_id, context.payload.slice(:position, :upper, :page_size))
+                @hadjustment.observe(context.viewer_id, context.payload.slice(:position_x, :upper_x, :page_size_x).transform_keys { |key| key.to_s.delete_suffix('_x').to_sym }) if context.payload.key?(:position_x)
+              end
             end)
           end
         end

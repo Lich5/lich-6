@@ -87,7 +87,9 @@ RSpec.describe 'bounded display geometry and cursor compatibility' do
     expect(@logs.grep(/unsupported named cursor/).length).to eq(1)
     expect { gdk::Cursor.new(Object.new) }.to raise_error(gtk::UnsupportedOperation)
     expect { widget.window.pointer }.to raise_error(gtk::UnsupportedOperation)
-    expect { gdk::Display.default.default_seat }.to raise_error(gtk::UnsupportedOperation)
+    device = gdk::Display.default.default_seat.pointer
+    expect(device).to equal(gdk::Display.default.default_seat.pointer)
+    expect { widget.window.get_device_position(device) }.to raise_error(gtk::UnsupportedOperation)
   end
 
   it 'supplies measured screen dimensions and requested window size before publication' do

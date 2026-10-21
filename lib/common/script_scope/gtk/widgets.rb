@@ -270,14 +270,15 @@ module Lich
           # Other native event families are not implied by menu support.
           # @return [Widget] self
           def add_events(mask)
-            masks = { Gdk::EventMask::BUTTON_PRESS_MASK => :pointer_press, Gdk::EventMask::SCROLL_MASK => :scroll,
+            masks = { Gdk::EventMask::BUTTON_PRESS_MASK => :pointer_press, Gdk::EventMask::BUTTON_RELEASE_MASK => :pointer_release, Gdk::EventMask::SCROLL_MASK => :scroll,
                       Gdk::EventMask::ENTER_NOTIFY_MASK => :pointer_enter, Gdk::EventMask::LEAVE_NOTIFY_MASK => :pointer_leave }
-            mask = Gdk::EventMask::SCROLL_MASK if mask == :scroll_mask
+            mask = { scroll_mask: Gdk::EventMask::SCROLL_MASK, button_press_mask: Gdk::EventMask::BUTTON_PRESS_MASK,
+                     button_release_mask: Gdk::EventMask::BUTTON_RELEASE_MASK }.fetch(mask, mask)
             supported = masks.keys.reduce(0, :|)
             session.refuse(self, :add_events) unless mask.is_a?(Integer) && mask.positive? && (mask & ~supported).zero?
             events = masks.filter_map { |bit, event| event unless (mask & bit).zero? }
             session.refuse(self, :add_events) unless events.all? { |event| session.port.schema(component_type)[:events].key?(event) }
-            write(:pointer_events, true) if events.include?(:pointer_press)
+            write(:pointer_events, true) if events.any? { |event| %i[pointer_press pointer_release].include?(event) }
             self
           end
 
@@ -780,7 +781,15 @@ module Lich
                            crossing = CrossingEvent.new(event == :pointer_enter ? :enter_notify : :leave_notify)
                            @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(widget, crossing) == true }
                          elsif %i[pointer_press pointer_release].include?(event)
-                           pointer = PointerEvent.new(**context.payload)
+                           pointer = PointerEvent.new(**context.payload, released: event == :pointer_release)
+                           if is_a?(Layout)
+                             session.refuse(self, :pointer_press) if pointer_viewer && pointer_viewer != context.viewer_id
+                             toplevel.instance_variable_set(:@pointer_surface, self)
+                             @last_pointer = context.payload.slice(:x, :y, :state)
+                             @pointer_viewer = context.viewer_id
+                             @pointer_cancelled = false
+                             @pointer_press = event == :pointer_press ? pointer : nil
+                           end
                            session.with_pointer(widget, pointer) do
                              @signals.fetch(event, []).dup.each do |_name, handler|
                                break if handler.call(widget, pointer) == true
@@ -797,6 +806,9 @@ module Lich
 
         class Window < Widget
           include Container
+
+          # @api private
+          def pointer_viewer = @pointer_surface&.pointer_viewer
 
           attr_reader :titlebar
 
@@ -1196,11 +1208,16 @@ module Lich
           def signal_map = { 'delete_event' => :close, 'configure_event' => :configure, 'window_state_event' => :window_state, 'size_allocate' => :configure,
                              'key_press_event' => :key_press, 'key_release_event' => :key_release }
 
-          def builtin_events = %i[close configure window_state]
+          def builtin_events = %i[close configure window_state detach]
 
           # Preserve the latest validated browser measurements for the original
           # script's allocation/position reads, including its exit cleanup.
           def bind_event(event)
+            if event == :detach
+              return session.port.bind(@handle, event, proc do |context|
+                session.callback(context, widget: self) { @pointer_surface&.cancel_pointer(context.viewer_id) }
+              end)
+            end
             if event == :window_state
               return session.port.bind(@handle, event, proc do |context|
                 session.callback(context, widget: self) do

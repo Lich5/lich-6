@@ -6,7 +6,7 @@ module Lich
   module WebUI
     # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
     module Contract
-      VERSION = '2.49.0'
+      VERSION = '2.50.0'
       MAJOR_VERSION = 2
 
       # Serialized UTF-8 JSON budgets. A maximum-length field can require six
@@ -293,12 +293,18 @@ module Lich
             max_height: property(GEOMETRY), scroll_to: property(IDENT, scope: :viewer),
             fill: property(BOOL, default: false), scrollbars: property(BOOL, default: true),
             scroll_position: property(SCROLL_PIXELS, scope: :viewer),
+            scroll_position_x: property(SCROLL_PIXELS, scope: :viewer),
+            scroll_revision: property(integer(min: 0, max: 2_147_483_647), scope: :viewer),
+            scroll_revision_x: property(integer(min: 0, max: 2_147_483_647), scope: :viewer),
+            initial_scroll: property(record(x: property(SCROLL_PIXELS, required: true), y: property(SCROLL_PIXELS, required: true))),
           },
           children: :many,
           events: { scrolled: event(record(
                                       position: property(SCROLL_PIXELS, required: true),
                                       upper: property(SCROLL_PIXELS),
-                                      page_size: property(SCROLL_PIXELS)
+                                      page_size: property(SCROLL_PIXELS),
+                                      position_x: property(SCROLL_PIXELS), upper_x: property(SCROLL_PIXELS),
+                                      page_size_x: property(SCROLL_PIXELS)
                                     )) }, value: nil,
         },
         divider: { properties: { label: property(SHORT) }, children: :none, events: {}, value: nil },
@@ -726,16 +732,28 @@ module Lich
                                                                                        y: property(GEOMETRY, required: true), height: property(integer(min: 0, max: 65_536), required: true)), max: BOUNDS[:children]), required: true)
                                                   ), terminal: true)
             end
-            if %i[page text image group progress table stack button].include?(type)
+            if %i[page text image group progress table stack button overlay].include?(type)
               base[:properties][:pointer_events] = property(BOOL, default: false)
               base[:events][:pointer_press] = deep_dup(POINTER_EVENT)
               base[:events][:pointer_release] = event(deep_dup(POINTER_EVENT[:payload]), ordered: true)
+            end
+            if type == :overlay
+              base[:properties][:pointer_tracking] = property(BOOL, default: false)
+              base[:properties][:pointer_position] = property(record(
+                                                                x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
+                                                                state: property(integer(min: 0, max: 13), required: true)
+                                                              ), scope: :viewer)
+              base[:events][:pointer_motion] = event(record(
+                                                       x: property(GEOMETRY, required: true), y: property(GEOMETRY, required: true),
+                                                       state: property(integer(min: 0, max: 13), required: true)
+                                                     ))
             end
             if %i[overlay select number_input group].include?(type)
               base[:events][:scroll] = event(record(
                                                delta_x: property(integer(min: -65_536, max: 65_536), required: true),
                                                delta_y: property(integer(min: -65_536, max: 65_536), required: true),
-                                               state: property(integer(min: 0, max: 13), required: true)
+                                               state: property(integer(min: 0, max: 13), required: true),
+                                               x: property(GEOMETRY), y: property(GEOMETRY)
                                              ), ordered: true)
               # Cumulative viewer-local deltas survive coalesced redraw delivery.
               base[:properties][:scroll_request] = property(record(
