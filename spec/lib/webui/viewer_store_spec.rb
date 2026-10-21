@@ -12,6 +12,28 @@ RSpec.describe Lich::WebUI::ViewerStore do
     end
   end
 
+  it 'retires only an unambiguous exited viewer after copying its closing state' do
+    store = described_class.new
+    viewer = store.attach(connection_id: 'old', address: 'form', page: page)
+    render = page.render
+    store.deliver(viewer, render)
+    input = render.tree.children.first
+    store.set_property(viewer, input, :value, 'Closing draft')
+    store.transient_disconnect('old')
+    snapshot = store.closing_snapshot(page, retire: true)
+    expect(snapshot.values[[input.cid, :value]]).to eq('Closing draft')
+    expect(viewer.values).to be_empty
+    expect(store.closing_snapshot(page)).to be_nil
+
+    first = store.attach(connection_id: 'new', address: 'form', page: page, resume_token: viewer.resume_token)
+    expect(first).not_to equal(viewer)
+    store.deliver(first, render)
+    second = store.attach(connection_id: 'other', address: 'form', page: page)
+    store.deliver(second, render)
+    expect(store.closing_snapshot(page, retire: true)).to be_nil
+    expect(store.attachments_for(page)).to eq([first, second])
+  end
+
   it 'applies new tree-row expansion defaults without resetting retained viewer choices' do
     rows = [{ key: 'old', cells: { name: 'Old' }, expanded: true }]
     table_page = Lich::WebUI::Page.new(owner: owner, id: 'tree', title: 'Tree') do

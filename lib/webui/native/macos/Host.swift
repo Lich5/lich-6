@@ -54,6 +54,9 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
         }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // Hidden script windows still receive server requests to reveal themselves.
+        // Suspending their JavaScript would also suspend that control channel.
+        config.preferences.inactiveSchedulingPolicy = .none
         config.userContentController.add(self, name: "lichWindow")
         config.userContentController.addUserScript(WKUserScript(source: bridge,
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -132,7 +135,7 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
             // user onto other desktops or another app's full-screen Space.
             window.collectionBehavior = []
             let borderless = value["borderless"] as? Bool ?? false
-            let mask: NSWindow.StyleMask = borderless ? [.borderless, .resizable] : [.titled, .closable, .miniaturizable, .resizable]
+            let mask: NSWindow.StyleMask = borderless ? [.borderless, .miniaturizable, .resizable] : [.titled, .closable, .miniaturizable, .resizable]
             if window.styleMask != mask {
                 let content = window.contentRect(forFrameRect: window.frame)
                 window.styleMask = mask
@@ -265,6 +268,7 @@ final class Host: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigatio
     }
 }
 
+#if !WEBUI_HOST_TEST
 @main
 struct WebUIHostMain {
     static func main() {
@@ -293,3 +297,4 @@ struct WebUIHostMain {
         app.run()
     }
 }
+#endif

@@ -95,6 +95,42 @@ RSpec.describe 'WebUI browser bootstrap', browser: true do
     service&.stop
   end
 
+  it 'retains a tab selection through consecutive stale-generation refusals' do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    service = Lich::WebUI::Service.new
+    selected = 0
+    changes = []
+    attempts = 0
+    page = nil
+    select = proc do |event|
+      selected = event.payload[:index]
+      changes << selected
+      service.refresh(page)
+    end
+    page = Lich::WebUI::Page.new(owner: Object.new, id: 'tab-redraw', title: 'Tab redraw') do |ui|
+      ui.tabs key: 'tabs', names: %w[One Two], selected: selected, on: { select: select } do
+        text key: 'one', content: 'First panel', slot: 'One'
+        text key: 'two', content: 'Second panel', slot: 'Two'
+      end
+    end
+    service.registry.register(page)
+    # Advance the actual delivered generation before admission twice. This
+    # exercises real server refusals without sleeps or fabricated wire frames.
+    allow(service.runtime).to receive(:handle).and_wrap_original do |original, connection, message|
+      if message[:type] == 'event' && message[:event] == 'select'
+        attempts += 1
+        service.refresh(page) if attempts <= 2
+      end
+      original.call(connection, message)
+    end
+    WebUIBrowser.check(service: service, page: page, scenario: 'native-tab-redraw')
+    expect(attempts).to eq(3)
+    expect(changes).to eq([1])
+  ensure
+    service&.stop
+  end
+
   it 'sizes and lays out native tab actions without changing indexed panels' do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
     service = Lich::WebUI::Service.new

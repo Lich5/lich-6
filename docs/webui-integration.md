@@ -383,6 +383,15 @@ no parent-death watchdog or startup cleanup sweep. Disconnected windows continue
 retrying their connection. Normal script termination and game exit use the
 owned-window cleanup path described above.
 
+The adapter's `present(root_handle)` operation requests an owned window after
+pending page changes have been published. `Gtk::Window#show` uses it to reopen a
+retained page when a native close handler hid the GTK window and vetoed its
+destruction. Repeated shows reuse a live host window; destroyed handles and
+terminated owners cannot reopen. The page and widget identities remain intact.
+An exited host creates a fresh viewer using the existing attachment/default
+rules; presentation does not transfer a previous viewer's private drafts into
+another attachment. This does not make the native OS close itself cancelable.
+
 Geometry precedence is explicit caller geometry, then saved geometry where the
 page does not own configure handling, then the page's default size and position.
 The geometry store is scoped by game and character when that context is available.
@@ -401,7 +410,7 @@ windows remain closable with Cmd-W. Windows uses
 request, preserving keyboard focus in the frontend. Alt-F4 closes its windows.
 The shim retains `Gtk::Window#keep_above=`
 in the page's presentation property, validated by the same schema as native
-presentation facilities; window presentation adds no adapter operation. Windows
+presentation facilities. Windows
 Chrome/Edge still do not support the borderless request: Chromium draws its own
 title bar. Linux retains the existing browser limitations.
 

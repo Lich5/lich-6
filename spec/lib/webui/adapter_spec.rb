@@ -17,6 +17,54 @@ RSpec.describe Lich::WebUI::Adapter do
     expect(barrier.pop(timeout: 3)).to be(true)
   end
 
+  it 'presents only a live owned page after publishing its latest state' do
+    allow(service.runtime).to receive(:schedule_render)
+    presented = []
+    port = described_class.new(owner: owner, service: service, on_publish: ->(page) { presented << page.last_render })
+    root = port.create(:page, title: 'Retained')
+    child = port.create(:text, content: 'Before')
+    port.attach(root, child)
+    port.send(:flush!)
+    expect(presented.size).to eq(1)
+    expect { port.present(child) }.to raise_error(Lich::WebUI::Error, /page root/)
+    expect { adapter.present(root) }.to raise_error(Lich::WebUI::Error, /unknown handle/)
+
+    port.set(child, :content, 'After')
+    2.times { port.present(root) }
+    expect(presented.size).to eq(1)
+    port.send(:flush!)
+    expect(presented.size).to eq(2)
+    expect(presented.last.tree.children.first.props[:content]).to eq('After')
+    expect(service.registry.pages_for(owner).size).to eq(1)
+
+    port.present(root)
+    port.set(root, :presentation, { hidden: true })
+    port.send(:flush!)
+    expect(presented.size).to eq(2)
+    port.present(root)
+    port.destroy(root)
+    port.send(:flush!)
+    expect(presented.size).to eq(2)
+    expect { port.present(root) }.to raise_error(Lich::WebUI::Error, /destroyed/)
+  end
+
+  it 'allows an explicit retry after its host opener fails without replacing the page' do
+    allow(service.runtime).to receive(:schedule_render)
+    attempts = []
+    port = described_class.new(owner: owner, service: service, on_publish: lambda do |page|
+      attempts << page
+      raise 'launch failed' if attempts.size == 2
+    end)
+    root = port.create(:page, title: 'Retry')
+    port.send(:flush!)
+    port.present(root)
+    expect { port.send(:flush!) }.to raise_error('launch failed')
+    port.present(root)
+    port.send(:flush!)
+    expect(attempts.size).to eq(3)
+    expect(attempts.uniq.size).to eq(1)
+  end
+
   it 'limits Button content to one plain text child without attaching refused children' do
     button = adapter.create(:button, label: '')
     text = adapter.create(:text, content: 'Die')
@@ -144,7 +192,7 @@ RSpec.describe Lich::WebUI::Adapter do
 
   it 'exposes the approved adapter operations' do
     expect(described_class.public_instance_methods(false)).to contain_exactly(
-      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :layout_tab_actions, :replace_child, :set_overlay_pass_through, :monitor_geometry, :focus, :place
+      :create, :get, :set, :attach, :detach, :bind, :unbind, :destroy, :modal, :schema, :layout_grid, :layout_tabs, :layout_tab_actions, :replace_child, :set_overlay_pass_through, :monitor_geometry, :focus, :place, :present
     )
   end
 

@@ -384,14 +384,17 @@ module Lich
       # Captures the sole retained viewer when an owned OS window exits without pagehide.
       # Multiple viewers are deliberately not guessed; expired viewers are excluded.
       # @param page [Page] page whose native host exited
+      # @param retire [Boolean] retire the exited viewer after copying its closing state
       # @return [Snapshot, nil] last delivered state, when unambiguous
-      def closing_snapshot(page)
+      def closing_snapshot(page, retire: false)
         @mutex.synchronize do
           expire_locked!
           candidates = @by_resume.values.select { |attachment| attachment.page.equal?(page) && attachment.render }
           if candidates.one?
             attachment = candidates.first
-            Snapshot.new(page, attachment.viewer_id, attachment.render, attachment.values.dup, attachment.input_requests.dup)
+            snapshot = Snapshot.new(page, attachment.viewer_id, attachment.render, attachment.values.dup, attachment.input_requests.dup)
+            destroy_locked!(attachment) if retire
+            snapshot
           end
         end
       end

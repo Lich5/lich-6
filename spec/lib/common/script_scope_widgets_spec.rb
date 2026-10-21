@@ -494,6 +494,86 @@ RSpec.describe 'bounded script compatibility pilot' do
     expect(window).not_to be_destroyed
   end
 
+  context 'when presenting a retained native window' do
+    let(:opened) { [] }
+    let(:terminated) { [] }
+    let(:service) do
+      Lich::WebUI::Service.new(
+        browser_open: lambda do |_url, **options|
+          opened << options
+          options[:on_start].call(opened.length)
+          true
+        end,
+        browser_terminate: ->(signal, pid) { terminated << [signal, pid] }
+      )
+    end
+
+    before do
+      allow(Lich::WebUI).to receive(:service).and_return(service)
+      allow(Lich::WebUI).to receive(:adapter).and_call_original
+    end
+
+    it 'reopens the same page after native close and hide while retaining script input and leaving siblings open' do
+      sibling = compatibility::Window.new('Main')
+      sibling.show_all
+      Timeout.timeout(3) { sleep 0.001 until opened.size == 1 }
+      window = compatibility::Window.new('Help')
+      entry = compatibility::Entry.new
+      entry.text = 'Initial'
+      window.add(entry)
+      closes = Queue.new
+      window.signal_connect('delete-event') { window.hide; closes << true; true }
+      window.show_all
+      Timeout.timeout(3) { sleep 0.001 until opened.size == 2 }
+      page = service.registry.pages_for(owner).find { |candidate| candidate.title == 'Help' }
+      address = service.registry.address_for(page)
+
+      2.times do |cycle|
+        connection = double("viewer-#{cycle}", viewer_id: "viewer-#{cycle}", alive?: true, send_text: true)
+        service.runtime.handle(connection, type: 'attach', page: address)
+        input = page.last_render.tree.each.find { |component| component.type == :text_input }
+        service.runtime.handle(connection, type: 'event', page: address, generation: page.generation,
+                                           cid: input.cid, event: 'change', payload: { value: "Draft #{cycle}" })
+        service.runtime.disconnect(connection)
+        opened.last[:on_exit].call
+        expect(closes.pop(timeout: 3)).to be(true)
+        expect(window).not_to be_destroyed
+        expect(window).not_to be_visible
+        expect(entry.text).to eq("Draft #{cycle}")
+
+        3.times { window.show_all }
+        Timeout.timeout(3) { sleep 0.001 until opened.size == cycle + 3 }
+        expect(service.registry.address_for(page)).to eq(address)
+        expect(service.registry.pages_for(owner).size).to eq(2)
+        expect(entry.text).to eq("Draft #{cycle}")
+        expect(sibling).to be_visible
+        expect(terminated).to be_empty
+      end
+
+      # A late duplicate notification from the first process cannot close its replacement.
+      opened[1][:on_exit].call
+      expect(service.window_host(page)).not_to be_nil
+      expect(closes).to be_empty
+      window.destroy
+      expect(terminated.map(&:last)).to eq([4])
+      expect(service.registry.pages_for(owner).map(&:title)).to eq(['Main'])
+    end
+
+    it 'does not resurrect a retained page after owner termination' do
+      window = compatibility::Window.new('Retired')
+      window.signal_connect('delete-event') { window.hide; true }
+      window.show_all
+      Timeout.timeout(3) { sleep 0.001 until opened.size == 1 }
+      opened.first[:on_exit].call
+      Timeout.timeout(3) { sleep 0.001 until !window.visible? }
+      service.terminate_owner(owner)
+
+      expect { window.show }.to raise_error(Lich::WebUI::Error)
+      expect(opened.size).to eq(1)
+      expect(service.registry.pages_for(owner)).to be_empty
+    end
+  end
+
   it 'keeps shim entry and checkbox defaults while saving a locked browser draft', browser: true do
     skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
 
@@ -1611,6 +1691,31 @@ RSpec.describe 'bounded script compatibility pilot' do
       .to raise_error(Lich::WebUI::SchemaViolationError)
     expect { validator.validate_event!(:tabs, :select, { index: 0, tab: 'hidden' }, props: { names: ['Hidden'], selected: 0, headers: [{ key: 'hidden', hidden: true }] }, **context) }
       .to raise_error(Lich::WebUI::SchemaViolationError)
+  end
+
+  it 'delivers Escape after a pointer action redraws a keyboard-enabled window', browser: true do
+    skip 'explicit browser run only' unless ENV['NATIVE_BROWSER'] == '1'
+
+    window = compatibility::Window.new('Keyboard redraw')
+    box = compatibility::VBox.new(false, 4)
+    surface = compatibility::EventBox.new
+    surface.add(compatibility::Label.new('Enter local mode'))
+    status = compatibility::Label.new('Ready')
+    surface.signal_connect('button-press-event') { status.text = 'Mode active - Escape to cancel' }
+    keys = Queue.new
+    window.signal_connect('key-press-event') do |_widget, event|
+      if event.keyval == 0xff1b
+        keys << event.keyval
+        status.text = 'Mode cancelled'
+      end
+    end
+    box.add(surface)
+    box.add(status)
+    window.add(box).show_all
+    page = nil
+    Timeout.timeout(2) { sleep 0.001 until (page = service.registry.pages_for(owner).first)&.last_render }
+    WebUIBrowser.check(service: service, page: page, scenario: 'shim-keyboard-redraw')
+    expect(2.times.map { keys.pop(timeout: 3) }).to eq([0xff1b, 0xff1b])
   end
 
   it 'delivers Priority 16 events with viewer isolation and scrolling in Chrome', browser: true do

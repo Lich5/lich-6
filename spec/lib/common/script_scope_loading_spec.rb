@@ -2,6 +2,7 @@
 
 require_relative '../../spec_helper'
 require_relative '../../../lib/common/script_scope'
+require 'open3'
 
 RSpec.describe 'GTK-free Ruby dependency boundary' do
   let(:scope) { Lich::Common::ScriptScope }
@@ -95,6 +96,56 @@ RSpec.describe 'GTK-free Ruby dependency boundary' do
     expect(Kernel.private_instance_methods).to include(:require, :require_relative, :load)
     expect(Kernel.public_methods).to include(:require, :require_relative, :load)
   end
+
+  it 'preserves dependency loader aliases, loaded features and native refusals in a fresh process' do
+    Dir.mktmpdir('aliased-load-boundary') do |root|
+      File.write(File.join(root, 'cached.rb'), 'LOADER_EVENTS << :cached')
+      File.write(File.join(root, 'child.rb'), 'LOADER_EVENTS << :child')
+      File.write(File.join(root, 'gtk3.rb'), 'abort "native sentinel executed"')
+      dependency = File.join(root, 'dependency.rb')
+      File.write(dependency, <<~RUBY)
+        module LoaderAliasDependency
+          extend self
+          alias original_require require
+          alias original_require_relative require_relative
+          alias original_load load
+
+          def self.check
+            cached = File.join(__dir__, 'cached.rb')
+            child = File.join(__dir__, 'child.rb')
+            results = [original_require(cached), original_require(child),
+                       original_require(child), original_require_relative('child'),
+                       original_load(child, true)]
+            abort "loader results: \#{results.inspect}" unless results == [false, true, false, false, true]
+            abort "loader events: \#{LOADER_EVENTS.inspect}" unless LOADER_EVENTS == [:cached, :child, :child]
+            begin
+              original_require(File.join(__dir__, 'missing.rb'))
+              abort 'missing dependency accepted'
+            rescue LoadError
+            end
+            begin
+              original_require_relative('gtk3')
+              abort 'native dependency accepted'
+            rescue Lich::Common::ScriptScope::Gtk::UnsupportedOperation
+            end
+          end
+        end
+        LoaderAliasDependency.check
+      RUBY
+      source = <<~RUBY
+        LOADER_EVENTS = []
+        require File.join(File.dirname(ARGV.fetch(0)), 'cached.rb')
+        Lich::Common::ScriptScope.activate!
+        require ARGV.fetch(0)
+        abort 'instance loaders became public' unless [:require, :require_relative, :load].all? { |name| Kernel.private_instance_methods.include?(name) }
+        abort 'module loaders became private' unless [:require, :require_relative, :load].all? { |name| Kernel.public_methods.include?(name) }
+      RUBY
+      output, status = Open3.capture2e(RbConfig.ruby, '-I', File.expand_path('../../../lib', __dir__),
+                                       '-rcommon/script_scope', '-e', source, dependency)
+      expect(status.success?).to be(true), output
+    end
+  end
+
   it 'loads ordinary files beneath GTK-like installation directories without widening native admission' do
     Dir.mktmpdir('ordinary-install') do |root|
       stub_const('ORDINARY_INSTALL_EVENTS', [])

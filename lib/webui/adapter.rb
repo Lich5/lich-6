@@ -13,7 +13,7 @@ module Lich
   module WebUI
     # Imperative, versioned port used by the bounded script compatibility shim.
     class Adapter
-      OPERATIONS = %i[create get set attach detach bind unbind destroy modal schema].freeze
+      OPERATIONS = %i[create get set attach detach bind unbind destroy modal schema present].freeze
 
       # Explicit reset token for optional shared properties. Never enters a render:
       # set removes the property and revalidates defaults and dependent layout.
@@ -45,7 +45,7 @@ module Lich
       private_constant :Handle
 
       Node = Struct.new(:type, :props, :placement, :children, :parent, :slot, :bindings, :page, :cid, :published, :handle,
-                        :callbacks, :viewer_values, :focus,
+                        :callbacks, :viewer_values, :focus, :present_requested,
                         keyword_init: true)
       private_constant :Node
 
@@ -55,7 +55,7 @@ module Lich
       # @param service [Service] host used for publication and cleanup
       # @param viewer [String, nil] explicit viewer for scoped reads/writes
       # @param validator [Validator] shared property validator
-      # @param on_publish [#call, nil] observer notified when roots are published
+      # @param on_publish [#call, nil] host opener called on first publication or explicit presentation
       def initialize(owner:, service:, viewer: nil, validator: Validator.new, on_publish: nil)
         @owner = owner
         @service = service
@@ -69,6 +69,23 @@ module Lich
         @focus_sequence = 0
         @dirty_roots = {}.compare_by_identity
         @mutex = Monitor.new
+      end
+
+      # Requests an owned window after pending state is published on the owner worker.
+      # Reuses the page and its handles; the host reuses a live window or opens a new one.
+      # @param handle [Handle] live page root belonging to this adapter
+      # @return [nil]
+      # @raise [Error] for foreign, non-page, destroyed or terminated handles
+      def present(handle)
+        @service.registry.ensure_active!(@owner)
+        @mutex.synchronize do
+          root = node!(handle)
+          raise attributed_error('presentation requires a page root', handle, :present) unless root.type == :page && !root.parent
+
+          root.present_requested = true
+          dirty!(root)
+        end
+        nil
       end
 
       # Retains a revisioned focus request for a focusable descendant of one owned page.
@@ -682,7 +699,7 @@ module Lich
       private
 
       # Snapshots dirty roots by identity, then refreshes outside the adapter monitor.
-      # Avoids lock inversion with Page rendering; initial publication is announced once per root.
+      # Avoids lock inversion with Page rendering; explicit presentation follows publication.
       # @return [nil]
       def flush!
         pages = @mutex.synchronize do
@@ -722,9 +739,13 @@ module Lich
             @nodes.each_value { |child| child.published = true if !child.equal?(root) && root_for(child).equal?(root) && delivered.key?(child.cid) }
           end
           publish = @mutex.synchronize do
-            next false if root.published || !handle_for(root)
+            next false unless handle_for(root)
 
+            first = !root.published
+            requested = root.present_requested
             root.published = true
+            root.present_requested = false
+            first || (requested && !root.props.dig(:presentation, :hidden))
           end
           @on_publish&.call(root.page) if publish
         end

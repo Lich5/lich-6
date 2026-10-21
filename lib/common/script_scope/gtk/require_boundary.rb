@@ -101,8 +101,12 @@ module Lich
 
           # Kernel's instance loaders stay private; Kernel.require remains public.
           module PrivateLoaders
-            include Loaders
-            private :require, :require_relative, :load
+            # Concrete methods preserve Ruby's module alias lookup. Changing the
+            # visibility of included methods breaks dependencies aliasing require.
+            Loaders.instance_methods(false).each do |name|
+              define_method(name, Loaders.instance_method(name))
+              private name
+            end
           end
         end
       end
