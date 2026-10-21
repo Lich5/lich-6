@@ -964,6 +964,107 @@ test('a stale refusal replays only its identified click once, across unrelated r
   dom.window.close();
 });
 
+function tabRetryFixture(t) {
+  const result = fixture();
+  const { dom, sent, receive } = result;
+  t.after(() => dom.window.close());
+  // jsdom lacks the browser's reflected inert property; preserve its DOM contract.
+  if (!('inert' in dom.window.HTMLElement.prototype)) {
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'inert', {
+      configurable: true,
+      get() { return this.hasAttribute('inert'); },
+      set(value) { this.toggleAttribute('inert', value); }
+    });
+  }
+  receive({ type: 'hello', pages: [{ address: 'tabs-page' }] });
+  const render = (generation, mutate = () => {}) => {
+    const tabs = { type: 'tabs', cid: 'tabs', props: { names: ['One', 'Two'], selected: 0,
+      headers: [{ key: 'one' }, { key: 'two' }] }, children: [
+      { type: 'text', cid: 'one', props: { content: 'First panel' } },
+      { type: 'text', cid: 'two', props: { content: 'Second panel' } }
+    ] };
+    const message = { type: 'render', page: 'tabs-page', generation, bindings: { tabs: ['select'] },
+      tree: { type: 'page', cid: 'root', props: {}, children: [tabs] } };
+    mutate(tabs, message);
+    receive(message);
+  };
+  const selections = () => sent.filter(message => message.event === 'select');
+  const refuse = (request = selections().at(-1).request) => receive({ type: 'refusal', reason: 'stale_generation',
+    page: 'tabs-page', cid: 'tabs', event: 'select', request });
+  render(1);
+  dom.window.document.querySelectorAll('[role="tab"]')[1].click();
+  return { ...result, render, selections, refuse };
+}
+
+test('tab selection survives repeated stale renders and stops when selected', t => {
+  const { render, selections, refuse } = tabRetryFixture(t);
+  for (let generation = 2; generation <= 4; generation++) {
+    render(generation);
+    assert.equal(selections().length, generation - 1, 'unrelated paint must not resend');
+    refuse();
+    render(generation);
+    assert.equal(selections().length, generation);
+    assert.deepEqual(selections().at(-1).payload, { index: 1, tab: 'two' });
+  }
+  render(5, tabs => { tabs.props.selected = 1; });
+  refuse();
+  render(6);
+  assert.equal(selections().length, 4, 'acknowledged navigation must not revive');
+});
+
+test('a newer tab click supersedes an older selection intent', t => {
+  const { dom, render, selections, refuse } = tabRetryFixture(t);
+  const first = selections()[0];
+  dom.window.document.querySelectorAll('[role="tab"]')[0].click();
+  refuse(first.request);
+  render(2, tabs => { tabs.props.selected = 1; });
+  assert.equal(selections().length, 2);
+  refuse();
+  render(3, tabs => { tabs.props.selected = 1; });
+  assert.equal(selections().length, 3);
+  assert.equal(selections().at(-1).payload.index, 0);
+});
+
+test('tab retry retains the original deadline across attempts', t => {
+  const { dom, render, selections, refuse } = tabRetryFixture(t);
+  const start = dom.window.Date.now();
+  dom.window.Date.now = () => start + 29000;
+  refuse(); render(2);
+  assert.equal(selections().length, 2);
+  dom.window.Date.now = () => start + 31000;
+  refuse(); render(3);
+  assert.equal(selections().length, 2);
+});
+
+for (const [name, mutate] of Object.entries({
+  reordered: tabs => tabs.children.reverse(),
+  replaced: tabs => { tabs.children[1].cid = 'replacement'; },
+  renamed: tabs => { tabs.props.names[1] = 'Replacement'; },
+  rekeyed: tabs => { tabs.props.headers[1].key = 'replacement'; },
+  disabled: tabs => { tabs.props.disabled = true; },
+  hidden: tabs => { tabs.props.hidden = true; },
+  headerDisabled: tabs => { tabs.props.headers[1].disabled = true; },
+  headerHidden: tabs => { tabs.props.headers[1].hidden = true; },
+  selectorsHidden: tabs => { tabs.props.show_tabs = false; },
+  ancestorHidden: (tabs, message) => { message.tree.children = [
+    { type: 'stack', cid: 'container', props: { hidden: true }, children: [tabs] }
+  ]; },
+  ancestorDisabled: (tabs, message) => { message.tree.children = [
+    { type: 'stack', cid: 'container', props: { disabled: true }, children: [tabs] }
+  ]; },
+  pageHidden: (_tabs, message) => { message.tree.props.presentation = { hidden: true }; },
+  removed: (_tabs, message) => { message.tree.children = []; },
+  unbound: (_tabs, message) => { message.bindings = {}; }
+})) {
+  test(`tab selection is retired when ${name}, even if restored before refusal`, t => {
+    const { render, selections, refuse } = tabRetryFixture(t);
+    render(2, mutate);
+    render(3);
+    refuse(); render(4);
+    assert.equal(selections().length, 1);
+  });
+}
+
 test('clearing a password discards every retained submit that referenced it', () => {
   const { dom, sent, receive } = fixture();
   receive({ type: 'hello', pages: [{ address: 'login' }] });

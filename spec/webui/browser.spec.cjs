@@ -55,7 +55,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-keyboard-redraw', 'contract-inputs', 'launcher-unlock', 'native-opacity-reset', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-keyboard-redraw', 'contract-inputs', 'launcher-unlock', 'native-opacity-reset', 'native-tab-redraw', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -1317,6 +1317,11 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
           .toBe(opacity === undefined ? '' : String(opacity));
       }
     }
+  } else if (scenario === 'native-tab-redraw') {
+    await page.getByRole('tab', { name: 'Two', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Two', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Second panel', { exact: true })).toBeVisible();
+    await expect(page.getByText('First panel', { exact: true })).toBeHidden();
   } else if (scenario === 'native-notebook-actions') {
     const notebook = page.locator('[data-component-type="tabs"]');
     const help = page.getByRole('button', { name: 'Native help', exact: true });

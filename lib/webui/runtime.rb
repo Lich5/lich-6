@@ -106,7 +106,7 @@ module Lich
                            event: message[:event], request: message[:request])
         )
         # Refusal must precede the replacement tree so the browser can associate
-        # its one permitted retry with the exact rejected intent.
+        # a correlated retry with the exact rejected intent.
         send_render(connection, fetch_attachment(connection, message[:page])) if error.reason == :stale_generation
         :refused
       rescue Error => error
