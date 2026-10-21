@@ -40,6 +40,7 @@ test.afterEach(async ({ page }, testInfo) => {
     if (testInfo.status !== testInfo.expectedStatus) console.log(`Widget drag events: ${body}`);
   }
   if (testInfo.status === testInfo.expectedStatus) return;
+  if (scenario === 'shim-canvas') console.log(interactions.join('\n'));
   const body = wire.join('\n');
   console.log(`WebUI wire log (${scenario}, last ${wire.length} entries):\n${body}`);
   await testInfo.attach('webui-wire.log', { body, contentType: 'text/plain' });
@@ -55,7 +56,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   page.on('console', message => record('console', `${message.type()}: ${message.text()}`));
   const target = process.env.WEBUI_TEST_URL;
   expect(target, 'Run through the browser-tagged RSpec fixtures').toMatch(/^file:\/\//);
-  expect(['shim-keyboard-redraw', 'contract-inputs', 'launcher-unlock', 'native-opacity-reset', 'native-tab-redraw', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
+  expect(['shim-canvas', 'shim-keyboard-redraw', 'contract-inputs', 'launcher-unlock', 'native-opacity-reset', 'native-tab-redraw', 'merchantical-help-window', 'native-notebook-actions', 'merchantical-notebook-actions', 'merchantical-list', 'priority17-drawing', 'priority17-title-scroll', 'priority17-widget-drag', 'pr64-native-radio', 'priority16-review', 'priority16-combo-rebuild', 'priority16-tooltips', 'priority16-two-facades', 'priority16-hover-choice', 'priority16-successor-controls', 'priority16-successor-columns', 'priority16-events', 'priority15-notebook', 'priority15-log-style', 'priority15-followup', 'priority15-tree-text', 'buttonbox-empty-id', 'frame-scroller', 'three-compatibility', 'priority14-controls', 'priority11-labels', 'native-bmp', 'shim-layout', 'shim-fixed-events-focus', 'shim-abyssx', 'shim-compass', 'shim-eloot-stance', 'shim-gemstonev-difficulty', 'shim-scheduled-visibility', 'shim-repository-scheduling', 'shim-sail2-scheduling', 'shim-geometry-cursors', 'native-progress-sizing', 'shim-manatimer', 'shim-tpick-information', 'shim-tpick-settings', 'shim-headerbar', 'shim-tpick-welcome', 'shim-entry', 'shim-separator', 'shim-controls', 'shim-progress-style', 'shim-models', 'shim-builder', 'shim-ewaggle', 'shim-ebounty', 'shim-eherbs', 'shim-blackarts', 'shim-eloot-corrected', 'shim-bigshot-corrected', 'shim-repository', 'shim-go2', 'shim-huntplan', 'native-bootstrap']).toContain(scenario);
   const errors = [];
   const documents = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -174,7 +175,39 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
   ]));
   expect(new URL(page.url()).searchParams.has('token')).toBe(false);
 
-  if (scenario === 'pr64-native-radio') {
+  if (scenario === 'shim-canvas') {
+    const scroll = page.locator('.webui-scroll');
+    await expect.poll(() => scroll.evaluate(el => el.scrollWidth)).toBeGreaterThan(1200);
+    await scroll.evaluate(el => { el.scrollLeft = 400; el.scrollTop = 300; });
+    await expect.poll(() => scroll.evaluate(el => el.scrollLeft)).toBe(400);
+    const bounds = await scroll.boundingBox();
+    const x = bounds.x + 220, y = bounds.y + 150;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 90, y - 60, { steps: 6 });
+    // The original script must see movement and scroll while the button is held.
+    await expect.poll(() => scroll.evaluate(el => el.scrollLeft)).toBeGreaterThan(450);
+    await expect.poll(() => scroll.evaluate(el => el.scrollTop)).toBeGreaterThan(330);
+    await page.mouse.move(bounds.x - 10, bounds.y - 10);
+    await page.mouse.up();
+    await expect(page.getByText('Released 1', { exact: true })).toBeVisible();
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 30, y - 20);
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await page.mouse.up();
+    await expect(page.getByText('Released 2', { exact: true })).toBeVisible();
+    await page.mouse.move(x, y);
+    const left = await scroll.evaluate(el => el.scrollLeft);
+    await page.keyboard.down('Shift');
+    await page.mouse.wheel(0, 60);
+    await page.keyboard.up('Shift');
+    await expect.poll(() => scroll.evaluate(el => el.scrollLeft)).toBeGreaterThan(left);
+    await page.keyboard.down('Control');
+    await page.mouse.wheel(0, -40);
+    await page.keyboard.up('Control');
+    await expect(page.getByText(/^Anchor \d+,\d+$/)).toBeVisible();
+  } else if (scenario === 'pr64-native-radio') {
     await page.getByRole('radio', { name: 'Native second', exact: true }).click();
     await expect(page.getByText('Native true 1', { exact: true })).toBeVisible();
     await page.getByRole('radio', { name: 'Native second', exact: true }).click();
@@ -736,7 +769,7 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     expect(clipped).toBe(true);
     await page.getByRole('button', { name: 'Move into canvas', exact: true }).click();
     await expect(hidden).toHaveCSS('left', '100px');
-    expect(await hidden.evaluate(el => {
+    await expect.poll(() => hidden.evaluate(el => {
       const box = el.getBoundingClientRect();
       return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button') === el;
     })).toBe(true);

@@ -114,12 +114,12 @@ module Lich
         end
 
         # Bounded viewport coordinates from one authenticated pointer callback.
-        PointerEvent = Data.define(:x, :y, :button, :time, :state, :click_count) do
-          def initialize(x:, y:, button:, time:, state:, click_count: 1)
+        PointerEvent = Data.define(:x, :y, :button, :time, :state, :click_count, :released) do
+          def initialize(x:, y:, button:, time:, state:, click_count: 1, released: false)
             super
           end
 
-          def event_type = click_count == 2 ? :button2_press : :button_press
+          def event_type = released ? :button_release : click_count == 2 ? :button2_press : :button_press
         end
 
         # Literal menu labels. Mnemonic-bearing labels require keyboard support
@@ -308,12 +308,13 @@ module Lich
         end
 
         class ScrollEvent
-          attr_reader :state
+          attr_reader :state, :x, :y
           attr_accessor :direction
 
           def initialize(payload)
             @state = ModifierState.new(payload[:state])
             @dx, @dy = payload.values_at(:delta_x, :delta_y)
+            @x, @y = payload.values_at(:x, :y)
             @direction = if @dx.abs > @dy.abs
                            @dx.negative? ? :left : :right
                          else
@@ -438,17 +439,20 @@ module Lich
       module Gdk
         module EventMask
           BUTTON_PRESS_MASK = 1 << 8
+          BUTTON_RELEASE_MASK = 1 << 9
           SCROLL_MASK = 1 << 21
           ENTER_NOTIFY_MASK = 1 << 12
           LEAVE_NOTIFY_MASK = 1 << 13
         end
         BUTTON_PRESS_MASK = EventMask::BUTTON_PRESS_MASK
+        BUTTON_RELEASE_MASK = EventMask::BUTTON_RELEASE_MASK
         BUTTON_PRIMARY = 1
         BUTTON_MIDDLE = 2
         BUTTON_SECONDARY = 3
         module EventType
           BUTTON_PRESS = :button_press
           BUTTON2_PRESS = :button2_press
+          BUTTON_RELEASE = :button_release
         end
 
         module ScrollDirection
@@ -460,6 +464,7 @@ module Lich
         EventScroll = ScrollDirection
         module Window
           SHIFT_MASK = 1
+          CONTROL_MASK = 4
         end
 
         module Keyval
@@ -474,7 +479,9 @@ module Lich
         # Legacy constant spelling; this does not expose native GDK event objects.
         module Event
           BUTTON_PRESS_MASK = EventMask::BUTTON_PRESS_MASK
+          BUTTON_RELEASE_MASK = EventMask::BUTTON_RELEASE_MASK
           BUTTON2_PRESS = :button2_press
+          Type = EventType
         end
       end
     end

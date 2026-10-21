@@ -424,6 +424,10 @@ module Lich
         callback = attachment.render.bindings[[component.cid, message[:event].to_sym]]
         raise Protocol::Refusal.new(:unbound, 'component event has no server binding') unless callback
 
+        if message[:event].to_sym == :pointer_motion && !component.props[:pointer_tracking]
+          raise Protocol::Refusal.new(:payload, 'pointer measurement requires tracking opt-in')
+        end
+
         if component.type == :table && message[:event].to_sym == :row_drop
           source = find_component!(attachment, payload[:source])
           unless source.type == :table && component.props[:transfer_group] &&

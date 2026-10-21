@@ -19,11 +19,11 @@ capabilities.
 
 ## Script acceptance status
 
-Status below describes pinned source excerpts tested through the shim, not entire
-scripts running in a game. A native conversion is a separate script implementation;
+Status below describes tested source excerpts and local UI workflows through the
+shim, not entire scripts running in a game. A native conversion is a separate script implementation;
 neither its existence nor a successful preview establishes upstream publication.
-The source refresh uses the October 12 cached revisions, not newly fetched script
-sources. Exact revisions, hashes and test boundaries are in the
+The retained source-refresh fixtures use the October 12 cached revisions, not
+newly fetched script sources. Their exact revisions, hashes and test boundaries are in the
 [fixture record](../spec/fixtures/webui/README.txt).
 
 | Script(s) | Established coverage | Remaining boundary or fix |
@@ -37,7 +37,8 @@ sources. Exact revisions, hashes and test boundaries are in the
 | tpick | Original default settings for Rogue/Warrior/Bard/Wizard and information/profile/save flows; required cues; Chrome/macOS WebKit | Spell-less Monk/Paladin missing Spells grid remains a source defect; optional Show Images windows are deferred |
 | manatimer | Original setup with saved position, monitor request, progress/overlay/countdown update, right-click and cleanup; Chrome/macOS WebKit | Missing saved position and ignored monitor origin remain source limitations; full pulse/game loop untested |
 | sail2 | Original startup race retained as a negative test; explicitly repaired readiness sentinel permits setup/save/hide/close acceptance | Source startup fix still needed; sailing loop untested |
-| gemstonev | Unchanged difficulty window/timer/command handoff plus monitor/cursor excerpts | Main-window creation and game command captured; main/game loop not certified |
+| gemstonev | Unchanged Main, Help, Info, All Cards and Current Cards in native macOS WebKit; initially hidden windows, repeated close/reopen, local controls and hotkeys, Minimize/restore and final Close cleanup | Synthetic local assets and character fixtures; live gameplay and original artwork fidelity untested |
+| smartheal | Original setup proc: all 14 body sections, 42 dropdowns and all 46 settings verified after Save & Close; Exit and native close discard edits | Disposable settings; live healing untested |
 | highlight-manager | Guarded cursor helper excerpts | Full setup/game behavior untested |
 | spellson, staminabar2 and other CSS-cohort scripts | Bounded CSS/progress or selected call-chain evidence | CSS success alone is not complete script acceptance; see the dated [CSS evidence](webui-css-decoration-acceptance.md) |
 
@@ -45,9 +46,11 @@ Retained native conversion candidates comprise BlackArts, bardwag, bigshot,
 calibrate_creaturebar, creaturebar, ebounty, ecleanse, eherbs, eloot, ewaggle, go2,
 jinx, map, repository and soundfx. This is the cached reference inventory, not a
 claim that all fifteen passed runtime acceptance or shipped upstream. Native map
-already exists; xnarost receives no further shim expansion. sea-charts remains a
-proposed native conversion. stormsync/bigshit2 expansion is excluded; slootbeta
-and remaining corpus families have no blanket compatibility certification.
+already exists; xnarost, orbuculum, narost-glass, narost2 and narost are unsupported;
+use map instead. sea-charts uses the bounded canvas interaction support described
+below; its zoom-limit indexing defect remains a separate source issue. stormsync remains deferred
+with source/Ruby defects and subsequent GTK blockers. Remaining corpus families
+have no blanket compatibility certification.
 
 ## Rendering and event flow
 
@@ -161,7 +164,7 @@ Targets are active, primary or point (a two-integer signed desktop coordinate).
 Results carry x/y/width/height, source (`native` or `browser`) and a fallback flag;
 unavailable results contain source `unavailable` and fallback true without a
 fabricated rectangle. A missing requested monitor falls back to active, primary,
-then the first available monitor. No pointer/device operations are exposed.
+then the first available monitor. This monitor API does not expose pointer/device operations.
 
 Before a viewer is attributed, macOS queries the bundled AppKit helper, Windows
 queries Forms/Win32 foreground-window geometry through PowerShell, and Linux
@@ -187,16 +190,18 @@ supports `Gdk::Cursor.new(name, display: ...)`, `new_from_name(display, name)`,
 `:hand2`/`CursorType::HAND2` aliases, and `widget.window.set_cursor`/`cursor=`.
 Nil removes a hint without replacing handles or input state. Unknown bounded
 names use default with one attributed notice; malformed arguments, foreign
-owners and retired widgets/sessions refuse. The window facade is cursor-only:
-native handles, seats/devices, pointer polling, grabs and warping still refuse.
+owners and retired widgets/sessions refuse. The window facade also supports the
+bounded canvas measurement tokens described below. Native handles, OS pointer
+polling, grabs and warping remain refused.
 
 Acceptance covers full cached manatimer setup/update/cleanup and the exact
-gemstonev geometry/cursor and highlight-manager cursor-helper excerpts. It does
-not establish whole gemstonev/highlight-manager or live-game compatibility.
+gemstonev geometry/cursor and highlight-manager cursor-helper excerpts. GemStoneV's
+broader local window/control coverage is listed above; full highlight-manager
+and live-game compatibility remain untested.
 Native WebKit and Chrome checks pass locally; Windows/Linux native behavior and
 physical multi-monitor arrangements remain unverified. Native map is already
-converted; xnarost gets no shim expansion, and sea-charts is a separate native
-conversion candidate.
+converted; the unsupported map derivatives listed above get no shim expansion.
+sea-charts uses the canvas pointer/scroll subset below.
 
 ### Script bindings and helpers
 
@@ -825,7 +830,7 @@ compatibility diagnostics; saved geometry retains its established precedence.
 integer inner padding from 0 through 64, separately from outer widget margins.
 Read-only documents preserve scroll position instead of implicitly following
 the end; supported explicit end-iterator/end-mark requests still enable follow.
-The corresponding client and contract version is 2.49.0.
+The corresponding client and contract version is 2.50.0.
 
 ### Pinned setup acceptance
 
@@ -1357,14 +1362,44 @@ Mocks, jsdom, responsive viewports and browser-tab closure do not establish thos
 native behaviors. Game-connected behavior requires validation in a game session.
 
 
-### Positioned Layout subset
+### Positioned Layout and canvas interaction (contract 2.50.0)
 
 `Gtk::Layout.new` (or `new(nil, nil)`) reuses Fixed's bounded `put`, `move`,
 child ownership and natural extents, with child painting clipped to the canvas.
 It accepts negative child coordinates, including offscreen status icons.
-Native virtual-size, drawing-window and scroll-adjustment APIs remain refused;
-scrolling is provided by browser containers rather than a native GLib/GTK loop.
-This subset does not implement `Layout#set_size` or adjustment synchronization.
+`set_size`, `width` and `height` expose bounded virtual dimensions. Finite numeric
+positions and sizes from script calculations are normalized to integer pixels.
+`ScrolledWindow` exposes both `hadjustment` and `vadjustment`, measured extents and
+viewport sizes, and viewer-scoped absolute scroll requests. Independent request
+revisions preserve manual movement on the other axis. Before a viewer attaches,
+authored initial offsets seed its first scroll position; later measurements and
+requests belong to the attributed viewer. Negative requests clamp to zero, and
+the browser clamps the upper edge. Scroller allocation uses measured viewport
+size, with the parent window's initial allocation before the first measurement.
+
+Layout accepts button press/release masks and the existing scroll mask. Wheel
+events carry bounded content coordinates for anchored zoom. Compatible wheel
+batches retain their anchor and modifiers. `Display.default.default_seat.pointer`
+is an owner-bound token: `window.get_device_position(token)` reads the active
+Layout's cached viewer/window coordinates, never an OS device. Queued drag work
+retains the originating viewer even when another viewer subsequently interacts.
+
+The opt-in overlay `pointer_tracking` contract samples motion once per animation
+frame and permits compatible marker/scroll redraws while the button is held.
+Release authority remains bounded by the existing callback/visibility/owner
+checks. Release outside the surface, capture loss, focus loss and disconnect
+cancel the gesture; the browser also ends it after 25 seconds, before the
+30-second server admission limit. Ordinary pointer surfaces retain their
+existing redraw policy. Native drawing windows and arbitrary device operations
+remain unsupported.
+
+The unchanged sea-charts source has passed local Chrome checks of all sixteen
+menu scales, live drag scrolling, wheel controls, room/follow updates, markers,
+resize and settings save. Native macOS WebKit checks cover map rendering, drag,
+menu zoom, scrolling, keep-above, the estimated-room marker and window-close save.
+World metadata and persistence are isolated fixtures. The source's Ctrl-wheel
+endpoint indexing remains separate: down at 10% wraps to 200%, and up at 200%
+divides nil before its later nil check. No script-source repair is included.
 
 ### True-color BMP images
 

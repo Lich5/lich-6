@@ -122,6 +122,20 @@ module Lich
           def default_screen = owned(:default_screen) { @screen }
           # @return [Monitor] primary selection facade
           def primary_monitor = owned(:primary_monitor) { @monitor }
+
+          # Opaque tokens select this session's browser pointer, never a native device.
+          def default_seat = owned(:default_seat) { @seat ||= PointerSeat.new(session) }
+        end
+
+        class PointerSeat
+          include DisplayValue
+          def initialize(session) = @session = session
+          def pointer = owned(:pointer) { @pointer ||= PointerDevice.new(session) }
+        end
+
+        class PointerDevice
+          include DisplayValue
+          def initialize(session) = @session = session
         end
 
         module CursorType
@@ -155,7 +169,7 @@ module Lich
           def self.new_from_name(display, name) = new(name, display: display)
         end
 
-        # Cursor-only facade: exposing this value does not expose a Gdk native window.
+        # Cursor and measured-pointer facade; it never exposes a Gdk native window.
         class CursorWindow
           include DisplayValue
 
@@ -178,6 +192,16 @@ module Lich
             end
           end
           alias cursor= set_cursor
+
+          def get_device_position(device)
+            owned(:get_device_position) do
+              surface = @widget.instance_variable_get(:@pointer_surface)
+              valid = !@widget.destroyed? && device.is_a?(PointerDevice) && device.session.equal?(session) && surface && !surface.destroyed?
+              session.refuse(self, :get_device_position) unless valid
+              position = surface.pointer_position
+              [self, position.fetch(:x), position.fetch(:y), position.fetch(:state)]
+            end
+          end
         end
 
         # Class-level native/device APIs remain explicit refusals as well.

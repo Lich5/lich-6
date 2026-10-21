@@ -241,6 +241,8 @@ has been idle, followed by repeated hide/show and borderless minimize/restore
 cycles. Assertions observe actual AppKit state without polling or evaluating
 JavaScript to wake the hidden WebView. Ordinary suite runs leave these two cases
 pending; no browser credentials, game connection or downloaded assets are used.
+The loopback server's EOF cleanup regression runs in the ordinary suite without
+`NATIVE_HOST=1`, a native app or the Swift compiler.
 
 After `npm ci --prefix spec/webui`, install Chrome if it is not already available:
 
@@ -250,14 +252,19 @@ npx --no-install playwright install chrome
 cd ../..
 ```
 
+`script_scope_canvas_spec.rb` adds `shim-canvas`: two-axis scrolling while the
+button remains held, pointer polling across marker redraws, release outside the
+surface, focus-loss cancellation and modifier-wheel coordinates. Its Ruby cases
+cover viewer attribution, disconnect cancellation and bounded virtual extents.
+
 CI installs the browser system dependencies (reusing the runner image's Chrome)
 and runs these files through Bundler, split across two shards with two parallel
 workers each (see `.github/workflows/webui_tests.yaml`; a new browser spec file
-must be added to one shard and to the command below). Run the same browser
-selection locally from the repository root in the initialized Ruby shell:
+must be added to one shard). Run all browser scenarios locally from the
+repository root in the initialized Ruby shell:
 
 ```bash
-NATIVE_BROWSER=1 rspec spec/lib/common/script_scope_source_refresh_spec.rb spec/lib/common/script_scope_scheduling_acceptance_spec.rb spec/lib/common/script_scope_geometry_cursor_spec.rb spec/lib/common/script_scope_manatimer_spec.rb spec/lib/common/script_scope_widgets_spec.rb spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb spec/lib/webui/browser_integration_spec.rb spec/lib/common/script_scope_header_bar_spec.rb spec/lib/common/script_scope_tpick_setup_spec.rb --tag browser
+NATIVE_BROWSER=1 parallel_rspec -n 4 spec/lib/common spec/lib/webui --test-options '--tag browser'
 ```
 
 Chrome runs headlessly in an isolated Playwright context. The browser runner has

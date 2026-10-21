@@ -1489,7 +1489,7 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     masks = scope::Gdk::EventMask
     expect(box.add_events(masks::ENTER_NOTIFY_MASK | masks::LEAVE_NOTIFY_MASK)).to equal(box)
     expect { box.add_events(masks::ENTER_NOTIFY_MASK | (1 << 14)) }.to raise_error(compatibility::UnsupportedOperation)
-    expect { compatibility::Layout.new.add_events(masks::BUTTON_PRESS_MASK) }.to raise_error(compatibility::UnsupportedOperation)
+    expect { compatibility::Layout.new.add_events(masks::BUTTON_PRESS_MASK) }.not_to raise_error
     calls = Queue.new
     box.signal_connect('enter-notify-event') { |widget, event| calls << [widget, event.event_type] }
     box.signal_connect('leave-notify-event') { |widget, event| calls << [widget, event.event_type] }
