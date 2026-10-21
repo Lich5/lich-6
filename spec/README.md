@@ -228,6 +228,20 @@ zsh lib/webui/native/macos/build.sh
 The policy check verifies trusted main-frame link activation, HTTP(S) destinations,
 and refusal of redirects, subframes, credential URLs and local cross-port links.
 
+Native presentation regressions require a logged-in macOS desktop and the installed
+Swift compiler. After initializing the workspace Ruby environment, run:
+
+```bash
+NATIVE_HOST=1 command rspec spec/lib/webui/native_host_presentation_spec.rb
+```
+
+These checks compile the production host with a test entry point in a disposable
+app bundle. A loopback WebSocket sends reveal requests after the hidden window
+has been idle, followed by repeated hide/show and borderless minimize/restore
+cycles. Assertions observe actual AppKit state without polling or evaluating
+JavaScript to wake the hidden WebView. Ordinary suite runs leave these two cases
+pending; no browser credentials, game connection or downloaded assets are used.
+
 After `npm ci --prefix spec/webui`, install Chrome if it is not already available:
 
 ```bash

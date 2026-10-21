@@ -2082,6 +2082,49 @@ test('custom tab headers keep stable pointer targets, colors and primary selecti
   assert.equal(button.style.color, 'rgb(0, 255, 0)');
 });
 
+test('keyboard page focus survives redraw and delivers Escape and key release to the new generation', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  const document = dom.window.document;
+  receive({ type: 'hello', pages: [{ address: 'keys' }] });
+  const draw = generation => receive({ type: 'render', page: 'keys', generation,
+    bindings: { root: ['key_press', 'key_release'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [{ type: 'text', cid: 'status', props: { content: `Mode ${generation}` } }]
+    } });
+  draw(1);
+  document.querySelector('.webui-page').focus();
+  draw(2);
+  assert.equal(document.activeElement, document.querySelector('.webui-page'));
+  document.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  draw(3);
+  document.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keyup', { key: 'Escape', bubbles: true }));
+  assert.deepEqual(sent.filter(message => message.event?.startsWith('key_')).map(message =>
+    [message.event, message.generation, message.payload.keyval]), [['key_press', 2, 0xff1b], ['key_release', 3, 0xff1b]]);
+});
+
+test('keyboard page focus restoration respects eligibility, other pages and explicit server focus', t => {
+  for (const state of ['unbound', 'hidden', 'inert', 'presentation-hidden', 'new-root', 'other-page', 'server-focus', 'input']) {
+    const { dom, receive } = fixture(); t.after(() => dom.window.close());
+    const document = dom.window.document;
+    dom.window.CSS = { escape: value => value };
+    receive({ type: 'hello', pages: [{ address: 'one' }, { address: 'two' }] });
+    const draw = (page, generation, changed = false) => receive({ type: 'render', page, generation,
+      bindings: changed && state === 'unbound' ? {} : { root: ['key_press'] },
+      facilities: changed && state === 'server-focus' ? { focus: 'input', focus_revision: 1 } : {}, tree: {
+        type: 'page', cid: changed && state === 'new-root' ? 'replacement' : 'root', props: {
+          hidden: changed && state === 'hidden', disabled: changed && state === 'inert',
+          presentation: { hidden: changed && state === 'presentation-hidden' }
+        }, children: [{ type: 'text_input', cid: 'input', props: { value: 'Draft' } }]
+      } });
+    draw('one', 1); draw('two', 1);
+    const root = document.querySelector('[data-page-address="one"]');
+    (state === 'input' ? root.querySelector('input') : root).focus();
+    draw(state === 'other-page' ? 'two' : 'one', 2, true);
+    const expected = state === 'other-page' ? root : ['server-focus', 'input'].includes(state)
+      ? document.querySelector('[data-page-address="one"] input') : document.body;
+    assert.equal(document.activeElement, expected, state);
+  }
+});
+
 test('plain actions retain focus across redraws without joining submitted input values', t => {
   const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
   receive({ type: 'hello', pages: [{ address: 'action-focus' }] });

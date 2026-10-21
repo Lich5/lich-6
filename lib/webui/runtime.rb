@@ -281,10 +281,17 @@ module Lich
         callback = page.lifecycle_bindings[:close]
         return unless callback && claim_window_close(page)
 
-        snapshot = @viewers.closing_snapshot(page)
+        snapshot = @viewers.closing_snapshot(page, retire: true)
         component = snapshot&.render&.tree || page.last_render&.tree
         context = EventContext.new(snapshot&.viewer_id, page, component, :close, { reason: :user }.freeze, nil)
-        dispatch_lifecycle(context, callback, snapshot)
+        begin
+          dispatch_lifecycle(context, callback, snapshot)
+        ensure
+          if snapshot
+            page.forget_monitors(snapshot.viewer_id)
+            @viewers_changed&.call(page.owner)
+          end
+        end
       rescue Error
         nil # Owner termination already removed the page or its dispatcher.
       end
@@ -320,7 +327,7 @@ module Lich
 
       # Internal core render scheduling, shared by native page updates and the
       # imperative adapter. A key has at most one worker, with changes coalesced
-      # until its next render. The adapter's public port stays at ten operations.
+      # until its next render. Explicit adapter presentation shares this queue.
       # The short adapter delay batches construction without blocking its caller.
       def schedule_render(key, owner:, delay: 0.01, &render)
         @refresh_mutex.synchronize do

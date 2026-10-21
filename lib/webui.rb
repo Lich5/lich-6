@@ -103,7 +103,8 @@ module Lich
 
       # Hosting is core-owned: compatibility consumers obtain an opaque port
       # without managing servers, transport, page registries or browser windows.
-      # Opening follows the first valid render, once per page.
+      # Opening follows the first valid render or an explicit adapter presentation.
+      # The service reuses live owned windows and can reopen a retained page.
       #
       # @param owner [Object] lifetime identity for adapter pages
       # @param viewer [String, nil] attachment id for viewer-local operations

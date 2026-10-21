@@ -1111,6 +1111,7 @@ module Lich
               session.refuse(self, :show) if destroyed?
               write(:presentation, @props[:presentation].merge(hidden: false)) if @props.dig(:presentation, :hidden)
               materialize
+              session.port.present(@handle)
               if @initial_focus
                 target, @initial_focus = @initial_focus, nil
                 unless target.destroyed?

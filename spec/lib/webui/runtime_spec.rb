@@ -448,6 +448,113 @@ RSpec.describe Lich::WebUI::Runtime do
     expect(runtime.viewers_present?(owner)).to be false
   end
 
+  [true, false].each do |process_first|
+    it "settles retained-page modal policies after native close with process_first=#{process_first}" do
+      coordinator = nil
+      notifications, enqueued = [], []
+      host = described_class.new(registry: registry, dispatcher: dispatcher, viewers: viewers,
+                                 viewers_changed: lambda { |who|
+                                   notifications << enqueued.dup
+                                   coordinator.viewers_changed(who)
+                                 })
+      coordinator = Lich::WebUI::ModalCoordinator.new(
+        registry: registry, runtime: host, viewers_present: host.method(:viewers_present?), pages_changed: -> {}
+      )
+      allow(dispatcher).to receive(:enqueue).and_wrap_original do |original, **options, &work|
+        original.call(**options, &work).tap { enqueued << options[:event] }
+      end
+      calls = Queue.new
+      page = registry.register(Lich::WebUI::Page.new(
+        owner: owner, id: 'retained', title: 'Retained', on: { close: ->(_event) { calls << :closed } }
+      ) { text(key: 'body', content: 'Retained page') })
+      address = registry.address_for(page)
+      host.handle(first_connection, type: 'attach', page: address)
+      viewer = viewers.attachments_for(page).first.viewer_id
+      page.observe_monitors(viewer, { source: 'browser', screens: [] })
+      host.watch_window(page)
+      buttons = [{ id: 'ok', label: 'OK' }]
+      aborted = coordinator.open(owner: owner, id: 'abort', title: 'Abort', buttons: buttons, no_viewer: :abort)
+      defaulted = coordinator.open(owner: owner, id: 'default', title: 'Default', buttons: buttons,
+                                   no_viewer: :default, default_button: 'ok')
+      expect(aborted).not_to be_resolved
+      expect(defaulted).not_to be_resolved
+
+      host.disconnect(first_connection) unless process_first
+      expect(host.browser_closed(page)).to eq(:queued)
+      host.disconnect(first_connection) if process_first
+
+      expect(calls.pop(timeout: 2)).to eq(:closed)
+      expect(registry.address_for(page)).to eq(address)
+      expect(host.viewers_present?(owner)).to be(false)
+      expect(page.monitor_snapshot(viewer)).to be_nil
+      expect(notifications.first).to include(:close) if process_first
+      expect(aborted).to be_resolved
+      expect(defaulted).to be_resolved
+      expect(aborted.await).to have_attributes(reason: :no_viewer, button: nil)
+      expect(defaulted.await).to have_attributes(reason: :no_viewer, button: 'ok')
+      notification_count = notifications.length
+      expect(host.browser_closed(page)).to be_nil
+      expect(notifications.length).to eq(notification_count)
+      expect(calls).to be_empty
+    ensure
+      coordinator&.shutdown
+      host&.shutdown
+    end
+  end
+
+  %i[shutdown overflow].each do |refusal|
+    it "cleans up a retired native viewer when close dispatch is refused by #{refusal}" do
+      notifications = []
+      host = described_class.new(registry: registry, dispatcher: dispatcher, viewers: viewers,
+                                 viewers_changed: ->(who) { notifications << who })
+      callback = double('close callback')
+      expect(callback).not_to receive(:call)
+      page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'refused-close', title: 'Close',
+                                                     on: { close: callback }) {})
+      host.handle(first_connection, type: 'attach', page: registry.address_for(page))
+      viewer = viewers.attachments_for(page).first.viewer_id
+      page.observe_monitors(viewer, { source: 'browser', screens: [] })
+      host.watch_window(page)
+      if refusal == :shutdown
+        dispatcher.shutdown_owner(owner)
+      else
+        allow(dispatcher).to receive(:enqueue).and_raise(Lich::WebUI::Dispatcher::OverflowError, 'queue is full')
+      end
+
+      expect(host.browser_closed(page)).to be_nil
+      expect(page.monitor_snapshot(viewer)).to be_nil
+      expect(notifications).to eq([owner])
+      host.disconnect(first_connection)
+      expect(host.browser_closed(page)).to be_nil
+      expect(notifications).to eq([owner])
+    ensure
+      host&.shutdown
+    end
+  end
+
+  it 'preserves monitor data and viewer availability when native close cannot identify one viewer' do
+    notifications = []
+    host = described_class.new(registry: registry, dispatcher: dispatcher, viewers: viewers,
+                               viewers_changed: ->(who) { notifications << who })
+    calls = Queue.new
+    page = registry.register(Lich::WebUI::Page.new(owner: owner, id: 'shared-close', title: 'Close',
+                                                   on: { close: ->(_event) { calls << :closed } }) {})
+    [first_connection, second_connection].each do |connection|
+      host.handle(connection, type: 'attach', page: registry.address_for(page))
+    end
+    attached = viewers.attachments_for(page)
+    attached.each { |viewer| page.observe_monitors(viewer.viewer_id, { source: 'browser', screens: [] }) }
+    host.watch_window(page)
+
+    expect(host.browser_closed(page)).to eq(:queued)
+    expect(calls.pop(timeout: 2)).to eq(:closed)
+    expect(viewers.attachments_for(page)).to match_array(attached)
+    attached.each { |viewer| expect(page.monitor_snapshot(viewer.viewer_id)).not_to be_nil }
+    expect(notifications).to be_empty
+  ensure
+    host&.shutdown
+  end
+
   it 'delivers detach even when the close callback immediately unregisters the page' do
     callbacks = []
     # Execute on enqueue to deterministically expose the real worker race.
