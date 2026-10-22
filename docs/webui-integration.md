@@ -1333,7 +1333,7 @@ and resource disposal where relevant. Keep private-helper comments focused on
 invariants that callers or maintainers cannot infer from the name alone.
 
 The default `.yardopts` excludes private methods. See the
-[YARD style guide](YARD-STYLE-GUIDE.md) for documentation tiers, private-method
+[YARD style guide](contributing/yard-style-guide.md) for documentation tiers, private-method
 documentation, examples, and coverage checks.
 
 Renderer comments describe draft preservation, event replay, and measured layout;

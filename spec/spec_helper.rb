@@ -454,6 +454,7 @@ end
 # These methods are used throughout lich-5 for output to the game client.
 # In tests, they either suppress output or print to stdout (if DEBUG=1).
 
+# Returns nil, as the production respond and _respond do.
 def respond(first = "", *messages)
   return unless ENV['DEBUG']
 
@@ -463,6 +464,7 @@ def respond(first = "", *messages)
     puts first.to_s.chomp
   end
   messages.flatten.each { |message| puts message.to_s.chomp }
+  nil
 end
 
 def _respond(first = "", *messages)
@@ -493,7 +495,7 @@ module XMLData
   @dr_active_spells_stellar_percentage = 0
 
   class << self
-    attr_accessor :game, :name, :room_id, :room_title, :room_description, :room_exits, :injury_mode, :stamina, :server_time, :previous_nav_rm, :show_room_id
+    attr_accessor :game, :name, :room_id, :room_title, :room_description, :room_exits, :injury_mode, :stamina, :server_time, :previous_nav_rm, :nav_count, :show_room_id
     attr_accessor :dr_active_spells, :dr_active_spells_slivers, :dr_active_spells_stellar_percentage
     attr_accessor :current_target_ids
 
@@ -529,6 +531,7 @@ module XMLData
       @injuries = {}
       @room_id = 0
       @previous_nav_rm = nil
+      @nav_count = 0
       @show_room_id = false
       @room_title = ''
       @room_description = ''
@@ -693,10 +696,12 @@ module Lich
       def msg_format(_format, _msg); end unless respond_to?(:msg_format)
       def mono(_msg); end unless respond_to?(:mono)
 
+      # Returns nil, as the production msg does.
       def msg(type, message, **_opts)
         @messages ||= []
         @messages << { type: type, message: message }
         puts "[Lich::Messaging] #{message}" if ENV['DEBUG']
+        nil
       end unless respond_to?(:msg)
 
       def messages
@@ -1343,6 +1348,10 @@ module Lich; module DragonRealms; end; end
 # DRC - Common module (bput, hands, messaging)
 # -----------------------------------------------------------------------------
 module DRC
+  # Same as Lich::DragonRealms::DRC::IMMOBILE_PATTERN, for code that matches
+  # the immobile reply when the real DRC isn't loaded.
+  IMMOBILE_PATTERN = /^You don't seem to be able to move/.freeze
+
   @right_hand = nil
   @left_hand = nil
 
@@ -1670,6 +1679,11 @@ class DRRoom
 
   class << self
     attr_accessor :npcs, :pcs, :group_members, :room_objs
+
+    # The production method with no Creature roster: the noun rule only.
+    def unignored_npcs(ignored)
+      (npcs || []) - Array(ignored).compact.map(&:to_s)
+    end
 
     # Clear through the accessors, not the mock's instance variables. When the
     # production DRRoom (lib/dragonrealms/drinfomon/drroom.rb) is loaded in the

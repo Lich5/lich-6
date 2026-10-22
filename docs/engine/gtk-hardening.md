@@ -6,9 +6,9 @@ loop, GLib callback-retention wrappers, and `shutdown_gtk!` are not current APIs
 Their historical implementation remains in Git history; do not use those
 instructions to configure or extend WebUI.
 
-The current [script-local shim](../lib/common/script_scope/gtk/boot.rb) is a
+The current [script-local shim](../../lib/common/script_scope/gtk/boot.rb) is a
 bounded migration bridge into WebUI. Core and native WebUI consumers do not load
-GTK. The [architecture guide](webui-integration.md) describes supported methods,
+GTK. The [architecture guide](../webui-integration.md) describes supported methods,
 refusals, declared presentation omissions, and the shared owner lifecycle.
 
 - `Gtk.main` and `Gtk.main_quit` report that native-loop control is omitted;
@@ -26,5 +26,5 @@ refusals, declared presentation omissions, and the shared owner lifecycle.
 
 There is no native GTK fallback, arbitrary GLib timer compatibility, or global
 `Gtk` constant. The shim does not suppress missing widgets or repair script
-business logic. See [review readiness](webui-review-readiness.md) for the
+business logic. See [review readiness](../webui-review-readiness.md) for the
 remaining script and platform acceptance work.

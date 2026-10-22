@@ -1045,10 +1045,10 @@ and current upstream proposal status were not revalidated.
 | File | Reconciliation |
 | --- | --- |
 | [README.md](../README.md) | Identify this development tree and its WebUI architecture; distinguish upstream release links. |
-| [GTK-HARDENING.md](GTK-HARDENING.md) | Replace retired native GTK loop/shutdown instructions with current shim ownership and cleanup behavior. |
-| [macos-bundler-recovery.md](macos-bundler-recovery.md) | Correct startup dependency groups and legacy flag semantics. |
-| [r4l5-gem-recovery-manifest.md](r4l5-gem-recovery-manifest.md) | Distinguish platform recovery paths and historical GTK payload examples from current requirements. |
-| [saved-frontend-editing.md](saved-frontend-editing.md) | Describe the implemented WebUI forms, availability checks and edit-duplicate limitation; remove obsolete GTK test instructions. |
+| [GTK-HARDENING.md](engine/gtk-hardening.md) | Replace retired native GTK loop/shutdown instructions with current shim ownership and cleanup behavior. |
+| [macos-bundler-recovery.md](dependency-recovery/macos-bundler-recovery.md) | Correct startup dependency groups and legacy flag semantics. |
+| [r4l5-gem-recovery-manifest.md](dependency-recovery/windows-r4l5-gem-manifest.md) | Distinguish platform recovery paths and historical GTK payload examples from current requirements. |
+| [saved-frontend-editing.md](frontends/saved-frontend-editing.md) | Describe the implemented WebUI forms, availability checks and edit-duplicate limitation; remove obsolete GTK test instructions. |
 | [webui-integration.md](webui-integration.md) | Reconcile current contract, Builder/control boundaries, queue failures, bounded CSS and validation claims. |
 | [spec/README.md](../spec/README.md) | Reconcile test isolation, callback completion and browser versus Ruby evidence; remove contradictory reset guidance. |
 | [fixture README](../spec/fixtures/webui/README.txt) | Clarify frozen sources, original versus repaired acceptance, and repository listing coverage. |
