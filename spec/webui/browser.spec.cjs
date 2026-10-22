@@ -177,17 +177,23 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
 
   if (scenario === 'shim-canvas') {
     const scroll = page.locator('.webui-scroll');
+    // Read the live scroller after frame-based restoration; redraws can detach locator handles.
+    const scrollPosition = property => page.evaluate(property => new Promise(resolve => {
+      requestAnimationFrame(() => {
+        resolve(document.querySelector('.webui-scroll')[property]);
+      });
+    }), property);
     await expect.poll(() => scroll.evaluate(el => el.scrollWidth)).toBeGreaterThan(1200);
     await scroll.evaluate(el => { el.scrollLeft = 400; el.scrollTop = 300; });
-    await expect.poll(() => scroll.evaluate(el => el.scrollLeft)).toBe(400);
+    await expect.poll(() => scrollPosition('scrollLeft')).toBe(400);
     const bounds = await scroll.boundingBox();
     const x = bounds.x + 220, y = bounds.y + 150;
     await page.mouse.move(x, y);
     await page.mouse.down();
     await page.mouse.move(x - 90, y - 60, { steps: 6 });
     // The original script must see movement and scroll while the button is held.
-    await expect.poll(() => scroll.evaluate(el => el.scrollLeft)).toBeGreaterThan(450);
-    await expect.poll(() => scroll.evaluate(el => el.scrollTop)).toBeGreaterThan(330);
+    await expect.poll(() => scrollPosition('scrollLeft')).toBeGreaterThan(450);
+    await expect.poll(() => scrollPosition('scrollTop')).toBeGreaterThan(330);
     await page.mouse.move(bounds.x - 10, bounds.y - 10);
     await page.mouse.up();
     await expect(page.getByText('Released 1', { exact: true })).toBeVisible();
@@ -198,11 +204,11 @@ test(`WebUI ${scenario || 'missing fixture'}`, async ({ page, context }) => {
     await page.mouse.up();
     await expect(page.getByText('Released 2', { exact: true })).toBeVisible();
     await page.mouse.move(x, y);
-    const left = await scroll.evaluate(el => el.scrollLeft);
+    const left = await scrollPosition('scrollLeft');
     await page.keyboard.down('Shift');
     await page.mouse.wheel(0, 60);
     await page.keyboard.up('Shift');
-    await expect.poll(() => scroll.evaluate(el => el.scrollLeft)).toBeGreaterThan(left);
+    await expect.poll(() => scrollPosition('scrollLeft')).toBeGreaterThan(left);
     await page.keyboard.down('Control');
     await page.mouse.wheel(0, -40);
     await page.keyboard.up('Control');
