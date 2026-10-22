@@ -4,6 +4,7 @@
 # sadly adding global level script methods (2024-06-12)
 
 require_relative 'common/move'
+require_relative 'common/wait_response'
 
 # Sentinel constants for dependency.lic gating.
 # When these are defined, dependency.lic skips its inline versions.
@@ -1560,10 +1561,10 @@ def fput(message, *waitingfor)
 
     timer = Time.now # Reset timeout on any game response
 
-    if string =~ /(?:\.\.\.wait |Wait )(?<wait_time>[0-9]+)/
+    if (wait_match = Lich::Common::WAIT_RESPONSE_PATTERN.match(string))
       return fail_with.call(:too_many_resends) if over_cap.call
 
-      hold_up = Regexp.last_match[:wait_time].to_i
+      hold_up = wait_match[:seconds].to_i
       return fail_with.call(:interrupted) if wait.call(hold_up)
 
       standing = false
@@ -1762,6 +1763,13 @@ def status_tags(onoff = "none")
   end
 end
 
+# Sends text to the main frontend and every attached detachable frontend,
+# escaped for frontends that need it, and to scripts watching script output.
+#
+# @param first [String, Array<String>] a line, or lines
+# @param messages [Array<String>] more lines
+# @return [nil] always, so a method that ends with respond returns nil
+#   whether or not any frontend is attached or a write fails
 def respond(first = "", *messages)
   str = ''
   begin
@@ -1783,8 +1791,16 @@ def respond(first = "", *messages)
   rescue => e
     Lich.log "error: respond: #{e}\n\t#{e.backtrace.first}"
   end
+  nil
 end
 
+# Like respond, but sends the text as is, without escaping, so it can carry
+# frontend markup.
+#
+# @param first [String, Array<String>] a line, or lines
+# @param messages [Array<String>] more lines
+# @return [nil] always, so a method that ends with _respond (or with
+#   Lich::Messaging.msg, which calls it) returns nil
 def _respond(first = "", *messages)
   str = ''
   begin
@@ -1801,6 +1817,7 @@ def _respond(first = "", *messages)
   rescue => e
     Lich.log "error: _respond: #{e}\n\t#{e.backtrace.first}"
   end
+  nil
 end
 
 def noded_pulse
@@ -1902,9 +1919,9 @@ def dothis(action, success_line)
       line = get
       if line =~ success_line
         return line
-      elsif line =~ /^(\.\.\.w|W)ait ([0-9]+) sec(onds)?\.$/
-        if $2.to_i > 1
-          Script.execution_sleep($2.to_i - "0.5".to_f)
+      elsif (wait_match = Lich::Common::WAIT_RESPONSE_PATTERN.match(line))
+        if wait_match[:seconds].to_i > 1
+          Script.execution_sleep(wait_match[:seconds].to_i - 0.5)
         else
           Script.execution_sleep 0.3
         end
@@ -1967,9 +1984,9 @@ def dothistimeout(action, timeout, success_line, interrupt: nil)
         Script.execution_sleep 0.1
       elsif line =~ success_line
         return line
-      elsif line =~ /^(\.\.\.w|W)ait ([0-9]+) sec(onds)?\.$/
-        if $2.to_i > 1
-          Script.execution_sleep($2.to_i - "0.5".to_f)
+      elsif (wait_match = Lich::Common::WAIT_RESPONSE_PATTERN.match(line))
+        if wait_match[:seconds].to_i > 1
+          Script.execution_sleep(wait_match[:seconds].to_i - 0.5)
         else
           Script.execution_sleep 0.3
         end

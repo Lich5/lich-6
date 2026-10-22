@@ -104,4 +104,4 @@ These tests isolate authentication, accounts and process launches. They cover
 character editing, supported-but-unavailable choices, cancellation, catalog
 updates and launch gating without authenticating to a live game or reading
 player accounts. Browser and OS-window acceptance remain separate; see the
-[WebUI validation guidance](webui-integration.md#validation).
+[WebUI validation guidance](../webui-integration.md#validation).
