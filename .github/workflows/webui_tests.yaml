@@ -45,8 +45,9 @@ jobs:
             const WEBUI_PATHS = [
               'lib/webui/', 'lib/webui.rb',
               'lib/common/script_scope/', 'lib/common/script_scope.rb', 'lib/common/script_death.rb',
+              'lib/common/webui_launcher.rb', 'lib/common/webui_launcher/',
               'spec/webui/', 'spec/fixtures/webui/', 'spec/lib/webui/', 'spec/lib/common/script_scope_',
-              'spec/support/webui_', 'spec/spec_helper.rb',
+              'spec/support/webui_', 'spec/spec_helper.rb', 'spec/login_spec_helper.rb', 'spec/support/frontend_mock.rb',
               'Gemfile', 'Gemfile.lock', '.github/workflows/webui_tests.yaml',
             ];
             const matches = path => WEBUI_PATHS.some(p => p.endsWith('/') || p.endsWith('_') ? path.startsWith(p) : path === p);
