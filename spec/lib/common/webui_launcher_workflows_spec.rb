@@ -3,133 +3,21 @@
 require_relative '../../spec_helper'
 require_relative '../../login_spec_helper'
 require 'common/webui_launcher'
+require_relative '../../support/webui_launcher_fakes'
 require 'timeout'
 
-# Fixture types stay local to this workflow-focused example group.
-# rubocop:disable Lint/ConstantDefinitionInBlock
 RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
-  Event = Data.define(:viewer_id, :payload, :submission)
-
-  class ImmediateExecutor
-    # Executes synchronously while honoring the production cleanup ownership contract.
-    # @param cleanup [Proc, nil] completion cleanup
-    # @yield fixture work
-    # @return [Boolean] true after accepting the work
-    def post(cleanup: nil, &work)
-      work.call
-      true
-    ensure
-      cleanup&.call
-    end
-
-    def stop(wait: true) = wait
-  end
-
-  class WorkflowFrontendLocator
-    Resolution = Data.define(:frontend_id) do
-      def executable_path = '/fixture/frontend'
-      def source = :detected
-    end
-
-    class << self
-      attr_accessor :resolved
-    end
-    self.resolved = []
-
-    def self.available(gui_selectable:, refresh:)
-      raise unless gui_selectable && refresh
-
-      [Resolution.new('stormfront')]
-    end
-
-    def self.resolve(frontend, refresh: false)
-      self.resolved << [frontend, refresh]
-      Resolution.new(frontend) if frontend == 'stormfront'
-    end
-  end
-
-  class WorkflowService
-    attr_reader :terminated, :stopped, :refreshes
-
-    def initialize
-      @refreshes = 0
-    end
-
-    def refresh(_page) = @refreshes += 1
-    def terminate_owner(owner) = @terminated = owner
-    def stop = @stopped = true
-  end
-
-  class WorkflowCatalog
-    attr_accessor :entries_value, :mode, :keychain, :require_master, :master_valid
-    attr_reader :calls
-
-    def initialize(entry)
-      @entries_value = [entry]
-      @mode = :standard
-      @keychain = true
-      @require_master = false
-      @master_valid = true
-      @calls = []
-    end
-
-    def entries(autosort: false) = autosort ? @entries_value.sort_by(&:char_name) : @entries_value
-    def accounts = @entries_value.map(&:user_id).uniq
-    def encryption_mode = @mode
-    def enhanced_encryption_available? = @keychain
-
-    def credential(key, master_password: nil)
-      @calls << [:credential, key, master_password]
-      raise Lich::Common::WebUILauncher::Catalog::MasterPasswordRequired if @require_master && master_password.nil?
-
-      Lich::WebUI::SensitiveValue.server('origin-b-saved-canary')
-    end
-
-    def validate_master_password(password)
-      @calls << [:validate_master, password.dup]
-      @master_valid
-    end
-
-    def upsert_manual_entry(entry, password)
-      @calls << [:save_manual, entry, password]
-      true
-    end
-
-    def toggle_favorite(key) = @calls << [:favorite, key]
-    def remove_entry(key) = @calls << [:remove_entry, key]
-    def remove_account(account) = @calls << [:remove_account, account]
-    def add_character(account, character) = @calls << [:add_character, account, character]
-    def update_character(key, character) = @calls << [:update_character, key, character]
-    def update_launcher_setting(setting, value) = @calls << [:setting, setting, value]
-
-    def add_or_update_account(account, password, characters, frontend:)
-      @calls << [:save_account, account, password, characters, frontend]
-      true
-    end
-
-    def change_encryption_mode(mode, master_password: nil)
-      @calls << [:change_encryption, mode, master_password]
-      @mode = mode
-      true
-    end
-
-    def change_master_password(current, replacement)
-      @calls << [:change_master, current, replacement]
-      true
-    end
-  end
-
   let(:entry) do
     Lich::Common::WebUILauncher::Catalog::Entry.new(
       'entry-0', 'DOUG', 'Aldor', 'GS3', 'GemStone IV', 'stormfront', nil, nil, false, nil
     )
   end
-  let(:catalog) { WorkflowCatalog.new(entry) }
-  let(:service) { WorkflowService.new }
+  let(:catalog) { WebUISpecSupport::Launcher::WorkflowCatalog.new(entry) }
+  let(:service) { WebUISpecSupport::Launcher::WorkflowService.new }
   let(:launches) { [] }
   let(:messages) { [] }
   let(:feedback) { [] }
-  let(:executor) { ImmediateExecutor.new }
+  let(:executor) { WebUISpecSupport::Launcher::ImmediateExecutor.new }
   let(:authenticator) do
     Class.new do
       class << self
@@ -151,14 +39,14 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     described_class.new(
       data_dir: '/fixture', catalog: catalog, service: service, authenticator: authenticator,
       executor: executor, on_launch: ->(launch, origin) { launches << [origin, launch] },
-      browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator,
+      browser_open: proc { true }, frontend_locator: WebUISpecSupport::Launcher::WorkflowFrontendLocator,
       recovery: ->(message) { feedback << message },
       logger: ->(level, message) { messages << [level, message] }
     )
   end
 
   def event(values = {}, viewer: 'viewer-1', payload: {})
-    Event.new(viewer, payload, Lich::WebUI::Submission.new(viewer_id: viewer, values: values))
+    WebUISpecSupport::Launcher::Event.new(viewer, payload, Lich::WebUI::Submission.new(viewer_id: viewer, values: values))
   end
 
   def viewer_secret(value)
@@ -310,7 +198,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
 
   it 'refuses a saved frontend that disappears before Play without unlocking or authenticating' do
     launcher
-    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
 
     launcher.saved_launch(event, entry.key)
 
@@ -319,12 +207,12 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(launches).to be_empty
     expect(launcher.active_operations).to be_empty
     expect(launcher.send(:render_state)[:notice][:text]).to match(/front end is unavailable.*Frontends/)
-    expect(WorkflowFrontendLocator).to have_received(:resolve).with('stormfront', refresh: true).at_least(:once)
+    expect(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to have_received(:resolve).with('stormfront', refresh: true).at_least(:once)
   end
 
   it 'retains an explicit saved custom command when its stock frontend is not detected' do
     catalog.entries_value = [entry.with(custom_launch: '/fixture/custom')]
-    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
 
     launcher.saved_launch(event, entry.key)
 
@@ -340,7 +228,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     credential = Lich::WebUI::SensitiveValue.server('unlocked-fixture')
     allow(catalog).to receive(:credential).and_return(credential)
     allow(credential).to receive(:discard!).and_call_original
-    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
 
     launcher.unlock_response(event({ 'password' => viewer_secret('correct') }, payload: { button: 'unlock' }), 'password')
 
@@ -365,7 +253,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(launches.last.first).to eq(:saved_entry)
 
     alternate = described_class.new(
-      data_dir: '/fixture', catalog: catalog, service: WorkflowService.new, executor: ImmediateExecutor.new,
+      data_dir: '/fixture', catalog: catalog, service: WebUISpecSupport::Launcher::WorkflowService.new, executor: WebUISpecSupport::Launcher::ImmediateExecutor.new,
       on_launch: proc {}, browser_open: proc { true }
     )
     alternate.instance_variable_set(:@modal, { kind: :unlock, entry_key: 'entry-0' })
@@ -445,7 +333,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(catalog.calls.map(&:first)).to include(:save_manual, :favorite)
     expect(launches.last.first).to eq(:manual)
     expect(authenticator.calls.map { |call| call[:password] }).to include('manual-canary')
-    expect(WorkflowFrontendLocator.resolved).to include(['stormfront', true])
+    expect(WebUISpecSupport::Launcher::WorkflowFrontendLocator.resolved).to include(['stormfront', true])
   end
 
   it 'distinguishes account authentication failure from successful master-password unlock' do
@@ -473,7 +361,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   it 'explains when a selected manual frontend is no longer available' do
     launcher.manual_connect(event({ 'account' => 'DOUG', 'password' => viewer_secret('manual-canary') }), 'account', 'password')
     launcher.manual_select(event({}, payload: { rows: ['character-0'] }))
-    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
     launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront' }))
     expect(launcher.send(:render_state)[:manual][:error]).to match(/front end is unavailable.*Frontends/)
     expect(launches).to be_empty
@@ -707,7 +595,7 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     expect(launcher.send(:build_page).render.facilities[:accelerators])
       .to contain_exactly(hash_including(keys: 'enter', target: ready.cid, event: 'activate'))
 
-    allow(WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).and_return(nil)
     launcher.manual_play(event({ 'select:manual-frontend' => 'stormfront' }))
     expect(launcher.send(:render_state)[:manual][:error]).to match(/front end is unavailable/)
     expect(launches).to be_empty
@@ -805,8 +693,8 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
 
   it 'routes saved Saga through its managed launcher without reading credentials or creating a game key' do
     catalog.entries_value = [entry.with(frontend: 'saga')]
-    allow(WorkflowFrontendLocator).to receive(:resolve).and_call_original
-    allow(WorkflowFrontendLocator).to receive(:resolve).with('saga', refresh: true).and_return(WorkflowFrontendLocator::Resolution.new('saga'))
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).and_call_original
+    allow(WebUISpecSupport::Launcher::WorkflowFrontendLocator).to receive(:resolve).with('saga', refresh: true).and_return(WebUISpecSupport::Launcher::WorkflowFrontendLocator::Resolution.new('saga'))
     expect(Lich::Common::SagaManagedLauncher).to receive(:launch).with(account: 'DOUG', character: 'Aldor', game_code: 'GS3').and_return(ok: true, pid: 123)
     launcher.saved_launch(event, entry.key)
     expect(catalog.calls.map(&:first)).not_to include(:credential)
@@ -875,12 +763,12 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
   end
 
   it 'keeps saved multi-launch open but closes manual and single saved launches' do
-    persistent_service = WorkflowService.new
+    persistent_service = WebUISpecSupport::Launcher::WorkflowService.new
     session_launcher = class_double(Lich::Common::SessionLauncher, launch: { ok: true })
     persistent = described_class.new(
       data_dir: '/fixture', catalog: catalog, service: persistent_service, authenticator: authenticator,
-      executor: ImmediateExecutor.new, session_launcher: session_launcher, persistent: true,
-      on_launch: proc {}, browser_open: proc { true }, frontend_locator: WorkflowFrontendLocator
+      executor: WebUISpecSupport::Launcher::ImmediateExecutor.new, session_launcher: session_launcher, persistent: true,
+      on_launch: proc {}, browser_open: proc { true }, frontend_locator: WebUISpecSupport::Launcher::WorkflowFrontendLocator
     )
     persistent.saved_launch(event, 'entry-0')
     persistent.saved_launch(event, 'entry-0')
@@ -943,4 +831,3 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
     end
   end
 end
-# rubocop:enable Lint/ConstantDefinitionInBlock
