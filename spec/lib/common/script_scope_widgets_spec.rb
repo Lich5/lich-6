@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require_relative '../../support/webui_shim_bindings'
 require 'timeout'
 require_relative '../../../lib/common/script_scope'
 require_relative '../../support/webui_browser'
 
 RSpec.describe 'bounded script compatibility pilot' do
+  include WebUISpecSupport::ShimBindings
+
   let(:scope) { Lich::Common::ScriptScope }
   let(:owner) { Struct.new(:name).new('pilot.lic') }
   let(:service) { Lich::WebUI::Service.new }
@@ -15,11 +18,7 @@ RSpec.describe 'bounded script compatibility pilot' do
     @core_gtk = [Object, Lich::Common].to_h do |namespace|
       [namespace, namespace.const_defined?(:Gtk, false) ? namespace.const_get(:Gtk, false) : nil]
     end
-    scope.activate!
-    stub_const('Lich::Common::Script', Class.new { def self.current; end })
-    allow(Lich::Common::Script).to receive(:current).and_return(owner)
-    allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
-    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
+    install_webui_shim_bindings
     allow(Lich).to receive(:log)
   end
 

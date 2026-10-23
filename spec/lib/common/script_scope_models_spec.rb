@@ -1,21 +1,20 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require_relative '../../support/webui_shim_bindings'
 require 'timeout'
 require_relative '../../../lib/common/script_scope'
 
 RSpec.describe 'bounded model, tree and combo compatibility' do
+  include WebUISpecSupport::ShimBindings
+
   let(:scope) { Lich::Common::ScriptScope }
   let(:owner) { Struct.new(:name).new('models.lic') }
   let(:service) { Lich::WebUI::Service.new }
   let(:gtk) { scope.const_get(:Gtk, false) }
 
   before do
-    scope.activate!
-    stub_const('Lich::Common::Script', Class.new { def self.current; end })
-    allow(Lich::Common::Script).to receive(:current).and_return(owner)
-    allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
-    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
+    install_webui_shim_bindings
     allow(Lich).to receive(:log)
   end
 

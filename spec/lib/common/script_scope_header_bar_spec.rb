@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require_relative '../../support/webui_shim_bindings'
 require_relative '../../../lib/common/script_scope'
 require_relative '../../support/webui_browser'
 require 'digest'
@@ -8,6 +9,8 @@ require 'json'
 require 'timeout'
 
 RSpec.describe 'HeaderBar and tpick titlebar acceptance' do
+  include WebUISpecSupport::ShimBindings
+
   let(:scope) { Lich::Common::ScriptScope }
   let(:gtk) { scope.const_get(:Gtk, false) }
   let(:owner) { Struct.new(:name).new('tpick.lic') }
@@ -16,11 +19,7 @@ RSpec.describe 'HeaderBar and tpick titlebar acceptance' do
   let(:header) { gtk::HeaderBar.new }
 
   before do
-    scope.activate!
-    stub_const('Lich::Common::Script', Class.new { def self.current; end })
-    allow(Lich::Common::Script).to receive(:current).and_return(owner)
-    allow(Lich::WebUI).to receive(:adapter) { |owner:, viewer: nil| Lich::WebUI::Adapter.new(owner: owner, service: service, viewer: viewer) }
-    allow(Lich::WebUI).to receive(:callback_queue) { |owner:| proc { |&work| service.runtime.dispatch(owner: owner, &work) } }
+    install_webui_shim_bindings
     @diagnostics = []
     allow(Lich).to receive(:log) { |message| @diagnostics << message }
   end

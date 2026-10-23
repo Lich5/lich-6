@@ -3,64 +3,20 @@
 require_relative '../../spec_helper'
 require_relative '../../login_spec_helper'
 require 'common/webui_launcher'
+require_relative '../../support/webui_launcher_fakes'
 
-# Fixture types stay local to this contract-focused example group.
-# rubocop:disable Lint/ConstantDefinitionInBlock
 RSpec.describe Lich::Common::WebUILauncher do
-  Entry = Lich::Common::WebUILauncher::Catalog::Entry
-
-  class ReduxFrontendLocator
-    Resolution = Data.define(:frontend_id) do
-      def executable_path = '/fixture/frontend'
-      def source = :detected
-    end
-
-    def self.available(gui_selectable:, refresh:)
-      raise unless gui_selectable && refresh
-
-      [Resolution.new('stormfront'), Resolution.new('saga')]
-    end
-
-    def self.resolve(frontend, refresh: false)
-      Resolution.new(frontend) if %w[stormfront saga].include?(frontend) && [true, false].include?(refresh)
-    end
-  end
-
-  class ReduxCatalogFixture
-    attr_reader :mutations
-
-    def initialize(entries: [], keychain: true, mode: :standard)
-      @entries = entries
-      @keychain = keychain
-      @mode = mode
-      @mutations = []
-    end
-
-    def entries(autosort: false)
-      autosort ? @entries.sort_by(&:char_name) : @entries
-    end
-
-    def accounts = @entries.map(&:user_id).uniq
-    def encryption_mode = @mode
-    def enhanced_encryption_available? = @keychain
-    def toggle_favorite(key) = @mutations << [:favorite, key]
-    def remove_entry(key) = @mutations << [:remove_entry, key]
-    def remove_account(account) = @mutations << [:remove_account, account]
-    def update_character(key, character) = @mutations << [:update_character, key, character]
-    def add_character(account, character) = @mutations << [:add_character, account, character]
-  end
-
   let(:entries) do
     [
-      Entry.new('entry-0', 'DOUG', 'Aldor', 'GS3', 'GemStone IV', 'stormfront', nil, nil, true, 1),
-      Entry.new('entry-1', 'DOUG', 'Bera', 'DR', 'DragonRealms', 'wizard', nil, nil, false, nil),
+      WebUISpecSupport::Launcher::Entry.new('entry-0', 'DOUG', 'Aldor', 'GS3', 'GemStone IV', 'stormfront', nil, nil, true, 1),
+      WebUISpecSupport::Launcher::Entry.new('entry-1', 'DOUG', 'Bera', 'DR', 'DragonRealms', 'wizard', nil, nil, false, nil),
     ]
   end
-  let(:catalog) { ReduxCatalogFixture.new(entries: entries) }
+  let(:catalog) { WebUISpecSupport::Launcher::ReduxCatalogFixture.new(entries: entries) }
   let(:launcher) do
     described_class.new(
       data_dir: '/fixture', catalog: catalog, on_launch: proc {}, browser_open: proc { true },
-      frontend_locator: ReduxFrontendLocator
+      frontend_locator: WebUISpecSupport::Launcher::ReduxFrontendLocator
     )
   end
   let(:tree) { launcher.send(:build_page).render.tree }
@@ -214,7 +170,7 @@ RSpec.describe Lich::Common::WebUILauncher do
 
   it 'shows all three encryption modes and an actionable keychain-unavailable state' do
     unavailable = described_class.new(
-      data_dir: '/fixture', catalog: ReduxCatalogFixture.new(entries: entries, keychain: false),
+      data_dir: '/fixture', catalog: WebUISpecSupport::Launcher::ReduxCatalogFixture.new(entries: entries, keychain: false),
       on_launch: proc {}, browser_open: proc { true }
     )
     rendered = unavailable.send(:build_page).render.tree
@@ -227,7 +183,7 @@ RSpec.describe Lich::Common::WebUILauncher do
 
   it 'defaults to Manual Entry when there are no saved entries' do
     empty = described_class.new(
-      data_dir: '/fixture', catalog: ReduxCatalogFixture.new, on_launch: proc {}, browser_open: proc { true }
+      data_dir: '/fixture', catalog: WebUISpecSupport::Launcher::ReduxCatalogFixture.new, on_launch: proc {}, browser_open: proc { true }
     )
     rendered = empty.send(:build_page).render.tree
 
@@ -280,4 +236,3 @@ RSpec.describe Lich::Common::WebUILauncher do
     expect(failed.lifecycle).to eq(:closed)
   end
 end
-# rubocop:enable Lint/ConstantDefinitionInBlock
