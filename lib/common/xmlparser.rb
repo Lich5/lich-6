@@ -681,8 +681,8 @@ module Lich
       # @param attributes [Hash<String, String>] element attributes
       # @return [void] updates parser state for the incoming element
       def tag_start(name, attributes)
-        # This is called once per element by REXML in games.rb
-        # https://ruby-doc.org/stdlib-2.6.1/libdoc/rexml/rdoc/REXML/StreamListener.html
+        # The Ox SAX bridge calls this from attrs_done after collecting the
+        # opening element's attributes (see start_element and attr above).
         begin
           @active_tags.push(name)
           @active_ids.push(attributes['id'].to_s)

@@ -14,7 +14,8 @@ module Lich
     # duplicating the validation or instantiating GTK. The shapes a
     # frontends.yml document may hold, what a built-in may override, and what
     # makes an identifier acceptable are properties of the settings file rather
-    # than of either toolkit -- so they live here and both launchers call them.
+    # than of either toolkit -- so they live here. The current WebUI launcher's
+    # FrontendTab uses these transformations and provides the settings snapshot.
     #
     # Nothing here reads or writes a file. Callers hand in the current document
     # and persist the result, which keeps the reload-before-write decision with

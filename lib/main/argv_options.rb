@@ -162,9 +162,10 @@ module Lich
 
       # Apply side effects: dark mode, hosts-dir, bind-address, detachable-client
       module SideEffects
-        # Parses launch arguments into the options hash.
-        # @param argv_options [Hash] launch options to update
-        # @return [Hash] the parsed or updated launch options
+        # Applies startup side effects to already-parsed options. Handlers may
+        # update the hash or exit the process for terminal launch actions.
+        # @param argv_options [Hash] parsed launch options to apply and update
+        # @return [Hash] the same options hash after handler updates
         def self.execute(argv_options)
           StartupTheme.apply(argv_options)
           handle_hosts_dir(argv_options)

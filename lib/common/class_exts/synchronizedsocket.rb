@@ -69,7 +69,6 @@ module Lich
       # @param role [Symbol] whether failure should end the session or only the
       #   detachable connection
       # @param write_queue_capacity [Integer] maximum pending writes
-      # @return [void] initializes isolated instance state
       def initialize(delegate, role: :primary, write_queue_capacity: DEFAULT_WRITE_QUEUE_CAPACITY)
         raise ArgumentError, "unknown socket role: #{role.inspect}" unless ROLES.include?(role)
         unless write_queue_capacity.is_a?(Integer) && write_queue_capacity.positive?

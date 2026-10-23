@@ -121,10 +121,11 @@ module Lich
         # Builds optional CLI flags for child launches.
         # Emits path flags only when explicitly overridden to a non-default value,
         # or, for :inherit flags, when this process holds a value the child cannot
-        # re-derive. This keeps child ARGV concise and avoids passing parent
-        # default directories.
+        # re-derive. With force_path_flags: true, explicit nonempty paths are
+        # retained even when they equal defaults. Explicit empty paths always
+        # opt out. Otherwise child ARGV omits re-derivable default directories.
         #
-        # @param context [Hash] Optional launch context from GUI callbacks.
+        # @param context [Hash] caller-supplied launch options and path overrides
         # @return [Array<String>] Optional flags (possibly empty).
         def optional_spawn_flags(context)
           flags = []

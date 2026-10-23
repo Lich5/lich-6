@@ -4,7 +4,7 @@ require_relative 'errors'
 
 module Lich
   module WebUI
-    # Machine-readable authority for SPEC-WEBUI-CONTRACT 2.5.0 SS10 and SS14.
+    # Machine-readable authority for the shared host/browser component contract.
     module Contract
       VERSION = '2.50.0'
       MAJOR_VERSION = 2

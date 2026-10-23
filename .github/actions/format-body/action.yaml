@@ -6,13 +6,13 @@
 #   - Preserve only the RP credit footer (not the full RP block) to keep credit intact.
 #
 # CONTRACT (ALL CHANNELS)
-#   1) Our sections first (Markdown headers, generated dynamically — no files):
+#   1) Our sections first (Markdown headers, generated dynamically -- no files):
 #        ### Features (general|dr|gs)
 #        ### Features (dr|gs)
 #        ### Bug Fixes (general|dr|gs)
 #      - Include ONLY type=feat|fix with scope=all|dr|gs.
-#      - Bullet format: "* <Title stripped of type(scope):> ([#<N>](https://github.com/<owner>/<repo>/issues/<N>))".
-#      - Sort within each section: PR number ascending (oldest → newest).
+#      - Bullet format: "* <Title stripped of type(scope):> ([#<N>](https://github.com/<owner>/<repo>/pull/<N>))".
+#      - Sort within each section: PR number ascending (oldest -> newest).
 #   2) RP credit footer next (verbatim, two lines), not the RP block:
 #        ---
 #        This PR was generated with [Release Please](https://github.com/googleapis/release-please#release-please). See [documentation](https://github.com/googleapis/release-please#release-please).
@@ -66,7 +66,7 @@ runs:
         PR_NUMBER: ${{ inputs.pr_number }}
       with:
         script: |
-          const MODE = process.env.MODE; // 'pre' or 'stable'
+          const MODE = process.env.MODE; // 'beta' or 'stable'
           const CONTRACT_SHA = process.env.CONTRACT_SHA;
           const sentinelTag = `<!-- FORMATTER:v1 sha=${CONTRACT_SHA} mode=${MODE} -->`;
           const BREAK_AUTO = (process.env.BREAK_AUTO || 'false').toLowerCase() === 'true';
@@ -228,7 +228,7 @@ runs:
             return;
           }
 
-          // Expose final body to next step (and also patch here in case the next step is omitted)
+          // Expose final body; the following step performs the PATCH unless skipped by the sentinel.
           core.setOutput('finalBody', finalBody);
 
     - name: Patch PR body (unless skipped by sentinel)

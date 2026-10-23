@@ -40,7 +40,9 @@ module Lich
     #
     # @param owner [Object] lifetime identity used for adapter page cleanup
     # @param viewer [String, nil] attachment id for viewer-local properties;
-    #   required before publication, otherwise a callback may supply context
+    #   reads require viewer attribution. Before publication, unattributed writes
+    #   initialize defaults; after publication, writes require an explicit viewer
+    #   or the originating callback's viewer context
     # @return [Lich::WebUI::Adapter] bounded component adapter
     def self.webui_adapter(owner:, viewer: nil)
       Lich::WebUI.adapter(owner: owner, viewer: viewer)

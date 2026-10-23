@@ -700,7 +700,7 @@ module Lich
         )
       end
 
-      # Resolves inherited sensitivity in the delivered tree without changing local properties.
+      # Resolves ancestor disabled state in the delivered tree without changing local properties.
       # @param component [Component] current subtree
       # @param cid [String] target identity
       # @param inherited [Boolean] disabled state of ancestors

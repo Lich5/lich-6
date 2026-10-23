@@ -619,11 +619,11 @@ RSpec.describe 'do_client command dispatch' do
   # step), rather than raising out of the command handler.
   describe 'user-supplied patterns that are not valid regexes' do
     # Exercises a malformed command pattern in an isolated child process.
-    # @param command [Object] command fixture input
-    # @param running [Object] running fixture input
-    # @param hidden [Object] hidden fixture input
-    # @param binary [Object] binary fixture input
-    # @return [Hash] captured command output, errors, and lifecycle effects
+    # @param command [String] malformed command to send through do_client
+    # @param running [Array<String>] names exposed as running scripts in the child
+    # @param hidden [Array<String>] names exposed as hidden scripts in the child
+    # @param binary [Boolean] whether to send the command with binary encoding
+    # @return [String] captured child-process stdout
     def bad_pattern_probe(command, running: [], hidden: [], binary: false)
       probe(<<~RUBY)
         #{fake_script_helper}

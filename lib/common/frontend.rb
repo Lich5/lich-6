@@ -424,7 +424,7 @@ module Lich
       # in FrontendSettings rather than becoming executable Ruby.
       #
       # The manifest is explicit because registry order is user-visible in the
-      # GTK selector and retained by the legacy capability constants below.
+      # frontend selection catalog and retained by the legacy capability constants below.
       # @return [void]
       # @api private
       def self.load_built_in_catalog!
@@ -671,11 +671,11 @@ module Lich
       end
 
       # The line proxy_handshake forwards, and why, for its log line.
-      # @return [Array(String, String)] the line to forward and the reason
       # @param line [String] stream or handshake line
       # @param version [String, nil] frontend version override
       # @param keep [Boolean] whether to retain the original handshake
       # @param frontend [String, nil] frontend identity
+      # @return [Array(String, String)] the line to forward and the reason
       def self.proxy_handshake_decision(line, version, keep, frontend)
         match = PROXY_HANDSHAKE_LINE.match(line.to_s)
         return [line, 'forwarded unchanged: not a client string'] unless match

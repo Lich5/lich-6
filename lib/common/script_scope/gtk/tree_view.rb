@@ -33,8 +33,10 @@ module Lich
           end
 
           # Enables edit proposals and updates already attached column definitions.
+          # Callers ignore the method result; Ruby assignment expressions still
+          # evaluate to their right-hand value.
           # @param value [Boolean] whether the browser may propose an edit
-          # @return [Boolean] accepted flag
+          # @return [void]
           def editable=(value)
             session.refuse(self, :editable=) if @projecting_cell
             session.refuse(self, :editable=) unless value == true || value == false
@@ -445,8 +447,10 @@ module Lich
           end
           alias set_sort_column_id sort_column_id=
 
-          # Header clicks are supported through model sorting, not custom signals.
-          # @param value [Boolean] whether the sort header accepts clicks
+          # Controls header interaction: false disables sorting and activation;
+          # true permits connected clicked callbacks even without a sort column.
+          # Built-in sorting additionally requires sort_column_id.
+          # @param value [Boolean] whether the header accepts clicks
           def clickable=(value)
             session.refuse(self, :clickable=) unless [true, false].include?(value)
             @clickable = value

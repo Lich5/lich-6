@@ -403,6 +403,15 @@ module Lich
 
       # Replaces a tabs page/header collection atomically, preserving retained handles.
       # Viewer selections are reconciled by stable header key on delivery.
+      # One adapter monitor guards validation, ownership, selection remapping and
+      # publication scheduling. Removed pages remain reusable; tab actions remain.
+      # If mutation or scheduling raises before return, properties, child
+      # ownership/slots and pending viewer selections are restored before re-raising.
+      # @param parent [Handle] tabs container owned by this adapter
+      # @param children [Array<Handle>] unique tab pages in their new display order
+      # @param names [Array<String>] one caption per tab page
+      # @param headers [Array<Hash>] contracted header metadata with stable keys
+      # @return [nil]
       def layout_tabs(parent, children:, names:, headers:)
         @mutex.synchronize do
           tabs = node!(parent)
