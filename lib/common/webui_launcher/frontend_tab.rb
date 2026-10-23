@@ -40,8 +40,8 @@ module Lich
         end
 
         # The Frontends tab: the catalog on top, an editor for the selected row
-        # below. Mirrors GUI::FrontendManagerTab, which #1558 added to the GTK
-        # launcher -- detection is shown as status only, and nothing here ever
+        # below. Retains the editing role of the former GUI::FrontendManagerTab
+        # from #1558 -- detection is shown as status only, and nothing here ever
         # launches a frontend or touches account associations.
         # @api private
         def render(ui)
@@ -126,12 +126,10 @@ module Lich
           end
         end
 
-        # GTK lays this editor out as rows: a fixed-width label on the left and
-        # the field filling the rest. Emitting the inputs as a flat sequence put
-        # every label on its own line above its field and roughly doubled the
-        # height of the form, so each row is its own two-column grid. The label
-        # still belongs to the input -- it is the input's own `label` prop, not
-        # a separate text node -- so the control keeps its accessible name.
+        # Emits a flat sequence of text inputs. CSS scoped to the frontend editor
+        # lays each field out as a row, with a fixed-width label beside its input,
+        # avoiding the doubled form height of stacked labels. Each label remains
+        # the input's own `label` prop so the control keeps its accessible name.
         # @api private
         def render_frontend_fields(ui, state, draft, built_in)
           [

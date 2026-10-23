@@ -10,8 +10,7 @@ on:
         description: "Branch to release from"
         required: true
         default: "main"
-  # Future: also trigger automatically when main changes (uncomment when ready).
-  # this may be problematic and requires rigorous testing
+  # Also runs on main pushes outside the ignored paths below.
   push:
     branches: [ "main" ]
     paths-ignore:

@@ -16,12 +16,12 @@ module Lich
           def each(&block) = children.each(&block)
         end
 
+        CrossingEvent = Data.define(:event_type)
+
         # Shadow objects preserve synchronous reads and GTK mutator chaining.
         # Only materialized widgets own opaque port handles. Destruction removes
         # the browser surface while leaving Ruby metadata readable, as MyFletch
         # reads and normalizes its entries after destroying the setup window.
-        CrossingEvent = Data.define(:event_type)
-
         class Widget
           SIGNAL_ID_MUTEX = Mutex.new
           private_constant :SIGNAL_ID_MUTEX
@@ -266,8 +266,12 @@ module Lich
           end
           private :disconnect_signal_handler
 
-          # Enables only the pointer-press mask on contracted pointer surfaces.
-          # Other native event families are not implied by menu support.
+          # Accepts positive combined press, release, scroll, enter and leave masks
+          # only when every requested event exists in this component's schema.
+          # Press/release requests also enable the pointer_events property.
+          # Unsupported bits, zero and ineligible component events are refused.
+          # @param mask [Integer, Symbol] supported mask bits, or :scroll_mask,
+          #   :button_press_mask or :button_release_mask
           # @return [Widget] self
           def add_events(mask)
             masks = { Gdk::EventMask::BUTTON_PRESS_MASK => :pointer_press, Gdk::EventMask::BUTTON_RELEASE_MASK => :pointer_release, Gdk::EventMask::SCROLL_MASK => :scroll,

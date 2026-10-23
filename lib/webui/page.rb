@@ -75,14 +75,15 @@ module Lich
         @window_geometry = nil
       end
 
-      # Reads the latest successful render generation under the page lock.
-      # @return [Integer] zero before the first render
+      # Reads the allocated render generation under the page lock. Allocation
+      # precedes author rendering and validation, so failed renders advance it too.
+      # @return [Integer] zero before the first render attempt
       def generation
         @mutex.synchronize { @generation }
       end
 
       # Reads the latest successful render without evaluating the render block.
-      # @return [Render, nil] nil before the first render
+      # @return [Render, nil] nil until a render succeeds; failures retain the prior result
       def last_render
         @mutex.synchronize { @last_render }
       end

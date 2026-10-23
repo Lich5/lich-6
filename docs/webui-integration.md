@@ -5,13 +5,13 @@ GTK compatibility layer. Both native and compatible GTK script interfaces use
 the same component contract, renderer, and window lifecycle. Core WebUI is
 independent of the compatibility layer and does not require the GTK gem.
 
-This guide describes the lich-6 development tree through PR #56
-(`100e7b7b`, 2026-10-14), not a released EO distribution.
+This guide describes the current lich-6 development tree, not a released EO
+distribution. Dated acceptance evidence below retains its original scope.
 [Fixture provenance](../spec/fixtures/webui/README.txt) identifies the frozen
 script sources, test-only repairs and acceptance limits used for regression checks.
 
 The authoritative host/browser contract is
-[`Contract::VERSION`](../lib/webui/contract.rb), currently **2.21.0**. It is an
+[`Contract::VERSION`](../lib/webui/contract.rb). It is an
 internal compatibility version, not a Lich or script release number. Versioned
 feature notes below describe when capabilities were introduced, not a second
 current contract. Ruby validation and browser handling must agree on the same
@@ -933,10 +933,11 @@ or `both` to the existing table borders. `activate-on-single-click` selects the
 shared `activation` policy (`single` or the default `double`); Enter still
 activates a row. A double-click sequence in single mode invokes activation once.
 Embedded editors and expansion controls retain their own gestures. Column
-`clickable` controls built-in sorting; `true` without a sort column is refused.
+`clickable=false` disables header interaction. Built-in sorting uses a configured
+sort column; `clickable=true` also enables connected `clicked` callbacks without
+requiring a sort column. See the [table capability history](#script-owned-models-and-viewer-owned-tables).
 CellRendererText `xalign` maps 0/1 to start/end and intermediate fractions to
-center. No arbitrary fractional cell positioning or custom header-click handler
-is implied.
+center. Arbitrary fractional cell positioning remains unsupported.
 
 SearchEntry accepts only the standard `edit-find-symbolic` primary icon with
 `primary-icon-activatable=false` and `primary-icon-sensitive=false`. Its decoration

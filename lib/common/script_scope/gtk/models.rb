@@ -545,7 +545,7 @@ module Lich
           def append(parent = nil) = insert_row(parent, -1)
           def prepend(parent = nil) = insert_row(parent, 0)
 
-          # Inserts a root without changing the identities of existing rows.
+          # Inserts under the supplied parent, or at the root for nil, preserving existing row identities.
           # @param parent [TreeIter, nil] parent or nil for roots
           # @param position [Integer] sibling index, or -1 to append
           # @return [TreeIter] new row

@@ -1436,7 +1436,10 @@ def get?
 end
 
 # Reads buffered downstream lines, normalizing room blocks for plain-text callers.
-# @param lines [Array<String>] input stream lines or buffer selectors
+# Selectors are flattened; an optional leading Numeric or nonzero count string
+# limits the history before remaining fragments are joined with | as a regex.
+# For example, reget(20, 'arrives', 'leaves') filters the last 20 buffered lines.
+# @param lines [Array<Numeric, String, Array>] optional count and case-insensitive regex fragments
 # @param core [Boolean] whether the caller may access raw core history
 # @return [Array<String>, nil, false] matching buffered lines, nil for no match, or false without a script
 def reget(*lines, core: false)

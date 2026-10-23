@@ -138,7 +138,7 @@ module Lich
           current.queue(&block)
         end
 
-        # Contract 11.5 dispositions native main-loop calls as lifecycle-only:
+        # Native main-loop calls report a lifecycle-only compatibility degradation:
         # the core dispatcher already owns the loop and must never be nested.
         def self.main
           session.degrade(:main_loop, 'native main-loop control is replaced by the core dispatcher')

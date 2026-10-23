@@ -13,6 +13,7 @@ module WebUIBrowser
   # @param service [Lich::WebUI::Service] isolated fixture host
   # @param page [Lich::WebUI::Page] registered native or shim page
   # @param scenario [String] browser scenario and diagnostic directory name
+  # @param controls [Hash] scenario controls serialized to the browser child process
   # @return [void]
   # @raise [RuntimeError] when the browser assertions or dependency loading fail
   def self.check(service:, page:, scenario:, controls: {})

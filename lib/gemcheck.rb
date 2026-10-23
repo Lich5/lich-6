@@ -95,7 +95,7 @@ module Lich
     end
 
     # The initial non-Windows recovery is deliberately macOS-only and only
-    # covers default runtime gems. GTK remains outside this Bundler path.
+    # covers the default runtime group used by current startup.
     # @param groups [Array<Symbol>]
     # @return [Boolean]
     def bundler_recovery_supported?(groups)
@@ -130,7 +130,7 @@ module Lich
       recovery.recover(gem_names, force: force, plan: plan)
     end
 
-    # Runs a consented Bundler repair for the default non-GTK runtime gems on
+    # Runs a consented Bundler repair for the default runtime gem group on
     # macOS. The recovery object uses a shipped lockfile when present, or
     # resolves only within staging before making the private RubyGems home
     # active.

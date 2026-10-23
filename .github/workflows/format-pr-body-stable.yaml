@@ -1,5 +1,5 @@
 ## -----------------------------------------------------------------------------
-## Format Release PR Body (Stable) — Documentation
+## Format Release PR Body (Stable) -- Documentation
 ##
 ## Why two triggers:
 ## - pull_request path handles human edits/labels to the Release Please PR.
@@ -53,7 +53,7 @@ jobs:
       github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (read optional sections.md if present)
+      - name: Checkout repository for the local formatter action
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Format body (stable, idempotent)
@@ -76,7 +76,7 @@ jobs:
       github.event.workflow_run.name == 'Prepare Stable Release'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (read optional sections.md if present)
+      - name: Checkout repository for the local formatter action
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Find open Release Please PR (stable)

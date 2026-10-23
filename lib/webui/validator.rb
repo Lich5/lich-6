@@ -9,6 +9,11 @@ module Lich
       Context = Data.define(:owner, :page_id, :cid)
 
       # Validates property names/shapes/defaults and type-specific relationships.
+      # @param type [Symbol, String] contracted component type
+      # @param props [Hash] authored properties, before normalization and defaults
+      # @param owner [Object] diagnostic owner identity
+      # @param page_id [String] diagnostic page identity
+      # @param cid [String] diagnostic component identity
       # @return [Hash] normalized, frozen properties
       # @raise [Error] for unknown types/properties or invalid values
       def validate_component!(type, props, owner:, page_id:, cid:)
@@ -22,6 +27,13 @@ module Lich
 
       # Validates a supported event payload against the current control properties.
       # This checks dynamic limits and choices as well as the static payload shape.
+      # @param type [Symbol, String] contracted component type
+      # @param event_name [Symbol, String] supported event name
+      # @param payload [Hash, nil] submitted event fields, or nil for a payload-free event
+      # @param props [Hash] current validated control properties
+      # @param owner [Object] diagnostic owner identity
+      # @param page_id [String] diagnostic page identity
+      # @param cid [String] diagnostic component identity
       # @return [Hash] validated payload
       # @raise [UnknownEventError] for an unsupported event
       # @raise [SchemaViolationError] for invalid payloads
@@ -52,6 +64,11 @@ module Lich
       end
 
       # Validates a supported page facility with owner/page diagnostic attribution.
+      # @param name [Symbol, String] contracted facility name
+      # @param value [Object] authored facility value
+      # @param owner [Object] diagnostic owner identity
+      # @param page_id [String] diagnostic page identity
+      # @param cid [String, nil] optional diagnostic component identity
       # @return [Object] normalized facility value
       # @raise [UnknownPropertyError] for an unsupported facility
       def validate_facility!(name, value, owner:, page_id:, cid: nil)
@@ -66,6 +83,12 @@ module Lich
       end
 
       # Validates a submitted input against both its shape and current choices/range.
+      # @param type [Symbol, String] contracted input component type
+      # @param value [Object] submitted input value
+      # @param props [Hash] current validated control properties
+      # @param owner [Object] diagnostic owner identity
+      # @param page_id [String] diagnostic page identity
+      # @param cid [String] diagnostic component identity
       # @return [Object] normalized input
       # @raise [SchemaViolationError] for non-input components or invalid values
       def validate_input_value!(type, value, props:, owner:, page_id:, cid:)
@@ -81,6 +104,12 @@ module Lich
       end
 
       # Checks a parent-provided placement shape using a placement-qualified error field.
+      # @param name [Symbol, String] placement field name
+      # @param shape [Hash] parent-provided contract shape definition
+      # @param value [Object] authored placement value
+      # @param owner [Object] diagnostic owner identity
+      # @param page_id [String] diagnostic page identity
+      # @param cid [String] diagnostic component identity
       # @return [Object] normalized placement value
       def validate_placement!(name, shape, value, owner:, page_id:, cid:)
         validate_shape(shape, value, Context.new(owner, page_id, cid), "placement.#{name}")
@@ -88,6 +117,13 @@ module Lich
 
       # Revalidates the complete property set before accepting one changed property.
       # Cross-property invariants cannot be bypassed by a single-field update.
+      # @param type [Symbol, String] contracted component type
+      # @param name [Symbol, String] property being changed
+      # @param value [Object] proposed property value
+      # @param props [Hash] current properties to merge with the proposed value
+      # @param owner [Object] diagnostic owner identity
+      # @param page_id [String] diagnostic page identity
+      # @param cid [String] diagnostic component identity
       # @return [Object] normalized requested value
       # @raise [UnknownPropertyError] for an unsupported property
       def validate_property!(type, name, value, props:, owner:, page_id:, cid:)

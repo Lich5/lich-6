@@ -168,8 +168,8 @@ RSpec.describe 'spec_helper global leak guard' do
   end
 
   # Reads the child-suite outcome for a fully described example.
-  # @param full_description [Object] full description fixture input
-  # @return [String] the recorded example status
+  # @param full_description [String] exact full description of the child-suite example
+  # @return [Array<String, nil>] status and exception message (nil without an exception)
   def status_of(full_description)
     example = probe_result['examples'].find { |e| e['full_description'] == full_description }
     raise "no probe example #{full_description.inspect}: #{Array(probe_result['messages']).join}" unless example

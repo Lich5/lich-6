@@ -296,9 +296,9 @@ module Lich
 
       # Applies a validated interaction to the corresponding viewer-local control state.
       # Password values are intentionally excluded from this persistent state map.
-      # @return [void]
       # Request IDs acknowledge accepted live text input, never grant routing authority.
       # They are captured with values so an older delivery cannot erase newer typing.
+      # @return [void]
       def update(attachment, component, event, payload, request = nil)
         @mutex.synchronize do
           if request && component.type == :text_input && event == :change && !component.props[:sensitive]
