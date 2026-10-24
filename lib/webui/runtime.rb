@@ -8,6 +8,7 @@ require_relative 'viewer_store'
 require_relative 'native_host'
 require_relative 'window_presentation'
 require_relative 'value_helpers'
+require_relative 'runtime/render_coordinator'
 
 module Lich
   module WebUI
@@ -18,6 +19,14 @@ module Lich
       LIFECYCLE_SNAPSHOT_KEY = :lich_webui_lifecycle_snapshot
       EventContext = Data.define(:viewer_id, :page, :component, :event, :payload, :submission, :render) do
         # The optional immutable admission render pins callback source identity.
+        # @param viewer_id [String, nil] originating viewer identity
+        # @param page [Page] event's owning page
+        # @param component [Component, nil] admitted control or page root
+        # @param event [Symbol] admitted event name
+        # @param payload [Hash] validated event payload
+        # @param submission [Submission, nil] disposable terminal snapshot
+        # @param render [Page::Render, nil] immutable admission render
+        # @return [EventContext] captured callback context
         def initialize(viewer_id:, page:, component:, event:, payload:, submission:, render: nil)
           super
         end
@@ -36,6 +45,7 @@ module Lich
       # @param on_page_closed [#call, nil] callback releasing a page's owned window
       # @param window_host [#call, nil] lookup from a Page to its BrowserWindow
       # @param viewers_changed [#call, nil] notification after an owner's viewer loss
+      # @return [Runtime]
       def initialize(registry:, dispatcher: nil, viewers: ViewerStore.new,
                      validator: Validator.new, file_service: nil, logger: nil, on_page_closed: nil, window_host: nil, viewers_changed: nil)
         @registry = registry
@@ -52,10 +62,9 @@ module Lich
         @scheduler = Scheduler.new(dispatcher: @dispatcher, admission: @registry.method(:ensure_active!), logger: @logger)
         @connections = {}
         @connections_mutex = Mutex.new
-        @refresh_mutex = Mutex.new
-        @refresh_state = {}.compare_by_identity
-        @closed_owners = ObjectSpace::WeakMap.new
-        @stopping = false
+        @render_coordinator = RenderCoordinator.new(on_error: lambda do |owner, error|
+          log(:error, "WebUI refresh failed owner=#{owner_label(owner)} error=#{error.class}")
+        end)
         @degradation_mutex = Mutex.new
         @degradations = {}.compare_by_identity
       end
@@ -64,8 +73,9 @@ module Lich
       # It is never coalesced. Owner termination cancels pending work, and the
       # existing dispatcher bounds apply to these submissions as one logical source.
       # @param owner [Object] lifecycle identity used by the caller's pages
-      # @yield work to execute asynchronously; must not await this dispatcher
+      # @param work [Proc] work queued on the owner dispatcher
       # @return [Symbol] :queued when admitted, not the block's eventual result
+      # @yield work to execute asynchronously; must not await this dispatcher
       # @raise [Error] if the host/owner has stopped or the queue is full
       # @raise [ArgumentError] if the owner or work block is missing
       def dispatch(owner:, &work)
@@ -84,6 +94,7 @@ module Lich
       end
 
       # Snapshots recorded presentation limitations without exposing mutable internal records.
+      # @param page [Page] exact owner-scoped page
       # @return [Array<Hash>] copied notices for the page
       def degradations(page)
         @degradation_mutex.synchronize { Array(@degradations[page]).map(&:dup).freeze }
@@ -119,133 +130,6 @@ module Lich
         :refused
       end
 
-      # Retains resumable attachments and rechecks modals after active viewers leave.
-      # Enqueues every detach before notifying each owner identity once.
-      # @param connection [Object] disconnected transport with a viewer_id
-      # @return [void]
-      def disconnect(connection)
-        @connections_mutex.synchronize { @connections.delete(connection.viewer_id) }
-        owners = {}.compare_by_identity
-        @viewers.transient_disconnect(connection.viewer_id).each do |attachment|
-          attachment.page.forget_monitors(attachment.viewer_id)
-          enqueue_lifecycle(attachment, :detach)
-          owners[attachment.page.owner] = true
-        end
-        owners.each_key { |owner| @viewers_changed&.call(owner) }
-      end
-
-      # A different script's open window cannot present this owner's modal.
-      # Transiently disconnected attachments are retained for resume, not counted.
-      def viewers_present?(owner)
-        @registry.pages_for(owner).any? { |page| !@viewers.attachments_for(page).empty? }
-      end
-
-      # Reads a shared property or the explicit/current callback viewer's value.
-      # Viewer-local reads require an unambiguous attachment; secrets cannot be read here.
-      # @return [Object] current property value
-      # @raise [SensitiveReadError] for sensitive write-only fields
-      # @raise [UnknownPropertyError] for an unknown property
-      def read(page, cid, property, viewer: nil)
-        component = page_component(page, cid)
-        name = component_property(component, property)
-        scope = property_scope(component, name)
-        case scope
-        when :sensitive_write_only
-          raise SensitiveReadError.new(
-            'sensitive values are write-only', owner: owner_label(page.owner), page_id: page.id,
-            cid: component.cid, field: name
-          )
-        when :viewer
-          attachment = contextual_attachment(page, component, viewer)
-          @viewers.property(attachment, component, name)
-        else
-          page.fetch_shared_value(component.cid, name, component.props[name])
-        end
-      rescue KeyError
-        raise UnknownPropertyError.new(
-          "unknown property #{property.inspect}", owner: owner_label(page.owner), page_id: page.id,
-          cid: cid, field: property
-        )
-      end
-
-      # Validates a scoped property update, then schedules a page refresh.
-      # Sensitive/ephemeral state must use its dedicated submission path instead.
-      # @return [nil]
-      # @raise [SensitiveReadError] for sensitive or ephemeral fields
-      # @raise [UnknownPropertyError] for an unknown property
-      def write(page, cid, property, value, viewer: nil)
-        component = page_component(page, cid)
-        name = component_property(component, property)
-        scope = property_scope(component, name)
-        if %i[sensitive_write_only ephemeral_client].include?(scope)
-          raise SensitiveReadError.new(
-            'sensitive and ephemeral values cannot be set through bulk state',
-            owner: owner_label(page.owner), page_id: page.id, cid: component.cid, field: name
-          )
-        end
-        validated = @validator.validate_property!(
-          component.type, name, value, props: component.props,
-          owner: owner_label(page.owner), page_id: page.id, cid: component.cid
-        )
-        if scope == :viewer
-          attachment = contextual_attachment(page, component, viewer)
-          @viewers.set_property(attachment, component, name, validated)
-        else
-          page.write_shared_value(component.cid, name, validated)
-        end
-        schedule_refresh(page)
-        nil
-      rescue KeyError
-        raise UnknownPropertyError.new(
-          "unknown property #{property.inspect}", owner: owner_label(page.owner), page_id: page.id,
-          cid: cid, field: property
-        )
-      end
-
-      # Renders and delivers a registered page only while its owner accepts work.
-      # @param page [Page] page to refresh
-      # @return [Integer] evaluated render generation
-      # @raise [Error] if the page closed, its owner terminated or the host stopped
-      def refresh(page)
-        @registry.ensure_active!(page.owner)
-        @registry.address_for(page)
-        page.bind_runtime(self)
-        render = validated_render(page)
-        @viewers.attachments_for(page).each do |attachment|
-          connection = @connections_mutex.synchronize { @connections[attachment.connection_id] }
-          next unless connection&.alive?
-
-          @viewers.deliver(attachment, render)
-          send_render(connection, attachment)
-        end
-        render.generation
-      end
-
-      # Applies writes made while new controls were awaiting their first delivery.
-      # Identity is captured at write time; departed viewers are never recreated.
-      # Stale targets are discarded; invalid writes are reported individually so
-      # a single rejected value cannot discard later valid writes in the batch.
-      # @api private
-      # @param page [Page] exact owner-scoped page receiving the writes
-      # @param changes [Array<Array>] viewer ID, CID, property, validated value
-      # @return [Object] refresh scheduling result
-      def seed_viewer_properties(page, changes)
-        attachments = @viewers.attachments_for(page).to_h { |attachment| [attachment.viewer_id, attachment] }
-        changes.each do |viewer, cid, name, value|
-          attachment = attachments[viewer]
-          next unless attachment
-
-          @viewers.seed_property(attachment, cid, name) do |component|
-            raise Error, 'initial property must be viewer-scoped' unless property_scope(component, name) == :viewer
-            @validator.validate_property!(component.type, name, value, props: component.props,
-                                          owner: owner_label(page.owner), page_id: page.id, cid: cid)
-          end
-        rescue Error, KeyError => error
-          log(:warning, "WebUI initial property refused owner=#{owner_label(page.owner)} page=#{page.id} cid=#{cid} field=#{name} error=#{error.class}")
-        end
-        schedule_refresh(page)
-      end
-
       # Closes admission before waiting for previously accepted work and releasing pages.
       # @param owner [Object] terminating owner identity
       # @return [Array<Page>] removed pages
@@ -268,55 +152,6 @@ module Lich
         pages
       end
 
-      # An owned app process exiting is a real window close. A WebSocket loss
-      # remains a reconnectable detach and must never terminate the script.
-      def watch_window(page)
-        @window_close_mutex.synchronize { @window_closes[page] = false }
-      end
-
-      # Dispatches an OS close with the last retained viewer state when unambiguous.
-      # @param page [Page] page whose owned process exited
-      # @return [Object, nil] dispatch result, or nil when already closed
-      def browser_closed(page)
-        @registry.address_for(page)
-        callback = page.lifecycle_bindings[:close]
-        return unless callback && claim_window_close(page)
-
-        snapshot = @viewers.closing_snapshot(page, retire: true)
-        component = snapshot&.render&.tree || page.last_render&.tree
-        context = EventContext.new(snapshot&.viewer_id, page, component, :close, { reason: :user }.freeze, nil)
-        begin
-          dispatch_lifecycle(context, callback, snapshot)
-        ensure
-          if snapshot
-            page.forget_monitors(snapshot.viewer_id)
-            @viewers_changed&.call(page.owner)
-          end
-        end
-      rescue Error
-        nil # Owner termination already removed the page or its dispatcher.
-      end
-
-      # Removes a page and its attachments, then reevaluates owner modal availability.
-      # @param page [Page] page to remove
-      # @param reason [Symbol] reason sent to attached viewers
-      # @return [Page, nil] removed page, or nil if already absent
-      def close_page(page, reason: :owner)
-        address = @registry.address_for(page)
-        @registry.unregister(page.owner, page.id)
-        @on_page_closed&.call(page)
-        @viewers.attachments_for(page).each do |attachment|
-          connection = @connections_mutex.synchronize { @connections[attachment.connection_id] }
-          connection&.send_text(Protocol.page_closed(address: address, reason: reason))
-        end
-        @viewers.destroy_page(page)
-        @degradation_mutex.synchronize { @degradations.delete(page) }
-        @viewers_changed&.call(page.owner)
-        page
-      rescue Error
-        nil
-      end
-
       # Refuses registration before draining the host's dispatcher and render workers.
       # @return [void]
       def shutdown
@@ -330,702 +165,50 @@ module Lich
       # imperative adapter. A key has at most one worker, with changes coalesced
       # until its next render. Explicit adapter presentation shares this queue.
       # The short adapter delay batches construction without blocking its caller.
+      # @param key [Object] render source identified by object identity
+      # @param owner [Object] server-owned lifecycle identity
+      # @param delay [Numeric] coalescing delay in seconds
+      # @param render [Proc] render work retained for the scheduling record
+      # @return [nil]
+      # @api private
       def schedule_render(key, owner:, delay: 0.01, &render)
-        @refresh_mutex.synchronize do
-          raise Error, 'render owner is terminated' if @stopping || @closed_owners[owner]
-
-          state = (@refresh_state[key] ||= {
-            dirty: false, thread: nil, owner: owner, work: render, delay: delay, cancelled: false
-          })
-          if state[:thread]&.alive?
-            state[:dirty] = true
-            return
-          end
-          state[:thread] = Thread.new { refresh_loop(key, state) }
-        end
-        nil
+        @render_coordinator.schedule_render(key, owner: owner, delay: delay, &render)
       end
 
       private
 
-      # Resolves a registered page and creates/resumes its viewer attachment before delivery.
-      # @return [Symbol] :attached after render delivery and lifecycle enqueue
-      def attach(connection, message)
-        @connections_mutex.synchronize { @connections[connection.viewer_id] = connection }
-        page = fetch_page(message[:page])
-        page.bind_runtime(self)
-        attachment = @viewers.attach(
-          connection_id: connection.viewer_id, address: message[:page], page: page,
-          resume_token: message[:resume]
-        )
-        render = validated_render(page)
-        @viewers.deliver(attachment, render)
-        send_render(connection, attachment)
-        enqueue_lifecycle(attachment, :attach)
-        :attached
-      end
-
-      # Removes an explicit viewer attachment regardless of render generation.
-      # Close targets attachment lifetime, so an in-flight render must not discard
-      # it. Component events still require the delivered generation to match.
-      # Rechecks the owner's modal policies after removal.
-      # @param connection [Object] authenticated transport
-      # @param message [Hash] validated detach envelope
-      # @return [Symbol] :detached after removal
+      # Reads diagnostic identity without changing lifecycle ownership.
+      # @param owner [Object] server-owned lifecycle identity
+      # @return [Object]
       # @api private
-      def detach(connection, message)
-        attachment = fetch_attachment(connection, message[:page])
-        jobs = []
-        if message[:geometry]
-          # Final window measurements and close travel together, so a pending
-          # meter render cannot invalidate the last size just as Chrome exits.
-          payload = @validator.validate_event!(:page, :configure, message[:geometry], props: attachment.render.tree.props,
-                                               owner: owner_label(attachment.page.owner), page_id: attachment.page.id,
-                                               cid: attachment.render.tree.cid)
-          attachment.page.observe_window_geometry(payload)
-          jobs << lifecycle_job(attachment, :configure, payload)
-        end
-        # A close handler can unregister the page immediately on its worker.
-        # Capture all contexts before dispatch can clear the attachment render.
-        jobs << lifecycle_job(attachment, :close, reason: :user)
-        jobs << lifecycle_job(attachment, :detach)
-        jobs.compact.each(&:call)
-        @viewers.close(connection_id: connection.viewer_id, address: message[:page])
-        attachment.page.forget_monitors(attachment.viewer_id)
-        @viewers_changed&.call(attachment.page.owner)
-        :detached
-      end
-
-      # Validates and transfers a submission to the dispatcher with explicit disposal.
-      # @api private
-      # @param connection [Object] authenticated viewer connection
-      # @param message [Hash] decoded event and submission values
-      # @return [Symbol] :queued after dispatch accepts ownership
-      # @raise [Protocol::Refusal] for invalid events or queue overflow
-      def event(connection, message)
-        attachment = fetch_attachment(connection, message[:page])
-        @viewers.admit_event(attachment, message) do |admission|
-          dispatch_event(connection, attachment, message, admission)
-        end
-      end
-
-      # Validates and enqueues against the render protected by ViewerStore admission.
-      # Script callbacks run only on the dispatcher, outside the store monitor.
-      # @param connection [Object] authenticated transport receiving any refusal
-      # @param attachment [ViewerStore::Attachment] coherently admitted viewer
-      # @param message [Hash] event envelope with validated protocol fields
-      # @param admission [Object] captured render and bounded gesture authority
-      # @return [Symbol] :queued after validation and dispatcher submission
-      def dispatch_event(connection, attachment, message, admission)
-        component = find_component!(attachment, message[:cid])
-        payload = @validator.validate_event!(
-          component.type, message[:event], message[:payload] || {}, props: component.props,
-          owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: component.cid
-        )
-        callback = attachment.render.bindings[[component.cid, message[:event].to_sym]]
-        raise Protocol::Refusal.new(:unbound, 'component event has no server binding') unless callback
-
-        if message[:event].to_sym == :pointer_motion && !component.props[:pointer_tracking]
-          raise Protocol::Refusal.new(:payload, 'pointer measurement requires tracking opt-in')
-        end
-
-        if component.type == :table && message[:event].to_sym == :row_drop
-          source = find_component!(attachment, payload[:source])
-          unless source.type == :table && component.props[:transfer_group] &&
-                 source.props[:transfer_group] == component.props[:transfer_group] &&
-                 source.props[:rows].any? { |row| row[:key] == payload[:row] }
-            raise Protocol::Refusal.new(:payload, 'row transfer is outside its declared table group')
-          end
-        end
-
-        if message[:event].to_sym == :widget_drop
-          source = find_component!(attachment, payload[:source])
-          valid = component.props[:drag_destination] && source.props[:drag_source] &&
-                  widget_transfer_available?(attachment.render.tree, component.cid) &&
-                  widget_transfer_available?(attachment.render.tree, source.cid) &&
-                  payload[:allocations].map { |item| item[:cid] } == component.children.map(&:cid)
-          raise Protocol::Refusal.new(:payload, 'widget transfer requires live enabled peers and matching children') unless valid
-        end
-
-        if message[:event].to_sym == :pointer_release && !widget_transfer_available?(attachment.render.tree, component.cid)
-          raise Protocol::Refusal.new(:payload, 'pointer release target is hidden or disabled')
-        end
-
-        event_schema = Contract.schema(component.type)[:events].fetch(message[:event].to_sym)
-        unless event_schema[:lifecycle]
-          presentation = (attachment.render.tree.props[:presentation] || {}).merge(attachment.render.facilities[:presentation] || {})
-          if presentation[:hidden] || interaction_disabled?(attachment.render.tree, component.cid)
-            raise Protocol::Refusal.new(:payload, 'component interaction is disabled or its window is hidden')
-          end
-        end
-        # A select notification represents a transition, including when a client
-        # resubmits its already selected tab before the next render arrives.
-        if component.type == :tabs && message[:event].to_sym == :select &&
-           @viewers.property(attachment, component, :selected) == payload[:index]
-          return :queued
-        end
-        snapshot = build_submission(attachment, component, message)
-        return dispatch_radio_change(attachment, component) if component.type == :radio_option && message[:event].to_sym == :change
-        if component.type == :table && message[:event].to_sym == :selection_change && callback.respond_to?(:prepare_selection)
-          return dispatch_guarded_selection(attachment, component.cid, payload)
-        end
-
-        attachment.page.observe_window_geometry(payload) if component.type == :page && message[:event].to_sym == :configure
-        if component.type == :page && message[:event].to_sym == :configure && payload[:monitors]
-          attachment.page.observe_monitors(attachment.viewer_id, payload[:monitors])
-        end
-        @viewers.update(attachment, component, message[:event].to_sym, payload, message[:request])
-        context = EventContext.new(
-          attachment.viewer_id, attachment.page, component, message[:event].to_sym, payload, snapshot, admission.render
-        )
-        @dispatcher.enqueue(
-          owner: attachment.page.owner, page_id: attachment.page.id,
-          viewer_id: attachment.viewer_id, cid: component.cid, event: context.event,
-          coalescable: !event_schema[:terminal] && !event_schema[:lifecycle] && !event_schema[:ordered],
-          cleanup: -> { snapshot&.discard_sensitive! }
-        ) do
-          if %i[widget_drop pointer_release].include?(context.event)
-            run_bounded_gesture(attachment, admission, message, callback, context)
-          else
-            callback.call(context)
-          end
-        end
-        dispatched = true
-        if %i[widget_drop pointer_release].include?(context.event)
-          log(:debug, "WebUI #{context.event} phase=queued request=#{message[:request]} generation=#{message[:generation]} admitted_generation=#{admission.render.generation}")
-        end
-        # A control already displays its own draft. Redrawing on blur needlessly
-        # changes generation before the following Save arrives. Structural
-        # choices still need a render; callbacks schedule their own other edits.
-        schedule_refresh(attachment.page) if event_schema[:structural]
-        clear_sensitive_client(connection, snapshot)
-        :queued
-      rescue Dispatcher::OverflowError
-        @viewers.close(connection_id: connection.viewer_id, address: message[:page])
-        connection.close
-        raise Protocol::Refusal.new(:overflow, 'viewer event queue overflow')
-      ensure
-        snapshot&.discard_sensitive! unless dispatched
-      end
-
-      # Retires obsolete queued gestures and records callback completion separately
-      # from native browser delivery. No store monitor is held while user code runs.
-      # @param attachment [ViewerStore::Attachment] viewer that admitted the gesture
-      # @param admission [Object] captured render and bounded epoch identity
-      # @param message [Hash] request metadata used for phase diagnostics
-      # @param callback [#call] captured server binding, never a replacement binding
-      # @param context [EventContext] validated component, payload and render
-      # @return [void]
-      # @raise [StandardError] callback failure, logged and propagated to dispatcher
-      def run_bounded_gesture(attachment, admission, message, callback, context)
-        current = if context.event == :pointer_release
-                    @viewers.release_admission_current?(attachment, admission)
-                  else
-                    @viewers.widget_admission_current?(attachment, admission)
-                  end
-        unless current
-          log(:debug, "WebUI #{context.event} phase=retired request=#{message[:request]}")
-          return
-        end
-        callback.call(context)
-        log(:debug, "WebUI #{context.event} phase=completed request=#{message[:request]}")
-      rescue StandardError => error
-        log(:error, "WebUI #{context.event} phase=failed request=#{message[:request]} error=#{error.class}")
-        raise
-      end
-
-      # Evaluate guarded proposals in owner order against current live selection.
-      # Rejection/failure never commits a proposed value. Refresh also restores
-      # optimistic browser selection after a veto; no second draft store exists.
-      def dispatch_guarded_selection(attachment, cid, payload)
-        @dispatcher.enqueue(owner: attachment.page.owner, page_id: attachment.page.id,
-                            viewer_id: attachment.viewer_id, cid: cid, event: :selection_change, coalescable: true) do
-          live = begin
-            @viewers.attachment_for_viewer(attachment.page, attachment.viewer_id)
-          rescue Error
-            nil
-          end
-          next unless live.equal?(attachment)
-          component = attachment.render.tree.find(cid)
-          callback = attachment.render.bindings[[cid, :selection_change]]
-          next unless component && callback.respond_to?(:prepare_selection)
-
-          context = EventContext.new(attachment.viewer_id, attachment.page, component, :selection_change, payload, nil)
-          previous = @viewers.property(attachment, component, :selected) || []
-          restore = true
-          begin
-            proposed = callback.prepare_selection(context)
-            accepted = @validator.validate_event!(:table, :selection_change, proposed, props: component.props,
-                                                  owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: cid)
-            @viewers.update(attachment, component, :selection_change, accepted)
-            callback.call(context.with(payload: accepted)) unless accepted[:rows] == previous
-            # Keep the failure default until the changed callback also succeeds.
-            # Accepted browser state needs no restoration paint when it matches.
-            restore = accepted[:rows] != payload[:rows]
-          ensure
-            schedule_refresh(attachment.page) if restore
-          end
-        end
-        :queued
-      end
-
-      # Selects a radio member atomically and dispatches deselection before selection.
-      # The viewer store owns all group state; no adapter keeps a parallel draft map.
-      # @return [Symbol] :queued, including an unchanged selection with no callbacks
-      def dispatch_radio_change(attachment, component)
-        changed = @viewers.select_radio_option(attachment, component)
-        callbacks = changed.filter_map do |member, checked|
-          callback = attachment.render.bindings[[member.cid, :change]]
-          [callback, EventContext.new(attachment.viewer_id, attachment.page, member, :change, { value: checked }.freeze, nil)] if callback
-        end
-        return :queued if callbacks.empty?
-
-        @dispatcher.enqueue(owner: attachment.page.owner, page_id: attachment.page.id,
-                            viewer_id: attachment.viewer_id, cid: component.cid, event: :change, coalescable: false) do
-          callbacks.each { |callback, context| callback.call(context) }
-        end
-        :queued
-      end
-
-      # Validates exactly the server-declared terminal scope before retaining submitted values.
-      # Secrets become disposable carriers; mutable raw secret strings are scrubbed in ensure.
-      # @return [Submission, nil] terminal snapshot, or nil for a nonterminal event
-      # @raise [Protocol::Refusal] for a mismatched or unauthorized submission scope
-      def build_submission(attachment, terminal, message)
-        raw_values = message.fetch(:submission, [])
-        event_schema = Contract.schema(terminal.type)[:events].fetch(message[:event].to_sym)
-        unless event_schema[:terminal]
-          raise Protocol::Refusal.new(:submission_scope, 'submission requires a terminal event') unless raw_values.empty?
-
-          return nil
-        end
-        scope = attachment.render.submissions.fetch(terminal.cid, [])
-        unless raw_values.length == scope.length
-          raise Protocol::Refusal.new(:submission_scope, 'submission value count does not match server scope')
-        end
-
-        components = scope.map { |cid| find_component!(attachment, cid) }
-        validated = components.each_with_index.map do |component, index|
-          value = @validator.validate_input_value!(
-            component.type, raw_values[index], props: component.props,
-            owner: owner_label(attachment.page.owner), page_id: attachment.page.id, cid: component.cid
-          )
-          if %i[text_input textarea].include?(component.type) && component.props[:read_only]
-            # The browser may still display an older server value. Validate
-            # against its delivery, but retain the latest server-owned value.
-            value = @viewers.read_only_submission(attachment, component, value)
-          end
-          [component, value]
-        end
-        selected_groups = validated.filter_map do |component, value|
-          component.props[:group] if component.type == :radio_option && value
-        end
-        unless selected_groups.uniq.length == selected_groups.length
-          raise Protocol::Refusal.new(:submission_scope, 'radio group has multiple selected options')
-        end
-        # Capture all differences before applying any values: selecting a radio
-        # option also updates its peers. Native callbacks still receive only the
-        # terminal event; the imperative adapter uses this metadata to reconcile
-        # legacy change handlers when Save overtakes a stale change-event retry.
-        input_changes = validated.filter_map do |component, value|
-          next if sensitive?(component)
-
-          previous = @viewers.input_value(attachment, component)
-          # textarea.value normalizes CRLF and lone CR to LF. Compare that
-          # representation only; preserve the validated snapshot value below.
-          changed = if component.type == :textarea
-                      ValueHelpers.normalize_text_line_breaks(previous) != ValueHelpers.normalize_text_line_breaks(value)
-                    else
-                      previous != value
-                    end
-          component if changed
-        end
-        values = validated.to_h do |component, value|
-          if sensitive?(component)
-            [component.cid, SensitiveValue.viewer(value)]
-          else
-            @viewers.set_input(attachment, component, value) unless %i[text_input textarea].include?(component.type) && component.props[:read_only]
-            [component.cid, value]
-          end
-        end
-        Submission.new(viewer_id: attachment.viewer_id, values: values, input_changes: input_changes)
-      ensure
-        scrub_sensitive_raw!(components, raw_values) if defined?(components) && components
-      end
-
-      # Overwrites mutable raw strings at known sensitive positions after snapshot construction.
-      # @return [void]
-      def scrub_sensitive_raw!(components, raw_values)
-        components.each_with_index do |component, index|
-          next unless sensitive?(component)
-          next unless raw_values[index].is_a?(String) && !raw_values[index].frozen?
-
-          raw_values[index].replace("\0" * raw_values[index].bytesize)
-          raw_values[index].clear
-        end
-      end
-
-      # Requests clearing only the secret controls present in this submission.
-      # @return [void]
-      def clear_sensitive_client(connection, snapshot)
-        sensitive_cids = snapshot&.sensitive_cids || []
-        return if sensitive_cids.empty?
-
-        connection.send_text(JSON.generate(type: 'clear_sensitive', cids: sensitive_cids))
-      end
-
-      def stale!(_connection, _attachment)
-        raise Protocol::Refusal.new(:stale_generation, 'stale generation')
-      end
-
-      # Sends the delivered tree, event bindings and native-presentation ownership.
-      # @param connection [#send_text] authenticated viewer connection
-      # @param attachment [ViewerStore::Attachment] current viewer/page association
-      # @return [Object] transport send result
-      # @api private
-      def send_render(connection, attachment)
-        snapshot = @viewers.snapshot(attachment, for_delivery: true)
-        render = snapshot.render
-        bindings = render.bindings.keys.group_by(&:first).transform_values do |pairs|
-          pairs.map(&:last).map(&:to_s)
-        end
-        connection.send_text(
-          Protocol.render(
-            address: attachment.address, generation: render.generation,
-            tree: serialize_for_client(snapshot), facilities: render.facilities,
-            bindings: bindings, submissions: render.submissions,
-            input_requests: snapshot.input_requests,
-            resume: attachment.resume_token,
-            window_presentation: @window_host&.call(attachment.page)&.presentation_support || {}
-          )
-        )
-      end
-
-      # Resolves ancestor disabled state in the delivered tree without changing local properties.
-      # @param component [Component] current subtree
-      # @param cid [String] target identity
-      # @param inherited [Boolean] disabled state of ancestors
-      # @return [Boolean, nil] effective state, or nil when absent from this subtree
-      def interaction_disabled?(component, cid, inherited = false)
-        disabled = inherited || component.props[:disabled] == true
-        return disabled if component.cid == cid
-
-        component.children.each do |child|
-          result = interaction_disabled?(child, cid, disabled)
-          return result unless result.nil?
-        end
-        nil
-      end
-
-      # Widget transfers cannot originate in a hidden or disabled ancestor.
-      # @return [Boolean, nil] availability, or nil when absent from this subtree
-      def widget_transfer_available?(component, cid, unavailable = false)
-        unavailable ||= component.props[:disabled] == true || component.props[:hidden] == true
-        return !unavailable if component.cid == cid
-
-        component.children.each do |child|
-          result = widget_transfer_available?(child, cid, unavailable)
-          return result unless result.nil?
-        end
-        nil
-      end
-
-      # Resolves a component within the viewer's delivered tree, not an arbitrary newer render.
-      # @return [Component]
-      # @raise [Protocol::Refusal] for an unknown delivered identity
-      def find_component!(attachment, cid)
-        component = attachment.render.tree.find(cid)
-        return component if component
-
-        raise Protocol::Refusal.new(:component_id, 'component is not registered for delivered page')
-      end
-
-      # Serializes a coherent viewer snapshot and resolves logical popup addresses.
-      # @param snapshot [ViewerStore::Snapshot] state captured before transport writes
-      # @return [Hash] client component tree
-      # @api private
-      def serialize_for_client(snapshot)
-        tree = @viewers.serialize(snapshot)
-        rewrite_popup_addresses(tree, snapshot.page.owner)
-      end
-
-      # Replaces owner-local popup IDs with registered opaque addresses recursively.
-      # Popup resolution cannot select another owner's page by its local ID.
-      # @return [Hash] updated component tree
-      def rewrite_popup_addresses(component, owner)
-        if component[:type] == 'composite' && component.dig(:props, :popup)
-          popup = component[:props][:popup]
-          target = @registry.fetch(owner, popup[:page])
-          component[:props] = component[:props].merge(popup: popup.merge(page: @registry.address_for(target)))
-        end
-        component[:children].each { |child| rewrite_popup_addresses(child, owner) }
-        component
-      end
-
-      def sensitive?(component)
-        ValueHelpers.sensitive_value?(component)
-      end
-
       def owner_label(owner)
         Diagnostics.owner_label(owner)
       end
 
-      # Finds a component in the closing viewer's snapshot or the current page render.
-      # @param page [Page] owning page
-      # @param cid [String] component identifier
-      # @return [Component] matching component
-      # @api private
-      def page_component(page, cid)
-        render = lifecycle_snapshot(page)&.render || page.last_render || page.render
-        component = render.tree.each.find { |candidate| candidate.cid == cid.to_s }
-        return component if component
-
-        raise Error.new('component is not registered', owner: owner_label(page.owner), page_id: page.id, cid: cid)
-      end
-
-      # Validates served images and popup ownership before applying native presentation.
-      # @param page [Page] page whose authored render is evaluated
-      # @return [Page::Render] render accepted for delivery
-      # @raise [Error] if an image route or popup page is unavailable
-      # @api private
-      def validated_render(page)
-        render = page.render
-        record_presentation_degradations(page, render)
-        render.tree.each do |component|
-          sources = case component.type
-                    when :image then component.props[:src] == '' ? [] : [component.props[:src]]
-                    when :composite
-                      component.props[:layers].filter_map do |layer|
-                        [layer[:src], layer[:mask]] if layer[:kind] == 'image'
-                      end.flatten.compact
-                    else []
-                    end
-          sources.each do |source|
-            next if @file_service&.resolve_url(source)
-
-            raise Error.new(
-              'image source is not a registered served file', owner: owner_label(page.owner),
-              page_id: page.id, cid: component.cid, field: :src
-            )
-          end
-          next unless component.type == :composite && component.props[:popup]
-
-          @registry.fetch(page.owner, component.props[:popup][:page])
-        end
-        @window_host&.call(page)&.present(render)
-        render
-      end
-
-      # Records unsupported presentation requests after facility overrides are applied.
-      # @param page [Page] owner of the diagnostic record
-      # @param render [Page::Render] evaluated page properties and facilities
-      # @return [void]
-      # @api private
-      def record_presentation_degradations(page, render)
-        requested = (render.tree.props[:presentation] || {}).merge(render.facilities[:presentation] || {})
-        refusals = requested.each_key.filter_map do |property|
-          next if presentation_support(page).fetch(property)
-
-          {
-            facility: :presentation, property: property,
-            reason: :unsupported_by_browser_host,
-          }.freeze
-        end
-        @degradation_mutex.synchronize do
-          # Close unregisters before taking this lock. A late render therefore
-          # cannot restore a strong reference after close removes the record.
-          @registry.address_for(page)
-          @degradations[page] = refusals.freeze
-        end
-      end
-
-      def fetch_page(address)
-        @registry.fetch_address(address)
-      rescue Error
-        raise Protocol::Refusal.new(:page_gone, 'page is no longer registered', page_id: address)
-      end
-
-      # Requires both a registered page and its current connection-specific attachment.
-      # @return [ViewerStore::Attachment]
-      # @raise [Protocol::Refusal] with page_gone or viewer_gone attribution
-      def fetch_attachment(connection, address)
-        fetch_page(address)
-        @viewers.fetch(connection_id: connection.viewer_id, address: address)
-      rescue Protocol::Refusal
-        raise
-      rescue Error
-        raise Protocol::Refusal.new(:viewer_gone, 'viewer is no longer attached', page_id: address)
-      end
-
-      # pagehide and the process monitor can both observe one user close.
-      # Unmanaged browser viewers retain their existing per-viewer semantics.
-      def claim_window_close(page)
-        @window_close_mutex.synchronize do
-          return true unless @window_closes.key?(page)
-          return false if @window_closes[page]
-
-          @window_closes[page] = true
-        end
-      end
-
-      def enqueue_lifecycle(attachment, event, payload = {})
-        lifecycle_job(attachment, event, payload)&.call
-      end
-
-      # Captures readable viewer state before close removes its live attachment.
-      # @param attachment [ViewerStore::Attachment] originating viewer
-      # @param event [Symbol] lifecycle event
-      # @param payload [Hash] validated event details
-      # @return [Proc, nil] enqueue operation, or nil when no callback is bound
-      # @api private
-      def lifecycle_job(attachment, event, payload = {})
-        callback = attachment.page.lifecycle_bindings[event]
-        return unless callback
-        return if event == :close && !claim_window_close(attachment.page)
-
-        snapshot = @viewers.snapshot(attachment) if %i[close detach configure].include?(event)
-        component = (snapshot&.render || attachment.render).tree
-        context = EventContext.new(
-          attachment.viewer_id, attachment.page, component, event, payload.freeze, nil
-        )
-        proc { dispatch_lifecycle(context, callback, snapshot) }
-      end
-
-      # Owns closing-state disposal even when callback work is refused or canceled.
-      # @param context [EventContext] captured lifecycle event
-      # @param callback [#call] bound page callback
-      # @param snapshot [ViewerStore::Snapshot, nil] temporary closing viewer state
-      # @return [Symbol] dispatcher admission result
-      # @api private
-      def dispatch_lifecycle(context, callback, snapshot)
-        @dispatcher.enqueue(
-          owner: context.page.owner, page_id: context.page.id,
-          viewer_id: context.viewer_id, cid: context.component&.cid, event: context.event, coalescable: false,
-          cleanup: -> { snapshot&.values&.clear }
-        ) do
-          previous = Thread.current.thread_variable_get(LIFECYCLE_SNAPSHOT_KEY)
-          Thread.current.thread_variable_set(LIFECYCLE_SNAPSHOT_KEY, [self, snapshot])
-          begin
-            callback.call(context)
-          ensure
-            Thread.current.thread_variable_set(LIFECYCLE_SNAPSHOT_KEY, previous)
-          end
-        end
-      end
-
-      # Maps generic value access onto checkbox/toggle checked or radio selected state.
-      # @return [Symbol] concrete contract property
-      def component_property(component, property)
-        key = property.to_sym
-        return key unless key == :value
-
-        case component.type
-        when :toggle, :checkbox, :radio_option then :checked
-        when :radio then :selected
-        else :value
-        end
-      end
-
-      # Resolves ownership while giving sensitive value classification precedence.
-      # @return [Symbol] property scope
-      # @raise [KeyError] for an unknown property
-      def property_scope(component, name)
-        schema = Contract.schema(component.type)
-        return :sensitive_write_only if name == :value && sensitive?(component)
-
-        definition = schema.fetch(:properties)[name]
-        return definition[:scope] if definition
-        return schema[:value_scope] if name == :value && schema[:value]
-
-        raise KeyError, name
-      end
-
-      # Resolves callback-scoped closing state before looking up a live viewer.
-      # @param page [Page] owning page
-      # @param component [Component] component being accessed
-      # @param viewer [Object, String, nil] explicit viewer outside callbacks
-      # @return [ViewerStore::Attachment, ViewerStore::Snapshot] viewer-local state
-      # @api private
-      def contextual_attachment(page, component, viewer)
-        snapshot = lifecycle_snapshot(page)
-        return snapshot if snapshot
-
-        selected = @dispatcher.current_context&.viewer_id || viewer
-        viewer_id = ValueHelpers.viewer_id(selected)
-        unless viewer_id
-          raise AmbiguousViewerError.new(
-            'viewer-local access requires callback context or an explicit viewer',
-            owner: owner_label(page.owner), page_id: page.id, cid: component.cid
-          )
-        end
-
-        @viewers.attachment_for_viewer(page, viewer_id.to_s)
-      end
-
-      # Limits detached state access to this runtime's current lifecycle callback.
-      # @param page [Page] page whose closing state is requested
-      # @return [ViewerStore::Snapshot, nil] matching callback snapshot
-      # @api private
-      def lifecycle_snapshot(page)
-        runtime, snapshot = Thread.current.thread_variable_get(LIFECYCLE_SNAPSHOT_KEY)
-        snapshot if runtime.equal?(self) && snapshot&.page.equal?(page)
-      end
-
-      def schedule_refresh(page)
-        schedule_render(page, owner: page.owner, delay: 0) do
-          refresh(page)
-        rescue Error
-          # Closure may retire this exact page after the refresh was queued or
-          # admitted. Discard that obsolete work without joining a render thread
-          # from inside a close callback. Live-page errors still reach the logger;
-          # a replacement with the same owner/id never revives the retired page.
-          raise if @registry.pages_for(page.owner).any? { |registered| registered.equal?(page) }
-        end
-      end
-
-      # Runs coalesced work until clean/canceled and removes only its own scheduling record.
-      # A late worker must not erase a replacement worker's state.
-      # @return [void]
-      def refresh_loop(key, state)
-        loop do
-          sleep(state[:delay]) if state[:delay].positive?
-          break if @refresh_mutex.synchronize { state[:cancelled] }
-
-          state[:work].call
-          repeat = @refresh_mutex.synchronize do
-            dirty = state[:dirty]
-            state[:dirty] = false
-            @refresh_state.delete(key) unless dirty
-            dirty
-          end
-          break unless repeat
-        end
-      rescue StandardError => error
-        log(:error, "WebUI refresh failed owner=#{owner_label(state[:owner])} error=#{error.class}")
-      ensure
-        @refresh_mutex.synchronize do
-          @refresh_state.delete(key) if @refresh_state[key].equal?(state)
-        end
-      end
-
       # Join already admitted renders before unregistering pages. Otherwise an
       # adapter could publish a page immediately after its owner was removed.
+      # @param owner [Object, nil] exact owner, or nil to cancel all render workers
+      # @return [Array<Thread>]
+      # @api private
       def cancel_renders(owner = nil)
-        threads = @refresh_mutex.synchronize do
-          owner ? @closed_owners[owner] = true : @stopping = true
-          @refresh_state.values.filter_map do |state|
-            next if owner && !state[:owner].equal?(owner)
-
-            state[:cancelled] = true
-            state[:thread]
-          end
-        end
-        threads.each { |thread| thread.join unless thread.equal?(Thread.current) }
+        @render_coordinator.cancel_renders(owner)
       end
 
+      # Delivers diagnostics while isolating sink failures from runtime control flow.
+      # @param level [Symbol] diagnostic severity
+      # @param message [String] diagnostic text
+      # @return [Object, nil]
+      # @api private
       def log(level, message)
         Diagnostics.log(@logger, level, message)
       end
     end
   end
 end
+
+require_relative 'runtime/attachments'
+require_relative 'runtime/events'
+require_relative 'runtime/submissions'
+require_relative 'runtime/rendering'
+require_relative 'runtime/properties'
+require_relative 'runtime/lifecycle'
