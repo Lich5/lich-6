@@ -19,6 +19,9 @@ module Lich
           # @return [Array<Hash>] detected XML blockers, excluding property text values
           attr_reader :issues
 
+          # Retains immutable XML blockers alongside the attributed refusal message.
+          # @param message [String] attributed refusal message
+          # @param issues [Array<Hash>] value-free XML blockers retained immutably
           def initialize(message, issues: [])
             super(message)
             @issues = issues.map(&:freeze).freeze
@@ -42,90 +45,8 @@ module Lich
           MAX_BYTES = 1_048_576
           MAX_OBJECTS = 2048
           MAX_DEPTH = 64
-          CLASSES = %w[Window Box HBox VBox Grid Table Frame ScrolledWindow Viewport
-                       Notebook Expander Label Entry SearchEntry Button ToggleButton
-                       CheckButton RadioButton SpinButton ComboBoxText ComboBox TextView
-                       TextBuffer Separator HSeparator TreeView TreeViewColumn
-                       TreeSelection ListStore TreeStore CellRendererText CellRendererToggle
-                       CellRendererCombo Adjustment].to_h { |name| ["Gtk#{name}", Gtk.const_get(name, false)] }.freeze
-          COLUMN_TYPES = { 'gchararray' => String, 'gint' => Integer, 'guint' => Integer,
-                           'gfloat' => Float, 'gdouble' => Float, 'gboolean' => TrueClass }.freeze
-          CONSTRUCTOR_PROPERTIES = {
-            'GtkBox' => %w[orientation spacing], 'GtkHBox' => %w[homogeneous spacing], 'GtkVBox' => %w[homogeneous spacing],
-            'GtkTable' => %w[n-rows n-columns],
-            'GtkAdjustment' => %w[value lower upper step-increment page-increment page-size],
-            'GtkSpinButton' => %w[adjustment climb-rate digits], 'GtkFrame' => %w[label], 'GtkExpander' => %w[label],
-            'GtkComboBox' => %w[has-entry model], 'GtkComboBoxText' => %w[has-entry model], 'GtkTextView' => %w[buffer],
-            'GtkSeparator' => %w[orientation], 'GtkRadioButton' => %w[group label],
-            'GtkTreeView' => %w[model], 'GtkCellRendererCombo' => %w[model],
-          }.freeze
-          ELEMENTS = {
-            'interface' => [%w[requires object], []],
-            'requires' => [[], %w[lib version]],
-            'object' => [%w[property child signal columns data items attributes], %w[class id]],
-            'property' => [[], %w[name translatable comments context]],
-            'child' => [%w[object packing attributes placeholder], %w[type internal-child]],
-            'packing' => [%w[property], []], 'placeholder' => [[], []],
-            'columns' => [%w[column], []], 'column' => [[], %w[type]],
-            'data' => [%w[row], []], 'row' => [%w[col row], []], 'col' => [[], %w[id translatable]],
-            'items' => [%w[item], []], 'item' => [[], %w[id translatable]],
-            'attributes' => [%w[attribute], []], 'attribute' => [[], %w[name value]],
-            'signal' => [[], %w[name handler swapped after]],
-          }.freeze
-          COMMON = {
-            'name' => [:name=, :text],
-            'can-focus' => [:can_focus=, :boolean],
-            'visible' => [:visible, :boolean], 'sensitive' => [:sensitive=, :boolean],
-            'width-request' => [:set_width_request, :integer], 'height-request' => [:set_height_request, :integer],
-            'border-width' => [:set_border_width, :integer], 'tooltip-text' => [:set_tooltip_text, :text],
-            'halign' => [:halign=, :symbol], 'valign' => [:valign=, :symbol], 'hexpand' => [:set_hexpand, :boolean], 'vexpand' => [:set_vexpand, :boolean],
-            'margin-start' => [:set_margin_start, :integer], 'margin-end' => [:set_margin_end, :integer],
-            'margin-left' => [:set_margin_left, :integer], 'margin-right' => [:set_margin_right, :integer],
-            'margin-top' => [:set_margin_top, :integer], 'margin-bottom' => [:set_margin_bottom, :integer],
-          }.freeze
-          PROPERTIES = {
-            Notebook           => { 'show-tabs' => [:show_tabs=, :boolean] },
-            Window             => { 'title' => [:title=, :text], 'default-width' => [:default_width=, :integer],
-                        'default-height' => [:default_height=, :integer], 'resizable' => [:resizable=, :boolean], 'modal' => [:modal=, :boolean] },
-            Grid               => { 'row-spacing' => [:row_spacing=, :integer], 'column-spacing' => [:column_spacing=, :integer],
-                      'column-homogeneous' => [:column_homogeneous=, :boolean], 'row-homogeneous' => [:row_homogeneous=, :boolean] },
-            Label              => { 'label' => [:text=, :text], 'wrap' => [:wrap=, :boolean], 'xalign' => [:xalign=, :number], 'yalign' => [:yalign=, :number],
-                       'single-line-mode' => [:single_line_mode=, :boolean],
-                       'xpad' => [:xpad=, :integer], 'ypad' => [:ypad=, :integer], 'angle' => [:angle=, :number], 'justify' => [:justify=, :symbol],
-                       'selectable' => [:set_selectable, :boolean], 'width-chars' => [:set_width_chars, :integer], 'use-markup' => [:use_markup=, :boolean] },
-            Entry              => { 'text' => [:text=, :text], 'placeholder-text' => [:placeholder_text=, :text],
-                       'max-length' => [:max_length=, :integer],
-                       'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number], 'width-chars' => [:set_width_chars, :integer],
-                       'max-width-chars' => [:set_max_width_chars, :integer] },
-            Button             => { 'label' => [:label=, :text], 'receives-default' => [:receives_default=, :boolean] },
-            SearchEntry        => { 'primary-icon-name'        => [:primary_icon_name=, :text],
-                                    'primary-icon-activatable' => [:primary_icon_activatable=, :boolean],
-                                    'primary-icon-sensitive'   => [:primary_icon_sensitive=, :boolean] },
-            CheckButton        => { 'draw-indicator' => [:draw_indicator=, :boolean], 'receives-default' => [:receives_default=, :boolean],
-                                   'always-show-image' => [:always_show_image=, :boolean] },
-            Frame              => { 'label-xalign' => [:label_xalign=, :number], 'shadow-type' => [:shadow_type=, :symbol] },
-            ScrolledWindow     => { 'shadow-type' => [:shadow_type=, :symbol] },
-            ToggleButton       => { 'label' => [:label=, :text], 'active' => [:set_active, :boolean] },
-            RadioButton        => { 'active' => [:set_active, :boolean] },
-            SpinButton         => { 'value' => [:set_value, :number], 'digits' => [:digits=, :integer], 'numeric' => [:numeric=, :boolean] },
-            ComboBox           => { 'active' => [:active=, :integer], 'entry-text-column' => [:entry_text_column=, :integer] },
-            TextView           => { 'editable' => [:editable=, :boolean], 'cursor-visible' => [:cursor_visible=, :boolean],
-                          'wrap-mode' => [:wrap_mode=, :symbol], 'accepts-tab' => [:accepts_tab=, :boolean] },
-            TextBuffer         => { 'text' => [:set_text, :text] },
-            Expander           => { 'label' => [:set_label, :text], 'expanded' => [:set_expanded, :boolean] },
-            TreeView           => { 'headers-visible' => [:headers_visible=, :boolean], 'search-column' => [:search_column=, :integer],
-                                   'enable-search' => [:enable_search=, :boolean], 'enable-grid-lines' => [:enable_grid_lines=, :symbol],
-                                   'activate-on-single-click' => [:activate_on_single_click=, :boolean],
-                                   'fixed-height-mode' => [:fixed_height_mode=, :boolean] },
-            TreeViewColumn     => { 'title' => [:title=, :text], 'resizable' => [:resizable=, :boolean],
-                                'clickable' => [:clickable=, :boolean],
-                                'visible' => [:visible=, :boolean], 'fixed-width' => [:fixed_width=, :integer],
-                                'sort-column-id' => [:sort_column_id=, :integer], 'sizing' => [:sizing=, :symbol] },
-            TreeSelection      => { 'mode' => [:mode=, :symbol] },
-            CellRendererText   => { 'editable' => [:editable=, :boolean], 'xalign' => [:xalign=, :number] },
-            CellRendererToggle => { 'activatable' => [:activatable=, :boolean] },
-            CellRendererCombo  => { 'text-column' => [:text_column=, :integer], 'has-entry' => [:has_entry=, :boolean] },
-          }.freeze
+          # Ordered class/property/XML declarations used by every Builder phase.
+          require_relative 'builder/catalog'
 
           # Creates a Builder owned by the current script, including subclass instances.
           def initialize
@@ -133,9 +54,11 @@ module Lich
             @objects, @by_id, @signals = [], {}, []
           end
 
+          # Returns a document-order snapshot without exposing the Builder collection.
           # @return [Array<Object>] document-order snapshot, including anonymous objects
           def objects = @objects.dup
 
+          # Resolves a declared XML identity or refuses the missing lookup.
           # @param id [String, Symbol] XML identifier
           # @return [Object] the original object for a declared identifier
           # @raise [BuilderError] undeclared identifier; unlike GTK, lookup never returns nil
@@ -242,386 +165,16 @@ module Lich
 
           private
 
-          # Reports all unmapped properties in one preflight, before allocating objects.
-          # This is not an exhaustive behavior audit: constructor/value failures are
-          # subsequently reported at their actual failing phase.
-          def check_properties
-            issues = []
-            @elements.each do |element|
-              klass = CLASSES.fetch(element.attributes['class'])
-              allowed = CONSTRUCTOR_PROPERTIES.fetch(element.attributes['class'], [])
-              allowed += COMMON.keys if klass <= Widget
-              PROPERTIES.each { |type, entries| allowed += entries.keys if klass <= type }
-              properties(element).each_key do |name|
-                next if allowed.include?(name)
-                issues << issue(element, name, 'unsupported property; requires an explicit mapping')
-              end
-            end
-            return if issues.empty?
-            first = issues.first
-            fail_at(@elements.find { |element| (element.attributes['id'] || '(anonymous)') == first[:object] && element.attributes['class'] == first[:xml_class] },
-                    first[:property], "#{first[:reason]} (#{issues.length} unmapped declarations)", issues: issues)
-          end
-
-          # Rejects unsupported XML syntax instead of silently ignoring unvisited nodes.
-          def check_elements(element, depth = 0)
-            fail_at(element, 'nesting', 'XML depth limit exceeded') if depth > MAX_DEPTH
-            shape = ELEMENTS[element.name]
-            fail_at(element, element.name, 'unsupported XML element') unless shape
-            element.attributes.each_attribute do |attribute|
-              fail_at(element, attribute.name, 'unsupported XML attribute') unless shape.last.include?(attribute.name)
-            end
-            if element.name == 'requires'
-              valid = element.attributes['lib'] == 'gtk+' && element.attributes['version'].to_s.match?(/\A3\.(?:[0-9]|1[0-9]|2[0-4])\z/)
-              fail_at(element, 'requires', 'only GTK 3 through 3.24 is supported') unless valid
-            end
-            element.elements.each do |child|
-              fail_at(child, child.name, "not supported inside #{element.name}") unless shape.first.include?(child.name)
-              check_elements(child, depth + 1)
-            end
-            if element.name == 'object'
-              %w[columns data items attributes].each do |name|
-                fail_at(element, name, 'duplicate section') if element.elements.to_a(name).length > 1
-              end
-            elsif element.name == 'child'
-              %w[packing attributes].each do |name|
-                fail_at(element, name, 'duplicate section') if element.elements.to_a(name).length > 1
-              end
-            end
-            if !%w[property col item attribute].include?(element.name) && element.texts.any? { |text| !text.value.strip.empty? }
-              fail_at(element, 'text', 'unexpected text outside a value element')
-            end
-          end
-
-          # Preserves all text characters; only explicitly numeric/boolean properties coerce.
-          def convert(value, kind, element, name)
-            @location = [element, name]
-            case kind
-            when :text then value
-            when :symbol then value.strip.tr('-', '_').to_sym
-            when :integer then Integer(value, 10)
-            when :number
-              number = Float(value)
-              fail_at(element, name, 'number must be finite') unless number.finite?
-              number
-            when :boolean
-              case value.strip.downcase
-              when 'true', 'yes', '1' then true
-              when 'false', 'no', '0' then false
-              else fail_at(element, name, 'expected boolean')
-              end
-            end
-          rescue ArgumentError
-            fail_at(element, name, "expected #{kind}")
-          end
-
-          def properties(element)
-            element.elements.to_a('property').each_with_object({}) do |property, result|
-              name = property.attributes['name'].to_s.tr('_', '-')
-              fail_at(element, name, 'empty or duplicate property') if name.empty? || result.key?(name)
-              result[name] = property.texts.map(&:value).join
-            end
-          end
-
-          # References are load-local: no failed load can bind or mutate an older graph.
-          def reference(id, element, name)
-            target = @pending_ids[id]
-            fail_at(element, name, "unresolved load-local reference #{id}") unless target
-            build(target)
-          end
-
-          # Construction order follows dependencies, while objects preserves XML order.
-          def build(element)
-            return @built[element] if @built.key?(element)
-            fail_at(element, 'reference', 'cyclic construction dependency') if @building[element]
-            @building[element] = true
-            @location = [element, 'constructor']
-            klass = CLASSES.fetch(element.attributes['class'])
-            props = properties(element)
-            object = construct(klass, props, element)
-            fail_at(element, 'internal-child', 'internal object already declared') if @object_elements.key?(object)
-            @created << object
-            @object_elements[object] = element
-            anonymous = "__anonymous_#{@objects.length + @positions.fetch(element) + 1}"
-            anonymous += '_' while @pending_ids.key?(anonymous) || @by_id.key?(anonymous)
-            object.instance_variable_set(:@builder_name, element.attributes['id'] || anonymous)
-            @built[element] = object
-            object.hide if object.is_a?(Widget) && !object.is_a?(Window) && !object.is_a?(ComboEntry)
-            props.each { |name, value| apply_property(object, name, value, element) unless name == 'can-focus' }
-            # Focus acceptance depends on the completed configuration (e.g. editable),
-            # not the order Glade happened to serialize the properties.
-            apply_property(object, 'can-focus', props['can-focus'], element) if props.key?('can-focus')
-            @building.delete(element)
-            object
-          end
-
-          def construct(klass, props, element)
-            case klass.name.split('::').last
-            when 'Box' then klass.new(convert(props.delete('orientation') || 'horizontal', :symbol, element, 'orientation'), convert(props.delete('spacing') || '0', :integer, element, 'spacing'))
-            when 'HBox', 'VBox' then klass.new(convert(props.delete('homogeneous') || 'false', :boolean, element, 'homogeneous'), convert(props.delete('spacing') || '0', :integer, element, 'spacing'))
-            when 'Table' then klass.new(convert(props.delete('n-rows') || '1', :integer, element, 'n-rows'), convert(props.delete('n-columns') || '1', :integer, element, 'n-columns'))
-            when 'Adjustment'
-              values = %w[value lower upper step-increment page-increment page-size].map do |name|
-                convert(props.delete(name) || '0', :number, element, name)
-              end
-              klass.new(*values)
-            when 'SpinButton'
-              adjustment = reference(props.delete('adjustment'), element, 'adjustment')
-              klass.new(adjustment, convert(props.delete('climb-rate') || '0', :number, element, 'climb-rate'), convert(props.delete('digits') || '0', :integer, element, 'digits'))
-            when 'ListStore', 'TreeStore'
-              columns = element.elements.to_a('columns/column').map do |column|
-                COLUMN_TYPES[column.attributes['type']] || fail_at(element, 'columns', 'unsupported scalar column type')
-              end
-              klass.new(*columns)
-            when 'Frame' then klass.new(props.delete('label'))
-            when 'Expander' then klass.new(props.delete('label') || '')
-            when 'Button' then klass.new(label: props.delete('label') || '', use_underline: false)
-            when 'ToggleButton', 'CheckButton' then klass.new(label: props.delete('label') || '')
-            when 'ComboBox', 'ComboBoxText' then klass.new(entry: convert(props.delete('has-entry') || 'false', :boolean, element, 'has-entry'))
-            when 'TextView' then klass.new(props.key?('buffer') ? reference(props.delete('buffer'), element, 'buffer') : nil)
-            when 'Separator' then klass.new(convert(props.delete('orientation') || 'horizontal', :symbol, element, 'orientation'))
-            when 'TreeSelection'
-              child, parent = element.parent, element.parent.parent
-              fail_at(element, 'internal-child', 'selection must belong to a TreeView') unless child.attributes['internal-child'] == 'selection' && parent.attributes['class'] == 'GtkTreeView'
-              build(parent).selection
-            when 'Entry'
-              if element.parent.attributes['internal-child'] == 'entry'
-                owner = build(element.parent.parent)
-                fail_at(element, 'internal-child', 'entry requires an editable combo') unless owner.is_a?(ComboBox) && owner.child
-                owner.child
-              else
-                klass.new
-              end
-            when 'RadioButton'
-              group = props.key?('group') ? reference(props.delete('group'), element, 'group') : nil
-              klass.new(group, label: props.delete('label') || '')
-            else klass.new
-            end
-          end
-
-          # Bind populated models before renderer mappings select a non-default column.
-          # Construction references (buffers, adjustments and radio groups) resolve earlier.
-          def bind_model(element)
-            props = properties(element)
-            return unless props.key?('model')
-            @location = [element, 'model']
-            @built.fetch(element).model = reference(props['model'], element, 'model')
-          end
-
-          def apply_property(object, name, value, element)
-            return if %w[model active entry-text-column].include?(name) && (object.is_a?(ComboBox) || name == 'model')
-            @location = [element, name]
-            mapping = PROPERTIES.filter_map { |type, entries| entries[name] if object.is_a?(type) }.last
-            mapping ||= COMMON[name] if object.is_a?(Widget)
-            fail_at(element, name, 'unsupported property; requires an explicit mapping') unless mapping
-            method, kind = mapping
-            converted = convert(value, kind, element, name)
-            case method
-            when :visible
-              if object.is_a?(Window)
-                @visible_windows << object if converted
-              else
-                converted ? object.show : object.hide
-              end
-            else object.public_send(method, converted)
-            end
-          end
-
-          # Parent-specific child roles never fall back to an arbitrary empty container.
-          def compose(element)
-            object = @built.fetch(element)
-            @location = [element, 'children']
-            children = element.elements.to_a('child')
-            pages = []
-            children.each do |child|
-              objects = child.elements.to_a('object')
-              placeholders = child.elements.to_a('placeholder')
-              valid = objects.length == 1 && placeholders.empty?
-              valid ||= objects.empty? && placeholders.length == 1 && child.attributes.empty? && child.elements.size == 1
-              fail_at(element, 'child', 'expected exactly one object or an unadorned placeholder') unless valid
-              next if objects.empty?
-              target = @built.fetch(objects.first)
-              internal, role = child.attributes['internal-child'], child.attributes['type']
-              if internal
-                valid = internal == 'selection' && object.is_a?(TreeView) && target.equal?(object.selection)
-                valid ||= internal == 'entry' && object.is_a?(ComboBox) && target.equal?(object.child)
-                fail_at(element, 'internal-child', 'unsupported internal child') unless valid && !role && !child.elements['packing'] && !child.elements['attributes']
-                next
-              end
-              if child.elements['attributes'] && !object.is_a?(TreeViewColumn) && !object.is_a?(ComboBox)
-                fail_at(element, 'attributes', 'cell bindings require a renderer parent')
-              end
-              packing = child.elements['packing'] ? properties(child.elements['packing']) : {}
-              if object.is_a?(Notebook)
-                fail_at(element, 'packing', 'unsupported notebook packing') unless (packing.keys - %w[tab-fill position reorderable]).empty?
-                if packing.key?('reorderable') && convert(packing['reorderable'], :boolean, element, 'reorderable')
-                  # A sole page with no tab selector has no observable ordering gesture.
-                  # Never use this exception to claim multi-page drag reordering.
-                  count = element.get_elements('child').count { |item| !item.attributes['type'] && item.elements['object'] }
-                  unless object.instance_variable_get(:@props)[:show_tabs] == false && count == 1
-                    fail_at(element, 'reorderable', 'tab reordering requires a hidden single-page notebook')
-                  end
-                  session.degrade(:notebook_reorder, 'single hidden notebook page has no ordering gesture')
-                end
-                if packing.key?('position')
-                  expected = object.children.length
-                  fail_at(element, 'position', 'notebook position must match document order') unless convert(packing['position'], :integer, element, 'position') == expected
-                end
-                # Tabs do not expand in this bounded surface, so either fill request
-                # has the same natural allocation. Expanded tab packing is still refused.
-                convert(packing['tab-fill'], :boolean, element, 'tab-fill') if packing.key?('tab-fill')
-                if role == 'tab'
-                  fail_at(element, 'tab', 'tab requires a preceding page and plain label') unless pages.last && target.is_a?(Label)
-                  fail_at(element, 'tab attributes', 'caption styling is not supported') if objects.first.elements['attributes']
-                  object.append_page(pages.pop, target)
-                else
-                  fail_at(element, 'child', 'notebook pages require paired tab labels') unless role.nil? && pages.empty?
-                  pages << target
-                end
-              elsif (object.is_a?(Frame) || object.is_a?(Expander)) && role == 'label'
-                fail_at(element, 'label', 'frame label must be plain text') unless target.is_a?(Label)
-                fail_at(element, 'packing', 'caption packing is unsupported') unless packing.empty?
-                fail_at(element, 'label attributes', 'caption styling is not supported') if objects.first.elements['attributes']
-                object.is_a?(Frame) ? object.set_label_widget(target) : object.set_label(target.text)
-              else
-                fail_at(element, 'child type', 'unsupported child role') if role
-                attach(object, target, packing, child)
-              end
-            end
-            fail_at(element, 'tab', 'page is missing a tab label') unless pages.empty?
-          end
-
-          def attach(parent, child, packing, element)
-            @location = [element, 'packing']
-            case parent
-            when Grid, Table
-              allowed = parent.instance_of?(Grid) ? %w[left-attach top-attach width height] : %w[left-attach right-attach top-attach bottom-attach]
-              fail_at(element, 'packing', 'unsupported grid placement') unless (packing.keys - allowed).empty?
-              values = allowed.map { |name| convert(packing.fetch(name, %w[left-attach top-attach].include?(name) ? '0' : '1'), :integer, element, name) }
-              # Legacy attach initializes padding through margin; retain explicit XML margins.
-              margin = child.instance_variable_get(:@props)[:margin]
-              parent.attach(child, *values)
-              child.send(:write, :margin, margin) unless margin.nil?
-            when Box
-              fail_at(element, 'packing', 'unsupported box placement') unless (packing.keys - %w[expand fill padding pack-type position]).empty?
-              ending = packing.fetch('pack-type', 'start')
-              fail_at(element, 'pack-type', 'expected start or end') unless %w[start end].include?(ending)
-              parent.public_send(ending == 'end' ? :pack_end : :pack_start, child,
-                                 expand: convert(packing.fetch('expand', 'true'), :boolean, element, 'expand'),
-                                 fill: convert(packing.fetch('fill', 'true'), :boolean, element, 'fill'),
-                                 padding: convert(packing.fetch('padding', '0'), :integer, element, 'padding'))
-              parent.reorder_child(child, convert(packing['position'], :integer, element, 'position')) if packing.key?('position')
-            when TreeView
-              fail_at(element, 'child', 'expected a column without packing') unless child.is_a?(TreeViewColumn) && packing.empty?
-              parent.append_column(child)
-            when TreeViewColumn, ComboBox
-              fail_at(element, 'child', 'expected one renderer without packing') unless child.is_a?(CellRendererText) && packing.empty?
-              attributes = element.elements.to_a('attributes/attribute')
-              fail_at(element, 'attributes', 'only one renderer binding is supported') if attributes.length > 1
-              parent.pack_start(child, true)
-              attributes.each do |attribute|
-                fail_at(element, 'attributes', 'renderer binding uses text, not a value attribute') if attribute.attributes['value']
-                parent.add_attribute(child, attribute.attributes['name'], convert(attribute.text.to_s, :integer, element, 'column'))
-              end
-            when Window, Frame, ScrolledWindow, Viewport, Expander
-              fail_at(element, 'packing', 'packing unsupported on this container') unless packing.empty?
-              parent.add(child)
-            else fail_at(element, 'child', 'object cannot contain this child')
-            end
-          end
-
-          # Applies values that require completed children/models, then records signals.
-          def finish(element)
-            object = @built.fetch(element)
-            props = properties(element)
-            if object.is_a?(ComboBox)
-              element.elements.each('items/item') do |item|
-                text = item.texts.map(&:value).join
-                item.attributes['id'] ? object.append(item.attributes['id'], text) : object.append_text(text)
-              end
-              %w[entry-text-column active].each do |name|
-                next unless props.key?(name)
-                method, kind = PROPERTIES[ComboBox].fetch(name)
-                object.public_send(method, convert(props[name], kind, element, name))
-              end
-            elsif element.elements['items']
-              fail_at(element, 'items', 'items require a combo')
-            end
-            element.elements.each('attributes/attribute') do |attribute|
-              @location = [element, 'attributes']
-              fail_at(element, 'attributes', 'text attributes require a Label') unless object.is_a?(Label)
-              name, value = [attribute.attributes['name'], attribute.attributes['value']]
-              case name
-              when 'style'
-                fail_at(element, 'attributes', 'unsupported text attribute') unless %w[normal italic].include?(value)
-                object.send(:write, :font_style, value)
-              when 'foreground'
-                # Pango's 16-bit RGB literals become bounded numeric channels;
-                # source attributes are never passed through as arbitrary CSS.
-                color = Color.parse(value)
-                fail_at(element, 'attributes', 'unsupported foreground color') unless color
-                object.send(:write, :foreground, color)
-              else fail_at(element, 'attributes', 'unsupported text attribute')
-              end
-            end
-            element.elements.each('signal') { |signal| prepare_signal(object, element, signal) }
-          end
-
-          # Store data exists before a forward-referencing combo applies its active index.
-          def load_model(element)
-            object = @built.fetch(element)
-            @location = [element, 'model data']
-            if object.is_a?(ListStore)
-              element.elements.each('data/row') { |row| populate(object, row) }
-            elsif element.elements['data'] || element.elements['columns']
-              fail_at(element, 'model data', 'columns/data require a store')
-            end
-          end
-
-          def populate(model, element, parent = nil)
-            row = model.is_a?(TreeStore) ? model.append(parent) : model.append
-            seen = []
-            element.elements.each('col') do |column|
-              index = convert(column.attributes['id'].to_s, :integer, element, 'column id')
-              fail_at(element, 'column id', 'duplicate cell') if seen.include?(index)
-              seen << index
-              kind = { String => :text, Integer => :integer, Float => :number, TrueClass => :boolean }.fetch(model.get_column_type(index))
-              row[index] = convert(column.texts.map(&:value).join, kind, element, 'cell')
-            end
-            element.elements.each('row') do |child|
-              fail_at(element, 'row', 'nested rows require TreeStore') unless model.is_a?(TreeStore)
-              populate(model, child, row)
-            end
-          end
-
-          def prepare_signal(object, element, signal)
-            name = signal.attributes['name'].to_s.tr('-', '_')
-            handler = signal.attributes['handler'].to_s
-            %w[after swapped].each do |flag|
-              fail_at(element, "signal:#{name}", "#{flag}=true is unsupported") if convert(signal.attributes[flag] || 'false', :boolean, element, flag)
-            end
-            supported = if object.is_a?(ComboEntry) then ['changed']
-                        elsif object.is_a?(Widget)
-                          object.send(:signal_map).keys.map { |key| key.tr('-', '_') } + ['destroy']
-                        elsif object.is_a?(Adjustment) then %w[changed value_changed]
-                        elsif object.is_a?(TreeSelection) then ['changed']
-                        elsif object.is_a?(CellRendererCombo) then %w[edited changed]
-                        elsif object.is_a?(CellRendererText) then [object.signal_name]
-                        else []
-                        end
-            fail_at(element, "signal:#{name}", 'unsupported signal or invalid handler name') unless supported.include?(name) && handler.match?(/\A[a-zA-Z_]\w*[!?]?\z/)
-            @pending_signals << [object, name, handler, element]
-          end
-
-          def validate_object(object)
-            return unless object.is_a?(Widget) && !object.is_a?(ComboEntry)
-            element = @object_elements.fetch(object)
-            @location = [element, 'component properties']
-            Lich::WebUI::Validator.new.validate_component!(object.send(:component_type), object.send(:component_props), owner: 'shim', page_id: nil, cid: nil)
-          end
+          # Keep translation phases on this receiver; each family declares private helpers.
+          require_relative 'builder/validation'
+          require_relative 'builder/construction'
+          require_relative 'builder/composition'
+          require_relative 'builder/models_and_signals'
 
           # No script handlers have been connected on rejected graphs, so teardown cannot
           # invoke user code. Every widget is visited, including unattached label objects.
+          # @return [void] result is not part of the supported script contract
+          # @api private
           def discard_pending
             @created&.reverse_each do |object|
               session.cleanup(object) { object.destroy } if object.is_a?(Widget) && !object.is_a?(ComboEntry)
@@ -629,6 +182,12 @@ module Lich
             end
           end
 
+          # Builds value-free diagnostic context from the nearest XML object.
+          # @param element [REXML::Element, nil] XML location, or nil for a document-level refusal
+          # @param operation [String] XML property or phase being refused
+          # @param reason [String] value-free explanation of the refusal
+          # @return [Hash] value-free XML location and refusal reason
+          # @api private
           def issue(element, operation, reason)
             node = element
             node = node.parent while node.is_a?(REXML::Element) && node.name != 'object'
@@ -636,6 +195,14 @@ module Lich
               xml_class: node.is_a?(REXML::Element) ? node.attributes['class'] : nil, property: operation, reason: reason }
           end
 
+          # Raises a Builder refusal with script and XML declaration attribution.
+          # @param element [REXML::Element, nil] XML location, or nil for a document-level refusal
+          # @param operation [String] XML property or phase being refused
+          # @param reason [String] value-free explanation of the refusal
+          # @param issues [Array<Hash>, nil] collected value-free XML blockers
+          # @param object_id [String, nil] explicit XML identity for a lookup refusal
+          # @return [void] always raises BuilderError
+          # @api private
           def fail_at(element, operation, reason, issues: nil, object_id: nil)
             detail = issue(element, operation, reason)
             detail[:object] = object_id if object_id

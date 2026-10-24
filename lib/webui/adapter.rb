@@ -21,25 +21,35 @@ module Lich
       UNSET = Object.new.freeze
 
       # Requests host geometry through the shared service using this adapter's owner/viewer.
+      # @param target [Symbol] :active, :primary, or :point
+      # @param point [Array<Integer>, nil] signed desktop point for :point
       # @return [Hash] bounded geometry and explicit measurement/fallback provenance
       def monitor_geometry(target: :active, point: nil)
         viewer = ValueHelpers.viewer_id(@viewer)
         @service.monitor_geometry(owner: @owner, viewer: viewer, target: target, point: point)
       end
 
+      # Opaque token retaining its payload while the discovery indexes stay weak.
       class Handle
         # The retained public token owns its payload even through a weak index.
+        # @return [void]
+        # @api private
         def initialize
           @state = []
         end
 
+        # Replaces the token-owned payload during creation or retirement.
+        # @param node [Node, nil] live payload, or nil when destroyed
+        # @return [void]
+        # @api private
         def retain(node)
           @state[0] = node
         end
         private :retain
 
         # Keeps diagnostic output opaque instead of exposing adapter internals.
-        # @return [String]
+        # @return [String] opaque token description
+        # @api private
         def inspect = '#<Lich::WebUI::Adapter::Handle opaque>'
         alias to_s inspect
       end
@@ -54,9 +64,10 @@ module Lich
       # Handles use object identity; equal-looking windows remain independent.
       # @param owner [Object] lifecycle identity for every created page
       # @param service [Service] host used for publication and cleanup
-      # @param viewer [String, nil] explicit viewer for scoped reads/writes
+      # @param viewer [String, #viewer_id, nil] explicit identity or callback viewer resolver
       # @param validator [Validator] shared property validator
       # @param on_publish [#call, nil] host opener called on first publication or explicit presentation
+      # @return [Adapter] newly initialized owner-bound port
       def initialize(owner:, service:, viewer: nil, validator: Validator.new, on_publish: nil)
         @owner = owner
         @service = service
@@ -70,60 +81,6 @@ module Lich
         @focus_sequence = 0
         @dirty_roots = {}.compare_by_identity
         @mutex = Monitor.new
-      end
-
-      # Requests an owned window after pending state is published on the owner worker.
-      # Reuses the page and its handles; the host reuses a live window or opens a new one.
-      # @param handle [Handle] live page root belonging to this adapter
-      # @return [nil]
-      # @raise [Error] for foreign, non-page, destroyed or terminated handles
-      def present(handle)
-        @service.registry.ensure_active!(@owner)
-        @mutex.synchronize do
-          root = node!(handle)
-          raise attributed_error('presentation requires a page root', handle, :present) unless root.type == :page && !root.parent
-
-          root.present_requested = true
-          dirty!(root)
-        end
-        nil
-      end
-
-      # Retains a revisioned focus request for a focusable descendant of one owned page.
-      # @return [nil]
-      # @raise [Error] for foreign, detached, non-focusable or retired targets
-      def focus(root_handle, target_handle)
-        @mutex.synchronize do
-          root, target = node!(root_handle), node!(target_handle)
-          valid = root.type == :page && root_for(target).equal?(root) && TreeBuilder::FOCUSABLE_TYPES.include?(target.type)
-          raise attributed_error('focus requires a focusable page descendant', target_handle, :focus) unless valid
-          raise attributed_error('focus revision exhausted', root_handle, :focus) if @focus_sequence >= 2_147_483_647
-
-          root.focus = [WeakRef.new(target_handle), @focus_sequence += 1]
-          dirty!(root)
-        end
-        nil
-      end
-
-      # Repositions an existing child atomically under its parent's placement contract.
-      # @return [nil]
-      # @raise [Error] without changing placement on invalid input or parentage
-      def place(parent_handle, child_handle, placement)
-        @mutex.synchronize do
-          parent, child = node!(parent_handle), node!(child_handle)
-          raise attributed_error('placement requires an attached child', child_handle, :placement) unless child.parent.equal?(parent_handle)
-          raise ArgumentError, 'placement must be a Hash' unless placement.is_a?(Hash)
-
-          candidate = child.dup
-          candidate.placement = symbolize(placement).freeze
-          validate_placement!(parent, candidate, child_handle)
-          if parent.type == :tabs && candidate.placement[:tab_action]&.to_s != child.placement[:tab_action]&.to_s
-            raise attributed_error('change tab action roles through layout_tab_actions', child_handle, :placement)
-          end
-          child.placement = candidate.placement
-          dirty!(root_for(parent))
-        end
-        nil
       end
 
       # Validates a component and allocates an opaque handle without opening a window.
@@ -159,510 +116,9 @@ module Lich
         raise attributed(error, handle)
       end
 
-      # Reads validated shadow state without holding the adapter lock across rendering.
-      # @param handle [Object] opaque component handle
-      # @param property [Symbol, String] contract property
-      # @return [Object] a copy of the current property value
-      def get(handle, property)
-        target = nil
-        @mutex.synchronize do
-          node = node!(handle)
-          name, definition = property!(node, handle, property)
-          if sensitive_property?(node, name, definition)
-            raise SensitiveReadError.new(
-              'sensitive-write-only property cannot be read', owner: owner_label,
-              page_id: adapter_page_id, cid: handle_label(handle), field: name
-            )
-          end
-          if definition[:scope] == :viewer
-            selected = ValueHelpers.viewer_id(@viewer)
-            pending = [selected.to_s, name] if selected
-            return deep_copy(node.viewer_values[pending]) if pending && node.viewer_values.key?(pending)
-            if (page = root_for(node).page) && node.cid && node.published
-              target = [page, node.cid, name]
-              next
-            end
-            return deep_copy(node.viewer_values.fetch([viewer!, name], node.props[name]))
-          end
-
-          # Window measurements are captured before callback dispatch. Exit
-          # cleanup can therefore read the latest size even if a script is
-          # killed while its configure callback is still queued.
-          if node.type == :page && (geometry = node.page&.window_geometry)
-            return geometry.values_at(:width, :height) if name == :size
-            return geometry[:position].dup if name == :position
-          end
-
-          return deep_copy(node.props[name])
-        end
-        page, cid, name = target
-        deep_copy(page.get(cid, name, viewer: @viewer))
-      end
-
-      # Updates a property, releasing the adapter lock before viewer-state dispatch.
-      # @param handle [Object] opaque component handle
-      # @param property [Symbol, String] contract property
-      # @param value [Object] candidate value, or UNSET to reset an optional shared property
-      # @return [nil]
-      def set(handle, property, value)
-        target = nil
-        @mutex.synchronize do
-          node = node!(handle)
-          name, definition = property!(node, handle, property)
-          if value.equal?(UNSET) && (definition[:required] || definition[:scope] != :shared)
-            raise SchemaViolationError.new(
-              'only optional shared properties can be unset', owner: owner_label,
-              page_id: adapter_page_id, cid: handle_label(handle), field: name
-            )
-          end
-          if sensitive_property?(node, name, definition)
-            raise SchemaViolationError.new(
-              'sensitive-write-only property cannot be set through server-held adapter state',
-              owner: owner_label, page_id: adapter_page_id, cid: handle_label(handle), field: name
-            )
-          end
-          if definition[:scope] == :ephemeral_client || definition[:scope] == :sensitive_write_only
-            raise SchemaViolationError.new(
-              'property cannot be set through server-held adapter state', owner: owner_label,
-              page_id: adapter_page_id, cid: handle_label(handle), field: name
-            )
-          end
-          if definition[:scope] == :viewer
-            if (page = root_for(node).page) && node.cid && node.published && !(%i[tabs select].include?(node.type) && @viewer && @dirty_roots[root_for(node)])
-              target = [page, node.cid, name]
-              next
-            end
-            validated = validate_property(node, handle, name, value)
-            selected = ValueHelpers.viewer_id(@viewer)
-            if selected.nil? && !node.published
-              # A handle can exist before its first render. Initialization queued
-              # after construction still sets the authored default, not a draft.
-              # Once published, the normal explicit-viewer rule above applies.
-              node.props = node.props.merge(name => validated).freeze
-            else
-              node.viewer_values[[viewer!, name]] = validated
-            end
-          else
-            candidate = value.equal?(UNSET) ? node.props.except(name) : node.props.merge(name => value)
-            # Model mutation retires identities atomically with its row snapshot.
-            # Defaults must remain valid before per-viewer reconciliation runs.
-            if node.type == :table && name == :rows && value.is_a?(Array)
-              keys = value.filter_map { |row| row[:key] || row['key'] if row.is_a?(Hash) }
-              candidate[:selected] = (candidate[:selected] || []) & keys
-              candidate[:expanded] = candidate[:expanded] & keys if candidate.key?(:expanded)
-              candidate[:cursor] = {} unless keys.include?(candidate.dig(:cursor, :row))
-            end
-            if node.type == :table && name == :selection
-              candidate[:selected] = [] if value.to_s == 'none'
-              candidate[:selected] = (candidate[:selected] || []).first(1) if %w[single browse].include?(value.to_s)
-            end
-            # Browse requires a selection when rows exist. Match viewer reconciliation
-            # here so reads before publication see the same first-row fallback.
-            if node.type == :table && %i[rows selection].include?(name) && candidate[:selection].to_s == 'browse' && (candidate[:selected] || []).empty?
-              first = candidate[:rows].first if candidate[:rows].is_a?(Array)
-              key = first[:key] || first['key'] if first.is_a?(Hash)
-              candidate[:selected] = [key] if key
-            end
-            # A select's option list and default must remain one valid schema.
-            # sbounty replaces its choices; use the first declared choice only
-            # when the old default was removed, after validating the list.
-            if node.type == :select && name == :options
-              candidate[:options] = @validator.validate_component!(
-                :select, { options: value }, owner: owner_label,
-                page_id: adapter_page_id, cid: handle_label(handle)
-              ).fetch(:options)
-              was_option = node.props[:options].any? { |option| option[:value] == candidate[:value] }
-              if (!candidate[:editable] || was_option) && candidate[:options].none? { |option| option[:value] == candidate[:value] }
-                candidate[:value] = candidate[:empty_value] || candidate[:options].first&.fetch(:value)
-              end
-            end
-            validated = @validator.validate_component!(
-              node.type, candidate, owner: owner_label,
-              page_id: adapter_page_id, cid: handle_label(handle)
-            )
-            # Parent geometry and existing child placements are one mutation.
-            # Reject a narrowed grid before publishing any invalid shadow tree.
-            proposed = node.dup
-            proposed.props = validated
-            node.children.each { |child| validate_placement!(proposed, node!(child), child) }
-            if node.type == :select && name == :options
-              # A second rebuild can retire a choice staged before delivery.
-              # Reconcile pending drafts with the same empty fallback as defaults.
-              retired = node.props[:options].map { |option| option[:value] } - validated[:options].map { |option| option[:value] }
-              node.viewer_values.each do |(viewer, property), pending_value|
-                next unless property == :value && retired.include?(pending_value)
-
-                node.viewer_values[[viewer, property]] = validated[:empty_value] || validated[:options].first&.fetch(:value)
-              end
-            end
-            node.props = validated
-            assign_child_slots!(node) if named_children?(node)
-          end
-          dirty!(root_for(node))
-        end
-        if target
-          page, cid, name = target
-          page.set(cid, name, value, viewer: @viewer)
-        end
-        nil
-      rescue SchemaViolationError => error
-        raise attributed(error, handle, property)
-      end
-
-      # Inserts an unparented child after checking cycles, capacity, and placement.
-      # Publication failure restores membership and named slots before re-raising;
-      # handles, bindings and viewer values remain available for a later retry.
-      # @param parent [Handle] owning container
-      # @param child [Handle] child to attach
-      # @param index [Integer, nil] insertion position; nil appends
-      # @return [nil]
-      def attach(parent, child, index = nil, placement: nil)
-        @mutex.synchronize do
-          parent_node = node!(parent)
-          child_node = node!(child)
-          raise attributed_error('child already has a parent', child) if child_node.parent
-          raise attributed_error('component accepts no children', parent) if Contract.schema(parent_node.type)[:children] == :none
-          raise attributed_error('component hierarchy cannot contain a cycle', child) if root_for(parent_node).equal?(child_node)
-
-          position = index.nil? ? parent_node.children.length : Integer(index)
-          unless position.between?(0, parent_node.children.length)
-            raise attributed_error('child index is out of range', parent, :index)
-          end
-          child_rule = Contract.schema(parent_node.type)[:children]
-          if child_rule.is_a?(Hash) && child_rule[:types] && !child_rule[:types].include?(child_node.type)
-            raise attributed_error('child type is not permitted', child)
-          end
-          previous = child_node.placement
-          candidate = child_node.dup
-          unless placement.nil? || placement.is_a?(Hash)
-            raise attributed_error('placement must be a Hash', child, :placement)
-          end
-          candidate.placement = symbolize(placement).freeze if placement
-          validate_placement!(parent_node, candidate, child)
-          raise attributed_error('tab actions cannot be pages', child) if parent_node.type == :tabs && candidate.placement.key?(:tab_action) && candidate.type == :page
-          validate_child_capacity!(parent, parent_node, candidate)
-          parent_node.children.insert(position, child)
-          child_node.placement = candidate.placement
-          child_node.parent = parent
-          begin
-            assign_child_slots!(parent_node)
-            dirty!(root_for(parent_node))
-          rescue StandardError
-            parent_node.children.delete(child)
-            child_node.parent = nil
-            child_node.placement = previous
-            child_node.slot = nil
-            assign_child_slots!(parent_node)
-            raise
-          end
-        end
-        nil
-      rescue ArgumentError, TypeError
-        raise attributed_error('child index is out of range', parent, :index)
-      end
-
-      # Replaces one ordinary container child without publishing an intermediate tree.
-      # Invalid ownership/cycles or refused publication preserve the previous tree.
-      # @param parent_handle [Handle] ordinary container accepting many children
-      # @param previous_handle [Handle, nil] actual child to replace, or nil to append
-      # @param replacement_handle [Handle] unparented same-adapter replacement
-      # @return [nil]
-      # @raise [Error] for invalid replacement or refused publication admission
-      def replace_child(parent_handle, previous_handle, replacement_handle)
-        @mutex.synchronize do
-          parent, replacement = node!(parent_handle), node!(replacement_handle)
-          previous = node!(previous_handle) if previous_handle
-          valid = Contract.schema(parent.type)[:children] == :many && !replacement.parent &&
-                  (!previous || previous.parent.equal?(parent_handle))
-          ancestor = parent
-          while ancestor
-            valid &&= !ancestor.equal?(replacement)
-            ancestor = ancestor.parent && node!(ancestor.parent)
-          end
-          raise attributed_error('replacement requires an unparented child and its actual previous sibling', parent_handle) unless valid
-
-          validate_placement!(parent, replacement, replacement_handle)
-          expected = parent.children.length + (previous ? 0 : 1)
-          raise attributed_error('component has too many children', parent_handle) if expected > Contract::BOUNDS[:children]
-          index = previous ? parent.children.index(previous_handle) : parent.children.length
-          before_children = parent.children.dup
-          begin
-            parent.children.delete(previous_handle) if previous
-            previous.parent = nil if previous
-            parent.children.insert(index, replacement_handle)
-            replacement.parent = parent_handle
-            dirty!(root_for(parent))
-          rescue StandardError
-            parent.children.replace(before_children)
-            previous.parent = parent_handle if previous
-            replacement.parent = nil
-            raise
-          end
-        end
-        nil
-      end
-
-      # Replaces a tabs page/header collection atomically, preserving retained handles.
-      # Viewer selections are reconciled by stable header key on delivery.
-      # One adapter monitor guards validation, ownership, selection remapping and
-      # publication scheduling. Removed pages remain reusable; tab actions remain.
-      # If mutation or scheduling raises before return, properties, child
-      # ownership/slots and pending viewer selections are restored before re-raising.
-      # @param parent [Handle] tabs container owned by this adapter
-      # @param children [Array<Handle>] unique tab pages in their new display order
-      # @param names [Array<String>] one caption per tab page
-      # @param headers [Array<Hash>] contracted header metadata with stable keys
-      # @return [nil]
-      def layout_tabs(parent, children:, names:, headers:)
-        @mutex.synchronize do
-          tabs = node!(parent)
-          raise attributed_error('tabs required', parent) unless tabs.type == :tabs
-          unless children.is_a?(Array) && names.is_a?(Array) && children.uniq.length == children.length && children.length == names.length
-            raise attributed_error('one unique child per tab required', parent)
-          end
-          props = @validator.validate_component!(
-            :tabs, tabs.props.merge(names: names, headers: headers, selected: 0),
-            owner: owner_label, page_id: adapter_page_id, cid: handle_label(parent)
-          )
-          headers = props.fetch(:headers)
-          candidates = children.map do |handle|
-            child = node!(handle)
-            raise attributed_error('foreign or cyclic tab child', handle) if (child.parent && child.parent != parent) || root_for(tabs).equal?(child)
-            child
-          end
-          actions = tabs.children.select { |handle| node!(handle).placement.key?(:tab_action) }
-          raise attributed_error('action cannot also be a tab page', parent) if candidates.any? { |child| child.placement.key?(:tab_action) }
-          raise attributed_error('component has too many children', parent) if children.length + actions.length > Contract::BOUNDS[:children]
-          old_headers = tabs.props[:headers]
-          remap = proc do |index|
-            Contract.remap_tab_index(old_headers, headers, index, names.length)
-          end
-          props = props.merge(selected: remap.call(tabs.props[:selected] || 0)).freeze
-          pending = tabs.viewer_values.select { |(_viewer, name), _value| name == :selected }
-          before_props, before_children = tabs.props, tabs.children.dup
-          involved = (tabs.children + children).uniq.to_h { |handle| [handle, [node!(handle).parent, node!(handle).slot]] }
-          begin
-            (tabs.children - children - actions).each { |handle| node!(handle).parent = node!(handle).slot = nil }
-            tabs.props, tabs.children = props, children + actions
-            candidates.each { |child| child.parent = parent }
-            assign_child_slots!(tabs)
-            pending.each { |key, index| tabs.viewer_values[key] = remap.call(index) }
-            dirty!(root_for(tabs))
-          rescue StandardError
-            tabs.props, tabs.children = before_props, before_children
-            pending.each { |key, index| tabs.viewer_values[key] = index }
-            involved.each { |handle, (owner, slot)| node!(handle).parent, node!(handle).slot = owner, slot }
-            raise
-          end
-        end
-        nil
-      end
-
-      # Atomically replaces the two auxiliary tab-strip roles without touching pages or selection.
-      # Removed actions remain reusable; refused publication restores every ownership edge.
-      # @param parent [Handle] tabs container
-      # @param actions [Hash{Symbol => Handle}] optional :start and :end action widgets
-      # @return [nil]
-      def layout_tab_actions(parent, actions:)
-        @mutex.synchronize do
-          tabs = node!(parent)
-          valid = tabs.type == :tabs && actions.is_a?(Hash) && (actions.keys - %i[start end]).empty? && actions.values.uniq.length == actions.length
-          raise attributed_error('unique start/end tab actions required', parent) unless valid
-
-          previous = tabs.children.select { |handle| node!(handle).placement.key?(:tab_action) }
-          pages = tabs.children - previous
-          raise attributed_error('component has too many children', parent) if pages.length + actions.length > Contract::BOUNDS[:children]
-          actions.each_value do |handle|
-            child = node!(handle)
-            valid = child.type != :page && (!child.parent || previous.include?(handle)) && !root_for(tabs).equal?(child)
-            raise attributed_error('action must be unparented or already owned by these tabs', handle) unless valid
-          end
-          involved = (previous + actions.values).uniq.to_h do |handle|
-            child = node!(handle)
-            [handle, [child.parent, child.slot, child.placement]]
-          end
-          before = tabs.children
-          begin
-            previous.each do |handle|
-              child = node!(handle)
-              child.parent = child.slot = nil
-              child.placement = child.placement.except(:tab_action).freeze
-            end
-            tabs.children = pages + actions.values
-            actions.each do |side, handle|
-              child = node!(handle)
-              child.parent, child.slot = parent, nil
-              child.placement = child.placement.merge(tab_action: side.to_s).freeze
-              validate_placement!(tabs, child, handle)
-            end
-            dirty!(root_for(tabs))
-          rescue StandardError
-            tabs.children = before
-            involved.each { |handle, state| node!(handle).parent, node!(handle).slot, node!(handle).placement = state }
-            raise
-          end
-        end
-        nil
-      end
-
-      # Atomically changes a grid's bounded geometry and placements without
-      # replacing handles, bindings or viewer-owned input. Unparented children
-      # may be prepared for a subsequent attach; foreign parents are refused.
-      # @param parent [Handle] grid container
-      # @param columns [Integer] positive shared-contract column count
-      # @param placements [Hash{Handle => Hash}] replacement child placements
-      # @param expand_columns [Array<Integer>] expanding tracks in the new geometry
-      # @return [nil]
-      def layout_grid(parent, columns:, placements:, expand_columns: [])
-        @mutex.synchronize do
-          grid = node!(parent)
-          raise attributed_error('grid required', parent) unless grid.type == :grid
-          raise attributed_error('placement map required', parent) unless placements.is_a?(Hash) && placements.size <= Contract::BOUNDS[:children]
-          proposed = grid.dup
-          proposed.props = @validator.validate_component!(
-            :grid, grid.props.merge(cols: columns, expand_columns: expand_columns),
-            owner: owner_label, page_id: adapter_page_id, cid: handle_label(parent)
-          )
-          replacements = placements.to_h do |handle, placement|
-            child = node!(handle)
-            raise attributed_error('foreign grid child', handle) if child.parent && child.parent != parent
-            raise attributed_error('placement must be a Hash', handle) unless placement.is_a?(Hash)
-            candidate = child.dup
-            candidate.placement = symbolize(placement).freeze
-            validate_placement!(proposed, candidate, handle)
-            [handle, candidate.placement]
-          end
-          grid.children.each do |handle|
-            validate_placement!(proposed, node!(handle), handle) unless replacements.key?(handle)
-          end
-          grid.props = proposed.props
-          replacements.each { |handle, placement| node!(handle).placement = placement }
-          dirty!(root_for(grid))
-        end
-        nil
-      end
-
-      # Updates only an attached overlay child's pointer hit testing. Rejection
-      # or publication failure preserves its previous placement and identity.
-      # @param parent [Handle] overlay container
-      # @param child [Handle] attached layer
-      # @param value [Boolean] pointer pass-through flag
-      # @return [nil]
-      def set_overlay_pass_through(parent, child, value)
-        @mutex.synchronize do
-          parent_node = node!(parent)
-          child_node = node!(child)
-          unless parent_node.type == :overlay && child_node.parent.equal?(parent)
-            raise attributed_error('expected an attached overlay child', child, :pass_through)
-          end
-          previous = child_node.placement
-          candidate = child_node.dup
-          candidate.placement = previous.merge(pass_through: value).freeze
-          validate_placement!(parent_node, candidate, child)
-          return nil if previous == candidate.placement
-
-          child_node.placement = candidate.placement
-          begin
-            dirty!(root_for(parent_node))
-          rescue StandardError
-            child_node.placement = previous
-            raise
-          end
-        end
-        nil
-      end
-
-      # Unparents a child without destroying its handle or descendants.
-      # The former root is marked dirty for the next flush.
-      # @return [nil]
-      def detach(parent, child)
-        @mutex.synchronize do
-          parent_node = node!(parent)
-          child_node = node!(child)
-          index = parent_node.children.index(child)
-          raise attributed_error('component is not a child of parent', child) unless index
-
-          if parent_node.type == :tabs && child_node.placement.key?(:tab_action)
-            actions = parent_node.children.reject { |handle| handle.equal?(child) }.filter_map do |handle|
-              side = node!(handle).placement[:tab_action]
-              [side.to_sym, handle] if side
-            end.to_h
-            return layout_tab_actions(parent, actions: actions)
-          end
-          parent_node.children.delete_at(index)
-          child_node.parent = nil
-          child_node.slot = nil
-          child_node.placement = child_node.placement.except(:pass_through).freeze if parent_node.type == :overlay
-          child_node.placement = child_node.placement.except(:tab_action).freeze if parent_node.type == :tabs
-          assign_child_slots!(parent_node)
-          dirty!(root_for(parent_node))
-        end
-        nil
-      end
-
-      # Registers one allowed callback, replacing the previous binding for that event.
-      # @return [String] opaque binding ID usable with #unbind
-      # @raise [UnknownEventError] for events outside the component allowlist
-      def bind(handle, event, callable)
-        raise ArgumentError, 'callback must respond to call' unless callable.respond_to?(:call)
-
-        @mutex.synchronize do
-          node = node!(handle)
-          name = normalize_name(event)
-          allowed_events = if node.type == :page
-                             Contract::PAGE_LIFECYCLE_EVENTS
-                           else
-                             Contract.schema(node.type)[:events]
-                           end
-          unless allowed_events.key?(name)
-            raise UnknownEventError.new(
-              'event is not in the component allowlist', owner: owner_label,
-              page_id: adapter_page_id, cid: handle_label(handle), field: name
-            )
-          end
-          binding_id = "binding-#{SecureRandom.hex(16)}".freeze
-          node.callbacks.delete(node.bindings[name])
-          @bindings.delete(node.bindings[name])
-          callback = proc do |context|
-            reconcile_submission(context) if context.submission
-            callable.call(context)
-          end
-          # A server-only selection guard evaluates an owner proposal before
-          # Runtime commits viewer state. It is never a wire event or property.
-          if node.type == :table && name == :selection_change && callable.respond_to?(:prepare_selection)
-            callback.define_singleton_method(:prepare_selection) { |context| callable.prepare_selection(context) }
-          end
-          record = [handle, name, callback]
-          node.callbacks[binding_id] = record
-          @bindings[binding_id] = WeakRef.new(record)
-          @binding_operations += 1
-          prune_bindings! if (@binding_operations % 64).zero?
-          node.bindings[name] = binding_id
-          dirty!(root_for(node))
-          binding_id
-        end
-      end
-
-      # Removes a binding and marks its root dirty for publication.
-      # @param binding_id [String] ID returned by #bind
-      # @return [nil]
-      def unbind(binding_id)
-        @mutex.synchronize do
-          record = binding_record(binding_id.to_s)
-          @bindings.delete(binding_id.to_s)
-          handle, event, = record || raise(
-            attributed_error('unknown binding', nil, binding_id)
-          )
-          node = node!(handle)
-          node.bindings.delete(event)
-          node.callbacks.delete(binding_id.to_s)
-          dirty!(root_for(node))
-        end
-        nil
-      end
-
       # Destroys a handle subtree and closes its published page when destroying a root.
       # Unlike the shim's idempotent widget wrapper, repeated adapter destruction is refused.
+      # @param handle [Handle] subtree root to retire
       # @return [nil]
       def destroy(handle)
         @mutex.synchronize do
@@ -697,6 +153,7 @@ module Lich
       end
 
       # Returns the shared schema with adapter-owner attribution on unknown types.
+      # @param type [Symbol, String] supported contract type
       # @return [Hash] frozen type schema
       def schema(type)
         Contract.schema(type)
@@ -706,277 +163,10 @@ module Lich
 
       private
 
-      # Snapshots dirty roots by identity, then refreshes outside the adapter monitor.
-      # Avoids lock inversion with Page rendering; explicit presentation follows publication.
-      # @return [nil]
-      def flush!
-        pages = @mutex.synchronize do
-          selected = @dirty_roots.keys.filter_map do |candidate|
-            root_for(candidate) if handle_for(candidate)
-          end.uniq(&:object_id)
-          @dirty_roots.clear
-          selected.filter_map do |root|
-            next unless handle_for(root)
-
-            ensure_page!(root)
-            root.page.refresh_definition(
-              title: root.props.fetch(:title), props: root.props.except(:title), on: callbacks_for(root)
-            )
-            root
-          end
-        end
-        # Page rendering calls back into the adapter to snapshot its tree. Never
-        # hold the adapter monitor while waiting for a page's render mutex.
-        pages.each do |root|
-          @service.refresh(root.page)
-          delivered = root.page.last_render.tree.each.to_h { |component| [component.cid, true] }
-          @mutex.synchronize do
-            changes = []
-            @nodes.each_value do |child|
-              next unless root_for(child).equal?(root) && delivered.key?(child.cid)
-
-              child.viewer_values.delete_if do |(viewer, name), value|
-                changes << [viewer, child.cid, name, value]
-                true
-              end
-            end
-            # Seed before allowing live writes through Page#set. Otherwise a
-            # newer write can be overwritten by this older unpublished value.
-            # Seeding only locks viewer state and schedules work; it never renders.
-            @service.runtime.seed_viewer_properties(root.page, changes) unless changes.empty?
-            @nodes.each_value { |child| child.published = true if !child.equal?(root) && root_for(child).equal?(root) && delivered.key?(child.cid) }
-          end
-          publish = @mutex.synchronize do
-            next false unless handle_for(root)
-
-            first = !root.published
-            requested = root.present_requested
-            root.published = true
-            root.present_requested = false
-            first || (requested && !root.props.dig(:presentation, :hidden))
-          end
-          @on_publish&.call(root.page) if publish
-        end
-        nil
-      end
-
-      # Registers and binds one page for a root while preserving its handle-derived identity.
-      # @return [Page] root page
-      # @raise [Error] for non-page roots
-      def ensure_page!(root)
-        return root.page if root.page
-        raise attributed_error('only page roots can be rendered') unless root.type == :page
-
-        adapter = self
-        page = Page.new(
-          owner: @owner, id: adapter_page_id(root), title: root.props.fetch(:title),
-          props: root.props.except(:title), on: callbacks_for(root)
-        ) do |builder|
-          adapter.send(:render_children, builder, root)
-        end
-        @service.registry.register(page)
-        page.bind_runtime(@service.runtime)
-        root.page = page
-      end
-
-      # Snapshots the mutable adapter tree before constructing its declarative render.
-      # Terminal actions receive the snapshot's complete input scope.
-      # @return [void]
-      def render_children(builder, node)
-        snapshot = @mutex.synchronize { snapshot_children(node) }
-        scope = input_cids(snapshot, "page:#{adapter_page_id(node)}")
-        render_snapshot(builder, snapshot, scope)
-        @mutex.synchronize do
-          reference, revision = node.focus
-          handle = weak_value(reference)
-          target = @nodes[handle]
-          if target && target.cid && root_for(target).equal?(node)
-            builder.focus(target.cid)
-            builder.focus_revision(revision)
-          end
-        end
-      end
-
-      # Captures properties, bindings, slots, placement and descendants under the adapter monitor.
-      # @return [Array] render snapshot tuples
-      def snapshot_children(node)
-        node.children.map do |handle|
-          child = @nodes.fetch(handle)
-          bindings = child.bindings.to_h { |event, id| [event, child.callbacks.fetch(id).last] }
-          [child, child.props.merge(key: handle_label(handle)), child.slot, bindings, snapshot_children(child), child.placement]
-        end
-      end
-
-      # An imperative page is a legacy form. Each terminal control declares the
-      # page's input scope server-side, so Save captures current DOM values even
-      # when a change/blur event has not arrived. Values remain viewer-local.
-      def input_cids(snapshot, parent_cid)
-        snapshot.flat_map do |child, props, _slot, _bindings, children|
-          cid = "#{parent_cid}/#{child.type}:#{props.fetch(:key)}"
-          own = Contract.schema(child.type)[:value] ? [cid] : []
-          own + input_cids(children, cid)
-        end
-      end
-
-      # Builds snapshot controls and retains generated CIDs for subsequent scoped reads/writes.
-      # @return [void]
-      def render_snapshot(builder, snapshot, scope)
-        adapter = self
-        snapshot.each do |child, props, slot, bindings, children, placement|
-          terminal = (Contract.schema(child.type)[:events].keys & %i[activate submit response]).any?
-          draft = builder.component(child.type, slot: slot, placement: placement, on: bindings, submit: terminal ? scope : nil, **props) do
-            adapter.send(:render_snapshot, self, children, scope)
-          end
-          @mutex.synchronize { child.cid = draft.cid }
-        end
-      end
-
-      # Legacy forms commonly save a hash maintained by change handlers instead
-      # of reading widgets on Close. Reconcile only inputs changed by the final
-      # snapshot; already accepted change events must not fire a second time.
-      # Call outside the adapter monitor, in the same viewer/dispatcher turn.
-      def reconcile_submission(context)
-        handles = @mutex.synchronize { @nodes.values.to_h { |node| [node.cid, node.handle] } }
-        context.submission.input_changes.each do |component|
-          callback = @mutex.synchronize do
-            node = @nodes[handles[component.cid]]
-            next unless node && root_for(node).page.equal?(context.page)
-
-            binding = node&.bindings&.[](:change)
-            node.callbacks[binding]&.last if binding
-          end
-          next unless callback
-
-          callback.call(context.with(component: component, event: :change,
-                                     payload: { value: context.submission[component.cid] }.freeze, submission: nil))
-        end
-      end
-
-      # Resolves weak binding discovery while a live node owns the record.
-      # Missing or collected IDs never route to a replacement binding.
-      def binding_record(id)
-        record = weak_value(@bindings[id])
-        @bindings.delete(id) unless record
-        record
-      end
-
-      # Strong locals pin weak payloads through each operation/snapshot.
-      def weak_value(reference)
-        reference&.__getobj__
-      rescue WeakRef::RefError
-        nil
-      end
-
-      # Bound metadata churn without forcing GC or running script finalizers.
-      def prune_bindings!
-        @bindings.delete_if { |_id, reference| !reference.weakref_alive? }
-      end
-
-      def callbacks_for(node)
-        node.bindings.to_h { |event, binding_id| [event, node.callbacks.fetch(binding_id).last] }
-      end
-
-      # Child layout belongs to its parent schema. Validate before attaching so
-      # an invalid span cannot corrupt the tree or fail later in a render job.
-      def validate_placement!(parent, child, handle)
-        definitions = Contract.schema(parent.type)[:child_properties] || {}
-        child.placement.each do |name, value|
-          definition = definitions[name] || raise(attributed_error('unknown child placement', handle, name))
-          shape = Contract.child_placement_shape(definition.fetch(:shape), parent.props)
-          @validator.validate_placement!(name, shape, value, owner: owner_label,
-                                        page_id: adapter_page_id, cid: handle_label(handle))
-        end
-        if parent.type == :grid && child.placement.fetch(:column, 1) + child.placement.fetch(:span, 1) - 1 > parent.props[:cols]
-          raise attributed_error('child placement exceeds grid columns', handle, :span)
-        end
-        case Contract.child_placement_condition(parent.type, parent.props, child.placement)
-        when :grid_row_overflow
-          raise attributed_error('child placement exceeds grid rows', handle, :row_span)
-        when :unpositioned_coordinates
-          raise attributed_error('coordinates require a positioned overlay', handle, :placement)
-        end
-      end
-
-      def validate_property(node, handle, name, value)
-        @validator.validate_component!(
-          node.type, node.props.merge(name => value), owner: owner_label,
-          page_id: adapter_page_id, cid: handle_label(handle)
-        ).fetch(name)
-      end
-
-      def property!(node, handle, property)
-        name = normalize_name(property)
-        component_schema = Contract.schema(node.type)
-        definition = component_schema[:properties][name]
-        if !definition && name == :value && component_schema[:value]
-          definition = { shape: component_schema[:value], scope: component_schema[:value_scope] }
-        end
-        return [name, definition] if definition
-
-        raise UnknownPropertyError.new(
-          'unknown property', owner: owner_label, page_id: adapter_page_id,
-          cid: handle_label(handle), field: name
-        )
-      end
-
-      # Recognizes sensitive value fields even when sensitivity is set per component.
-      # @return [Boolean]
-      def sensitive_property?(node, name, definition)
-        definition[:scope] == :sensitive_write_only ||
-          (name == :value && ValueHelpers.sensitive_value?(node))
-      end
-
-      # Requires explicit viewer attribution for viewer-scoped adapter access.
-      # @return [String] viewer identity captured before leaving the callback
-      # @raise [AmbiguousViewerError] when no viewer was supplied
-      def viewer!
-        selected = ValueHelpers.viewer_id(@viewer)
-        return selected.to_s if selected
-
-        message = 'viewer-scoped adapter state requires an explicit viewer'
-        raise AmbiguousViewerError.new(message, owner: owner_label, page_id: adapter_page_id)
-      end
-
-      def assign_child_slots!(parent)
-        rule = Contract.schema(parent.type)[:children]
-        slots = Contract.child_slots(rule, parent.props)
-        index = 0
-        parent.children.each do |child_handle|
-          child = node!(child_handle)
-          if parent.type == :tabs && child.placement.key?(:tab_action)
-            child.slot = nil
-            next
-          end
-          # Dynamic numbering remains positional even before a reduced capacity
-          # is rejected at publication; declared slot membership is a separate check.
-          child.slot = rule.is_a?(Hash) && rule[:kind] == :named_dynamic ? index.to_s : slots[index]
-          index += 1
-        end
-      end
-
-      def validate_child_capacity!(handle, node, candidate)
-        rule = Contract.schema(node.type)[:children]
-        return unless rule.is_a?(Hash)
-
-        if node.type == :tabs
-          raise attributed_error('component has too many children', handle) if node.children.length >= Contract::BOUNDS[:children]
-          children = node.children.map { |child| node!(child) }
-          if candidate.placement.key?(:tab_action)
-            side = candidate.placement[:tab_action].to_s
-            raise attributed_error('tab action position occupied', handle) if children.any? { |child| child.placement[:tab_action]&.to_s == side }
-            return
-          end
-          return if children.count { |child| !child.placement.key?(:tab_action) } < node.props[:names].length
-          raise attributed_error('component has too many children', handle)
-        end
-        expected = Contract.child_slots(rule, node.props).length
-        raise attributed_error('component has too many children', handle) if node.children.length >= expected
-      end
-
-      def named_children?(node)
-        Contract.schema(node.type)[:children].is_a?(Hash)
-      end
-
+      # Resolves an exact live handle and distinguishes destruction from foreign identity.
+      # @param handle [Object] candidate opaque token
+      # @return [Node] retained payload
+      # @api private
       def node!(handle)
         return @nodes.fetch(handle) if @nodes.key?(handle)
         raise attributed_error('handle is already destroyed', handle) if @destroyed.key?(handle)
@@ -986,7 +176,9 @@ module Lich
 
       # Recursively retires handles, bindings, and local values while remembering destruction.
       # Requires the adapter monitor; page closure is handled by the caller.
+      # @param handle [Handle] owned subtree root to retire
       # @return [void]
+      # @api private
       def destroy_node!(handle)
         node = @nodes.delete(handle)
         node.focus = nil
@@ -1000,64 +192,55 @@ module Lich
         @destroyed[handle] = true
       end
 
-      def close_page(page)
-        @service.runtime.close_page(page, reason: :owner)
-      end
-
+      # Follows retained parent handles to the current tree root.
+      # @param node [Node] live node in the adapter tree
+      # @return [Node] topmost ancestor
+      # @api private
       def root_for(node)
         current = node
         current = node!(current.parent) while current.parent
         current
       end
 
-      # Coalesces adapter publication work through the core runtime for a page root.
-      # @return [void]
-      def dirty!(root)
-        return unless root.type == :page
-
-        @dirty_roots[root] = true
-        return if @publication_pending
-
-        @publication_pending = true
-        @service.runtime.schedule_render(self, owner: @owner) do
-          # Publish after queued construction and callbacks, never in the middle
-          # of their model/default updates. Keep a single pending owner task even
-          # when a long callback spans several render-coalescing intervals.
-          begin
-            @service.runtime.dispatch(owner: @owner) do
-              @mutex.synchronize { @publication_pending = false }
-              flush!
-            end
-          rescue StandardError
-            @mutex.synchronize { @publication_pending = false }
-            raise
-          end
-        end
-      rescue StandardError
-        @publication_pending = false
-        raise
-      end
-
       # Resolves a live node by its retained handle and exact identity, never Struct equality.
+      # @param node [Node] candidate payload to resolve by exact identity
       # @return [Handle, nil] nil after retirement
+      # @api private
       def handle_for(node)
         handle = node.handle
         handle if @nodes[handle].equal?(node)
       end
 
+      # Derives diagnostic or registered page identity from the retained root handle.
+      # @param root [Node, nil] page root, or nil for unrendered diagnostics
+      # @return [String] adapter-local page identifier
+      # @api private
       def adapter_page_id(root = nil)
         suffix = root ? handle_for(root).object_id.to_s(36) : 'unrendered'
         "adapter-#{suffix}"
       end
 
+      # Formats an opaque diagnostic identity without exposing payload state.
+      # @param handle [Handle, nil] component token or nil for the adapter
+      # @return [String] opaque diagnostic label
+      # @api private
       def handle_label(handle)
         handle ? "opaque-#{handle.object_id.to_s(36)}" : 'adapter'
       end
 
+      # Reads the shared diagnostic label without changing lifecycle ownership.
+      # @return [Object] owner ID, name or fallback label
+      # @api private
       def owner_label
         Diagnostics.owner_label(@owner)
       end
 
+      # Preserves attributed errors and adds adapter context to unscoped failures.
+      # @param error [Exception] original failure
+      # @param handle [Handle, nil] optional component token
+      # @param field [Object, nil] optional failing property or operation
+      # @return [Error] original attributed error or contextual replacement
+      # @api private
       def attributed(error, handle = nil, field = nil)
         return error if error.is_a?(Error) && error.owner
 
@@ -1068,6 +251,12 @@ module Lich
         )
       end
 
+      # Builds an adapter failure carrying owner, page and optional component context.
+      # @param message [String] failure description
+      # @param handle [Handle, nil] optional component token
+      # @param field [Object, nil] optional failing property or operation
+      # @return [Error] contextual adapter error
+      # @api private
       def attributed_error(message, handle = nil, field = nil)
         Error.new(
           message, owner: owner_label, page_id: adapter_page_id,
@@ -1075,20 +264,31 @@ module Lich
         )
       end
 
+      # Normalizes contract field names while retaining their supplied values.
+      # @param hash [Hash] authored property or layout fields
+      # @return [Hash{Symbol => Object}] normalized field map
+      # @api private
       def symbolize(hash)
         hash.to_h { |key, value| [normalize_name(key), value] }
       end
 
+      # Accepts symbol names or identifier-shaped strings and refuses other names.
+      # @param value [Symbol, String] candidate contract name
+      # @return [Symbol] normalized contract name
+      # @api private
       def normalize_name(value)
         return value if value.is_a?(Symbol)
         return value.to_sym if value.is_a?(String) && value.match?(Contract::IDENTIFIER)
 
         raise ArgumentError, "invalid contract name #{value.inspect}"
       end
-
-      def deep_copy(value)
-        ValueHelpers.deep_copy(value)
-      end
     end
   end
 end
+
+require_relative 'adapter/properties'
+require_relative 'adapter/tree_mutation'
+require_relative 'adapter/layout'
+require_relative 'adapter/bindings'
+require_relative 'adapter/render_tree'
+require_relative 'adapter/publication'
