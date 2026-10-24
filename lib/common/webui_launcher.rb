@@ -875,14 +875,14 @@ module Lich
         values = submission_values(event.submission)
         entry_key = @mutex.synchronize { @draft_entry_key }
         character = {
-          char_name: values.find { |key, _| key.end_with?('text_input:character-name') }&.last.to_s,
-          game_code: values.find { |key, _| key.end_with?('select:character-game') }&.last.to_s,
-          frontend: values.find { |key, _| key.end_with?('select:character-frontend') }&.last.to_s,
-          custom_launch: blank(values.find { |key, _| key.end_with?('text_input:character-custom') }&.last),
-          custom_launch_dir: blank(values.find { |key, _| key.end_with?('text_input:character-custom-dir') }&.last),
+          char_name: submitted(values, 'text_input:character-name').to_s,
+          game_code: submitted(values, 'select:character-game').to_s,
+          frontend: submitted(values, 'select:character-frontend').to_s,
+          custom_launch: blank(submitted(values, 'text_input:character-custom')),
+          custom_launch_dir: blank(submitted(values, 'text_input:character-custom-dir')),
         }
         character[:game_name] = GAME_NAMES.fetch(character[:game_code], character[:game_code])
-        account = values.find { |key, _| key.end_with?('select:character-account') }&.last.to_s
+        account = submitted(values, 'select:character-account').to_s
         return set_notice('Character name is required.', :error) if character[:char_name].empty?
         return set_notice('Choose a supported front end.', :error) unless @frontend_options.any? { |option| option[:value] == character[:frontend] }
         if native_launch_only?(character[:frontend]) && character[:custom_launch]
@@ -901,8 +901,8 @@ module Lich
       # @return [void]
       def save_account(event)
         values = submission_values(event.submission)
-        account = values.find { |key, _| key.end_with?('text_input:account-name') }&.last.to_s.strip.upcase
-        frontend = values.find { |key, _| key.end_with?('select:account-frontend') }&.last.to_s
+        account = submitted(values, 'text_input:account-name').to_s.strip.upcase
+        frontend = submitted(values, 'select:account-frontend').to_s
         password_pair = values.find { |key, _| key.end_with?('password_input:account-password') }
         return set_notice('Account name is required.', :error) if account.empty?
         return set_notice('Choose a supported front end.', :error) unless @frontend_options.any? { |option| option[:value] == frontend }

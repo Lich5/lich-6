@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'contract'
+require_relative 'value_helpers'
 
 module Lich
   module WebUI
@@ -49,10 +50,18 @@ module Lich
         children.each { |child| child.each(&block) }
       end
 
+      # Finds an exact component ID in depth-first order without coercing it.
+      # Callers retain their own absent-component errors and ID normalization.
+      # @param cid [String] component identifier to match
+      # @return [Component, nil] first matching component, or nil
+      def find(cid)
+        each.find { |component| component.cid == cid }
+      end
+
       private
 
       def sensitive_value?
-        type == :password_input || props[:sensitive] == true
+        ValueHelpers.sensitive_value?(self)
       end
     end
   end

@@ -7,6 +7,7 @@ require_relative 'submission'
 require_relative 'viewer_store'
 require_relative 'native_host'
 require_relative 'window_presentation'
+require_relative 'value_helpers'
 
 module Lich
   module WebUI
@@ -545,7 +546,7 @@ module Lich
             nil
           end
           next unless live.equal?(attachment)
-          component = attachment.render.tree.each.find { |node| node.cid == cid }
+          component = attachment.render.tree.find(cid)
           callback = attachment.render.bindings[[cid, :selection_change]]
           next unless component && callback.respond_to?(:prepare_selection)
 
@@ -633,7 +634,7 @@ module Lich
           # textarea.value normalizes CRLF and lone CR to LF. Compare that
           # representation only; preserve the validated snapshot value below.
           changed = if component.type == :textarea
-                      previous.gsub(/\r\n?/, "\n") != value.gsub(/\r\n?/, "\n")
+                      ValueHelpers.normalize_text_line_breaks(previous) != ValueHelpers.normalize_text_line_breaks(value)
                     else
                       previous != value
                     end
@@ -733,7 +734,7 @@ module Lich
       # @return [Component]
       # @raise [Protocol::Refusal] for an unknown delivered identity
       def find_component!(attachment, cid)
-        component = attachment.render.tree.each.find { |candidate| candidate.cid == cid }
+        component = attachment.render.tree.find(cid)
         return component if component
 
         raise Protocol::Refusal.new(:component_id, 'component is not registered for delivered page')
@@ -762,14 +763,11 @@ module Lich
       end
 
       def sensitive?(component)
-        component.type == :password_input || component.props[:sensitive] == true
+        ValueHelpers.sensitive_value?(component)
       end
 
       def owner_label(owner)
-        return owner.webui_owner_id if owner.respond_to?(:webui_owner_id)
-        return owner.name if owner.respond_to?(:name) && owner.name
-
-        "#{owner.class}:#{owner.object_id}"
+        Diagnostics.owner_label(owner)
       end
 
       # Finds a component in the closing viewer's snapshot or the current page render.
@@ -953,7 +951,7 @@ module Lich
         return snapshot if snapshot
 
         selected = @dispatcher.current_context&.viewer_id || viewer
-        viewer_id = selected.respond_to?(:viewer_id) ? selected.viewer_id : selected
+        viewer_id = ValueHelpers.viewer_id(selected)
         unless viewer_id
           raise AmbiguousViewerError.new(
             'viewer-local access requires callback context or an explicit viewer',
@@ -1026,9 +1024,7 @@ module Lich
       end
 
       def log(level, message)
-        @logger.call(level, message)
-      rescue StandardError
-        nil
+        Diagnostics.log(@logger, level, message)
       end
     end
   end

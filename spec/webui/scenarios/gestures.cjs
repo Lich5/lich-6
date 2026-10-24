@@ -1,13 +1,9 @@
 // Scenario callbacks are inert until the Ruby-owned browser run selects one.
+const { sampleCanvasScroll } = require('./canvas_sampling.cjs');
 
 async function runShimCanvas({ page, expect }) {
     const scroll = page.locator('.webui-scroll');
-    // Read the live scroller after frame-based restoration; redraws can detach locator handles.
-    const scrollPosition = property => page.evaluate(property => new Promise(resolve => {
-      requestAnimationFrame(() => {
-        resolve(document.querySelector('.webui-scroll')[property]);
-      });
-    }), property);
+    const scrollPosition = property => page.evaluate(sampleCanvasScroll, property);
     await expect.poll(() => scroll.evaluate(el => el.scrollWidth)).toBeGreaterThan(1200);
     await scroll.evaluate(el => { el.scrollLeft = 400; el.scrollTop = 300; });
     await expect.poll(() => scrollPosition('scrollLeft')).toBe(400);

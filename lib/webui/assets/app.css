@@ -116,9 +116,11 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
   color: var(--button-disabled-text); background: var(--button-disabled); border-bottom-color: var(--border); box-shadow: none; text-shadow: none;
 }
 .webui-page[data-density="compact"] .webui-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.webui-page[data-density="compact"] .tab-list { background: var(--tab-surface); gap: 0; min-height: 38px; }
+.webui-page[data-density="compact"] .tab-list,
+.webui-page[data-density="compact"] .tab-header > .tab-list { background: var(--tab-surface); gap: 0; min-height: 38px; }
 .webui-page[data-density="compact"] .tab-list > button { font-weight: normal; border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 12px; }
-.webui-page[data-density="compact"] .tab-list > button[aria-selected="true"] { border-bottom-color: #3584e4; }
+.webui-page[data-density="compact"] .tab-list > button[aria-selected="true"],
+.webui-page[data-density="compact"] .tab-header > .tab-list > button[aria-selected="true"] { border-bottom-color: #3584e4; }
 .webui-page[data-density="compact"] .tab-panel { background: var(--input-surface); border: 1px solid var(--border); padding: 0; flex: 1; min-height: 0; }
 .webui-page[data-density="compact"] input:not([type="checkbox"]):not([type="radio"]),
 .webui-page[data-density="compact"] textarea,
@@ -177,8 +179,10 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 .webui-page[data-density="compact"] .webui-divider { margin-block: 0; }
 
 .webui-tabs > .tab-list { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
-.webui-tabs > .tab-list > button { border: 1px solid transparent; border-radius: 4px 4px 0 0; background: transparent; }
-.webui-tabs > .tab-list > button[aria-selected="true"] { border-color: var(--border); border-bottom-color: var(--surface); font-weight: 600; }
+.webui-tabs > .tab-list > button,
+.webui-tabs > .tab-header > .tab-list > button { border: 1px solid transparent; border-radius: 4px 4px 0 0; background: transparent; }
+.webui-tabs > .tab-list > button[aria-selected="true"],
+.webui-tabs > .tab-header > .tab-list > button[aria-selected="true"] { border-color: var(--border); border-bottom-color: var(--surface); font-weight: 600; }
 .tab-panel { padding-top: 14px; }
 .webui-tabs.nested > .tab-list { padding-left: 12px; }
 .webui-tabs.account-tabs-left { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); align-items: start; }
@@ -188,11 +192,6 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
   flex-direction: column;
   border-right: 1px solid var(--border);
   border-bottom: 0;
-}
-.webui-tabs.account-tabs-left > .tab-list > button { text-align: left; border-radius: 4px 0 0 4px; }
-.webui-tabs.account-tabs-left > .tab-list > button[aria-selected="true"] {
-  border-right-color: var(--surface);
-  border-bottom-color: var(--border);
 }
 .webui-tabs.account-tabs-left > .tab-panel { grid-column: 2; grid-row: 1; padding: 0 0 0 14px; }
 
@@ -445,16 +444,15 @@ button.danger { color: white; background: var(--danger); border: 1px solid var(-
 /* Auxiliary actions share the header allocation but never become indexed tabs. */
 .webui-tabs > .tab-header { display: flex; gap: 6px; align-items: center; border-bottom: 1px solid var(--border); }
 .webui-tabs > .tab-header > .tab-list { display: flex; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; }
-.webui-tabs > .tab-header > .tab-list > button { border: 1px solid transparent; border-radius: 4px 4px 0 0; background: transparent; }
-.webui-tabs > .tab-header > .tab-list > button[aria-selected="true"] { border-color: var(--border); border-bottom-color: var(--surface); font-weight: 600; }
 .tab-action { flex: none; }
-.webui-page[data-density="compact"] .tab-header > .tab-list { background: var(--tab-surface); gap: 0; min-height: 38px; }
+/* This reset follows the equally specific selected-header rule above. */
 .webui-page[data-density="compact"] .tab-header > .tab-list > button { font-weight: normal; border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 12px; }
-.webui-page[data-density="compact"] .tab-header > .tab-list > button[aria-selected="true"] { border-bottom-color: #3584e4; }
 .webui-tabs[data-size-to-all="true"] > .tab-header { grid-area: 1 / 1; }
 .webui-tabs.account-tabs-left > .tab-header { grid-column: 1; grid-row: 1; flex-direction: column; align-items: stretch; border-right: 1px solid var(--border); border-bottom: 0; }
 .webui-tabs.account-tabs-left > .tab-header > .tab-list { flex-direction: column; }
 .webui-tabs.nested > .tab-header { padding-left: 12px; }
+.webui-tabs.account-tabs-left > .tab-list > button,
 .webui-tabs.account-tabs-left > .tab-header > .tab-list > button { text-align: left; border-radius: 4px 0 0 4px; }
+.webui-tabs.account-tabs-left > .tab-list > button[aria-selected="true"],
 .webui-tabs.account-tabs-left > .tab-header > .tab-list > button[aria-selected="true"] { border-right-color: var(--surface); border-bottom-color: var(--border); }
 .webui-tabs.account-tabs-left[data-tab-actions="true"] { display: grid; }

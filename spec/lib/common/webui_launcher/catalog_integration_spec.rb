@@ -330,4 +330,99 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
   ensure
     FileUtils.remove_entry(legacy_dir) if legacy_dir && File.directory?(legacy_dir)
   end
+
+  describe 'account and character write compatibility' do
+    let(:path) { File.join(data_dir, 'entry.yaml') }
+    let(:character) { { char_name: '  cERA   TWO ', game_code: 'GS3', frontend: 'wizard' } }
+    let(:store) { Lich::Common::Authentication::EntryStore }
+
+    %w[plaintext standard enhanced].each do |mode|
+      it "preserves #{mode} password preparation for manual and account writes" do
+        data = YAML.safe_load_file(path)
+        data['encryption_mode'] = mode
+        File.write(path, YAML.dump(data))
+        allow(manager).to receive(:retrieve_master_password).and_return('synthetic-master')
+        master = mode == 'enhanced' ? 'synthetic-master' : nil
+        expect(store).to receive(:encrypt_password)
+          .with('synthetic-manual', mode: mode.to_sym, account_name: 'MANUAL', master_password: master).and_call_original
+        expect(store).to receive(:encrypt_password)
+          .with('synthetic-account', mode: mode.to_sym, account_name: 'ACCOUNT', master_password: master).and_call_original
+
+        expect(catalog.upsert_manual_entry(character.merge(user_id: 'manual'), 'synthetic-manual')).to be(true)
+        expect(catalog.add_or_update_account('account', 'synthetic-account', [character], frontend: 'wizard')).to be(true)
+        saved = YAML.safe_load_file(path)
+        %w[MANUAL ACCOUNT].zip(%w[synthetic-manual synthetic-account]).each do |name, password|
+          expect(store.decrypt_password(saved['accounts'][name]['password'], mode: mode.to_sym,
+                                                                               account_name: name, master_password: master)).to eq(password)
+        end
+        expect(saved['accounts']['MANUAL']['characters']).to eq([{
+          'char_name' => 'Cera Two', 'game_code' => 'GS3', 'game_name' => '', 'frontend' => 'wizard',
+          'custom_launch' => nil, 'custom_launch_dir' => nil,
+        }])
+        expect(saved['accounts']['ACCOUNT']['characters']).to eq([{
+          'char_name' => 'Cera Two', 'game_code' => 'GS3', 'game_name' => '', 'frontend' => 'wizard',
+        }])
+      end
+    end
+
+    [nil, ''].each do |master|
+      it "refuses both enhanced account writes with a #{master.inspect} master before encryption or persistence" do
+        data = YAML.safe_load_file(path)
+        data['encryption_mode'] = 'enhanced'
+        File.write(path, YAML.dump(data))
+        before = File.binread(path)
+        allow(manager).to receive(:retrieve_master_password).and_return(master)
+        expect(store).not_to receive(:encrypt_password)
+        expect(store).not_to receive(:write_yaml_file)
+
+        expect { catalog.upsert_manual_entry(character.merge(user_id: 'manual'), 'synthetic') }
+          .to raise_error(described_class::MasterPasswordRequired, 'master password is required')
+        expect { catalog.add_or_update_account('account', 'synthetic', [], frontend: 'wizard') }
+          .to raise_error(described_class::MasterPasswordRequired, 'master password is required')
+        expect(File.binread(path)).to eq(before)
+      end
+    end
+
+    it 'retains required character fields and rejects missing names before writing' do
+      before = File.binread(path)
+      expect { catalog.add_character('DOUG', character) }.to raise_error(KeyError) { |error| expect(error.key).to eq(:game_name) }
+      key = catalog.entries.first.key
+      expect { catalog.update_character(key, character) }.to raise_error(KeyError) { |error| expect(error.key).to eq(:game_name) }
+      expect { catalog.add_character('DOUG', character.except(:char_name)) }
+        .to raise_error(KeyError) { |error| expect(error.key).to eq(:char_name) }
+      expect(File.binread(path)).to eq(before)
+    end
+
+    it 'preserves character projection, identity and metadata while account matching ignores custom commands' do
+      data = YAML.safe_load_file(path)
+      saved = data['accounts']['DOUG']['characters'].first
+      saved.merge!('custom_launch' => '/old', 'is_favorite' => true, 'favorite_order' => 2, 'extension' => 'retained')
+      File.write(path, YAML.dump(data))
+      entry = catalog.entries.first
+      incoming = entry.to_h.merge(char_name: 'bera', game_name: 'changed label', custom_launch_dir: '/new')
+      expect(catalog.upsert_manual_entry(incoming, 'synthetic')).to be(true)
+      expect(catalog.entries.first.key).to eq(entry.key)
+      expect(catalog.add_or_update_account('doug', 'synthetic', [incoming], frontend: 'wizard')).to be(true)
+      expect(catalog.entries.size).to eq(1)
+      expect(YAML.safe_load_file(path)['accounts']['DOUG']['characters'].first).to eq(
+        saved.merge('game_name' => 'changed label', 'custom_launch_dir' => '/new')
+      )
+      expect(catalog.add_character('doug', character.merge(game_name: nil))).to be(true)
+      added = catalog.entries.find { |item| item.char_name == 'Cera Two' }
+      expect(catalog.update_character(added.key, character.merge(char_name: '  cERA THREE ', game_name: nil))).to be(true)
+      expect(YAML.safe_load_file(path)['accounts']['DOUG']['characters'].last).to eq({
+        'char_name' => 'Cera Three', 'game_code' => 'GS3', 'game_name' => '', 'frontend' => 'wizard',
+        'custom_launch' => nil, 'custom_launch_dir' => nil,
+      })
+    end
+
+    it 'returns false for either account writer failure without changing the persisted catalog' do
+      before = File.binread(path)
+      allow(store).to receive(:write_yaml_file).and_raise(IOError, 'synthetic write failure')
+
+      expect(catalog.upsert_manual_entry(character.merge(user_id: 'manual'), 'synthetic')).to be(false)
+      expect(catalog.add_or_update_account('account', 'synthetic', [character], frontend: 'wizard')).to be(false)
+      expect(File.binread(path)).to eq(before)
+    end
+  end
 end

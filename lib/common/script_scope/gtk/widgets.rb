@@ -391,17 +391,11 @@ module Lich
           # @api private
           def refresh_layout!
             root = toplevel
-            return unless root.instance_variable_get(:@handle)
+            return unless root.send(:materialized?)
             pending = [root]
             until pending.empty?
               widget = pending.pop
-              handle = widget.instance_variable_get(:@handle)
-              if handle && !widget.destroyed?
-                props = widget.send(:layout_props)
-                previous = widget.instance_variable_get(:@published_layout) || {}
-                props.each { |key, value| session.port.set(handle, key, value) unless previous[key] == value }
-                widget.instance_variable_set(:@published_layout, props)
-              end
+              widget.send(:publish_layout!)
               pending.concat(widget.send(:owned_children))
             end
           end
@@ -703,6 +697,90 @@ module Lich
           def input_property = nil
           def builtin_events = []
 
+          # Internal metadata queries never read viewer-local state or publish widgets.
+          # @return [Boolean] whether this widget is explicitly hidden
+          def hidden? = @props[:hidden] == true
+
+          # @return [Boolean] whether this widget authored a pointer surface
+          def pointer_events? = @props[:pointer_events] == true
+
+          # @return [Boolean] whether an opaque port handle has already been allocated
+          def materialized? = !@handle.nil?
+
+          # @return [Notebook, nil] current header owner, independently of parentage
+          def tab_owner = @tab_owner
+
+          # Claims/releases header notification ownership after caller-side validation.
+          # @param owner [Notebook, nil] new owner, or nil to release the existing claim
+          # @return [Object, nil] assigned owner or released reference
+          def tab_owner=(owner)
+            if owner.nil?
+              remove_instance_variable(:@tab_owner) if instance_variable_defined?(:@tab_owner)
+            else
+              @tab_owner = owner
+            end
+          end
+
+          # @return [Frame, Expander, nil] current caption notification owner
+          def caption_owner = @frame_caption_owner
+
+          # Claims/releases caption notification ownership after caller-side validation.
+          # @param owner [Frame, Expander, nil] new owner, or nil to release a claimed caption
+          # @return [Object] assigned owner or released reference
+          def caption_owner=(owner)
+            owner.nil? ? remove_instance_variable(:@frame_caption_owner) : @frame_caption_owner = owner
+          end
+
+          # Publishes only this widget's changed layout, retaining the last successful map.
+          # The caller owns traversal and synchronization; rejected writes leave the map intact.
+          # @return [Hash, nil] published layout map, or nil for an unallocated/retired widget
+          def publish_layout!
+            return unless @handle && !destroyed?
+
+            props = layout_props
+            previous = @published_layout || {}
+            props.each { |key, value| session.port.set(@handle, key, value) unless previous[key] == value }
+            @published_layout = props
+          end
+
+          # A specialized pointer surface may retain its own event state before dispatch.
+          # @param _event [Symbol] :pointer_press or :pointer_release
+          # @param _pointer [PointerEvent] immutable script-facing event
+          # @param _context [Lich::WebUI::Runtime::EventContext] originating viewer/payload
+          # @return [nil] ordinary widgets retain no drag bookkeeping
+          def observe_pointer(_event, _pointer, _context); end
+
+          # Invokes a connection-order pointer snapshot, stopping only on literal true.
+          # Connection wrappers retain their own disconnection/destruction guards.
+          # @param event [Symbol] pointer signal family
+          # @param pointer [PointerEvent] script-facing pointer event
+          # @return [Array, nil] snapshot on completion, or nil when a handler stops dispatch
+          def dispatch_pointer_handlers(event, pointer)
+            @signals.fetch(event, []).dup.each do |_name, handler|
+              break if handler.call(self, pointer) == true
+            end
+          end
+
+          # Invokes key, crossing and window-state snapshots while the widget remains live.
+          # @param event [Symbol] one of the three notification families
+          # @param argument [KeyEvent, CrossingEvent, WindowStateEvent] script-facing notification
+          # @return [Array, nil] snapshot on completion, or nil after destruction/handled true
+          def dispatch_live_handlers(event, argument)
+            @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(self, argument) == true }
+          end
+
+          # Refreshes one class-owned caption without adopting or retiring labels.
+          # @param label [Label] caption reporting a text/fragment change
+          # @param owned_label [Label, nil] the caller's current caption
+          # @param operation [Symbol] class-specific degradation key
+          # @param message [String] class-specific omitted-style notice
+          # @return [Object, nil] write result, or nil for a retired/unowned/unchanged caption
+          def refresh_owned_caption(label, owned_label, operation:, message:)
+            return if destroyed? || !owned_label.equal?(label)
+            session.degrade(operation, message) if label.send(:caption_fragments?)
+            write(:label, label.text) unless @props[:label] == label.text
+          end
+
           # Reads current viewer input only inside a live callback; otherwise uses committed/default shadow state.
           # @return [Object] synchronous script-visible value
           def read(property)
@@ -780,24 +858,15 @@ module Lich
                            end
                          elsif %i[key_press key_release].include?(event)
                            key = KeyEvent.new(**context.payload)
-                           @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(widget, key) == true }
+                           dispatch_live_handlers(event, key)
                          elsif %i[pointer_enter pointer_leave].include?(event)
                            crossing = CrossingEvent.new(event == :pointer_enter ? :enter_notify : :leave_notify)
-                           @signals.fetch(event, []).dup.each { |_name, handler| break if destroyed? || handler.call(widget, crossing) == true }
+                           dispatch_live_handlers(event, crossing)
                          elsif %i[pointer_press pointer_release].include?(event)
                            pointer = PointerEvent.new(**context.payload, released: event == :pointer_release)
-                           if is_a?(Layout)
-                             session.refuse(self, :pointer_press) if pointer_viewer && pointer_viewer != context.viewer_id
-                             toplevel.instance_variable_set(:@pointer_surface, self)
-                             @last_pointer = context.payload.slice(:x, :y, :state)
-                             @pointer_viewer = context.viewer_id
-                             @pointer_cancelled = false
-                             @pointer_press = event == :pointer_press ? pointer : nil
-                           end
+                           observe_pointer(event, pointer, context)
                            session.with_pointer(widget, pointer) do
-                             @signals.fetch(event, []).dup.each do |_name, handler|
-                               break if handler.call(widget, pointer) == true
-                             end
+                             dispatch_pointer_handlers(event, pointer)
                            end
                          else
                            widget.send(:emit_handlers, event)
@@ -1196,6 +1265,13 @@ module Lich
 
           def component_type = :page
 
+          # Retains the Layout supplying this window's active drag/viewer attribution.
+          # @param surface [Layout] materialized canvas belonging to this window
+          # @return [Layout] retained surface
+          def track_pointer_surface(surface)
+            @pointer_surface = surface
+          end
+
           def forget_child(child)
             @titlebar = nil if child.equal?(@titlebar)
             super
@@ -1232,9 +1308,7 @@ module Lich
 
                   state = WindowStateEvent.new(new_window_state: minimized ? Gdk::WindowState::ICONIFIED : 0,
                                                changed_mask: Gdk::WindowState::ICONIFIED)
-                  @signals.fetch(:window_state, []).dup.each do |_name, handler|
-                    break if destroyed? || handler.call(self, state) == true
-                  end
+                  dispatch_live_handlers(:window_state, state)
                 end
               end)
             end
@@ -1495,7 +1569,7 @@ module Lich
             validate_caption!(value)
             write(:label, value)
             @frame_label ||= Label.new(value)
-            @frame_label.instance_variable_set(:@frame_caption_owner, self)
+            @frame_label.caption_owner = self
             @frame_label.text = value unless @frame_label.text == value
             self
           end
@@ -1520,15 +1594,15 @@ module Lich
           def set_label_widget(label)
             session.style_operation(self, :set_label_widget) do
               valid = label.is_a?(Label) && label.session.equal?(session) && !label.destroyed? && label.parent.nil? &&
-                      !label.instance_variable_get(:@tab_owner) && !label.instance_variable_get(:@frame_caption_owner)
+                      !label.tab_owner && !label.caption_owner
               session.refuse(self, :set_label_widget) unless valid && !destroyed?
               text = label.text
               validate_caption!(text)
               write(:label, text)
               previous = @frame_label
-              previous&.remove_instance_variable(:@frame_caption_owner)
+              previous.caption_owner = nil if previous
               @frame_label = label
-              label.instance_variable_set(:@frame_caption_owner, self)
+              label.caption_owner = self
               previous&.destroy
             end
             self
@@ -1568,9 +1642,9 @@ module Lich
           # @param label [Label] caption whose content or fragments changed
           # @return [Object] write result, or nil for a retired/unchanged caption
           def refresh_caption(label)
-            return if destroyed? || !@frame_label.equal?(label)
-            session.degrade(:frame_caption_style, 'frame caption keeps literal label text; caption typography follows browser theme') if label.instance_variable_get(:@props)[:fragments]
-            write(:label, label.text) unless @props[:label] == label.text
+            refresh_owned_caption(label, @frame_label,
+                                  operation: :frame_caption_style,
+                                  message: 'frame caption keeps literal label text; caption typography follows browser theme')
           end
 
           # Applies the shared caption bound before any ownership or port change.
@@ -1716,7 +1790,7 @@ module Lich
               index = n_pages - 1 if index.negative?
               return self unless index.between?(0, n_pages - 1)
 
-              return self if @tabs[index][:page].instance_variable_get(:@props)[:hidden] == true
+              return self if @tabs[index][:page].hidden?
               previous = selected_tab_key
               write(:selected, index)
               notify_switch(previous)
@@ -1737,13 +1811,13 @@ module Lich
               text = label.is_a?(EventBox) ? label.children.first : label
               valid &&= label.is_a?(Widget) && label.session.equal?(session) && !label.destroyed? && label.parent.nil? &&
                         text.instance_of?(Label) && !text.destroyed? && text.session.equal?(session) && !label.equal?(child) &&
-                        !label.instance_variable_get(:@tab_owner) && !text.instance_variable_get(:@tab_owner)
+                        !label.tab_owner && !text.tab_owner
               session.refuse(self, :append_page) unless valid
               previous = selected_tab_key
               entry = { key: "tab-#{SecureRandom.hex(12)}", widget: label, label: text, page: child }
               publish_tabs(@tabs + [entry])
               label.send(:parent=, self)
-              [label, text].uniq.each { |widget| widget.instance_variable_set(:@tab_owner, self) }
+              [label, text].uniq.each { |widget| widget.tab_owner = self }
               child.send(:parent=, self)
               @children << child
               @tabs << entry
@@ -1814,7 +1888,7 @@ module Lich
               return session.port.bind(@handle, :select, proc do |context|
                 session.callback(context, widget: self) do
                   index = @tabs.index { |entry| entry[:key] == context.payload[:tab] }
-                  next unless index && !@tabs[index][:page].destroyed? && @tabs[index][:page].instance_variable_get(:@props)[:hidden] != true
+                  next unless index && !@tabs[index][:page].destroyed? && !@tabs[index][:page].hidden?
 
                   emit_switch(index)
                 end
@@ -1830,9 +1904,7 @@ module Lich
                 widget = entry[:widget]
                 pointer = PointerEvent.new(**context.payload.except(:tab))
                 session.with_pointer(widget, pointer) do
-                  widget.instance_variable_get(:@signals).fetch(:pointer_press, []).dup.each do |_name, handler|
-                    break if handler.call(widget, pointer) == true
-                  end
+                  widget.send(:dispatch_pointer_handlers, :pointer_press, pointer)
                 end
               end
             end)
@@ -1890,9 +1962,9 @@ module Lich
             names = entries.map { |entry| entry[:label].text }
             session.refuse(self, :tab_label) unless names.uniq.length == names.length
             headers = entries.map do |entry|
-              props = entry[:label].send(:component_props)
-              { key: entry[:key], pointer_events: entry[:widget].instance_variable_get(:@props)[:pointer_events] == true,
-                foreground: props[:foreground], hidden: entry[:page].instance_variable_get(:@props)[:hidden] == true, disabled: !entry[:widget].is_sensitive? }.compact
+              props = entry[:label].send(:header_presentation)
+              { key: entry[:key], pointer_events: entry[:widget].pointer_events?,
+                foreground: props[:foreground], hidden: entry[:page].hidden?, disabled: !entry[:widget].is_sensitive? }.compact
             end
             [names, headers]
           end
@@ -1903,9 +1975,7 @@ module Lich
             # pages. Remap each by identity without creating a new committed value.
             remap = lambda do |index|
               index ||= 0
-              old_key = @props.dig(:headers, index, :key)
-              found = headers.index { |header| header[:key] == old_key } if old_key
-              Lich::WebUI::Contract.visible_tab_index(headers, found || index.clamp(0, [names.length - 1, 0].max))
+              Lich::WebUI::Contract.remap_tab_index(@props[:headers], headers, index, names.length)
             end
             selected = remap.call(@props[:selected])
             committed = remap.call(@committed[:selected]) if @committed.key?(:selected)
@@ -1919,7 +1989,7 @@ module Lich
           end
 
           def release_header(entry)
-            [entry[:widget], entry[:label]].uniq.each { |widget| widget.remove_instance_variable(:@tab_owner) if widget.instance_variable_defined?(:@tab_owner) }
+            [entry[:widget], entry[:label]].uniq.each { |widget| widget.tab_owner = nil }
             entry[:widget].send(:parent=, nil)
           end
         end
@@ -2241,6 +2311,13 @@ module Lich
           alias ellipsize= set_ellipsize
 
           protected
+
+          # Exposes only the effective foreground used by Notebook's header projection.
+          # @return [Hash] independent field map; link presentation may omit the field
+          def header_presentation = component_props.slice(:foreground)
+
+          # @return [Boolean] whether a caption would omit typed fragment styling
+          def caption_fragments? = !!@props[:fragments]
 
           # Applies a typed foreground cue, restoring authored/default color when
           # the matching class or provider disappears. Literal content is unchanged.

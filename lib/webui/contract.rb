@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'errors'
+require_relative '../util/deep_freeze'
 
 module Lich
   module WebUI
@@ -705,6 +706,61 @@ module Lich
         headers.index { |header| !header[:hidden] } || 0
       end
 
+      # Preserves stable tab identity before falling back to a bounded visible index.
+      # Callers retain their own missing-index defaults and selection state.
+      # @param previous_headers [Array<Hash>, nil] previously authored/delivered headers
+      # @param headers [Array<Hash>] replacement headers
+      # @param index [Integer] caller-defaulted previous selection
+      # @param page_count [Integer] number of replacement named pages
+      # @return [Integer] remapped selection, including zero for an empty/all-hidden set
+      def remap_tab_index(previous_headers, headers, index, page_count)
+        old_key = previous_headers&.dig(index, :key)
+        found = headers.index { |header| header[:key] == old_key } if old_key
+        visible_tab_index(headers, found || index.clamp(0, [page_count - 1, 0].max))
+      end
+
+      # Derives the named slots declared by a parent's validated child rule.
+      # Capacity admission and imperative numbering outside that capacity stay in callers.
+      # @param rule [Hash, Symbol] schema child declaration
+      # @param props [Hash] validated parent properties
+      # @return [Array<String>] declared slots, or an empty list for unnamed children
+      def child_slots(rule, props)
+        return [] unless rule.is_a?(Hash)
+
+        case rule.fetch(:kind)
+        when :named then rule.fetch(:slots)
+        when :named_dynamic then Array.new(props.fetch(rule.fetch(:count_property))) { |index| index.to_s }
+        when :named_from_property then props.fetch(rule.fetch(:property)).map(&:to_s)
+        else []
+        end
+      end
+
+      # Resolves a parent-relative placement bound without mutating its schema.
+      # @param shape [Hash] declared placement shape
+      # @param parent_props [Hash] validated parent properties
+      # @return [Hash] copied shape with any parent-provided maximum resolved
+      def child_placement_shape(shape, parent_props)
+        resolved = shape.dup
+        resolved[:max] = parent_props.fetch(resolved.delete(:max_property)) if resolved[:max_property]
+        resolved
+      end
+
+      # Identifies the common relational placement refusal after shape validation.
+      # Error attribution/order and additional caller-specific checks remain in callers.
+      # @param type [Symbol] normalized parent component type
+      # @param props [Hash] validated parent properties
+      # @param placement [Hash] shape-validated child placement
+      # @return [Symbol, nil] :grid_row_overflow, :unpositioned_coordinates, or nil
+      def child_placement_condition(type, props, placement)
+        if type == :grid && placement.fetch(:row, 1) + placement.fetch(:row_span, 1) - 1 > BOUNDS[:children]
+          return :grid_row_overflow
+        end
+        if type == :overlay && !props[:positioned] && (placement.keys & %i[x y]).any?
+          return :unpositioned_coordinates
+        end
+        nil
+      end
+
       # Assembles and recursively freezes the bounded control/facility contract once.
       # Shared property families are added here so native and shim consumers agree.
       # @return [Hash] cached schemas keyed by type
@@ -882,13 +938,7 @@ module Lich
       # Recursively freezes schema hashes, arrays, keys, and leaf values.
       # @return [Object] the supplied object
       def deep_freeze(value)
-        case value
-        when Hash
-          value.each { |key, child| deep_freeze(key); deep_freeze(child) }
-        when Array
-          value.each { |child| deep_freeze(child) }
-        end
-        value.freeze
+        Lich::Util.deep_freeze(value)
       end
 
       # Copies hash/array containers recursively, retaining scalar objects.

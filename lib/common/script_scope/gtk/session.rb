@@ -130,15 +130,7 @@ module Lich
             context = @callback_context
             context = nil unless context&.first.equal?(Thread.current)
             @dispatch.call do
-              run_queue_block do
-                next if stopping?
-
-                @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
-                Script.current # Honor pause after adopting the initially unowned worker.
-                synchronize do
-                  with_callback_context(context&.[](1), context&.[](2)) { model_batch { block.call unless stopping? } }
-                end
-              end
+              execute_callback(context, &block)
             end
           end
 
@@ -153,15 +145,7 @@ module Lich
               context = nil unless context&.first.equal?(Thread.current)
               @scheduler ||= Lich::WebUI.callback_scheduler(owner: @owner)
               @scheduler.schedule(interval_ms) do
-                run_queue_block do
-                  next if stopping?
-
-                  @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
-                  Script.current # Preserve Script pause behavior on the owner dispatcher.
-                  synchronize do
-                    with_callback_context(context&.[](1), context&.[](2)) { model_batch { block.call unless stopping? } }
-                  end
-                end
+                execute_callback(context, &block)
               end
             end
           end
@@ -339,6 +323,23 @@ module Lich
           end
 
           private
+
+          # Runs admitted queue/timer work with the captured viewer and window.
+          # Admission, scheduling and cleanup-thread execution stay in their callers.
+          # @param context [Array, nil] immutable registering thread/viewer/window snapshot
+          # @yield owner callback, batched under the session monitor
+          # @return [Object, nil] callback result, or nil after stopping/failure
+          def execute_callback(context, &block)
+            run_queue_block do
+              next if stopping?
+
+              @owner.thread_group.add(Thread.current) unless Script.current.equal?(@owner)
+              Script.current # Honor pause after adopting the initially unowned worker.
+              synchronize do
+                with_callback_context(context&.[](1), context&.[](2)) { model_batch { block.call unless stopping? } }
+              end
+            end
+          end
 
           # One rollback snapshot per model per callback or widget barrier. Nested
           # signals share this batch under the existing owner/session monitor.

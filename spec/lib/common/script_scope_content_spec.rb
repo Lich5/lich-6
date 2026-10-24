@@ -1779,4 +1779,73 @@ RSpec.describe 'bounded text, image and menu compatibility' do
     WebUIBrowser.check(service: service, page: page, scenario: 'pr64-native-radio')
     expect(observed).to eq([[:one, false], [:two, true], [:activate, true], [:activate, true]])
   end
+
+  %i[height width].each do |axis|
+    it "writes scroller minimum #{axis} before retaining the new request and preserves reset semantics" do
+      scroll = compatibility::ScrolledWindow.new
+      setter, getter, property = :"set_min_content_#{axis}", :"min_content_#{axis}", :"min_#{axis}"
+      expect(scroll.public_send(getter)).to eq(-1)
+      expect(scroll.public_send(setter, 120)).to equal(scroll)
+      show(compatibility::Window.new.add(scroll))
+      handle, port = scroll.materialize, scroll.session.port
+      fail_write = true
+      seen = []
+      allow(port).to receive(:set).and_wrap_original do |method, *args|
+        if args[0] == handle && args[1] == property
+          seen << scroll.public_send(getter)
+          raise IOError, 'synthetic minimum write failure' if fail_write
+        end
+        method.call(*args)
+      end
+
+      expect { scroll.public_send(setter, 250) }.to raise_error(IOError, 'synthetic minimum write failure')
+      expect([scroll.public_send(getter), port.get(handle, property)]).to eq([120, 120])
+      fail_write = false
+      expect(scroll.public_send(setter, -1)).to equal(scroll)
+      expect([scroll.public_send(getter), port.get(handle, property)]).to eq([-1, 0])
+      expect(seen).to eq([120, 120])
+      [0, 65_536].each { |value| expect(scroll.public_send(setter, value)).to equal(scroll) }
+      [-2, 65_537, nil, '5', 0.5].each do |value|
+        expect { scroll.public_send(setter, value) }.to raise_error(compatibility::UnsupportedOperation, /operation=#{setter}/)
+      end
+      scroll.destroy
+      expect(scroll.public_send(getter)).to eq(65_536)
+      expect { scroll.public_send(setter, 1) }.to raise_error(compatibility::UnsupportedOperation, /operation=#{setter}/)
+    end
+  end
+
+  %i[Frame Expander].each do |kind|
+    it "preserves #{kind} caption refresh guards, returns and partial state after a refused write" do
+      subject = compatibility.const_get(kind).new('Initial')
+      caption = subject.label_widget
+      show(compatibility::Window.new.add(subject))
+      handle, port = subject.materialize, subject.session.port
+      writes = []
+      fail_write = false
+      allow(port).to receive(:set).and_wrap_original do |method, *args|
+        if args[0] == handle && args[1] == :label
+          writes << args.last
+          raise IOError, 'synthetic caption write failure' if fail_write
+        end
+        method.call(*args)
+      end
+      foreign = compatibility::Label.new('Foreign')
+      foreign.set_markup('<b>Foreign</b>')
+      expect(subject.send(:refresh_caption, foreign)).to be_nil
+      expect(subject.send(:refresh_caption, caption)).to be_nil
+      expect(writes).to be_empty
+      expect(Lich).not_to have_received(:log).with(/compatibility (frame|expander)_caption_style/)
+
+      fail_write = true
+      expect { caption.text = 'Changed' }.to raise_error(IOError, 'synthetic caption write failure')
+      expect([caption.text, subject.label]).to eq(['Changed', 'Initial'])
+      fail_write = false
+      expect(subject.send(:refresh_caption, caption)).to equal(subject)
+      expect(subject.label).to eq('Changed')
+      subject.destroy
+      count = writes.length
+      expect(subject.send(:refresh_caption, caption)).to be_nil
+      expect(writes.length).to eq(count)
+    end
+  end
 end

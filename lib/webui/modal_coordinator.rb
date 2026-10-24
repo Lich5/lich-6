@@ -192,10 +192,7 @@ module Lich
       end
 
       def owner_label(owner)
-        return owner.webui_owner_id if owner.respond_to?(:webui_owner_id)
-        return owner.name if owner.respond_to?(:name) && owner.name
-
-        "#{owner.class}:#{owner.object_id}"
+        Diagnostics.owner_label(owner)
       end
     end
   end
