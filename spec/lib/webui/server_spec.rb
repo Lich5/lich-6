@@ -150,6 +150,33 @@ RSpec.describe Lich::WebUI::Server do
     server&.stop
   end
 
+  it 'serves exactly the shipped ordered scripts behind authentication, origin checks and cache validation' do
+    assets = File.expand_path('../../../lib/webui/assets', __dir__)
+    html = File.read(File.join(assets, 'index.html'))
+    names = html.scan(%r{<script src="/assets/([a-z_]+\.js)" defer></script>}).flatten
+    expect(names.size).to eq(6)
+    expect(described_class::ASSET_ROUTES.keys).to match_array(['/', '/assets/app.css', *names.map { |name| "/assets/#{name}" }])
+    server = build_server(assets).start
+    _uri, _response, cookie = authenticate(server)
+    names.each do |name|
+      target = "/assets/#{name}"
+      expect(request(server, target)).to start_with('HTTP/1.1 403 Forbidden')
+      expect(request(server, target, 'Cookie' => cookie, 'Origin' => 'http://evil.test')).to start_with('HTTP/1.1 403 Forbidden')
+      response = request(server, target, 'Cookie' => cookie)
+      expect(response).to start_with('HTTP/1.1 200 OK')
+      expect(response).to include('Content-Type: text/javascript; charset=utf-8', "script-src 'self'")
+      expect(response.split("\r\n\r\n", 2).last).to eq(File.binread(File.join(assets, name)))
+      etag = response[/^ETag: (.+)\r$/, 1]
+      expect(etag).not_to be_nil
+      expect(request(server, target, 'Cookie' => cookie, 'If-None-Match' => etag)).to start_with('HTTP/1.1 304 Not Modified')
+    end
+    ['/assets/not_allowed.js', '/assets/../app.js', '/assets/renderers_table.js/extra'].each do |target|
+      expect(request(server, target, 'Cookie' => cookie)).to start_with('HTTP/1.1 404 Not Found')
+    end
+  ensure
+    server&.stop
+  end
+
   it 'rejects unauthenticated, foreign Host, foreign Origin, and cross-site metadata requests', security_id: 'sec-host-origin' do
     server = build_server(@assets_dir).start
     _uri, _response, cookie = authenticate(server)
@@ -308,7 +335,7 @@ RSpec.describe Lich::WebUI::Server do
     viewer_id, message = delivered.pop
 
     expect(response_head).to start_with('HTTP/1.1 101 Switching Protocols')
-    expect(JSON.parse(hello.payload)).to include('type' => 'hello', 'contract_version' => '2.50.0')
+    expect(JSON.parse(hello.payload)).to include('type' => 'hello', 'contract_version' => '2.51.0')
     expect(viewer_id).to start_with('viewer-')
     expect(message).to eq(type: 'attach', page: 'page-abc', version: '2.5.0')
     socket.write(Lich::WebUI::WebSocket.encode_client_frame([1000].pack('n'), opcode: Lich::WebUI::WebSocket::OPCODE_CLOSE))

@@ -1,6 +1,5 @@
 // Shared dependency-free DOM/socket fixture for the shipped renderer.
-const fs = require("node:fs");
-const path = require("node:path");
+const { browserAssets } = require("./webui_assets_fixture.cjs");
 const vm = require("node:vm");
 
 /**
@@ -72,8 +71,9 @@ function fixture(target) {
     setInterval: () => ++timer, clearInterval() {},
     addEventListener: (name, callback) => { windowEvents[name] = callback; },
     removeEventListener: name => { delete windowEvents[name]; } };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../lib/webui/assets/app.js'), 'utf8'),
-    { window, document, WebSocket, URL, URLSearchParams, CSS: { escape: value => value }, queueMicrotask: work => work() });
+  const context = vm.createContext({ window, document, WebSocket, URL, URLSearchParams,
+    CSS: { escape: value => value }, queueMicrotask: work => work() });
+  for (const asset of browserAssets()) vm.runInContext(asset.source, context, { filename: asset.name });
   return { document, documentEvents, elements, sent, resized, windowEvents, window,
     frame: () => { frames.splice(0).forEach(work => work()); },
     receive: message => listeners.message({ data: JSON.stringify(message) }) };

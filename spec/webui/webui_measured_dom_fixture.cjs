@@ -1,6 +1,5 @@
 const { JSDOM } = require('jsdom');
-const fs = require('node:fs');
-const path = require('node:path');
+const { browserAssets } = require('./webui_assets_fixture.cjs');
 
 // Each call owns its DOM, measurements, observers, frames and socket capture.
 // The caller closes dom.window after the test.
@@ -8,7 +7,7 @@ function measuredDomFixture() {
   const dom = new JSDOM('<div id="status"></div><div id="pages"></div><div id="notifications"></div><div id="announcer"></div>',
     { url: 'http://127.0.0.1/', runScripts: 'outside-only' });
   const frames = [], sent = [], widths = new Map(), observers = [];
-  let listener;
+  const listeners = {};
   dom.window.requestAnimationFrame = callback => frames.push(callback);
   dom.window.ResizeObserver = class {
     constructor(callback) { this.callback = callback; observers.push(this); }
@@ -21,12 +20,13 @@ function measuredDomFixture() {
   dom.window.WebSocket = class {
     static OPEN = 1;
     readyState = 1;
-    addEventListener(name, callback) { if (name === 'message') listener = callback; }
+    addEventListener(name, callback) { listeners[name] = callback; }
     send(value) { sent.push(JSON.parse(value)); }
   };
-  dom.window.eval(fs.readFileSync(path.join(__dirname, '../../lib/webui/assets/app.js'), 'utf8'));
+  for (const asset of browserAssets()) dom.window.eval(asset.source);
   return { dom, widths, sent, observers,
-    receive: value => listener({ data: JSON.stringify(value) }),
+    receive: value => listeners.message({ data: JSON.stringify(value) }),
+    disconnect: () => listeners.close(),
     frame: () => frames.splice(0).forEach(callback => callback()),
     element: cid => dom.window.document.querySelector(`[data-cid="${cid}"]`) };
 }

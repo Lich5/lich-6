@@ -80,7 +80,7 @@ The main responsibilities are:
 | Contract | Define and validate properties, events and child relationships | [Contract](../lib/webui/contract.rb), [Validator](../lib/webui/validator.rb) |
 | Runtime | Register pages, track viewers, dispatch callbacks and manage modals | [Service](../lib/webui/service.rb), [Runtime](../lib/webui/runtime.rb) |
 | Window host | Launch and monitor browser processes and retain window geometry | [BrowserWindow](../lib/webui/browser_window.rb), [BrowserLauncher](../lib/webui/browser_launcher.rb), [WindowGeometryStore](../lib/webui/window_geometry_store.rb) |
-| Renderer | Paint shared controls and send user events and submissions | [JavaScript](../lib/webui/assets/app.js), [CSS](../lib/webui/assets/app.css) |
+| Renderer | Paint shared controls and send user events and submissions | [Bootstrap](../lib/webui/assets/app.js), [renderer families](../lib/webui/assets/), [CSS](../lib/webui/assets/app.css) |
 
 Scripts retain ownership of their calculations, defaults, ordering, persistence,
 validation and cancellation behavior. Presentation helpers do not supply those
@@ -830,7 +830,7 @@ compatibility diagnostics; saved geometry retains its established precedence.
 integer inner padding from 0 through 64, separately from outer widget margins.
 Read-only documents preserve scroll position instead of implicitly following
 the end; supported explicit end-iterator/end-mark requests still enable follow.
-The corresponding client and contract version is 2.50.0.
+The corresponding client and contract version is 2.51.0.
 
 ### Pinned setup acceptance
 
@@ -1271,6 +1271,41 @@ before the first teardown or callback error propagates to the caller.
 Optional save failure notification occurs after plaintext disposal
 and outside the commit gate; login can proceed unless canceled, even if notification
 fails. No GTK alert, fallback browser tab, or authentication URL is introduced.
+
+### Explicit presentation intent (contract 2.51.0)
+
+`tabs.vertical: true` declares a left-side tab strip regardless of its key.
+Horizontal inset strips use `presentation_role: :inset`. Component keys and CIDs
+remain identities for events and submissions; they do not select presentation.
+
+The optional `presentation_role` property selects a bounded existing treatment:
+
+| Component | Accepted roles |
+| --- | --- |
+| tabs | `inset` |
+| group | `record`, `form` |
+| button | `record_primary`, `record_secondary`, `record_favorite`, `refresh` |
+| toggle | `settings` |
+| columns | `form_choices` |
+| text | `form_hint` |
+
+Omission retains ordinary styling. Unknown roles and role/type mismatches are
+refused; arbitrary CSS, class names, selectors and HTML are not accepted.
+Roles carry no event or submission authority and do not add a value-bearing control.
+The renderer projects the role to `data-presentation-role` for the shipped styles.
+
+Saved-entry primary buttons retain their existing label and accessibility name.
+The tab layout authors their character/realm/frontend segments through the existing
+`content` text-child slot and literal text-fragment records. The list layout retains
+its ordinary literal label. Favorite buttons author a literal star in that same
+text-child slot and declare their existing `checked` state for presentation metadata;
+activation remains the original bound button callback. Display labels are never split
+or interpreted as application commands.
+
+Legacy hidden outer-window and content-window geometry fields remain supported.
+Their hooks can retire only after explicit observation replaces both domains and
+retained-consumer compatibility is established. Outer launcher persistence and page
+content dimensions remain distinct.
 
 ## Theme behavior
 

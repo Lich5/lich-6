@@ -11,7 +11,7 @@ RSpec.describe 'WebUI contract foundation' do
   let(:contract) { Lich::WebUI::Contract }
 
   it 'publishes exactly the supported component vocabulary' do
-    expect(contract::VERSION).to eq('2.50.0')
+    expect(contract::VERSION).to eq('2.51.0')
     expect(contract::TYPES).to contain_exactly(
       :page, :group, :stack, :columns, :grid, :tabs, :expander, :split, :overlay, :scroll, :divider,
       :text, :markdown, :log, :progress, :image, :button, :toggle, :checkbox, :radio, :radio_option, :text_input,
@@ -43,8 +43,10 @@ RSpec.describe 'WebUI contract foundation' do
   end
 
   it 'provides a browser renderer for every advertised component type' do
-    source = File.read(File.join(LIB_DIR, 'webui/assets/app.js'))
-    contract::TYPES.each { |type| expect(source).to match(/    #{type}\(_?page, component\)/), "missing renderer: #{type}" }
+    assets = File.join(LIB_DIR, 'webui/assets')
+    names = File.read(File.join(assets, 'index.html')).scan(%r{<script src="/assets/([a-z_]+\.js)" defer></script>}).flatten
+    source = names.map { |name| File.read(File.join(assets, name)) }.join("\n")
+    contract::TYPES.each { |type| expect(source).to match(/      #{type}\(_?page, component\)/), "missing renderer: #{type}" }
   end
 
   it 'refuses unknown types and unsupported major versions' do

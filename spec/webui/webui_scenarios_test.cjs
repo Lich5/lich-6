@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { createRegistry, scenarioIds, selectScenario } = require('./scenarios/index.cjs');
 
 // Independent baseline: the runner's complete allowlist before family extraction.
-const expectedIds = [
+const originalIds = [
   "shim-canvas",
   "shim-keyboard-redraw",
   "contract-inputs",
@@ -73,8 +73,11 @@ const expectedIds = [
   "native-bootstrap"
 ];
 
+const expectedIds = [...originalIds, 'launcher-presentation'];
+
 test('registration preserves every original scenario exactly once and provides run callbacks', () => {
-  assert.equal(scenarioIds.length, 64);
+  assert.equal(originalIds.length, 64);
+  assert.equal(scenarioIds.length, 65);
   assert.deepEqual([...scenarioIds].sort(), [...expectedIds].sort());
   for (const id of expectedIds) {
     const descriptor = selectScenario(id);

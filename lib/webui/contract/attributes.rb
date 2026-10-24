@@ -57,6 +57,17 @@ module Lich
         sensitive: property(BOOL),
       }.freeze
 
+      # Bounded presentation shapes, independent of component identity and labels.
+      # Omission retains ordinary styling; no arbitrary CSS or class names are accepted.
+      PRESENTATION_ROLES = {
+        tabs: %i[inset].freeze,
+        group: %i[record form].freeze,
+        button: %i[record_primary record_secondary record_favorite refresh].freeze,
+        toggle: %i[settings].freeze,
+        columns: %i[form_choices].freeze,
+        text: %i[form_hint].freeze,
+      }.freeze
+
       ACCESSIBILITY_SCHEMAS = {
         a11y_label: property(SHORT),
         a11y_description: property(BODY),
