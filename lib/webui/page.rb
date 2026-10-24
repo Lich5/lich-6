@@ -139,7 +139,9 @@ module Lich
           bindings = builder.bindings.merge(
             [tree.cid, :configure] => lifecycle_bindings.fetch(:configure, proc {})
           )
-          %i[window_state pointer_press key_press key_release].each do |event|
+          browser_events = Contract::PAGE_LIFECYCLE_EVENTS.keys - %i[configure close attach detach]
+          # Preserve the existing binding order: window-state reports precede input.
+          browser_events.partition { |event| event == :window_state }.flatten.each do |event|
             bindings[[tree.cid, event]] = lifecycle_bindings[event] if lifecycle_bindings.key?(event)
           end
           render = Render.new(
@@ -270,10 +272,7 @@ module Lich
       end
 
       def owner_label
-        return owner.webui_owner_id if owner.respond_to?(:webui_owner_id)
-        return owner.name if owner.respond_to?(:name) && owner.name
-
-        "#{owner.class}:#{owner.object_id}"
+        Diagnostics.owner_label(owner)
       end
     end
   end

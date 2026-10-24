@@ -402,4 +402,25 @@ RSpec.describe Lich::WebUI::Validator do
       validator.validate_component!(:table, base.merge(columns: [base[:columns][0].merge(expand: 1)]), **context)
     end.to raise_error(Lich::WebUI::SchemaViolationError)
   end
+
+  it 'shares explicit text limits while preserving event and submission error attribution' do
+    %i[text_input textarea].each do |type|
+      props = validator.validate_component!(type, { value: '', max_length: 4 }, **context)
+      expect(validator.validate_event!(type, :change, { value: 'four' }, props: props, **context)).to eq(value: 'four')
+      expect(validator.validate_input_value!(type, 'four', props: props, **context)).to eq('four')
+      expect { validator.validate_event!(type, :change, { value: 'fives' }, props: props, **context) }
+        .to raise_error(Lich::WebUI::SchemaViolationError, 'event value exceeds 4 characters (owner=spec-owner page=spec-page cid=test:component field=change)')
+      expect { validator.validate_input_value!(type, 'fives', props: props, **context) }
+        .to raise_error(Lich::WebUI::SchemaViolationError, 'value exceeds 4 characters (owner=spec-owner page=spec-page cid=test:component field=value)')
+    end
+  end
+
+  it 'retains read-only event refusal while allowing a bounded terminal value' do
+    %i[text_input textarea].each do |type|
+      props = validator.validate_component!(type, { value: 'kept', read_only: true, max_length: 4 }, **context)
+      expect { validator.validate_event!(type, :change, { value: 'edit' }, props: props, **context) }
+        .to raise_error(Lich::WebUI::SchemaViolationError, /text is read-only.*field=change/)
+      expect(validator.validate_input_value!(type, 'kept', props: props, **context)).to eq('kept')
+    end
+  end
 end

@@ -133,6 +133,20 @@ module Lich
 
           def builtin_events = [:pointer_motion]
 
+          # Retains canvas drag state before invoking the admitted pointer handlers.
+          # @param event [Symbol] :pointer_press or :pointer_release
+          # @param pointer [PointerEvent] immutable script-facing pointer event
+          # @param context [Lich::WebUI::Runtime::EventContext] originating viewer/payload
+          # @return [PointerEvent, nil] active press, or nil after release
+          def observe_pointer(event, pointer, context)
+            session.refuse(self, :pointer_press) if pointer_viewer && pointer_viewer != context.viewer_id
+            toplevel.send(:track_pointer_surface, self)
+            @last_pointer = context.payload.slice(:x, :y, :state)
+            @pointer_viewer = context.viewer_id
+            @pointer_cancelled = false
+            @pointer_press = event == :pointer_press ? pointer : nil
+          end
+
           private
 
           # GTK integer coordinates accept finite numeric script calculations.
@@ -700,13 +714,7 @@ module Lich
           # Requests a minimum viewport height independently of an explicit height request.
           # GTK's -1 reset becomes an unconstrained zero browser minimum.
           def set_min_content_height(value)
-            session.style_operation(self, :set_min_content_height) do
-              valid = value.is_a?(Integer) && value.between?(-1, Lich::WebUI::Contract::BOUNDS[:geometry].end)
-              session.refuse(self, :set_min_content_height) if destroyed? || !valid
-              write(:min_height, [value, 0].max)
-              @min_content_height = value
-            end
-            self
+            set_min_content(:height, value)
           end
           alias min_content_height= set_min_content_height
 
@@ -716,13 +724,7 @@ module Lich
 
           # Minimum viewport width uses the same bounded floor/reset as height.
           def set_min_content_width(value)
-            session.style_operation(self, :set_min_content_width) do
-              valid = value.is_a?(Integer) && value.between?(-1, Lich::WebUI::Contract::BOUNDS[:geometry].end)
-              session.refuse(self, :set_min_content_width) if destroyed? || !valid
-              write(:min_width, [value, 0].max)
-              @min_content_width = value
-            end
-            self
+            set_min_content(:width, value)
           end
           alias min_content_width= set_min_content_width
 
@@ -811,6 +813,25 @@ module Lich
                 @hadjustment.observe(context.viewer_id, context.payload.slice(:position_x, :upper_x, :page_size_x).transform_keys { |key| key.to_s.delete_suffix('_x').to_sym }) if context.payload.key?(:position_x)
               end
             end)
+          end
+
+          private
+
+          # Applies one scroller minimum while retaining the caller's operation name.
+          # Publish the browser floor before retaining GTK's request, including -1.
+          # @param axis [Symbol] :height or :width from the public wrappers
+          # @param value [Integer] requested minimum, -1..65536
+          # @return [ScrolledWindow] self
+          # @raise [UnsupportedOperation] for invalid values or a retired widget
+          def set_min_content(axis, value)
+            operation = :"set_min_content_#{axis}"
+            session.style_operation(self, operation) do
+              valid = value.is_a?(Integer) && value.between?(-1, Lich::WebUI::Contract::BOUNDS[:geometry].end)
+              session.refuse(self, operation) if destroyed? || !valid
+              write(:"min_#{axis}", [value, 0].max)
+              instance_variable_set(:"@min_content_#{axis}", value)
+            end
+            self
           end
         end
       end

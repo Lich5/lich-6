@@ -830,4 +830,30 @@ RSpec.describe Lich::Common::WebUILauncher, 'actual-core workflows' do
       expect(terminated).to eq([[windows ? 'KILL' : 'TERM', 1234]])
     end
   end
+
+  it 'uses the first namespaced submission match and retains character conversions and blanks' do
+    launcher.save_character(event({
+      'first/text_input:character-name' => :'cera two', 'second/text_input:character-name' => 'ignored',
+      'nested/select:character-game' => :GST, 'nested/select:character-frontend' => 'wizard',
+      'nested/select:character-account' => :doug, 'nested/text_input:character-custom' => false,
+      'nested/text_input:character-custom-dir' => '',
+    }))
+
+    expect(catalog.calls.last).to eq([:add_character, 'doug', {
+      char_name: 'cera two', game_code: 'GST', frontend: 'wizard', custom_launch: 'false',
+      custom_launch_dir: nil, game_name: 'GemStone IV Prime Test',
+    }])
+  end
+
+  it 'normalizes namespaced account values while retaining password pair presence checks' do
+    values = { 'first/text_input:account-name' => '  doug  ', 'second/text_input:account-name' => 'ignored',
+               'nested/select:account-frontend' => 'wizard' }
+    launcher.save_account(event(values))
+    expect(authenticator.calls).to be_empty
+    expect(launcher.send(:render_state)[:notice][:text]).to eq('Password is required.')
+
+    launcher.save_account(event(values.merge('nested/password_input:account-password' => viewer_secret(''))))
+    expect(authenticator.calls.last).to eq(account: 'DOUG', password: '', legacy: true)
+    expect(catalog.calls.last).to match([:save_account, 'DOUG', anything, anything, 'wizard'])
+  end
 end

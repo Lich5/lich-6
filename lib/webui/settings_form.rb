@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative 'value_helpers'
+
 module Lich
   module WebUI
     # Native setup forms share terminal submission and cancellation, not game
@@ -229,12 +231,7 @@ module Lich
       # Copies nested settings hashes, arrays, and strings so form edits do not mutate caller data.
       # @return [Object] copied setting value
       def copy(value)
-        case value
-        when Hash then value.to_h { |key, item| [key, copy(item)] }
-        when Array then value.map { |item| copy(item) }
-        when String then value.dup
-        else value
-        end
+        ValueHelpers.deep_copy(value)
       end
     end
   end

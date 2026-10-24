@@ -2963,3 +2963,40 @@ test('maximum multiline values fit while oversized aggregate submissions retain 
   dom.window.document.querySelector('[data-cid="save"]').click();
   assert.deepEqual(sent.at(-1).submission, ['smaller', 'smaller', 'smaller']);
 });
+
+test('tab and ordinary pointer presses share modifier masks while retaining rounded screen coordinates', t => {
+  const { dom, receive, sent } = fixture(); t.after(() => dom.window.close());
+  receive({ type: 'hello', pages: [{ address: 'modifiers' }] });
+  receive({ type: 'render', page: 'modifiers', generation: 1,
+    bindings: { tabs: ['tab_pointer'], surface: ['pointer_press'] }, tree: {
+      type: 'page', cid: 'root', props: {}, children: [
+        { type: 'tabs', cid: 'tabs', props: { names: ['Main'], selected: 0,
+          headers: [{ key: 'main', pointer_events: true }] }, children: [] },
+        { type: 'group', cid: 'surface', props: { pointer_events: true }, children: [] }
+      ]
+    } });
+  for (let bits = 0; bits < 8; bits++) {
+    const state = (bits & 1 ? 1 : 0) | (bits & 2 ? 4 : 0) | (bits & 4 ? 8 : 0);
+    for (const selector of ['[role="tab"]', '[data-cid="surface"]']) {
+      dom.window.document.querySelector(selector).dispatchEvent(new dom.window.MouseEvent('pointerdown', {
+        bubbles: true, cancelable: true, button: 2, clientX: 70000.6, clientY: -70000.6,
+        shiftKey: !!(bits & 1), ctrlKey: !!(bits & 2), altKey: !!(bits & 4), metaKey: true
+      }));
+      const event = sent.at(-1);
+      assert.equal(event.event, selector === '[role="tab"]' ? 'tab_pointer' : 'pointer_press');
+      assert.deepEqual([event.payload.state, event.payload.x, event.payload.y], [state, 70001, -70001]);
+    }
+  }
+});
+
+test('wheel coordinates clamp relative to the surface and deltas scale before rounding', t => {
+  const env = wheelFixture(t);
+  env.dom.window.document.querySelector('[data-cid="surface"]').getBoundingClientRect = () => ({ left: 5.25, top: -3.25 });
+  env.wheel(-5000.5, { deltaX: 5000.5, deltaMode: 1, clientX: 80000.5, clientY: -80000.5,
+    shiftKey: true, ctrlKey: true, altKey: true, metaKey: true });
+  env.frame();
+  assert.deepEqual(env.messages().at(-1).payload, { delta_x: 65536, delta_y: -65536, state: 13, x: 65536, y: -65536 });
+  env.wheel(0.4, { deltaX: 0.1, deltaMode: 1, clientX: 6.75, clientY: -4.75 });
+  env.frame();
+  assert.deepEqual(env.messages().at(-1).payload, { delta_x: 2, delta_y: 6, state: 0, x: 2, y: -1 });
+});

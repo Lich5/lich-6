@@ -97,4 +97,28 @@ RSpec.describe 'WebUI contract foundation' do
       expect { described_class.new('secret', origin: :unknown) }.to raise_error(ArgumentError, /origin/)
     end
   end
+
+  it 'keeps the independently shipped client version aligned with the host contract' do
+    source = File.read(File.join(LIB_DIR, 'webui/assets/app.js'))
+    expect(source.match(/const VERSION = "([^"]+)";/)[1]).to eq(contract::VERSION)
+  end
+
+  it 'keeps browser input-scope terminals aligned while excluding close and drag payloads' do
+    source = File.read(File.join(LIB_DIR, 'webui/assets/app.js'))
+    names = JSON.parse(source.match(/const TERMINAL_EVENTS = new Set\((\[.*?\])\);/)[1])
+    events = contract.schemas.values.flat_map { |schema| schema[:events].to_a }
+    terminals = events.select { |_name, definition| definition[:terminal] }.map { |name, _| name.to_s }.uniq
+    expect(terminals).to include('close', 'row_drop', 'widget_drop')
+    expect(names).to match_array(terminals - %w[close row_drop widget_drop])
+  end
+
+  it 'finds exact component IDs without coercing callers or changing depth-first identity' do
+    leaf = Lich::WebUI::Component.new(type: :text, cid: 'leaf', props: {})
+    branch = Lich::WebUI::Component.new(type: :stack, cid: 'branch', props: {}, children: [leaf])
+    root = Lich::WebUI::Component.new(type: :page, cid: 'root', props: {}, children: [branch])
+    expect(root.find('root')).to equal(root)
+    expect(root.find('leaf')).to equal(leaf)
+    expect(root.find(:leaf)).to be_nil
+    expect(root.find('missing')).to be_nil
+  end
 end

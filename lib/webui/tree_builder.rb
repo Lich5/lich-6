@@ -336,12 +336,7 @@ module Lich
         if rule[:types] && draft.children.any? { |child| !rule[:types].include?(child.type) }
           child_violation!(draft, 'child type is not permitted')
         end
-        slots = case rule.fetch(:kind)
-                when :named then rule.fetch(:slots)
-                when :named_dynamic then Array.new(draft.props.fetch(rule.fetch(:count_property))) { |index| index.to_s }
-                when :named_from_property then draft.props.fetch(rule.fetch(:property)).map(&:to_s)
-                else []
-                end
+        slots = Contract.child_slots(rule, draft.props)
         children = draft.children
         if draft.type == :tabs
           actions, children = children.partition { |child| child.placement.key?(:tab_action) }
@@ -366,16 +361,15 @@ module Lich
           child_violation!(draft, "unknown child placement #{unknown.first}") unless unknown.empty?
           child.placement.each do |name, value|
             definition = definitions.fetch(name)
-            shape = definition.fetch(:shape)
-            shape = shape.merge(max: draft.props.fetch(shape[:max_property])) if shape[:max_property]
+            shape = Contract.child_placement_shape(definition.fetch(:shape), draft.props)
             @validator.validate_placement!(
               name, shape, value, owner: owner_label, page_id: @page_id, cid: child.cid
             )
           end
-          if draft.type == :grid && child.placement.fetch(:row, 1) + child.placement.fetch(:row_span, 1) - 1 > Contract::BOUNDS[:children]
+          case Contract.child_placement_condition(draft.type, draft.props, child.placement)
+          when :grid_row_overflow
             child_violation!(draft, 'child placement exceeds grid rows')
-          end
-          if draft.type == :overlay && !draft.props[:positioned] && (child.placement.keys & %i[x y]).any?
+          when :unpositioned_coordinates
             child_violation!(draft, 'coordinates require a positioned overlay')
           end
         end
@@ -415,10 +409,7 @@ module Lich
       end
 
       def owner_label
-        return @owner.webui_owner_id if @owner.respond_to?(:webui_owner_id)
-        return @owner.name if @owner.respond_to?(:name) && @owner.name
-
-        "#{@owner.class}:#{@owner.object_id}"
+        Diagnostics.owner_label(@owner)
       end
     end
   end

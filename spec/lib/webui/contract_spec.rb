@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require 'open3'
+require 'rbconfig'
 require 'webui/contract'
 
 RSpec.describe Lich::WebUI::Contract do
@@ -50,5 +52,12 @@ RSpec.describe Lich::WebUI::Contract do
   it 'raises for an unknown component type' do
     expect { described_class.schema(:tree) }
       .to raise_error(Lich::WebUI::UnknownTypeError, /unknown component type :tree/)
+  end
+
+  it 'assembles frozen schemas when required alone in a fresh Ruby process' do
+    code = 'abort "schema not frozen" unless Lich::WebUI::Contract.schema(:table)[:properties].frozen?; puts "ready"'
+    output, errors, status = Open3.capture3(RbConfig.ruby, '-I', LIB_DIR, '-r', 'webui/contract', '-e', code)
+    expect(status.success?).to be(true), errors
+    expect(output).to eq("ready\n")
   end
 end

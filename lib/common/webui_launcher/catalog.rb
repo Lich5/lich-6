@@ -151,14 +151,10 @@ module Lich
           @mutex.synchronize do
             data = writable_yaml_data
             account = entry.fetch(:user_id).to_s.upcase
-            mode = data.fetch('encryption_mode', 'plaintext').to_sym
-            master = mode == :enhanced ? @master_password_manager.retrieve_master_password : nil
-            raise MasterPasswordRequired, 'master password is required' if mode == :enhanced && master.to_s.empty?
+            password_options = account_password_options(data, account)
 
             account_data = (data['accounts'][account] ||= { 'characters' => [] })
-            account_data['password'] = @entry_store.encrypt_password(
-              password, mode: mode, account_name: account, master_password: master
-            )
+            account_data['password'] = @entry_store.encrypt_password(password, **password_options)
             characters = (account_data['characters'] ||= [])
             character = characters.find do |candidate|
               candidate['char_name'].to_s.casecmp?(entry.fetch(:char_name).to_s) &&
@@ -187,13 +183,9 @@ module Lich
           @mutex.synchronize do
             data = writable_yaml_data
             name = account.to_s.upcase
-            mode = data.fetch('encryption_mode', 'plaintext').to_sym
-            master = mode == :enhanced ? @master_password_manager.retrieve_master_password : nil
-            raise MasterPasswordRequired, 'master password is required' if mode == :enhanced && master.to_s.empty?
+            password_options = account_password_options(data, name)
             account_data = (data['accounts'][name] ||= { 'characters' => [] })
-            account_data['password'] = @entry_store.encrypt_password(
-              password, mode: mode, account_name: name, master_password: master
-            )
+            account_data['password'] = @entry_store.encrypt_password(password, **password_options)
             existing = account_data['characters'] ||= []
             characters.each do |character|
               next if existing.any? do |candidate|
@@ -240,14 +232,7 @@ module Lich
             end
             return false if duplicate
 
-            characters << {
-              'char_name'         => normalize_character_name(character.fetch(:char_name)),
-              'game_code'         => character.fetch(:game_code).to_s,
-              'game_name'         => character.fetch(:game_name).to_s,
-              'frontend'          => character.fetch(:frontend).to_s,
-              'custom_launch'     => character[:custom_launch],
-              'custom_launch_dir' => character[:custom_launch_dir],
-            }
+            characters << stored_character_fields(character)
             write_yaml(data)
           end
         end
@@ -264,14 +249,7 @@ module Lich
             current = account&.fetch('characters', [])&.find { |candidate| character_match?(candidate, metadata) }
             return false unless current
 
-            current.merge!(
-              'char_name'         => normalize_character_name(character.fetch(:char_name)),
-              'game_code'         => character.fetch(:game_code).to_s,
-              'game_name'         => character.fetch(:game_name).to_s,
-              'frontend'          => character.fetch(:frontend).to_s,
-              'custom_launch'     => character[:custom_launch],
-              'custom_launch_dir' => character[:custom_launch_dir]
-            )
+            current.merge!(stored_character_fields(character))
             write_yaml(data)
           end
         end
@@ -534,6 +512,38 @@ module Lich
         rescue StandardError => error
           Lich.log("error: unable to persist launcher catalog: #{error.class}: #{error.message}") if Lich.respond_to?(:log)
           false
+        end
+
+        # Prepares encryption arguments for account creation/import and manual saves.
+        # Password changes retain their separate verification and missing-master policy.
+        # @param data [Hash] current YAML catalog
+        # @param account [String] caller-normalized account name
+        # @return [Hash] encryption keywords after enforcing the unlocked-master requirement
+        # @raise [MasterPasswordRequired] when enhanced mode has no nonempty master
+        # @api private
+        def account_password_options(data, account)
+          mode = data.fetch('encryption_mode', 'plaintext').to_sym
+          master = mode == :enhanced ? @master_password_manager.retrieve_master_password : nil
+          raise MasterPasswordRequired, 'master password is required' if mode == :enhanced && master.to_s.empty?
+
+          { mode: mode, account_name: account, master_password: master }
+        end
+
+        # Projects the required editor fields shared by character add and update.
+        # Manual saves and account imports retain their optional game-name handling.
+        # @param character [Hash] symbol-keyed editor fields
+        # @return [Hash] string-keyed stored fields with normalized display values
+        # @raise [KeyError] for an absent required editor field
+        # @api private
+        def stored_character_fields(character)
+          {
+            'char_name'         => normalize_character_name(character.fetch(:char_name)),
+            'game_code'         => character.fetch(:game_code).to_s,
+            'game_name'         => character.fetch(:game_name).to_s,
+            'frontend'          => character.fetch(:frontend).to_s,
+            'custom_launch'     => character[:custom_launch],
+            'custom_launch_dir' => character[:custom_launch_dir]
+          }
         end
 
         def character_match?(candidate, metadata)

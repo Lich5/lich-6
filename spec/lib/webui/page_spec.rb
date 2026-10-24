@@ -150,4 +150,17 @@ RSpec.describe Lich::WebUI::Page do
     expect { described_class.new(owner: owner, id: 'bad', title: 'Bad', on: { click: callback }) {} }
       .to raise_error(Lich::WebUI::UnknownEventError, /lifecycle/)
   end
+
+  it 'forwards declared browser page callbacks in stable order while retaining runtime callbacks' do
+    callback = proc {}
+    callbacks = Lich::WebUI::Contract::PAGE_LIFECYCLE_EVENTS.keys.to_h { |event| [event, callback] }
+    page = described_class.new(owner: owner, id: 'forwarded-life', title: 'Life', on: callbacks) {}
+    render = page.render
+    expect(render.bindings.keys.map(&:last)).to eq(%i[configure window_state pointer_press key_press key_release])
+    expect(render.bindings.values).to all(equal(callback))
+    expect(page.lifecycle_bindings).to eq(callbacks)
+
+    default = described_class.new(owner: owner, id: 'default-life', title: 'Default') {}.render
+    expect(default.bindings.fetch([default.tree.cid, :configure])).to respond_to(:call)
+  end
 end

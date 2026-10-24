@@ -4,6 +4,7 @@ require 'securerandom'
 require 'monitor'
 require_relative 'component'
 require_relative 'protocol'
+require_relative 'value_helpers'
 
 module Lich
   module WebUI
@@ -553,7 +554,7 @@ module Lich
       # Nontext values retain their identity; schema validation owns rejection.
       # @return [Object] text with LF line breaks, or the unchanged nontext value
       def normalize_text_line_breaks(value)
-        value.is_a?(String) ? value.gsub(/\r\n?/, "\n") : value
+        value.is_a?(String) ? ValueHelpers.normalize_text_line_breaks(value) : value
       end
 
       # Clears only peers in the same delivered page and viewer before selecting a member.
@@ -599,9 +600,7 @@ module Lich
 
         field = [component.cid, :selected]
         index = values.fetch(field, component.props[:selected] || 0)
-        old_key = previous&.props&.dig(:headers, index, :key)
-        current = component.props[:headers].index { |header| header[:key] == old_key } if old_key
-        values[field] = Contract.visible_tab_index(component.props[:headers], current || index.clamp(0, [component.props[:names].length - 1, 0].max))
+        values[field] = Contract.remap_tab_index(previous&.props&.[](:headers), component.props[:headers], index, component.props[:names].length)
       end
 
       # Removes only identities retired from this table; another viewer's choices are untouched.
@@ -635,7 +634,7 @@ module Lich
         props = component.props.each_with_object({}) do |(name, value), result|
           definition = Contract.schema(component.type)[:properties][name]
           next if definition && %i[sensitive_write_only ephemeral_client].include?(definition[:scope])
-          next if name == :value && (component.type == :password_input || component.props[:sensitive] == true)
+          next if name == :value && ValueHelpers.sensitive_value?(component)
 
           result[name] = definition && definition[:scope] == :viewer ? values.fetch([component.cid, name], value) : value
         end
@@ -643,7 +642,7 @@ module Lich
         # position) may first exist after interaction, with no source default.
         Contract.schema(component.type)[:properties].each do |name, definition|
           next if component.props.key?(name) || definition[:scope] != :viewer
-          next if name == :value && (component.type == :password_input || component.props[:sensitive] == true)
+          next if name == :value && ValueHelpers.sensitive_value?(component)
 
           props[name] = values[[component.cid, name]] if values.key?([component.cid, name])
         end

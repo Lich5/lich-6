@@ -365,7 +365,7 @@ module Lich
             # Custom models can be installed before pack_start/add_attribute chooses
             # their String column. Materialization still refuses an incomplete mapping.
             return unless model.column_types[@label_column] == String
-            options = [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column].to_s } }
+            options = model_options
             session.refuse(self, :options) if options.length > Lich::WebUI::Contract::BOUNDS[:collection]
             old_keys = @props[:options].map { |option| option[:value] }
             new_keys = options.map { |option| option[:value] }
@@ -383,7 +383,7 @@ module Lich
           # @api private
           def model_will_change!
             return unless @handle || model.column_types[@label_column] == String
-            options = [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column].to_s } }
+            options = model_options
             Lich::WebUI::Validator.new.validate_component!(:select, @props.merge(options: options, value: 'none'), owner: 'shim', page_id: nil, cid: nil)
           end
 
@@ -415,6 +415,13 @@ module Lich
           end
 
           private
+
+          # Projects the current model independently for preflight and publication.
+          # Row IDs preserve duplicate/blank labels; this performs no admission or write.
+          # @return [Array<Hash>] fresh options beginning with the no-selection sentinel
+          def model_options
+            [{ value: 'none', label: '' }] + model.rows.map { |iter| { value: iter.key, label: iter[@label_column].to_s } }
+          end
 
           # Matches the first label in model order, including a real blank label;
           # only unmatched empty text resolves to the no-selection sentinel.

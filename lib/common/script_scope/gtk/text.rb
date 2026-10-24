@@ -478,7 +478,7 @@ module Lich
             super()
             @props.merge!(label: String(label), open: false)
             @caption_label = Label.new(String(label))
-            @caption_label.instance_variable_set(:@frame_caption_owner, self)
+            @caption_label.send(:caption_owner=, self)
           end
 
           # @return [String] literal heading
@@ -539,9 +539,9 @@ module Lich
           # @param label [Label] owned caption whose content or fragments changed
           # @return [Object] write result, or nil for a retired/unchanged caption
           def refresh_caption(label)
-            return if destroyed? || !@caption_label.equal?(label)
-            session.degrade(:expander_caption_style, 'expander caption retains literal text; typography follows browser theme') if label.instance_variable_get(:@props)[:fragments]
-            write(:label, label.text) unless @props[:label] == label.text
+            refresh_owned_caption(label, @caption_label,
+                                  operation: :expander_caption_style,
+                                  message: 'expander caption retains literal text; typography follows browser theme')
           end
 
           # @return [Symbol] existing disclosure component, with no shim renderer

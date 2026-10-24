@@ -8,6 +8,7 @@ require_relative 'contract'
 require_relative 'errors'
 require_relative 'page'
 require_relative 'validator'
+require_relative 'value_helpers'
 
 module Lich
   module WebUI
@@ -22,7 +23,7 @@ module Lich
       # Requests host geometry through the shared service using this adapter's owner/viewer.
       # @return [Hash] bounded geometry and explicit measurement/fallback provenance
       def monitor_geometry(target: :active, point: nil)
-        viewer = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+        viewer = ValueHelpers.viewer_id(@viewer)
         @service.monitor_geometry(owner: @owner, viewer: viewer, target: target, point: point)
       end
 
@@ -174,7 +175,7 @@ module Lich
             )
           end
           if definition[:scope] == :viewer
-            selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+            selected = ValueHelpers.viewer_id(@viewer)
             pending = [selected.to_s, name] if selected
             return deep_copy(node.viewer_values[pending]) if pending && node.viewer_values.key?(pending)
             if (page = root_for(node).page) && node.cid && node.published
@@ -232,7 +233,7 @@ module Lich
               next
             end
             validated = validate_property(node, handle, name, value)
-            selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+            selected = ValueHelpers.viewer_id(@viewer)
             if selected.nil? && !node.published
               # A handle can exist before its first render. Initialization queued
               # after construction still sets the authored default, not a draft.
@@ -434,9 +435,7 @@ module Lich
           raise attributed_error('component has too many children', parent) if children.length + actions.length > Contract::BOUNDS[:children]
           old_headers = tabs.props[:headers]
           remap = proc do |index|
-            old_key = old_headers&.dig(index, :key)
-            found = headers.index { |header| header[:key] == old_key } if old_key
-            Contract.visible_tab_index(headers, found || index.clamp(0, [names.length - 1, 0].max))
+            Contract.remap_tab_index(old_headers, headers, index, names.length)
           end
           props = props.merge(selected: remap.call(tabs.props[:selected] || 0)).freeze
           pending = tabs.viewer_values.select { |(_viewer, name), _value| name == :selected }
@@ -883,18 +882,17 @@ module Lich
         definitions = Contract.schema(parent.type)[:child_properties] || {}
         child.placement.each do |name, value|
           definition = definitions[name] || raise(attributed_error('unknown child placement', handle, name))
-          shape = definition.fetch(:shape).dup
-          shape[:max] = parent.props.fetch(shape.delete(:max_property)) if shape[:max_property]
+          shape = Contract.child_placement_shape(definition.fetch(:shape), parent.props)
           @validator.validate_placement!(name, shape, value, owner: owner_label,
                                         page_id: adapter_page_id, cid: handle_label(handle))
         end
         if parent.type == :grid && child.placement.fetch(:column, 1) + child.placement.fetch(:span, 1) - 1 > parent.props[:cols]
           raise attributed_error('child placement exceeds grid columns', handle, :span)
         end
-        if parent.type == :grid && child.placement.fetch(:row, 1) + child.placement.fetch(:row_span, 1) - 1 > Contract::BOUNDS[:children]
+        case Contract.child_placement_condition(parent.type, parent.props, child.placement)
+        when :grid_row_overflow
           raise attributed_error('child placement exceeds grid rows', handle, :row_span)
-        end
-        if parent.type == :overlay && !parent.props[:positioned] && (child.placement.keys & %i[x y]).any?
+        when :unpositioned_coordinates
           raise attributed_error('coordinates require a positioned overlay', handle, :placement)
         end
       end
@@ -925,14 +923,14 @@ module Lich
       # @return [Boolean]
       def sensitive_property?(node, name, definition)
         definition[:scope] == :sensitive_write_only ||
-          (name == :value && (node.type == :password_input || node.props[:sensitive] == true))
+          (name == :value && ValueHelpers.sensitive_value?(node))
       end
 
       # Requires explicit viewer attribution for viewer-scoped adapter access.
       # @return [String] viewer identity captured before leaving the callback
       # @raise [AmbiguousViewerError] when no viewer was supplied
       def viewer!
-        selected = @viewer.respond_to?(:viewer_id) ? @viewer.viewer_id : @viewer
+        selected = ValueHelpers.viewer_id(@viewer)
         return selected.to_s if selected
 
         message = 'viewer-scoped adapter state requires an explicit viewer'
@@ -941,6 +939,7 @@ module Lich
 
       def assign_child_slots!(parent)
         rule = Contract.schema(parent.type)[:children]
+        slots = Contract.child_slots(rule, parent.props)
         index = 0
         parent.children.each do |child_handle|
           child = node!(child_handle)
@@ -948,14 +947,9 @@ module Lich
             child.slot = nil
             next
           end
-          child.slot = case rule
-                       when Hash
-                         case rule[:kind]
-                         when :named then rule[:slots][index]
-                         when :named_dynamic then index.to_s
-                         when :named_from_property then parent.props.fetch(rule[:property])[index]&.to_s
-                         end
-                       end
+          # Dynamic numbering remains positional even before a reduced capacity
+          # is rejected at publication; declared slot membership is a separate check.
+          child.slot = rule.is_a?(Hash) && rule[:kind] == :named_dynamic ? index.to_s : slots[index]
           index += 1
         end
       end
@@ -975,11 +969,7 @@ module Lich
           return if children.count { |child| !child.placement.key?(:tab_action) } < node.props[:names].length
           raise attributed_error('component has too many children', handle)
         end
-        expected = case rule[:kind]
-                   when :named then rule[:slots].length
-                   when :named_dynamic then node.props.fetch(rule[:count_property])
-                   when :named_from_property then node.props.fetch(rule[:property]).length
-                   end
+        expected = Contract.child_slots(rule, node.props).length
         raise attributed_error('component has too many children', handle) if node.children.length >= expected
       end
 
@@ -1065,10 +1055,7 @@ module Lich
       end
 
       def owner_label
-        return @owner.webui_owner_id if @owner.respond_to?(:webui_owner_id)
-        return @owner.name if @owner.respond_to?(:name) && @owner.name
-
-        "#{@owner.class}:#{@owner.object_id}"
+        Diagnostics.owner_label(@owner)
       end
 
       def attributed(error, handle = nil, field = nil)
@@ -1100,12 +1087,7 @@ module Lich
       end
 
       def deep_copy(value)
-        case value
-        when Hash then value.to_h { |key, item| [key, deep_copy(item)] }
-        when Array then value.map { |item| deep_copy(item) }
-        when String then value.dup
-        else value
-        end
+        ValueHelpers.deep_copy(value)
       end
     end
   end

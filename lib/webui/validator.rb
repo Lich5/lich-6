@@ -606,11 +606,11 @@ module Lich
           violation!('event value is not present in options', context, event_name) unless options.include?(value)
         when :text_input
           violation!('text is read-only', context, event_name) if props[:read_only]
-          max = props[:max_length] || Contract::BOUNDS[:input_text]
+          max = input_text_limit(type, props)
           violation!("event value exceeds #{max} characters", context, event_name) if value.length > max
         when :textarea
           violation!('text is read-only', context, event_name) if props[:read_only]
-          max = props[:max_length] || Contract::BOUNDS[:multiline_text]
+          max = input_text_limit(type, props)
           violation!("event value exceeds #{max} characters", context, event_name) if value.length > max
         when :number_input, :slider
           unless value.between?(props[:min], props[:max])
@@ -631,16 +631,24 @@ module Lich
           options = normalized_props[:options].map { |option| (option[:value] || option['value']).to_s }
           violation!('value is not present in options', context, :value) unless options.include?(value)
         when :text_input
-          max = normalized_props[:max_length] || Contract::BOUNDS[:input_text]
+          max = input_text_limit(type, normalized_props)
           violation!("value exceeds #{max} characters", context, :value) if value.length > max
         when :textarea
-          max = normalized_props[:max_length] || Contract::BOUNDS[:multiline_text]
+          max = input_text_limit(type, normalized_props)
           violation!("value exceeds #{max} characters", context, :value) if value.length > max
         when :number_input, :slider
           unless value.between?(normalized_props[:min], normalized_props[:max])
             violation!('value must be within min and max', context, :value)
           end
         end
+      end
+
+      # Reads the shared text bound; callers retain event/submission admission and errors.
+      # @param type [Symbol] text_input or textarea
+      # @param props [Hash] properties with normalized names
+      # @return [Integer] explicit limit or the component family's contract bound
+      def input_text_limit(type, props)
+        props[:max_length] || Contract::BOUNDS[type == :text_input ? :input_text : :multiline_text]
       end
 
       def validate_table_selection_event!(payload, props, context, event_name)
@@ -726,11 +734,7 @@ module Lich
       end
 
       def deep_dup(value)
-        case value
-        when Hash then value.to_h { |key, child| [key, deep_dup(child)] }
-        when Array then value.map { |child| deep_dup(child) }
-        else value
-        end
+        Contract.deep_dup(value)
       end
     end
   end

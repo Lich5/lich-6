@@ -142,7 +142,7 @@ test('requiring the family graph reads no environment and registers no Playwrigh
     return module.exports;
   }
   const registry = load(path.join(__dirname, 'scenarios/index.cjs'));
-  assert.equal(cache.size, 10, 'one registry and nine explicit families');
+  assert.equal(cache.size, 11, 'one registry, nine explicit families and the canvas sampler');
   assert.deepEqual(Array.from(registry.scenarioIds).sort(), [...expectedIds].sort());
 });
 

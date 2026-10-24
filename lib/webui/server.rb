@@ -677,9 +677,7 @@ module Lich
       end
 
       def log(level, message)
-        @logger.call(level, message)
-      rescue StandardError
-        nil
+        Diagnostics.log(@logger, level, message)
       end
     end
   end

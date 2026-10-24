@@ -2,6 +2,30 @@
 
 module Lich
   module WebUI
+    # Diagnostic formatting and sink isolation; labels never establish ownership.
+    module Diagnostics
+      # Preserves explicit owner IDs and truthy names, including an empty name.
+      # @param owner [Object] lifecycle owner used only for diagnostic attribution
+      # @return [Object] explicit ID/name, or class and object ID fallback
+      def self.owner_label(owner)
+        return owner.webui_owner_id if owner.respond_to?(:webui_owner_id)
+        return owner.name if owner.respond_to?(:name) && owner.name
+
+        "#{owner.class}:#{owner.object_id}"
+      end
+
+      # Keeps ordinary diagnostic-sink failures out of runtime control flow.
+      # @param logger [#call] sink accepting level and message
+      # @param level [Symbol] diagnostic severity
+      # @param message [String] already formatted diagnostic text
+      # @return [Object, nil] sink result, or nil after a StandardError
+      def self.log(logger, level, message)
+        logger.call(level, message)
+      rescue StandardError
+        nil
+      end
+    end
+
     # Base class for attributed WebUI contract failures.
     class Error < StandardError
       attr_reader :owner, :page_id, :cid, :field

@@ -2739,4 +2739,38 @@ RSpec.describe 'bounded model, tree and combo compatibility' do
     notebook.destroy
     expect { notebook.get_nth_page(0) }.to raise_error(gtk::UnsupportedOperation)
   end
+
+  it 'keeps combo candidate validation separate from publication with duplicate and unset labels' do
+    model = gtk::ListStore.new(String)
+    first, blank, last = 3.times.map { model.append }
+    first[0] = last[0] = 'Duplicate'
+    combo = gtk::ComboBox.new(model)
+    combo.active = 2
+    _window, = show(combo)
+    handle = combo.materialize
+    port = combo.session.port
+    original = [{ value: 'none', label: '' }, { value: first.key, label: 'Duplicate' },
+                { value: blank.key, label: '' }, { value: last.key, label: 'Duplicate' }]
+    updated = [{ value: 'none', label: '' }, { value: first.key, label: 'Duplicate' },
+               { value: blank.key, label: 'Assigned' }, { value: last.key, label: 'Duplicate' }]
+    phases = []
+    allow(combo).to receive(:model_will_change!).and_wrap_original do |method|
+      method.call
+      phases << [:preflight, port.get(handle, :options)]
+    end
+    allow(combo).to receive(:model_changed!).and_wrap_original do |method|
+      method.call
+      phases << [:publication, port.get(handle, :options)]
+    end
+
+    expect(port.get(handle, :options)).to eq(original)
+    blank[0] = 'Assigned'
+    expect(phases).to eq([[:preflight, original], [:publication, updated]])
+    expect(combo.active_iter).to eq(last)
+    phases.clear
+    expect { blank[0] = 'x' * 513 }.to raise_error(Lich::WebUI::SchemaViolationError)
+    expect(phases).to be_empty
+    expect(blank[0]).to eq('Assigned')
+    expect(port.get(handle, :options)).to eq(updated)
+  end
 end
