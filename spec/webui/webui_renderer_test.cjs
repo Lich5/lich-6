@@ -2011,6 +2011,19 @@ test('table pointer callbacks cannot replace a row while its drag gesture is act
   assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'Updated');
 });
 
+for (const [shape, children] of [['omitted'], ['null', null], ['empty', []]]) {
+  test(`empty icon palette tolerates ${shape} children`, t => {
+    const { dom, page } = fixture(); t.after(() => dom.window.close());
+    const component = { type: 'group', cid: 'palette', props: {
+      menu: 'popover', menu_icon: true, label: 'Palette'
+    } };
+    if (children !== undefined) component.children = children;
+    const palette = dom.window.LichWebUI.render(page, component);
+    assert.equal(palette.querySelector('.submenu-trigger').textContent, 'Palette');
+    assert.equal(palette.querySelector('.submenu-items').children.length, 0);
+  });
+}
+
 test('palette popovers open locally, retain a callback render, and dismiss with Escape or outside press', t => {
   const a = fixture(), b = fixture();
   t.after(() => { a.dom.window.close(); b.dom.window.close(); });
