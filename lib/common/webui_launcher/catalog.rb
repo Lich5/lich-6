@@ -338,7 +338,8 @@ module Lich
         end
 
         # Re-encrypts enhanced-mode accounts after validating the current master password.
-        # Each decrypted buffer is scrubbed; a failed write attempts to restore the old keychain value.
+        # Each decrypted buffer is scrubbed; EntryStore preserves the observed keychain
+        # state on handled publication failures, including a partially failed store.
         # @return [Boolean] whether validation, keychain storage, and catalog write succeeded
         def change_master_password(current_password, new_password)
           @mutex.synchronize do
@@ -353,18 +354,27 @@ module Lich
                 account_data.fetch('password').to_s, mode: :enhanced,
                 account_name: name, master_password: current_password
               )
+              return false if plaintext.nil?
+
               account_data['password'] = @entry_store.encrypt_password(
                 plaintext, mode: :enhanced, account_name: name, master_password: new_password
               )
+              return false if account_data['password'].nil?
             ensure
               scrub!(plaintext)
             end
             data['master_password_validation_test'] = @master_password_manager.create_validation_test(new_password)
-            return false unless @master_password_manager.store_master_password(new_password)
+            return false if data['master_password_validation_test'].nil?
 
-            written = write_yaml(data)
-            @master_password_manager.store_master_password(current_password) unless written
-            written
+            begin
+              @entry_store.write_yaml_with_master_password(
+                @entry_store.yaml_file_path(data_dir), data, new_password, manager: @master_password_manager
+              )
+              true
+            rescue StandardError => error
+              Lich.log("error: unable to change launcher master password: #{error.class}") if Lich.respond_to?(:log)
+              false
+            end
           end
         end
 
