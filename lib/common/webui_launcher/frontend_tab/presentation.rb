@@ -61,7 +61,7 @@ module Lich
           # Reload must still be reachable -- otherwise an empty catalog, or a
           # failed load, would leave no way back.
           unless draft
-            ui.group(label: 'Frontend Settings', key: 'frontend-editor-section') do
+            ui.group(label: 'Frontend Settings', key: 'frontend-editor-section', presentation_role: :form) do
               text(content: 'Select a frontend to edit, or choose Add Custom.')
               columns(key: 'frontend-actions', count: 3, weights: [0, 0, 1], gap: 6) do
                 button(slot: '0', key: 'frontends-add', label: 'Add Custom',
@@ -76,11 +76,11 @@ module Lich
 
           built_in = draft[:built_in]
           ui.group(label: built_in ? "#{draft[:label]} (built-in)" : 'Frontend Settings',
-                   key: 'frontend-editor-section') do
+                   key: 'frontend-editor-section', presentation_role: :form) do
             text(content: state[:frontend_error], tone: :danger) if state[:frontend_error]
             fields = launcher.__send__(:render_frontend_fields, self, state, draft, built_in)
             if built_in && !draft[:detected_command].to_s.empty?
-              text(key: 'frontend-detected', content: "Detected: #{draft[:detected_command]}", tone: :neutral)
+              text(key: 'frontend-detected', content: "Detected: #{draft[:detected_command]}", tone: :neutral, presentation_role: :form_hint)
             end
             capability_boxes = launcher.__send__(:render_frontend_capabilities, self, draft, built_in)
             # One row under the editor, in GTK's order, rather than Save alone at
@@ -143,7 +143,7 @@ module Lich
           # into six rows and pushed Save off the bottom of the form.
           Frontend.capability_vocabulary.each_slice(CAPABILITIES_PER_ROW).with_index do |row, index|
             ui.columns(key: "frontend-capability-row-#{index}", count: CAPABILITIES_PER_ROW,
-                       weights: Array.new(CAPABILITIES_PER_ROW, 1), gap: 8) do
+                       weights: Array.new(CAPABILITIES_PER_ROW, 1), gap: 8, presentation_role: :form_choices) do
               row.each_with_index do |capability, column|
                 boxes << checkbox(slot: column.to_s, key: "frontend-capability-#{capability}",
                                   label: capability.to_s, checked: selected.include?(capability.to_s),

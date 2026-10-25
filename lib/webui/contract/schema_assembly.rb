@@ -128,6 +128,9 @@ module Lich
             base[:properties][:fill_color] = property(RGBA) if type == :progress
             base[:events].merge!(COMPOSITE_EVENTS) if type == :composite
             base[:properties].merge!(deep_dup(ACCESSIBILITY_SCHEMAS))
+            if PRESENTATION_ROLES.key?(type)
+              base[:properties][:presentation_role] = property(enum(*PRESENTATION_ROLES.fetch(type)))
+            end
             # Page-local opaque groups equalize widget width requests across separate rows.
             base[:properties][:width_groups] = property(array(IDENT, max: 8)) unless type == :page
             if type == :password_input

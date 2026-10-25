@@ -12,7 +12,7 @@ module Lich
       # @api private
       def render_accounts(ui, state)
         launcher = self
-        ui.tabs(key: 'account-management-tabs', names: ACCOUNT_TABS, selected: 0,
+        ui.tabs(key: 'account-management-tabs', names: ACCOUNT_TABS, selected: 0, presentation_role: :inset,
                 on: { select: ->(_event) {} }) do
           stack(slot: 'Accounts', key: 'accounts-list-panel') { launcher.__send__(:render_accounts_list, self, state) }
           stack(slot: 'Add Character', key: 'add-character-panel') { launcher.__send__(:render_character_form, self, state) }

@@ -4,7 +4,11 @@ require_relative '../../spec_helper'
 require 'webui'
 
 RSpec.describe 'WebUI browser assets' do
-  let(:javascript) { File.read(File.join(Lich::WebUI::Service::ASSETS_DIR, 'app.js')) }
+  let(:javascript) do
+    html.scan(%r{<script src="/assets/([a-z_]+\.js)" defer></script>}).flatten.map do |name|
+      File.read(File.join(Lich::WebUI::Service::ASSETS_DIR, name))
+    end.join("\n")
+  end
   let(:html) { File.read(File.join(Lich::WebUI::Service::ASSETS_DIR, 'index.html')) }
 
   it 'constructs hostile text as text nodes without string-built DOM or evaluation sinks', security_id: 'sec-escaping' do

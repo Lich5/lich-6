@@ -40,11 +40,17 @@ RSpec.describe Lich::Common::WebUILauncher do
     row_columns = row.children.first
 
     expect(tabs.props[:names]).to eq(['FAVORITES', 'DOUG'])
+    expect(tabs.props[:vertical]).to be(true)
     expect(row_columns.type).to eq(:columns)
     expect(row_columns.props).to include(count: 3, weights: [7, 2, 1])
     expect(row_columns.children.map(&:type)).to eq([:button, :button, :button])
     expect(row_columns.children.map { |item| item.props[:label] })
       .to eq(['Aldor  |  GS Prime  |  Wrayth', 'Remove', 'filled_star'])
+    expect(row.props[:presentation_role]).to eq('record')
+    expect(row_columns.children.map { |item| item.props[:presentation_role] }).to eq(%w[record_primary record_secondary record_favorite])
+    expect(row_columns.children.first.children.first.props[:fragments].map { |part| part[:content] }).to eq(['Aldor', 'GS Prime', 'Wrayth'])
+    expect(row_columns.children.last.props[:checked]).to be(true)
+    expect(row_columns.children.last.children.first.props[:content]).to eq([0x2605].pack('U'))
     expect(row_columns.children.first.props[:a11y_label]).to eq('Play Aldor')
     expect(row_columns.children.last.props[:a11y_label]).to eq('Unfavorite Aldor')
   end
@@ -58,6 +64,8 @@ RSpec.describe Lich::Common::WebUILauncher do
 
     expect(row.props).to include(count: 2, weights: [8, 1])
     expect(row.children.map { |item| item.props[:label] }).to eq(['Play Bera | DR Prime | Wizard', 'Remove'])
+    expect(row.children.first.props[:presentation_role]).to eq('record_primary')
+    expect(row.children.first.children).to be_empty
     expect(rendered.each.none? { |component| component.cid.end_with?('button:favorite-entry-1') }).to be(true)
   end
 
@@ -154,6 +162,7 @@ RSpec.describe Lich::Common::WebUILauncher do
     account_actions = find(tree, 'group:account-form-section').children.last
 
     expect(tabs.props[:names]).to eq(['Accounts', 'Add Character', 'Add Account', 'Encryption Management'])
+    expect(tabs.props[:presentation_role]).to eq('inset')
     expect(character_actions.children.map { |button| button.props[:label] }).to eq(['Back to Accounts', 'Add Character'])
     expect(account_actions.children.map { |button| button.props[:label] }).to eq(['Back to Accounts', 'Add Account'])
   end

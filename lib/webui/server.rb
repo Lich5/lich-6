@@ -26,9 +26,14 @@ module Lich
             "connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; " \
             "form-action 'self'; frame-ancestors 'none'"
       ASSET_ROUTES = {
-        '/'               => ['index.html', 'text/html; charset=utf-8'],
-        '/assets/app.js'  => ['app.js', 'text/javascript; charset=utf-8'],
-        '/assets/app.css' => ['app.css', 'text/css; charset=utf-8'],
+        '/'                            => ['index.html', 'text/html; charset=utf-8'],
+        '/assets/renderers_menus.js'   => ['renderers_menus.js', 'text/javascript; charset=utf-8'],
+        '/assets/renderers_layout.js'  => ['renderers_layout.js', 'text/javascript; charset=utf-8'],
+        '/assets/renderers_display.js' => ['renderers_display.js', 'text/javascript; charset=utf-8'],
+        '/assets/renderers_inputs.js'  => ['renderers_inputs.js', 'text/javascript; charset=utf-8'],
+        '/assets/renderers_table.js'   => ['renderers_table.js', 'text/javascript; charset=utf-8'],
+        '/assets/app.js'               => ['app.js', 'text/javascript; charset=utf-8'],
+        '/assets/app.css'              => ['app.css', 'text/css; charset=utf-8'],
       }.freeze
       LOOPBACK_HOSTS = %w[127.0.0.1 ::1].freeze
 

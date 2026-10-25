@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
+const { browserAssets } = require('./webui_assets_fixture.cjs');
 
 function fixture() {
   const root = path.resolve(__dirname, '../../lib/webui/assets');
@@ -19,7 +20,7 @@ function fixture() {
     addEventListener(name, callback) { listeners[name] = callback; }
     send(json) { sent.push(JSON.parse(json)); }
   };
-  dom.window.eval(fs.readFileSync(path.join(root, 'app.js'), 'utf8'));
+  for (const asset of browserAssets()) dom.window.eval(asset.source);
   return { dom, sent, page: { controls: new Map(), bindings: {}, submissions: {} },
     receive: message => listeners.message({ data: JSON.stringify(message) }), disconnect: () => listeners.close() };
 }
@@ -2010,6 +2011,19 @@ test('table pointer callbacks cannot replace a row while its drag gesture is act
   assert.equal(dom.window.document.querySelector('tbody tr').textContent, 'Updated');
 });
 
+for (const [shape, children] of [['omitted'], ['null', null], ['empty', []]]) {
+  test(`empty icon palette tolerates ${shape} children`, t => {
+    const { dom, page } = fixture(); t.after(() => dom.window.close());
+    const component = { type: 'group', cid: 'palette', props: {
+      menu: 'popover', menu_icon: true, label: 'Palette'
+    } };
+    if (children !== undefined) component.children = children;
+    const palette = dom.window.LichWebUI.render(page, component);
+    assert.equal(palette.querySelector('.submenu-trigger').textContent, 'Palette');
+    assert.equal(palette.querySelector('.submenu-items').children.length, 0);
+  });
+}
+
 test('palette popovers open locally, retain a callback render, and dismiss with Escape or outside press', t => {
   const a = fixture(), b = fixture();
   t.after(() => { a.dom.window.close(); b.dom.window.close(); });
@@ -2775,7 +2789,7 @@ test('omitted and reset opacity preserve shipped stylesheet text dimming', t => 
   const render = (generation, opacity) => receive({ type: 'render', page: 'alpha', generation,
     bindings: {}, tree: { type: 'page', cid: 'root', props: {}, children: [
       { type: 'text', cid: 'text:subtle', props: { content: 'Subtle', emphasis: 'subtle', opacity } },
-      { type: 'text', cid: 'text:frontend-detected', props: { content: 'Detected', opacity } }
+      { type: 'text', cid: 'text:frontend-detected', props: { content: 'Detected', presentation_role: 'form_hint', opacity } }
     ] } });
   let generation = 0;
   for (const opacity of [undefined, 1, 0.35, undefined]) {
@@ -2849,7 +2863,7 @@ test('tab actions are independent typed children in every tab layout and never i
     bindings: { help: ['activate'], [cid]: ['select'] }, tree: { type: 'page', cid: 'root', props: { density: 'compact' }, children: [
       { type: 'tabs', cid, props: { names: ['end', 'Other'], selected: 1, ...props }, children }
     ] } });
-  for (const [index, props, cid] of [[1, {}, 'tabs'], [2, { size_to_all: true }, 'tabs'], [3, {}, 'saved-account-tabs']]) {
+  for (const [index, props, cid] of [[1, {}, 'tabs'], [2, { size_to_all: true }, 'tabs'], [3, { vertical: true }, 'saved-account-tabs']]) {
     render(index, props, cid);
     const tabs = document.querySelector('[data-component-type="tabs"]');
     const panels = tabs.querySelectorAll('.tab-panel');

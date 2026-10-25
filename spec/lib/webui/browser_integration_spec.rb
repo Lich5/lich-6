@@ -82,7 +82,7 @@ RSpec.describe 'WebUI browser bootstrap', browser: true do
     page = Lich::WebUI::Page.new(owner: owner, id: 'opacity-reset', title: 'Opacity reset') do |ui|
       props = alpha.nil? ? {} : { opacity: alpha }
       ui.text key: 'subtle', content: 'Subtle', emphasis: :subtle, **props
-      ui.text key: 'frontend-detected', content: 'Detected', **props
+      ui.text key: 'frontend-detected', content: 'Detected', presentation_role: :form_hint, **props
       ui.stack key: 'alpha-stack', **props do
         text content: 'Stack content'
       end
@@ -141,7 +141,8 @@ RSpec.describe 'WebUI browser bootstrap', browser: true do
     switch = proc { mode = mode == :sized ? :account : :sized; service.refresh(page) }
     help = proc { status = 'Native help activated'; service.refresh(page) }
     page = Lich::WebUI::Page.new(owner: owner, id: 'native-tab-actions', title: 'Native tab actions', props: { density: :compact }) do |ui|
-      ui.tabs key: mode == :sized ? 'sized-tabs' : 'saved-account-tabs', names: %w[One Two], selected: 1, size_to_all: mode == :sized do
+      ui.tabs key: mode == :sized ? 'sized-tabs' : 'saved-account-tabs', names: %w[One Two], selected: 1, size_to_all: mode == :sized,
+              vertical: mode == :account do
         text key: 'one', content: 'A much larger sizing page', slot: 'One', height: 240
         text key: 'two', content: 'Selected native page', slot: 'Two'
         button key: 'help', label: 'Native help', placement: { tab_action: :end }, on: { activate: help }

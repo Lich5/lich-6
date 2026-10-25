@@ -53,7 +53,86 @@ async function runLauncherUnlock({ page, expect }) {
     await expect(page.getByText('Unlock cancelled')).toBeVisible();
 }
 
+
+/** Exercises real Launcher authorship; optional snapshots compare measured styles across a refactor. */
+async function runLauncherPresentation({ page, expect }) {
+  const captures = {};
+  const measure = async (name, selectors) => {
+    captures[name] = await page.evaluate(selectors => Object.fromEntries(Object.entries(selectors).map(([key, selector]) => {
+      const element = document.querySelector(selector);
+      if (!element) throw new Error(`Missing presentation element: ${key}`);
+      const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+      return [key, { x: box.x, y: box.y, width: box.width, height: box.height,
+        styles: Object.fromEntries(['display', 'minHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+          'fontSize', 'fontWeight', 'lineHeight', 'textAlign', 'backgroundColor', 'borderTopWidth', 'gap']
+          .map(property => [property, style[property]])) }];
+    })), selectors);
+  };
+  const row = '[data-cid$="group:entry-0"]';
+  const rowSelectors = { row, columns: `${row} > .webui-columns`,
+    play: `${row} [data-cid$="button:play-entry-0"]`, remove: `${row} [data-cid$="button:remove-entry-0"]`,
+    favorite: `${row} [data-cid$="button:favorite-entry-0"]` };
+  const play = page.getByRole('button', { name: 'Play Aldor', exact: true });
+  await expect(play).toBeVisible();
+  await expect(play).toContainText('Aldor');
+  await expect(play).toContainText('GS Prime');
+  await expect(play).toContainText('Wrayth');
+  const segments = play.locator('.webui-text-fragment');
+  await expect(segments).toHaveCount(3);
+  const boxes = await segments.evaluateAll(elements => elements.map(element => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x, width: rect.width };
+  }));
+  expect(Math.abs(boxes[0].width / boxes[1].width - 1.4)).toBeLessThan(0.02);
+  expect(Math.abs(boxes[1].width - boxes[2].width)).toBeLessThan(1);
+  expect(Math.abs(boxes[0].x + boxes[0].width - boxes[1].x)).toBeLessThan(1);
+  expect(Math.abs(boxes[1].x + boxes[1].width - boxes[2].x)).toBeLessThan(1);
+  await measure('tabs640', rowSelectors);
+  await page.setViewportSize({ width: 480, height: 480 });
+  await measure('tabs480', rowSelectors);
+  const narrowRow = await page.locator(`${row}:visible`).boundingBox();
+  for (const name of ['Play Aldor', 'Remove', 'Unfavorite Aldor']) {
+    const box = await page.getByRole('button', { name, exact: true }).boundingBox();
+    expect(Math.abs(box.width - narrowRow.width)).toBeLessThan(1);
+  }
+  await play.click();
+  await expect(page.getByText('Synthetic Play received', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Unfavorite Aldor', exact: true }).click();
+  await expect(page.getByText('No favorite characters yet.', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'SYNTHETIC', exact: true }).click();
+  const favorite = page.getByRole('button', { name: 'Favorite Aldor', exact: true });
+  await expect(favorite).toHaveText('\u2606');
+  await favorite.click();
+  await expect(page.getByRole('button', { name: 'Unfavorite Aldor', exact: true })).toHaveText('\u2605');
+  await page.locator('[data-cid$="toggle:gui-settings-toggle"]').click();
+  await page.getByRole('checkbox', { name: 'Tab Layout', exact: true }).uncheck();
+  await expect(page.getByRole('button', { name: 'Unfavorite Aldor', exact: true })).toHaveCount(0);
+  await expect(play).toHaveText('Play Aldor | GS Prime | Wrayth');
+  const listSelectors = { ...rowSelectors };
+  delete listSelectors.favorite;
+  await measure('list480', listSelectors);
+  await page.setViewportSize({ width: 640, height: 480 });
+  await measure('list640', listSelectors);
+  await page.getByRole('tab', { name: 'Account Management', exact: true }).click();
+  await measure('nested', { tabs: '[data-cid$="tabs:account-management-tabs"] > .tab-list' });
+  await page.getByRole('tab', { name: 'Frontends', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Executable override', exact: true })).toBeVisible();
+  const formSelectors = { form: '[data-cid$="group:frontend-editor-section"]',
+    field: '[data-cid$="text_input:frontend-command"]',
+    label: '[data-cid$="text_input:frontend-command"] > .field-label',
+    choices: '[data-cid$="columns:frontend-capability-row-0"]', hint: '[data-cid$="text:frontend-detected"]' };
+  await measure('form640', formSelectors);
+  await page.setViewportSize({ width: 480, height: 480 });
+  await measure('form480', formSelectors);
+  await page.getByRole('button', { name: 'Add Custom', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Stable ID', exact: true })).toBeEditable();
+  await expect(page.getByRole('textbox', { name: 'Command', exact: true })).toBeEditable();
+  const controls = JSON.parse(process.env.WEBUI_TEST_CONTROLS || '{}');
+  if (controls.capture) require('node:fs').writeFileSync(controls.capture, JSON.stringify(captures, null, 2));
+}
+
 module.exports = [
+  { id: 'launcher-presentation', run: runLauncherPresentation },
   { id: 'launcher-unlock', run: runLauncherUnlock },
   { id: 'native-bootstrap', run: runNativeBootstrap },
 ];
