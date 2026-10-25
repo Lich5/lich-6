@@ -185,9 +185,15 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
                                        create_validation_test: 'new-validation', store_master_password: true)
     end
     let(:plaintexts) { [] }
+    let(:keychain) { { password: current_password } }
     let(:path) { File.join(data_dir, 'entry.yaml') }
 
     before do
+      allow(manager).to receive(:retrieve_master_password).with(strict: true) { keychain[:password] }
+      allow(manager).to receive(:store_master_password) do |password|
+        keychain[:password] = password
+        true
+      end
       data = YAML.load_file(path)
       data['encryption_mode'] = 'enhanced'
       data['master_password_validation_test'] = 'old-validation'
@@ -254,14 +260,51 @@ RSpec.describe Lich::Common::WebUILauncher::Catalog, 'real entry-store integrati
     end
 
     it 'restores the previous keychain value when persistence fails' do
-      allow(catalog).to receive(:write_yaml).and_return(false)
-      expect(manager).to receive(:store_master_password).with(new_password).ordered.and_return(true)
-      expect(manager).to receive(:store_master_password).with(current_password).ordered.and_return(true)
+      allow(File).to receive(:rename).and_raise(IOError, 'synthetic publication failure')
       before = File.binread(path)
 
       expect(catalog.change_master_password(current_password, new_password)).to be(false)
+      expect(manager).to have_received(:store_master_password).with(new_password).once
+      expect(manager).to have_received(:store_master_password).with(current_password).once
+      expect(keychain[:password]).to eq(current_password)
       expect(File.binread(path)).to eq(before)
       expect(plaintexts).to all(eq(''))
+    end
+
+    it 'restores the observed keychain value when storage mutates it before reporting failure' do
+      observed = 'synthetic-observed-keychain'
+      keychain[:password] = observed
+      allow(manager).to receive(:store_master_password) do |password|
+        keychain[:password] = password
+        password != new_password
+      end
+      before = File.binread(path)
+
+      expect(catalog.change_master_password(current_password, new_password)).to be(false)
+      expect(keychain[:password]).to eq(observed)
+      expect(File.binread(path)).to eq(before)
+      expect(plaintexts).to all(eq(''))
+    end
+
+    it 'refuses publication if the previous keychain state cannot be read' do
+      allow(manager).to receive(:retrieve_master_password).with(strict: true).and_raise(IOError, 'synthetic read failure')
+      before = File.binread(path)
+
+      expect(catalog.change_master_password(current_password, new_password)).to be(false)
+      expect(manager).not_to have_received(:store_master_password)
+      expect(File.binread(path)).to eq(before)
+    end
+
+    %i[decrypt_password encrypt_password].each do |operation|
+      it "refuses publication when #{operation} returns no credential" do
+        allow(entry_store).to receive(operation).and_return(nil)
+        before = File.binread(path)
+
+        expect(catalog.change_master_password(current_password, new_password)).to be(false)
+        expect(manager).not_to have_received(:store_master_password)
+        expect(File.binread(path)).to eq(before)
+        expect(plaintexts).to all(eq(''))
+      end
     end
   end
 

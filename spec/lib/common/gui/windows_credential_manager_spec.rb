@@ -161,11 +161,12 @@ RSpec.describe Lich::Common::GUI::WindowsCredentialManager do
     end
 
     context 'with special characters in password' do
-      # Escapes retain real accented Latin and Chinese passwords at runtime.
       special_passwords = [
         'p@ssw0rd!',
-        "p\u{e4}ssw\u{f6}rd", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
-        "\u{5bc6}\u{7801}", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+        # rubocop:disable Custom/AsciiOnlySource -- Preserve existing Unicode credential fixtures using ASCII source.
+        "p\u00e4ssw\u00f6rd",
+        "\u5bc6\u7801",
+        # rubocop:enable Custom/AsciiOnlySource
         "p'ss\"w@rd",
         'p\nw\t\r'
       ]
@@ -250,6 +251,77 @@ RSpec.describe Lich::Common::GUI::WindowsCredentialManager do
 
         expect(result).to be_nil
       end
+    end
+  end
+
+  describe 'credential operations with simulated Win32 results' do
+    let(:saved_error) { double('FFI saved WinAPI error', winapi_error: 5) }
+
+    before do
+      # Exercise the production native adapter without loading DLLs or accessing
+      # any real credential store, even when this spec runs on Windows.
+      dummy = Module.new
+      stub_const('Lich::Common::GUI::WindowsCredentialManager', dummy)
+      dummy.define_singleton_method(:ffi_lib) { |*_args| nil }
+      dummy.define_singleton_method(:attach_function) do |name, *_args|
+        dummy.define_singleton_method(name) { |*_values| nil }
+      end
+      allow(OS).to receive(:windows?).and_return(true)
+      allow(Lich::Util).to receive(:install_gem_requirements)
+      load File.join(LIB_DIR, 'common', 'gui', 'windows_credential_manager.rb')
+      @reader = dummy
+      # winapi_error exists only on Windows; model its saved value without
+      # depending on the host platform or reading the live WinAPI error again.
+      stub_const('FFI::LastError', saved_error)
+      expect(@reader).not_to receive(:GetLastError)
+      allow(Lich).to receive(:log)
+      allow(@reader).to receive(:CredReadW).and_return(false)
+    end
+
+    it 'returns nil only for ERROR_NOT_FOUND' do
+      allow(saved_error).to receive(:winapi_error).and_return(1168)
+      expect(@reader.retrieve_credential(target_name, strict: true)).to be_nil
+    end
+
+    it 'raises for access denied instead of returning absence' do
+      expect { @reader.retrieve_credential(target_name, strict: true) }.to raise_error(IOError, /error code 5/)
+    end
+
+    it 'raises when the API is unavailable' do
+      allow(@reader).to receive(:available?).and_return(false)
+      expect { @reader.retrieve_credential(target_name, strict: true) }.to raise_error(IOError, /unavailable/)
+    end
+
+    it 'preserves the legacy nil-on-error behavior for other callers' do
+      expect(@reader.retrieve_credential(target_name)).to be_nil
+    end
+
+    it 'reports the saved error code when storing fails' do
+      expect(@reader).to receive(:CredWriteW).and_return(false)
+      expect(Lich).to receive(:log).with('error: CredWriteW failed with error code 5')
+
+      expect(@reader.store_credential(target_name, username, password)).to be false
+    end
+
+    it 'reports the saved error code when deleting fails' do
+      expect(@reader).to receive(:CredDeleteW).and_return(false)
+      expect(Lich).to receive(:log).with('error: CredDeleteW failed with error code 5')
+
+      expect(@reader.delete_credential(target_name)).to be false
+    end
+
+    it 'does not interpret a saved error after a successful store' do
+      expect(@reader).to receive(:CredWriteW).and_return(true)
+      expect(saved_error).not_to receive(:winapi_error)
+
+      expect(@reader.store_credential(target_name, username, password)).to be true
+    end
+
+    it 'does not interpret a saved error after a successful deletion' do
+      expect(@reader).to receive(:CredDeleteW).and_return(true)
+      expect(saved_error).not_to receive(:winapi_error)
+
+      expect(@reader.delete_credential(target_name)).to be true
     end
   end
 
