@@ -1,0 +1,40 @@
+name: Testbed Windows WebUI specs
+
+# Throwaway testbed. Runs only on testbed/** branches or by hand; never on main.
+on:
+  push:
+    branches:
+      - 'testbed/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows_webui_specs:
+    name: WebUI specs on native Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      BUNDLE_WITHOUT: 'vscode:profanity'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        with:
+          bundler-cache: true
+      - name: file_service_spec
+        run: bundle exec rspec spec/lib/webui/file_service_spec.rb
+      - name: server_transport_boundary_spec
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui/server_transport_boundary_spec.rb
+      - name: connection_outbound_queue_spec
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui/connection_outbound_queue_spec.rb
+      - name: websocket_spec
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui/websocket_spec.rb
+      - name: window_geometry_store specs
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui/window_geometry_store_spec.rb spec/lib/webui/window_geometry_store_temp_spec.rb spec/lib/common/webui_launcher/window_geometry_store_spec.rb
