@@ -38,3 +38,6 @@ jobs:
       - name: window_geometry_store specs
         if: ${{ !cancelled() }}
         run: bundle exec rspec spec/lib/webui/window_geometry_store_spec.rb spec/lib/webui/window_geometry_store_temp_spec.rb spec/lib/common/webui_launcher/window_geometry_store_spec.rb
+      - name: launcher browser examples
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/webui_launcher/controller_regressions_spec.rb -e "launcher browser"
