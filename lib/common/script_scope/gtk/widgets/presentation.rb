@@ -43,7 +43,7 @@ module Lich
           # @param value [Object] literal text converted with String before publication
           # @return [Widget] self
           def set_tooltip_text(value)
-            write(:tooltip, String(value))
+            write(:tooltip, wire_literal(value, :tooltip_text=))
           end
           alias tooltip_text= set_tooltip_text
 
@@ -58,7 +58,11 @@ module Lich
           # @return [Widget] self
           # @raise [UnsupportedOperation] for other state/color objects
           def override_background_color(state, colour)
-            session.refuse(self, :override_background_color) unless state == :normal && colour.is_a?(Gdk::RGBA)
+            # Later-layer constants (Gdk::RGBA and StateFlags; defined at P13 or P14) are absent from
+            # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+            # Retirement: replace these guards with plain constant references once this
+            # file is no longer shipped or tested without the later layers.
+            session.refuse(self, :override_background_color) unless state == :normal && defined?(Gdk::RGBA) && colour.is_a?(Gdk::RGBA)
             session.degrade(:background_colour, 'widget background colours follow browser theme; displayed values are retained')
             self
           end
@@ -70,7 +74,9 @@ module Lich
           # @raise [UnsupportedOperation] for unknown states, colors, widgets or owner/lifetime misuse
           def override_color(state, colour)
             session.style_operation(self, :override_color) do
-              session.refuse(self, :override_color) if destroyed? || state != StateFlags::NORMAL || !colour.is_a?(Gdk::RGBA)
+              invalid = destroyed? || !defined?(StateFlags::NORMAL) || state != StateFlags::NORMAL
+              invalid ||= !(defined?(Gdk::RGBA) && colour.is_a?(Gdk::RGBA))
+              session.refuse(self, :override_color) if invalid
               if is_a?(Label) && !@link_markup
                 write(:foreground, @label_color || colour.to_h)
                 @props[:foreground] = colour.to_h
@@ -247,8 +253,9 @@ module Lich
           # @return [void] result is not part of the supported script contract
           # @raise [UnsupportedOperation] when tags are present
           def tooltip_markup=(value)
-            session.refuse(self, :tooltip_markup=) if value.match?(/<[^>]*>/)
-            write(:tooltip, CGI.unescapeHTML(value))
+            text = Gtk.wire_text(value) if value.is_a?(String)
+            session.refuse(self, :tooltip_markup=) unless text && !text.match?(/<[^>]*>/)
+            write(:tooltip, CGI.unescapeHTML(text))
           end
 
           # Clears tooltip text when disabled; enabling does not invent tooltip content.

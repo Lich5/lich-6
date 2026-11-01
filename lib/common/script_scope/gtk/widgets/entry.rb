@@ -11,7 +11,11 @@ module Lich
           # @return [Entry] self
           def modify_base(state, colour)
             session.style_operation(self, :modify_base) do
-              session.refuse(self, :modify_base) if destroyed? || !colour.is_a?(Gdk::Color)
+              # Later-layer constants (Gdk::Color; defined at P13 or P14) are absent from
+              # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+              # Retirement: replace these guards with plain constant references once this
+              # file is no longer shipped or tested without the later layers.
+              session.refuse(self, :modify_base) if destroyed? || !(defined?(Gdk::Color) && colour.is_a?(Gdk::Color))
               override_background_color(state, colour.to_rgba)
             end
           end
@@ -45,7 +49,7 @@ module Lich
           # @param value [Object] literal text converted with String before publication
           # @return [Entry] self
           def set_text(value)
-            text = String(value)
+            text = wire_literal(value, :text=)
             text = text[0, @props[:max_length]] if @props[:max_length]
             session.synchronize do
               previous = read(:value)
@@ -74,7 +78,7 @@ module Lich
           # @param value [Object] literal text converted with String before publication
           # @return [Entry] self
           def placeholder_text=(value)
-            write(:placeholder, String(value))
+            write(:placeholder, wire_literal(value, :placeholder_text=))
           end
           alias set_placeholder_text placeholder_text=
 

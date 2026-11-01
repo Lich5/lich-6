@@ -240,8 +240,7 @@ module Lich
           def append(id, text)
             text_model!
             session.refuse(self, :append) unless id.is_a?(String) && id.length <= 8192
-            text = String(text)
-            session.refuse(self, :append) if text.length > Lich::WebUI::Contract::BOUNDS[:short_text]
+            text = row_label(text, :append)
             session.synchronize do
               @item_ids ||= {}
               session.refuse(self, :append) if @item_ids.any? { |key, value| value == id && model.find_key(key) }
@@ -292,7 +291,8 @@ module Lich
           # @return [ComboBox] self
           def append_text(text)
             text_model!
-            session.synchronize { model.append[0] = String(text) }
+            label = row_label(text, :append_text)
+            session.synchronize { model.append[0] = label }
             self
           end
 
@@ -301,7 +301,8 @@ module Lich
           # @return [ComboBox] self
           def prepend_text(text)
             text_model!
-            session.synchronize { model.prepend[0] = String(text) }
+            label = row_label(text, :prepend_text)
+            session.synchronize { model.prepend[0] = label }
             self
           end
 
@@ -311,7 +312,8 @@ module Lich
           # @return [ComboBox] self
           def insert_text(index, text)
             text_model!
-            session.synchronize { model.insert(index)[0] = String(text) }
+            label = row_label(text, :insert_text)
+            session.synchronize { model.insert(index)[0] = label }
             self
           end
 
@@ -342,11 +344,15 @@ module Lich
           end
 
           # Encodes literal text separately from option IDs and the clearing sentinel.
+          # Binary-tagged UTF-8 is re-tagged as ListStore does, so it publishes and
+          # matches a closed combo's UTF-8 labels; other non-UTF-8 text is refused
+          # here, not later at publication (1844:RC11).
           # @param text [String] literal text for the entry facade
           # @return [ComboBox] self
           # @api private
           def set_entry_text(text)
-            session.refuse(self, :text=) unless has_entry? && text.is_a?(String) && text.length <= Lich::WebUI::Contract::BOUNDS[:input_text] - 5
+            text = Gtk.wire_text(text) if text.is_a?(String)
+            session.refuse(self, :text=) unless has_entry? && text && text.length <= Lich::WebUI::Contract::BOUNDS[:input_text] - 5
             if @props[:editable]
               set_choice("text:#{text}")
             else
@@ -439,6 +445,22 @@ module Lich
             write(:value, value)
             emit_handlers(:change) unless previous == value
             self
+          end
+
+          # Normalizes a new row's label before the row exists. The model adds a
+          # row and then sets its cell in two steps, so a label refused after the
+          # first step would leave a blank selectable row behind (1844:RC9).
+          # Binary-tagged UTF-8 is re-tagged as ListStore does; other non-UTF-8
+          # text, or a label longer than the select projection allows, is refused.
+          # @param text [Object] script-supplied label, converted with String
+          # @param operation [Symbol] public operation named in a refusal
+          # @return [String] wire-compatible label
+          # @raise [UnsupportedOperation] for non-UTF-8 or overlong text
+          # @api private
+          def row_label(text, operation)
+            label = Gtk.wire_text(String(text))
+            session.refuse(self, operation) unless label && label.length <= Lich::WebUI::Contract::BOUNDS[:short_text]
+            label
           end
 
           # Prevents text convenience methods from inventing values for extra model columns.

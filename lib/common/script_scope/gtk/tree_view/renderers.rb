@@ -38,7 +38,11 @@ module Lich
             session.refuse(self, :background=) if @projecting_cell
             session.style_operation(self, :background=) do
               valid = value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? && value.length <= 64
-              color = Color.parse(value) if valid
+              # Later-layer constant (Color; first defined at P14) is absent from P13 trees;
+              # resolve it at call time, so a non-nil value is refused until it exists.
+              # Retirement: replace this guard with a plain constant reference once this
+              # file is no longer shipped or tested without the later layers.
+              color = Color.parse(value) if valid && defined?(Color)
               session.refuse(self, :background=) unless value.nil? || color
               @background_color = color
               @columns.each(&:changed!)
@@ -94,11 +98,14 @@ module Lich
           def unwatch(column) = @columns.delete(column)
 
           # Literal display text is independent of the model's identity/sort value.
-          # @param value [Object] literal text converted with String before publication
+          # Binary-tagged UTF-8 is re-tagged as ListStore and TextBuffer do; other
+          # non-UTF-8 text is refused here, not later at projection (1844:RC10).
+          # @param value [String] literal text published as UTF-8
           # @return [void] result is not part of the supported script contract
           def text=(value)
-            session.refuse(self, :text=) unless value.is_a?(String) && value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:body_text]
-            @cell_text = value.dup.freeze
+            text = Gtk.wire_text(value) if value.is_a?(String)
+            session.refuse(self, :text=) unless text && text.length <= Lich::WebUI::Contract::BOUNDS[:body_text]
+            @cell_text = text.dup.freeze
             @columns.each(&:changed!) unless @projecting_cell
           end
 
@@ -110,7 +117,11 @@ module Lich
           # @param value [Gdk::RGBA, nil] typed foreground; nil restores theme color
           # @return [void] result is not part of the supported script contract
           def foreground_rgba=(value)
-            session.refuse(self, :foreground_rgba=) unless value.nil? || value.is_a?(Gdk::RGBA)
+            # Later-layer constant (Gdk::RGBA; first defined at P14) is absent from P13 trees;
+            # resolve it at call time. An absent class has no instances.
+            # Retirement: replace this guard with a plain constant reference once this
+            # file is no longer shipped or tested without the later layers.
+            session.refuse(self, :foreground_rgba=) unless value.nil? || (defined?(Gdk::RGBA) && value.is_a?(Gdk::RGBA))
             @cell_foreground = value&.to_h
             @cell_foreground_set = !value.nil?
             @columns.each(&:changed!) unless @projecting_cell

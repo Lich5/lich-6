@@ -23,7 +23,7 @@ module Lich
             super()
             kind = :toplevel if kind == :TOPLEVEL
             session.refuse(self, :new) unless kind == :toplevel || kind.is_a?(String)
-            @props[:title] = kind.is_a?(String) ? kind : ''
+            @props[:title] = kind.is_a?(String) ? wire_literal(kind, :new) : ''
             @props.merge!(bare: true, density: :compact)
             session.register(self)
           end
@@ -53,7 +53,7 @@ module Lich
           # @param value [Object] literal title converted with String
           # @return [Window] self
           def title=(value)
-            write(:title, String(value))
+            write(:title, wire_literal(value, :title=))
           end
           alias set_title title=
 
@@ -104,7 +104,11 @@ module Lich
           def set_titlebar(bar)
             session.synchronize do
               session.refuse(self, :set_titlebar) if destroyed?
-              session.refuse(self, :set_titlebar) unless bar.nil? || bar.is_a?(HeaderBar)
+              # Later-layer constants (HeaderBar; defined at P13 or P14) are absent from
+              # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+              # Retirement: replace these guards with plain constant references once this
+              # file is no longer shipped or tested without the later layers.
+              session.refuse(self, :set_titlebar) unless bar.nil? || (defined?(HeaderBar) && bar.is_a?(HeaderBar))
               return self if bar.equal?(@titlebar)
 
               if bar
@@ -272,7 +276,11 @@ module Lich
           # @param value [Symbol] supported utility-window hint
           # @return [Window] self
           def set_type_hint(value)
-            session.refuse(self, :set_type_hint) unless value == Gdk::WindowTypeHint::UTILITY
+            # Later-layer constants (Gdk::WindowTypeHint; defined at P13 or P14) are absent from
+            # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+            # Retirement: replace these guards with plain constant references once this
+            # file is no longer shipped or tested without the later layers.
+            session.refuse(self, :set_type_hint) unless defined?(Gdk::WindowTypeHint::UTILITY) && value == Gdk::WindowTypeHint::UTILITY
             session.degrade(:window_type_hint, 'utility window classification is controlled by the browser host')
             self
           end

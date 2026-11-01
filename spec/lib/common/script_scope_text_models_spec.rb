@@ -7,9 +7,12 @@ require_relative '../../../lib/common/script_scope/gtk/widgets'
 require_relative '../../../lib/common/script_scope/gtk/models'
 require_relative '../../../lib/common/script_scope/gtk/tree_view'
 require_relative '../../../lib/common/script_scope/gtk/text'
+require_relative '../../../lib/common/script_scope/gtk/combo_box'
+require_relative '../../../lib/common/script_scope/gtk/menus'
+require_relative '../../../lib/common/script_scope/gtk/transfers'
 
 # Model, table and text boundaries: the P13 share of 1831:RC27, plus 1844:RC1,
-# RC5, RC6 and RC7 and 1845:RC3 and RC5. A recording port stands in for core.
+# RC5, RC6, RC7, RC9, RC10, RC11, RC12 and RC13 and 1845:RC3 and RC5. A recording port stands in for core.
 RSpec.describe 'script compatibility models, tables and text' do
   port_class = Class.new do
     attr_reader :sets
@@ -229,5 +232,225 @@ RSpec.describe 'script compatibility models, tables and text' do
     buffer.text = 'ab'
     expect { buffer.get_text(buffer.start_iter, iter) }.to raise_error(gtk::UnsupportedOperation, /operation=get_text/)
     expect { buffer.insert(gtk::TextBuffer.new.start_iter, 'x') }.to raise_error(gtk::UnsupportedOperation, /operation=insert/)
+  end
+
+  it 'leaves no row behind when a combo text append, prepend or insert is refused (1844:RC9)' do
+    invalid = bytes(0xFF)
+    overlong = 'x' * (Lich::WebUI::Contract::BOUNDS[:short_text] + 1)
+    cafe = 'caf'.b + bytes(0xC3, 0xA9)
+    combo = gtk::ComboBox.new
+    combo.append_text('ok')
+    labels = -> { combo.model.rows.map { |iter| iter[0] } }
+    revision = combo.model.revision
+
+    [invalid, utf8(invalid), overlong].each do |rejected|
+      { append_text: [rejected], prepend_text: [rejected], insert_text: [0, rejected], append: ['id', rejected] }.each do |operation, args|
+        expect { combo.public_send(operation, *args) }.to raise_error(gtk::UnsupportedOperation, /operation=#{operation}/)
+      end
+    end
+    expect([labels.call, combo.model.revision]).to eq([['ok'], revision])
+
+    combo.append_text(cafe)
+    expect([labels.call, labels.call.last.encoding]).to eq([['ok', utf8(cafe)], Encoding::UTF_8])
+  end
+
+  it 'leaves no row behind when a combo item append is refused for its id (1844:RC9)' do
+    combo = gtk::ComboBox.new
+    combo.append('a', 'one')
+    revision = combo.model.revision
+
+    expect { combo.append('a', 'two') }.to raise_error(gtk::UnsupportedOperation, /operation=append/)
+    expect { combo.append(:b, 'two') }.to raise_error(gtk::UnsupportedOperation, /operation=append/)
+    expect([combo.model.rows.map { |iter| iter[0] }, combo.model.revision]).to eq([['one'], revision])
+  end
+
+  it 'refuses non-UTF-8 renderer text at the setter and re-tags binary-tagged UTF-8 (1844:RC10)' do
+    store = gtk::ListStore.new(String)
+    store.append[0] = 'row'
+    renderer = gtk::CellRendererText.new
+    column = gtk::TreeViewColumn.new('Name', renderer, text: 0)
+    view = gtk::TreeView.new(store)
+    view.append_column(column)
+    proposed = nil
+    column.set_cell_data_func(renderer) { |_column, cell, _model, _iter| cell.text = proposed }
+    cafe = 'caf'.b + bytes(0xC3, 0xA9)
+
+    [bytes(0xFF), utf8(bytes(0xFF)), 'caf'.b + bytes(0xFF)].each do |rejected|
+      expect { renderer.text = rejected }.to raise_error(gtk::UnsupportedOperation, /operation=text=/)
+      proposed = rejected
+      expect { view.materialize }.to raise_error(gtk::UnsupportedOperation, /operation=text=/)
+    end
+    expect(renderer.text).to be_nil
+
+    renderer.text = cafe
+    expect([renderer.text, renderer.text.encoding]).to eq([utf8(cafe), Encoding::UTF_8])
+    proposed = cafe
+    expect { view.materialize }.not_to raise_error
+    expect(view.send(:row_definitions).first[:cells].values).to eq([utf8(cafe)])
+  end
+
+  it 'refuses non-UTF-8 combo entry text at the setter and re-tags binary-tagged UTF-8 (1844:RC11)' do
+    cafe = 'caf'.b + bytes(0xC3, 0xA9)
+    combo = gtk::ComboBox.new(entry: true)
+    handle = combo.materialize
+    entry = combo.child
+
+    [bytes(0xFF), utf8(bytes(0xFF)), 'caf'.b + bytes(0xFF)].each do |rejected|
+      expect { entry.text = rejected }.to raise_error(gtk::UnsupportedOperation, /operation=text=/)
+    end
+    expect([entry.text, port.sets.count { |property, _| property == :value }]).to eq(['', 0])
+
+    entry.text = cafe
+    published = port.get(handle, :value)
+    expect([published, published.encoding, entry.text, entry.text.encoding]).to eq(['text:caf' + utf8(bytes(0xC3, 0xA9)), Encoding::UTF_8, utf8(cafe), Encoding::UTF_8])
+  end
+
+  it 'matches binary-tagged UTF-8 entry text to a closed combo label (1844:RC11)' do
+    cafe = 'caf'.b + bytes(0xC3, 0xA9)
+    combo = gtk::ComboBox.new(entry: true)
+    combo.append_text(utf8(cafe))
+    combo.child.editable = false
+
+    combo.child.text = cafe
+    expect(combo.child.text).to eq(utf8(cafe))
+  end
+
+  it 'refuses non-UTF-8 column tooltips at the setter and re-tags binary-tagged UTF-8 (1844:RC12)' do
+    store = gtk::ListStore.new(String)
+    store.append[0] = 'row'
+    column = gtk::TreeViewColumn.new('Name', gtk::CellRendererText.new, text: 0)
+    view = gtk::TreeView.new(store)
+    view.append_column(column)
+    cafe = 'caf'.b + bytes(0xC3, 0xA9)
+
+    [bytes(0xFF), utf8(bytes(0xFF)), 'caf'.b + bytes(0xFF), cafe.dup.force_encoding(Encoding::ISO_8859_1)].each do |rejected|
+      expect { column.tooltip_text = rejected }.to raise_error(gtk::UnsupportedOperation, /operation=tooltip_text=/)
+    end
+    expect(column.tooltip_text).to be_nil
+
+    column.tooltip_text = cafe
+    expect([column.tooltip_text, column.tooltip_text.encoding]).to eq([utf8(cafe), Encoding::UTF_8])
+    expect { view.materialize }.not_to raise_error
+    expect(column.send(:definition)[:tooltip]).to eq(utf8(cafe))
+  end
+
+  # Text kept as ASCII-8BIT, or in another encoding, failed only at publication.
+  # The setters now share Gtk.wire_text: binary-tagged UTF-8 is re-tagged and every
+  # other non-UTF-8 text is refused at the call (1844:RC13).
+  describe 'non-UTF-8 text at the P13 setters (1844:RC13)' do
+    let(:cafe) { 'caf'.b + bytes(0xC3, 0xA9) }
+    let(:rejected) do
+      [
+        'caf'.b + bytes(0xFF),
+        utf8('caf'.b + bytes(0xFF)),
+        'caf'.dup.force_encoding(Encoding::ISO_8859_1) + bytes(0xE9).force_encoding(Encoding::ISO_8859_1),
+        cafe.dup.force_encoding(Encoding::ISO_8859_1),
+        'hi'.encode(Encoding::UTF_16LE)
+      ]
+    end
+
+    # [name, refused operation, build, apply, read]
+    g = Lich::Common::ScriptScope::Gtk
+    cases = [
+      ['MenuItem#set_label', :label, -> { g::MenuItem.new('old') }, ->(w, v) { w.set_label(v) }, ->(w) { w.label }],
+      ['MenuItem#label=', :label, -> { g::MenuItem.new('old') }, ->(w, v) { w.label = v }, ->(w) { w.label }],
+      ['MenuItem.new', :label, nil, ->(_w, v) { g::MenuItem.new(v) }, ->(w) { w.label }],
+      ['CheckMenuItem.new', :new, nil, ->(_w, v) { g::CheckMenuItem.new(v) }, ->(w) { w.label }],
+      ['RadioMenuItem.new', :new, nil, ->(_w, v) { g::RadioMenuItem.new(v) }, ->(w) { w.label }],
+      ['SelectionData#set', :set, -> { g::SelectionData.new }, ->(w, v) { w.set(Lich::Common::ScriptScope::Gdk::Selection::TYPE_STRING, v) }, ->(w) { w.text }],
+      ['SelectionData#text=', :set, -> { g::SelectionData.new }, ->(w, v) { w.text = v }, ->(w) { w.text }],
+      ['SelectionData#set_text', :set, -> { g::SelectionData.new }, ->(w, v) { w.set_text(v) }, ->(w) { w.text }],
+      ['TreeViewColumn#title=', :title=, -> { g::TreeViewColumn.new('old') }, ->(w, v) { w.title = v }, ->(w) { w.title }],
+      ['TreeViewColumn#set_title', :title=, -> { g::TreeViewColumn.new('old') }, ->(w, v) { w.set_title(v) }, ->(w) { w.title }],
+      ['TreeViewColumn.new', :new, nil, ->(_w, v) { g::TreeViewColumn.new(v) }, ->(w) { w.title }],
+      ['Expander#set_label', :label=, -> { g::Expander.new('old') }, ->(w, v) { w.set_label(v) }, ->(w) { [w.label, w.label_widget.text] }],
+      ['Expander#label=', :label=, -> { g::Expander.new('old') }, ->(w, v) { w.label = v }, ->(w) { [w.label, w.label_widget.text] }],
+      ['Expander.new', :new, nil, ->(_w, v) { g::Expander.new(v) }, ->(w) { [w.label, w.label_widget.text] }]
+    ]
+
+    cases.each do |name, operation, build, apply, read|
+      it "#{name} refuses other non-UTF-8 text at the call and re-tags binary-tagged UTF-8" do
+        target = build&.call
+        before = target && read.call(target)
+
+        rejected.each do |text|
+          expect { apply.call(target, text) }.to raise_error(gtk::UnsupportedOperation, /operation=#{operation}/)
+        end
+        expect(read.call(target)).to eq(before) if target
+
+        result = target || apply.call(nil, cafe)
+        apply.call(target, cafe) if target
+        value = Array(read.call(result))
+        expect(value.map { |text| [text, text.encoding] }).to all(eq([utf8(cafe), Encoding::UTF_8]))
+      end
+    end
+
+    it 'publishes a re-tagged menu label and column title as UTF-8' do
+      item = gtk::MenuItem.new(cafe)
+      item.materialize
+      item.label = cafe
+      column = gtk::TreeViewColumn.new('Name', gtk::CellRendererText.new, text: 0)
+      column.title = cafe
+      store = gtk::ListStore.new(String)
+      view = gtk::TreeView.new(store)
+      view.append_column(column)
+      view.materialize
+
+      expect(port.sets.select { |property, _| property == :label }.map { |_, text| text.encoding }.uniq).to eq([Encoding::UTF_8])
+      expect(column.send(:definition)[:label]).to eq(utf8(cafe))
+      expect(column.send(:definition)[:label].encoding).to eq(Encoding::UTF_8)
+    end
+
+    it 'keeps the mnemonic refusal for a re-tagged menu label' do
+      expect { gtk::MenuItem.new('a_b'.b, true) }.to raise_error(gtk::UnsupportedOperation, /operation=mnemonic/)
+    end
+
+    it 'takes a notebook tab label only through a Label, which already normalizes text' do
+      notebook = gtk::Notebook.new
+      label = gtk::Label.new('one')
+      notebook.append_page(gtk::Label.new('page'), label)
+
+      rejected.each { |text| expect { label.text = text }.to raise_error(gtk::UnsupportedOperation, /operation=text=/) }
+      expect(label.text).to eq('one')
+      label.text = cafe
+      expect([label.text, label.text.encoding]).to eq([utf8(cafe), Encoding::UTF_8])
+    end
+
+    it 'defines Gtk.wire_text once' do
+      expect(gtk.method(:wire_text).source_location.first).to end_with('gtk/widgets.rb')
+    end
+  end
+
+  # Classes that a later layer first defines (images, style). hide_const makes any
+  # layer behave as P13 does, where none of them exist.
+  context 'without the classes a later layer defines (1844:RC14)' do
+    before do
+      %w[Gtk::Image Gtk::Color Gdk::RGBA Pango::FontDescription].each do |name|
+        hide_const("Lich::Common::ScriptScope::#{name}")
+      end
+    end
+
+    # [description, refused operation, call against fresh widgets]
+    [
+      ['MenuButton#set_image', 'set_image', ->(w) { w[:menu_button].set_image(Object.new) }],
+      ['TextView#override_font', 'override_font', ->(w) { w[:text_view].override_font(Object.new) }],
+      ['CellRenderer#background= with a color string', 'background=', ->(w) { w[:renderer].background = 'red' }],
+      ['CellRenderer#foreground_rgba=', 'foreground_rgba=', ->(w) { w[:renderer].foreground_rgba = Object.new }],
+      ['TreeView#override_background_color', 'override_background_color', ->(w) { w[:tree_view].override_background_color(:selected, Object.new) }]
+    ].each do |description, operation, call|
+      it "#{description} refuses instead of raising NameError" do
+        widgets = { menu_button: gtk::MenuButton.new, text_view: gtk::TextView.new, renderer: gtk::CellRendererText.new,
+                    tree_view: gtk::TreeView.new(gtk::ListStore.new(String)) }
+
+        expect { call.call(widgets) }.to raise_error(gtk::UnsupportedOperation, /operation=#{Regexp.escape(operation)}/)
+      end
+    end
+
+    it 'still clears a cell fill and foreground with nil' do
+      renderer = gtk::CellRendererText.new
+
+      expect { renderer.background = nil }.not_to raise_error
+      expect { renderer.foreground_rgba = nil }.not_to raise_error
+    end
   end
 end

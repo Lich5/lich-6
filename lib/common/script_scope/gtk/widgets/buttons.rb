@@ -12,7 +12,7 @@ module Lich
           def initialize(text = '', label: text)
             super()
             session.refuse(self, :new) unless label.is_a?(String)
-            @props.merge!(label: label, checked: false)
+            @props.merge!(label: wire_literal(label, :new), checked: false)
           end
 
           # Reads current callback selection or retained checkbox state.
@@ -27,8 +27,9 @@ module Lich
           # Replaces literal caption text through the existing control contract.
           # @param value [String] literal label text
           # @return [ToggleButton] self
+          # @raise [UnsupportedOperation] for text that is not UTF-8 or binary-tagged UTF-8
           def label=(value)
-            write(:label, String(value))
+            write(:label, wire_literal(value, :label=))
           end
 
           alias set_label label=
@@ -177,7 +178,11 @@ module Lich
           # @return [Button] self
           def set_image(value)
             session.synchronize do
-              valid = value.instance_of?(Image) && value.session.equal?(session) && !value.destroyed? && !value.parent &&
+              # Later-layer constants (Image; defined at P13 or P14) are absent from
+              # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+              # Retirement: replace these guards with plain constant references once this
+              # file is no longer shipped or tested without the later layers.
+              valid = defined?(Image) && value.instance_of?(Image) && value.session.equal?(session) && !value.destroyed? && !value.parent &&
                       value.directional_caption && children.empty? && (label.empty? || @button_image)
               session.refuse(self, :image=) unless valid
               self.label = value.directional_caption
@@ -246,6 +251,7 @@ module Lich
             super()
             label = '' if label.nil?
             session.refuse(self, :new) unless label.is_a?(String) && stock_id.nil?
+            label = wire_literal(label, :new)
             @props[:label] = use_underline ? label.delete('_') : label
           end
 
@@ -256,8 +262,9 @@ module Lich
           # Writes literal action text through the shared button contract.
           # @param value [Object] literal text converted with String before publication
           # @return [Button] self
+          # @raise [UnsupportedOperation] for text that is not UTF-8 or binary-tagged UTF-8
           def label=(value)
-            write(:label, String(value))
+            write(:label, wire_literal(value, :label=))
           end
           alias set_label label=
 

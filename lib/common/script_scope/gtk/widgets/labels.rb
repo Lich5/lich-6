@@ -32,9 +32,10 @@ module Lich
 
           # Creates centered, nonwrapping literal text with GTK-compatible empty defaults.
           # @param text [Object] initial text, converted to a literal string
+          # @raise [UnsupportedOperation] for text that is not UTF-8 or binary-tagged UTF-8
           def initialize(text = '')
             super()
-            @props.merge!(content: text.to_s, align: :center, wrap: false)
+            @props.merge!(content: wire_literal(text.to_s, :new), align: :center, wrap: false)
           end
 
           # Reads the retained literal label content.
@@ -60,11 +61,12 @@ module Lich
           # a new link; such text is refused rather than rendered as markup.
           # @param value [Object] literal text converted with String before publication
           # @return [Label] self
+          # @raise [UnsupportedOperation] for text that is not UTF-8 or binary-tagged UTF-8
           def text=(value)
             if @use_markup
               set_markup(String(value))
             else
-              text = String(value)
+              text = wire_literal(value, :text=)
               session.refuse(self, :text=) if @link_markup && text.match?(/[\[\]]/)
               write(:content, text)
             end
@@ -131,13 +133,17 @@ module Lich
           # @raise [UnsupportedOperation] for unsupported tags
           def set_markup(value)
             session.refuse(self, :set_markup) unless value.is_a?(String)
-            value = value.dup.force_encoding(Encoding::UTF_8)
-            session.refuse(self, :set_markup) unless value.valid_encoding? && value.length <= Lich::WebUI::Contract::BOUNDS[:display_text]
+            value = Gtk.wire_text(value)
+            session.refuse(self, :set_markup) unless value && value.length <= Lich::WebUI::Contract::BOUNDS[:display_text]
             return set_link_markup(value) if value.include?('<a ') || @link_markup
             # Merchantical's located-item cue colors one entire literal label.
             # Reuse the shared background property, not raw HTML or fragment CSS.
             if (background = value.match(/\A<span background=(['"])([^'"<>]*)\1>([^<>]*)<\/span>\z/m))
-              color = Color.parse_markup(background[2])
+              # Later-layer constants (Color; defined at P13 or P14) are absent from
+              # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+              # Retirement: replace these guards with plain constant references once this
+              # file is no longer shipped or tested without the later layers.
+              color = Color.parse_markup(background[2]) if defined?(Color)
               session.refuse(self, :set_markup) unless color
               replace_markup_font(background: color)
               write(:font_style, :normal)
@@ -175,6 +181,7 @@ module Lich
             # Boon's measured blue bold tip maps to literal text and the native
             # bounded color record. Source markup never reaches the browser.
             if (tip = value.match(/\A<span color="blue" weight="bold">([^<>]*)<\/span>\z/m))
+              session.refuse(self, :set_markup) unless defined?(Color)
               replace_markup_font(foreground: Color.parse('blue'))
               write(:emphasis, :strong)
               write(:font_style, :normal)
@@ -481,8 +488,8 @@ module Lich
           # @return [LinkButton] self
           # @api private
           def replace_link(uri, label)
-            valid = [uri, label].all? { |value| value.is_a?(String) && value.valid_encoding? && value.encoding.ascii_compatible? }
-            session.refuse(self, :link) unless valid
+            uri, label = [uri, label].map { |value| Gtk.wire_text(value) if value.is_a?(String) }
+            session.refuse(self, :link) unless uri && label
             session.synchronize do
               set_markup("<a href=\"#{CGI.escapeHTML(uri)}\">#{CGI.escapeHTML(label)}</a>")
               @uri, @link_label = uri.dup.freeze, label.dup.freeze

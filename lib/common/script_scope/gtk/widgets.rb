@@ -10,6 +10,20 @@ module Lich
   module Common
     module ScriptScope
       module Gtk
+        # Normalizes script text for the UTF-8 JSON wire without loosening core admission.
+        # Socket and file reads often tag valid UTF-8 bytes as binary; only that tag is
+        # corrected. Any other non-UTF-8 text is refused, never transcoded.
+        # @param value [String] script-supplied text
+        # @return [String, nil] wire-compatible text, or nil when it must be refused
+        # @api private
+        def self.wire_text(value)
+          return value if value.ascii_only? || (value.encoding == Encoding::UTF_8 && value.valid_encoding?)
+          return nil unless value.encoding == Encoding::BINARY
+
+          text = value.dup.force_encoding(Encoding::UTF_8)
+          text.valid_encoding? ? text : nil
+        end
+
         # Marker for supported legacy containers. Iteration exposes a snapshot
         # of actual children; sensitivity is inherited through the shared component tree.
         module Container
@@ -119,7 +133,11 @@ module Lich
           # @return [Widget] self
           # @raise [UnsupportedOperation] for widgets without a text-style contract
           def override_font(font)
-            valid = font.is_a?(Pango::FontDescription) && %i[text button text_input].include?(component_type)
+            # Later-layer constants (Pango::FontDescription; defined at P13 or P14) are absent from
+            # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+            # Retirement: replace these guards with plain constant references once this
+            # file is no longer shipped or tested without the later layers.
+            valid = defined?(Pango::FontDescription) && font.is_a?(Pango::FontDescription) && %i[text button text_input].include?(component_type)
             session.refuse(self, :override_font) unless valid
             font.properties.each { |property, value| write(property, value) }
             write(:emphasis, font.weight == :bold ? :strong : :normal)
@@ -134,7 +152,11 @@ module Lich
           # @return [StyleContext]
           def style_context
             session.style_operation(self, :style_context) do
-              session.refuse(self, :style_context) if destroyed?
+              # Later-layer constants (StyleContext; defined at P13 or P14) are absent from
+              # P12 and P13 trees; resolve them at call time. An absent class has no instances.
+              # Retirement: replace these guards with plain constant references once this
+              # file is no longer shipped or tested without the later layers.
+              session.refuse(self, :style_context) if destroyed? || !defined?(StyleContext)
               @style_context ||= StyleContext.new(self)
             end
           end
@@ -219,6 +241,21 @@ module Lich
             self
           end
           private :insert_child
+
+          # Converts a script text argument to wire-compatible literal text at the
+          # setter, so an unpublishable value fails at the call and not at the next
+          # publication. Binary-tagged UTF-8 is re-tagged; other non-UTF-8 text is refused.
+          # @param value [Object] script text, converted with String
+          # @param operation [Symbol] public operation named in the refusal
+          # @return [String] UTF-8 or ASCII literal text
+          # @raise [UnsupportedOperation] for text that is not UTF-8 or binary-tagged UTF-8
+          # @api private
+          def wire_literal(value, operation)
+            text = Gtk.wire_text(String(value))
+            session.refuse(self, operation) unless text
+            text
+          end
+          private :wire_literal
         end
       end
     end

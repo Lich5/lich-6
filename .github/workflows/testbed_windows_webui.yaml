@@ -41,3 +41,9 @@ jobs:
       - name: launcher browser examples
         if: ${{ !cancelled() }}
         run: bundle exec rspec spec/lib/common/webui_launcher/controller_regressions_spec.rb -e "launcher browser"
+      - name: real keychain fence (Win32 group)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/real_keychain_fence_spec.rb
+      - name: master password and entry store specs
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/authentication/entry_store_spec.rb spec/lib/common/cli/cli_encryption_mode_change_spec.rb spec/lib/common/webui_launcher/catalog_password_changes_spec.rb
