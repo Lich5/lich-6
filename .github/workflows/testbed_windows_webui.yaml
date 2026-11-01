@@ -46,4 +46,4 @@ jobs:
         run: bundle exec rspec spec/lib/real_keychain_fence_spec.rb
       - name: master password and entry store specs
         if: ${{ !cancelled() }}
-        run: bundle exec rspec spec/lib/common/authentication/entry_store_spec.rb spec/lib/common/cli/cli_encryption_mode_change_spec.rb spec/lib/common/webui_launcher/catalog_password_changes_spec.rb
+        run: bundle exec rspec spec/lib/common/authentication/entry_store_spec.rb spec/lib/common/cli/cli_encryption_mode_change_spec.rb spec/lib/common/webui_launcher/catalog_password_changes_spec.rb spec/lib/common/authentication/cli_password_spec.rb spec/lib/common/gui/account_manager_spec.rb spec/lib/webui/browser_launcher_spec.rb
