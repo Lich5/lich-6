@@ -69,3 +69,15 @@ jobs:
       - name: full spec/lib/webui
         if: ${{ !cancelled() }}
         run: bundle exec rspec spec/lib/webui
+      - name: builder specs (1850:RC5, Windows CRLF reads and child supervision)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/script_scope_builder_spec.rb spec/lib/common/script_scope_builder_remaining_spec.rb
+      - name: default WebUI acceptance spec (1853:RC18, Windows child supervision)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/main/default_webui_acceptance_spec.rb
+      - name: master-password and browser specs (1841:RC29, 1834:RC41/RC42, 1838:RC8)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/gui/master_password_manager_spec.rb spec/lib/common/authentication/cli_password_spec.rb spec/lib/common/cli/cli_encryption_mode_change_spec.rb spec/lib/common/webui_launcher/controller_regressions_spec.rb
+      - name: workflow classification test on a CRLF checkout (1852:RC12)
+        if: ${{ !cancelled() }}
+        run: node --test spec/webui/webui_workflow_classification_test.cjs

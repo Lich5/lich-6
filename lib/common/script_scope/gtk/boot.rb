@@ -35,10 +35,10 @@ module Lich
       HAVE_GTK = Lich::WebUI.presentation_enabled?
 
       # With presentation explicitly disabled (--no-gui), script code must not
-      # see a Gtk constant, so a script's defined?(Gtk) takes its non-GUI branch
-      # as on main, where gtk3 never loaded. An unconfigured policy is no
-      # decision and conceals nothing.
-      conceal(:Gtk) if Lich::WebUI.presentation_disabled?
+      # see a Gtk, GLib or Gdk constant, so a script's defined?(Gtk) takes its
+      # non-GUI branch as on main, where gtk3 never loaded and none of the three
+      # existed. An unconfigured policy is no decision and conceals nothing.
+      conceal(:Gtk, :GLib, :Gdk) if Lich::WebUI.presentation_disabled?
 
       module Gtk
         # Legacy spelling for the existing browser-owned automatic scroll policy.
@@ -125,6 +125,9 @@ module Lich
         # window in which the owner starts between the check and the call.
         # Both refuse through the closed-owner error below. An owner that is merely
         # stopping, before its death close, still gets one (1845:RC12).
+        # Because the hook is registered first and the core has no unregister, a
+        # failed Session.new leaves one no-op hook on the owner until the owner
+        # dies; no shipped path raises there (1845:RC15).
         # @return [Session]
         # @raise [UnsupportedOperation] when no Script owns the call, or the owner's
         #   death close or pre-terminate hooks have started, and it has no session
@@ -229,6 +232,8 @@ module Lich
         # before it drops the session, so no later call recreates one (1845:RC12).
         # It closes whichever session the owner holds then, so it needs no session at
         # registration time.
+        # @param owner [Script] script whose death closes its session
+        # @return [Proc] the registered hook, as Lich::WebUI.before_owner_terminate returns it
         # @raise [Lich::WebUI::Error] when the owner's pre-terminate hooks have started
         #   (the owner is dying: the caller must create no session for it)
         # @api private
