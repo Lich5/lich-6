@@ -14,7 +14,7 @@ jobs:
   windows_webui_specs:
     name: WebUI specs on native Windows
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       BUNDLE_WITHOUT: 'vscode:profanity'
     steps:
@@ -59,3 +59,12 @@ jobs:
       - name: startup fatal report spec
         if: ${{ !cancelled() }}
         run: bundle exec rspec spec/lib/main/webui_startup_spec.rb
+      - name: Windows-aware specs the stack touched (first Windows run)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/frontend_choices_spec.rb spec/lib/common/webui_launcher/catalog_integration_spec.rb spec/lib/common/webui_launcher_workflows_spec.rb spec/lib/gemcheck_spec.rb spec/lib/util/memoryreleaser_spec.rb spec/lib/webui/browser_window_pending_close_spec.rb spec/lib/webui/host_service_boundary_spec.rb spec/lib/webui/monitor_geometry_spec.rb spec/lib/webui/owned_shutdown_spec.rb spec/lib/webui/window_lifecycle_spec.rb
+      - name: Windows-aware main specs (first Windows run, outside the stack)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/frontend_locator_spec.rb spec/lib/common/frontend_spec.rb spec/lib/common/game_transport_spec.rb spec/lib/common/gui/master_password_manager_spec.rb spec/lib/common/gui/windows_credential_manager_spec.rb spec/lib/common/process_launcher_spec.rb spec/lib/common/settings/sessions_settings_spec.rb spec/lib/common/update/snapshot_manager_spec.rb spec/lib/init_startup_dirs_spec.rb spec/lib/lich_hosts_file_spec.rb
+      - name: full spec/lib/webui
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui
