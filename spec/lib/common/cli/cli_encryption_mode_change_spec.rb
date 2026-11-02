@@ -10,6 +10,7 @@ require_relative '../../../../lib/common/cli/cli_encryption_mode_change'
 RSpec.describe Lich::Common::CLI::EncryptionModeChange do
   let(:data_dir) { Dir.mktmpdir('cli-mode-change') }
   let(:entry_store) { Lich::Common::Authentication::EntryStore }
+  let(:minimum) { Lich::Common::GUI::MasterPasswordManager::MIN_PASSWORD_LENGTH }
 
   around do |example|
     original_stdout = $stdout
@@ -34,6 +35,26 @@ RSpec.describe Lich::Common::CLI::EncryptionModeChange do
 
       expect(entry_store).to have_received(:change_encryption_mode)
         .with(data_dir, :enhanced, 'synthetic-master', manager: Lich::Common::GUI::MasterPasswordManager)
+    end
+  end
+
+  describe '.change_mode to enhanced with a --master-password value' do
+    before { allow(entry_store).to receive(:change_encryption_mode).and_return(true) }
+
+    it 'refuses a password shorter than the shared minimum before writing anything' do
+      short = 'x' * (minimum - 1)
+
+      expect(described_class.change_mode(:enhanced, short)).to eq(1)
+      expect(entry_store).not_to have_received(:change_encryption_mode)
+      expect($stdout.string).to include("error: Password must be at least #{minimum} characters")
+    end
+
+    it 'accepts a password of exactly the minimum length' do
+      exact = 'x' * minimum
+
+      expect(described_class.change_mode(:enhanced, exact)).to eq(0)
+      expect(entry_store).to have_received(:change_encryption_mode)
+        .with(data_dir, :enhanced, exact, manager: Lich::Common::GUI::MasterPasswordManager)
     end
   end
 end

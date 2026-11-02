@@ -47,3 +47,15 @@ jobs:
       - name: master password and entry store specs
         if: ${{ !cancelled() }}
         run: bundle exec rspec spec/lib/common/authentication/entry_store_spec.rb spec/lib/common/cli/cli_encryption_mode_change_spec.rb spec/lib/common/webui_launcher/catalog_password_changes_spec.rb spec/lib/common/authentication/cli_password_spec.rb spec/lib/common/gui/account_manager_spec.rb spec/lib/webui/browser_launcher_spec.rb
+      - name: server Fetch Metadata spec
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui/server_spec.rb
+      - name: browser path, variable and discovery spec
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/webui/browser_path_spec.rb
+      - name: launcher saved-path and Chromium examples
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/webui_launcher/controller_regressions_spec.rb -e "saved browser path" -e "Chromium"
+      - name: startup fatal report spec
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/main/webui_startup_spec.rb
