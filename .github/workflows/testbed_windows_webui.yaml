@@ -81,3 +81,9 @@ jobs:
       - name: workflow classification test on a CRLF checkout (1852:RC12)
         if: ${{ !cancelled() }}
         run: node --test spec/webui/webui_workflow_classification_test.cjs
+      - name: corrections pass specs (1844:RC8, 1844:RC4, 1853:RC9, 1846:RC4)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/script_scope_destroy_sibling_reads_spec.rb spec/lib/common/script_scope_model_coalescing_spec.rb spec/lib/common/script_scope_top_level_ivars_spec.rb spec/lib/common/script_scope_css_corpus_spec.rb
+      - name: renderer fail-closed and password hint tests (1835:RC10, 1835:RC13)
+        if: ${{ !cancelled() }}
+        run: node --test spec/webui/webui_render_fail_closed_test.cjs spec/webui/webui_password_hints_test.cjs spec/webui/webui_asset_loading_test.cjs
