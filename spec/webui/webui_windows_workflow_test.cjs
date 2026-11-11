@@ -50,6 +50,7 @@ test('Windows coverage stays bounded and blocking with pinned read-only actions'
   assert.ok(!selected.includes('spec/lib/gemcheck_spec.rb'));
   assert.match(workflow, /^            if \(\$code -ne 0\) \{ \$failed = \$true \}$/m);
   assert.match(workflow, /^          if \(\$failed\) \{ exit 1 \}$/m);
+  assert.match(workflow, /\$principal\.Count -ne 1 -or \$principal\[0\]\.status -ne 'passed'/);
   assert.match(workflow, /if: \$\{\{ !cancelled\(\) \}\}\n        uses: actions\/upload-artifact@/);
 });
 
@@ -76,6 +77,7 @@ test('Windows selection includes the retained transport, authentication, launche
     'spec/lib/common/webui_launcher/controller_regressions_spec.rb',
     'spec/lib/common/script_scope_builder_spec.rb', 'spec/lib/common/script_scope_builder_remaining_spec.rb',
     'spec/lib/main/default_webui_acceptance_report_spec.rb',
+    'spec/lib/main/webui_startup_spec.rb', 'spec/lib/main/default_webui_acceptance_spec.rb',
   ]) assert.ok(selected.includes(filename), filename);
 });
 
