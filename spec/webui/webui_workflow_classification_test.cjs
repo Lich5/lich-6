@@ -100,15 +100,15 @@ for (const filename of [
   '.github/workflows/windows_webui.yaml',
   '.github/workflows/macos_webui.yaml', '.github/scripts/macos_webui_smoke.py',
   '.github/scripts/windows_runtime_prepare.ps1', '.github/scripts/windows_runtime_observer.rb',
-  '.ruby-version', // setup-ruby reads it for the browser job (1852:RC10)
+  '.ruby-version', // setup-ruby reads it for the browser job
 ]) {
   test(`existing WebUI dependency remains selected: ${filename}`, async () => {
     assert.deepEqual((await classify({ files: [{ filename }] })).outputs, [['webui', 'true']]);
   });
 }
 
-// Files the launcher presentation browser spec and the login helpers load
-// (1852:RC4); each one maps to a distinct WEBUI_PATHS entry.
+// Files the launcher presentation browser spec and the login helpers load;
+// each one maps to a distinct WEBUI_PATHS entry.
 for (const filename of [
   'spec/lib/common/webui_launcher_presentation_browser_spec.rb', 'spec/support/data_dir.rb',
   '.rspec', '.rspec_parallel',
@@ -125,10 +125,10 @@ for (const filename of [
 
 // Every helper that .rspec or .rspec_parallel loads into all examples (browser
 // ones included) must select WebUI jobs, so an edit to the next globally loaded
-// helper cannot skip the browser checks (1852:RC11).
+// helper cannot skip the browser checks.
 // Parses the require targets of an rspec options file. The space, `=` and
 // attached (`-r./path`) forms are accepted; any other line that starts with
-// --require or -r fails visibly instead of being skipped (1852:RC12).
+// --require or -r fails visibly instead of being skipped.
 function rspecRequires(text) {
   const required = [];
   for (const line of lf(text).split('\n')) {
