@@ -2,14 +2,18 @@
 require 'digest'
 require 'fileutils'
 require 'json'
+require 'net/http'
 require 'open-uri'
 require 'open3'
+require 'openssl'
 require 'rbconfig'
 require 'rubygems/installer'
+require 'securerandom'
 require 'tempfile'
 require 'timeout'
 require 'tmpdir'
 require 'uri'
+require_relative 'recovery_unit_policy'
 
 module Lich
   # Restores approved runtime gems from the Ruby4Lich5 manifest when an
@@ -27,13 +31,17 @@ module Lich
     LOCK_FILENAME = '.lich-dependency-recovery.lock'
     HTTP_OPEN_TIMEOUT_SECONDS = 10
     HTTP_READ_TIMEOUT_SECONDS = 60
+    MANIFEST_TIMEOUT_SECONDS = 30
+    DOWNLOAD_TIMEOUT_SECONDS = 300
+    MAX_MANIFEST_BYTES = 5 * 1024 * 1024
     NATIVE_LOAD_TIMEOUT_SECONDS = 60
+    PARENT_EXIT_TIMEOUT_SECONDS = 120
     SHA256_PATTERN = /\Asha256:[0-9a-f]{64}\z/
     SAFE_FILENAME = /\A(?!\.+\z)[^\\\/]+\z/
     SAFE_NAME = /\A[a-zA-Z0-9_.-]+\z/
 
     # Result of a successful or unsuccessful recovery attempt.
-    Result = Struct.new(:installed_gems, :error, :restart_required, keyword_init: true) do
+    Result = Struct.new(:installed_gems, :error, :restart_required, :error_kind, keyword_init: true) do
       # @return [Boolean] whether recovery completed successfully
       def success?
         error.nil?
@@ -43,7 +51,7 @@ module Lich
     # A validated, manifest-derived set of units. Planning intentionally
     # fetches no gem artifacts, so callers can obtain user consent before an
     # installation changes the runtime.
-    Plan = Struct.new(:units, :error, keyword_init: true) do
+    Plan = Struct.new(:units, :error, :target, :error_kind, keyword_init: true) do
       # @return [Boolean] whether the requested units are approved and valid
       def success?
         error.nil?
@@ -52,6 +60,74 @@ module Lich
 
     # Raised internally for malformed manifests and rejected artifacts.
     class Error < StandardError; end
+    class StagingTimeoutError < Error; end
+    # Raised before any gem is installed or scheduled when a directory
+    # RubyGems must write to in the gem home is read-only or denies writes.
+    class GemHomeNotWritableError < Error; end
+    # Raised when a well-formed manifest publishes no target for the running
+    # Ruby ABI and platform (for example native ARM64 Windows Ruby while only
+    # x64 is published). This is a coverage gap, not a corrupt manifest.
+    class UnsupportedRuntimeError < Error; end
+
+    # Gem home subdirectories Gem::Installer#install writes into for a gem
+    # without executables (see #verify_gem_home_writable!).
+    GEM_HOME_WRITE_DIRS = %w[gems specifications extensions cache build_info].freeze
+
+    # kernel32 calls the replacement helper uses to wait for Lich to exit.
+    #
+    # Ruby's Process.kill(0, pid) on Windows only checks that OpenProcess
+    # succeeds. An exited process stays openable while any other process
+    # still holds a handle to it, so polling kill(0) can report a finished
+    # Lich as running until the helper gives up. Waiting on the process
+    # handle reports the exit itself. Fiddle and kernel32 load on first use,
+    # so other platforms never touch them.
+    module WindowsProcessApi
+      SYNCHRONIZE = 0x0010_0000
+      PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+      ERROR_INVALID_PARAMETER = 87
+      WAIT_OBJECT_0 = 0
+      WAIT_TIMEOUT = 0x102
+
+      module_function
+
+      # Opens a handle that can wait on +pid+.
+      # @param pid [Integer]
+      # @return [Array(Fiddle::Pointer, nil), Array(nil, Integer)] the handle,
+      #   or nil and the Win32 error code when OpenProcess fails
+      def open(pid)
+        handle = kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        error = Fiddle.win32_last_error
+        handle.null? ? [nil, error] : [handle, nil]
+      end
+
+      # @param handle [Fiddle::Pointer] handle from {open}
+      # @param milliseconds [Integer]
+      # @return [Array(Integer, Integer)] WaitForSingleObject result and Win32 error
+      def wait(handle, milliseconds)
+        result = kernel32.WaitForSingleObject(handle, milliseconds)
+        [result, Fiddle.win32_last_error]
+      end
+
+      # @param handle [Fiddle::Pointer] handle from {open}
+      # @return [void]
+      def close(handle)
+        kernel32.CloseHandle(handle)
+      end
+
+      # @return [Module] Fiddle bindings for the kernel32 functions above
+      def kernel32
+        @kernel32 ||= begin
+          require 'fiddle/import'
+          Module.new do
+            extend Fiddle::Importer
+            dlload 'kernel32.dll'
+            extern 'void* OpenProcess(unsigned long, int, unsigned long)'
+            extern 'unsigned long WaitForSingleObject(void*, unsigned long)'
+            extern 'int CloseHandle(void*)'
+          end
+        end
+      end
+    end
 
     # @param manifest_url [String] HTTPS manifest location
     # @param gem_home [String] runtime-owned installation directory
@@ -60,10 +136,15 @@ module Lich
     # @param install_gem [#call, nil] test seam for local gem installation
     # @param extract_zip [#call, nil] test seam for zip extraction
     # @param powershell_runner [#call, nil] test seam for the Windows extractor
+    # @param windows_process_api [#open, #wait, #close] test seam for the
+    #   kernel32 calls that wait for Lich to exit
     def initialize(manifest_url: ENV.fetch('LICH_GEM_MANIFEST_URL', DEFAULT_MANIFEST_URL),
                    gem_home: Gem.dir, temp_dir: (defined?(TEMP_DIR) ? TEMP_DIR : Dir.tmpdir),
                    http_get: nil, install_gem: nil, extract_zip: nil, powershell_runner: nil,
-                   helper_launcher: nil)
+                   helper_launcher: nil, lich_version: (defined?(LICH_VERSION) ? LICH_VERSION : nil),
+                   windows_process_api: WindowsProcessApi)
+      @windows_process_api = windows_process_api
+      @lich_version = lich_version
       @manifest_url = manifest_url
       @gem_home = gem_home
       @temp_dir = temp_dir
@@ -90,6 +171,31 @@ module Lich
       Plan.new(units: [], error: "#{e.class}: #{e.message}")
     end
 
+    # The complete applicable target is checked before choosing required roots.
+    # RubyInstaller-provided roots need no artifact, and are checked separately.
+    def policy_plan(gem_names)
+      manifest = load_manifest
+      target = target_for(manifest)
+      raise Error, 'accepted policy has no recovery units' if target.fetch('units').empty?
+      target.fetch('units').each { |unit| validate_unit!(unit) }
+      ids = target.fetch('units').map { |unit| unit.fetch('id') }
+      raise Error, 'accepted policy has duplicate unit IDs' unless ids.uniq.length == ids.length
+      target.fetch('units').each do |unit|
+        unless unit.fetch('members').sort == unit.fetch('packages').map { |package| package.fetch('name') }.sort
+          raise Error, "unit #{unit.fetch('id')} members disagree with packages"
+        end
+      end
+      effective = target.merge('units' => RecoveryUnitPolicy.select(target, @lich_version))
+      requested = Array(gem_names).select { |name| effective.fetch('units').any? { |unit| unit_members(unit).include?(name) } }
+      Plan.new(units: units_for(manifest, requested), target: effective)
+    rescue OpenURI::HTTPError, SocketError, SystemCallError, IOError, Timeout::Error, OpenSSL::SSL::SSLError, Net::ProtocolError, Net::HTTPBadResponse => e
+      Plan.new(units: [], error: "#{e.class}: #{e.message}", error_kind: :acquisition)
+    rescue UnsupportedRuntimeError => e
+      Plan.new(units: [], error: "#{e.class}: #{e.message}", error_kind: :unsupported_runtime)
+    rescue StandardError => e
+      Plan.new(units: [], error: "#{e.class}: #{e.message}", error_kind: :invalid)
+    end
+
     # Downloads, verifies, and installs a previously approved manifest plan.
     # Installation always targets +Gem.dir+ (or the injected runtime directory),
     # never a user-controlled GEM_HOME.
@@ -97,8 +203,10 @@ module Lich
     # @param gem_names [Array<String>] approved gem names to restore
     # @param force [Boolean] reinstall even when the manifest version is present
     # @param plan [Plan, nil] plan obtained before user consent
+    # @param restart [Boolean] defer all replacements until this process exits
+    # @param preserve_newer [Boolean] retain installed versions above the policy floor
     # @return [Result]
-    def recover(gem_names, force: false, plan: nil)
+    def recover(gem_names, force: false, plan: nil, restart: false, preserve_newer: false)
       planned = plan || recovery_plan(gem_names)
       return Result.new(installed_gems: [], error: planned.error) unless planned.success?
 
@@ -107,23 +215,30 @@ module Lich
         # No runtime lock or Gem.dir write occurs until every requested unit is
         # downloaded, extracted, and hash-verified. An unreachable release
         # endpoint therefore fails closed without changing the runtime.
-        staged_units = planned.units.map { |unit| stage_unit(unit, work_dir, artifact_cache) }
+        staged_units = Timeout.timeout(DOWNLOAD_TIMEOUT_SECONDS, StagingTimeoutError) { planned.units.map { |unit| stage_unit(unit, work_dir, artifact_cache) } }
         with_install_lock do
-          replacement, direct = staged_units.partition { |staged| native_runtime_unit?(staged.fetch(:unit)) }
-          installed = direct.flat_map { |staged| install_staged_unit(staged, force: force) }
-
-          if replacement.empty?
-            Result.new(installed_gems: installed)
-          elsif replacement.length == 1
-            schedule_runtime_replacement(replacement.first, work_dir)
-            Result.new(installed_gems: installed, restart_required: true)
+          # Fail here, while Lich is still running and nothing has changed,
+          # rather than in the detached helper after Lich has exited, where
+          # the player only sees a popup and the next start asks again.
+          replace_after_exit = restart || staged_units.any? { |staged| native_runtime_unit?(staged.fetch(:unit)) }
+          # The helper moves installed versions aside first, except newer
+          # ones under preserve_newer; an in-process install leaves them.
+          verify_gem_home_writable!(staged_units, keeps_installed_newer: !replace_after_exit || preserve_newer)
+          if replace_after_exit
+            schedule_runtime_replacement(staged_units, work_dir, preserve_newer: preserve_newer)
+            Result.new(installed_gems: [], restart_required: true)
           else
-            raise Error, 'multiple native runtime replacement units are not supported in one recovery'
+            installed = staged_units.flat_map { |staged| install_staged_unit(staged, force: force) }
+            Result.new(installed_gems: installed)
           end
         end
       end
       refresh_rubygems! unless result.restart_required
       result
+    rescue StagingTimeoutError => e
+      Result.new(installed_gems: [], error: "Recovery staging timed out: #{e.message}", error_kind: :timeout)
+    rescue GemHomeNotWritableError => e
+      Result.new(installed_gems: [], error: e.message, error_kind: :gem_home_not_writable)
     rescue Error, JSON::ParserError, OpenURI::HTTPError, SocketError, SystemCallError => e
       Result.new(installed_gems: [], error: e.message)
     rescue StandardError => e
@@ -163,7 +278,7 @@ module Lich
 
       require 'win32ole'
       WIN32OLE.new('WScript.Shell').Popup(
-        "Lich could not update the GTK runtime. See #{log_path} for details.",
+        "Lich could not update the Ruby gem runtime. See #{log_path} for details.",
         0, 'Lich5: Ruby Gem Recovery', 16
       )
     rescue StandardError
@@ -174,7 +289,7 @@ module Lich
 
     # @return [Hash] validated manifest document
     def load_manifest
-      document = JSON.parse(fetch(@manifest_url))
+      document = Timeout.timeout(MANIFEST_TIMEOUT_SECONDS) { JSON.parse(fetch(@manifest_url)) }
       raise Error, 'manifest must be a JSON object' unless document.is_a?(Hash)
       raise Error, "unsupported manifest schema #{document['schema'].inspect}" unless document['schema'] == 1
       raise Error, 'manifest targets must be an array' unless document['targets'].is_a?(Array)
@@ -182,19 +297,32 @@ module Lich
       document
     end
 
+    def target_for(manifest)
+      all_targets = manifest.fetch('targets')
+      # Only a well-formed target list may report "no target for this
+      # runtime"; anything malformed stays a fail-closed invalid policy.
+      raise Error, 'manifest targets must not be empty' if all_targets.empty?
+      unless all_targets.all? { |candidate| candidate.is_a?(Hash) && candidate['ruby_abi'].is_a?(String) && candidate['platform'].is_a?(String) }
+        raise Error, 'manifest targets must each name a String ruby_abi and platform'
+      end
+      targets = all_targets.select do |candidate|
+        candidate['ruby_abi'] == ruby_abi && candidate['platform'] == Gem::Platform.local.to_s
+      end
+      raise UnsupportedRuntimeError, "manifest has no target for Ruby #{ruby_abi} on #{Gem::Platform.local}" if targets.empty?
+      raise Error, 'manifest has duplicate targets for this runtime' unless targets.length == 1
+      target = targets.first
+      raise Error, 'manifest target units must be an array' unless target['units'].is_a?(Array)
+      target
+    end
+
     # Selects units only from the exact Ruby ABI and platform that are running.
     # @param manifest [Hash]
     # @param requested [Array<String>]
     # @return [Array<Hash>]
     def units_for(manifest, requested)
-      target = manifest.fetch('targets').find do |candidate|
-        candidate.is_a?(Hash) &&
-          candidate['ruby_abi'] == ruby_abi &&
-          candidate['platform'] == Gem::Platform.local.to_s
-      end
-      raise Error, "manifest has no target for Ruby #{ruby_abi} on #{Gem::Platform.local}" unless target
+      target = target_for(manifest)
 
-      units = target['units']
+      units = RecoveryUnitPolicy.select(target, @lich_version)
       raise Error, 'manifest target units must be an array' unless units.is_a?(Array)
 
       selected = requested.map do |name|
@@ -275,7 +403,9 @@ module Lich
         [package.fetch('name'), path]
       end
       { unit: unit, package_paths: package_paths }
-    rescue Error, OpenURI::HTTPError, SocketError, SystemCallError, Timeout::Error => e
+    rescue StagingTimeoutError, Timeout::Error
+      raise StagingTimeoutError, 'Recovery download or staging exceeded its time budget'
+    rescue Error, OpenURI::HTTPError, SocketError, SystemCallError => e
       raise Error, "Could not stage recovery unit #{unit.fetch('id')}: #{e.message}"
     end
 
@@ -306,7 +436,7 @@ module Lich
       artifact_cache[identity] = { path: artifact_path, package_dir: package_dir }
     end
 
-    # @param staged [Hash]
+    # @param staged_units [Array<Hash>]
     # @param force [Boolean]
     # @return [Array<String>] installed package names
     def install_staged_unit(staged, force:)
@@ -325,13 +455,123 @@ module Lich
       end
     end
 
-    # A ZIP unit containing native gems cannot safely be overwritten while the
+    # Checks, before anything is installed or scheduled, that RubyGems will be
+    # able to write everywhere Gem::Installer#install writes for these gems.
+    #
+    # Every directory gets a real write probe. The plugins directory, and the
+    # bin directory when a staged gem has executables, are also checked with
+    # File.writable?, because Gem::Installer#ensure_writable_dir refuses them
+    # when that is false. plugins is checked that way only when some staged
+    # gem will reach Gem::Installer#generate_plugins, which returns before
+    # the check when a newer version of that gem is installed and stays
+    # installed (+keeps_installed_newer+). On Windows, File.writable? false
+    # means the folder has the read-only attribute, which Windows itself
+    # ignores for writes into a folder; other
+    # directories are not checked that way, since RubyGems would install into
+    # them anyway. A directory that does not exist yet skips that check (the
+    # one RubyGems creates carries no such flag) and is probed through its
+    # nearest existing parent, which is where RubyGems would create it.
+    #
+    # @param staged_units [Array<Hash>] units from #stage_unit
+    # @param keeps_installed_newer [Boolean] whether installed versions newer
+    #   than a staged package stay installed while it is installed
+    # @return [void]
+    # @raise [GemHomeNotWritableError] naming the directory and how to fix it
+    def verify_gem_home_writable!(staged_units, keeps_installed_newer:)
+      plugins = Gem.plugindir(@gem_home)
+      attribute_checked = []
+      attribute_checked << plugins if reaches_generate_plugins?(staged_units, keeps_installed_newer)
+      attribute_checked << Gem.bindir(@gem_home) if staged_executables?(staged_units)
+      probed = ([@gem_home] + GEM_HOME_WRITE_DIRS.map { |name| File.join(@gem_home, name) } + [plugins] + attribute_checked).uniq
+
+      attribute_checked.each do |dir|
+        raise GemHomeNotWritableError, read_only_dir_message(dir) if File.directory?(dir) && !File.writable?(dir)
+      end
+      probed.each { |dir| probe_dir_write!(nearest_existing_dir(dir)) }
+    end
+
+    # Gem::Installer#generate_plugins returns early, before checking the
+    # plugins directory, when Gem::Specification.latest_spec_for(name) is
+    # newer than the gem being installed. This asks the same question the
+    # same way: latest_spec_for counts installed specs of any platform,
+    # where find_all_by_name keeps only those matching this one.
+    # @param staged_units [Array<Hash>]
+    # @param keeps_installed_newer [Boolean]
+    # @return [Boolean] whether installing some staged package checks plugins
+    def reaches_generate_plugins?(staged_units, keeps_installed_newer)
+      return true unless keeps_installed_newer
+
+      staged_units.flat_map { |staged| staged.fetch(:unit).fetch('packages') }.any? do |package|
+        latest = Gem::Specification.latest_spec_for(package.fetch('name'))
+        !(latest && latest.version > Gem::Version.new(package.fetch('version')))
+      end
+    end
+
+    # A package whose spec cannot be read counts as having none; installing
+    # it then fails with RubyGems' own error, which says more than this could.
+    # @param staged_units [Array<Hash>]
+    # @return [Boolean] whether any staged gem installs executables
+    def staged_executables?(staged_units)
+      staged_units.any? do |staged|
+        staged.fetch(:package_paths).each_value.any? do |path|
+          !Gem::Package.new(path).spec.executables.empty?
+        rescue Gem::Exception
+          false
+        end
+      end
+    end
+
+    # @param dir [String]
+    # @return [String] +dir+, or its nearest ancestor that is a directory
+    def nearest_existing_dir(dir)
+      dir = File.dirname(dir) until File.directory?(dir) || File.dirname(dir) == dir
+      dir
+    end
+
+    # Creates and removes an empty file in +dir+.
+    # @param dir [String]
+    # @return [void]
+    # @raise [GemHomeNotWritableError] if the file cannot be created
+    def probe_dir_write!(dir)
+      probe = File.join(dir, ".lich-write-probe-#{Process.pid}-#{SecureRandom.hex(4)}")
+      File.open(probe, File::WRONLY | File::CREAT | File::EXCL) { nil }
+    rescue Errno::EACCES, Errno::EPERM, Errno::EROFS => e
+      raise GemHomeNotWritableError, denied_dir_message(dir, e)
+    ensure
+      begin
+        File.delete(probe) if probe && File.exist?(probe)
+      rescue SystemCallError
+        nil
+      end
+    end
+
+    # @param dir [String]
+    # @return [String] one line naming +dir+ and how to clear the flag
+    def read_only_dir_message(dir)
+      if Gem.win_platform?
+        native = dir.tr('/', '\\')
+        "#{native} is marked read-only, so gems cannot be installed. Open a Command Prompt and run: attrib -R \"#{native}\""
+      else
+        "#{dir} is not writable, so gems cannot be installed. Make it writable for your user (chmod u+w \"#{dir}\")."
+      end
+    end
+
+    # @param dir [String] the directory, or the lock file, that refused the write
+    # @param error [SystemCallError]
+    # @return [String] one line naming +dir+ and the refusal
+    def denied_dir_message(dir, error)
+      shown = Gem.win_platform? ? dir.tr('/', '\\') : dir
+      reason = error.class.name.split('::').last
+      "Writing to #{shown} was denied (#{reason}), so gems cannot be installed. Give your account permission to modify it."
+    end
+
+    # A unit containing native gems cannot safely be overwritten while the
     # Lich Ruby process is alive. It is replaced as one coherent suite after
     # this process exits, rather than mixing old and new native components.
     # @param unit [Hash]
     # @return [Boolean]
     def native_runtime_unit?(unit)
-      Gem.win_platform? && unit.fetch('artifact').fetch('archive') == 'zip' && unit.fetch('packages').any? do |package|
+      Gem.win_platform? && unit.fetch('packages').any? do |package|
         package.fetch('filename').end_with?("-#{Gem::Platform.local}.gem")
       end
     end
@@ -339,18 +579,28 @@ module Lich
     # @param staged [Hash]
     # @param work_dir [String]
     # @return [void]
-    def schedule_runtime_replacement(staged, work_dir)
+    def schedule_runtime_replacement(staged_units, work_dir, preserve_newer: false)
+      packages = {}
+      Array(staged_units).each do |staged|
+        by_name = staged.fetch(:unit).fetch('packages').to_h { |package| [package.fetch('name'), package] }
+        staged.fetch(:unit).fetch('install_order').each do |name|
+          package = by_name.fetch(name)
+          if packages.key?(name) && RecoveryUnitPolicy.package_identity(packages[name], Gem::Platform.local.to_s) != RecoveryUnitPolicy.package_identity(package, Gem::Platform.local.to_s)
+            raise Error, "conflicting replacement package identities for #{name}"
+          end
+          packages[name] ||= package.merge('path' => staged.fetch(:package_paths).fetch(name))
+        end
+      end
       payload_path = File.join(work_dir, 'native-runtime-replacement.json')
       payload = {
-        'schema'     => 1,
-        'parent_pid' => Process.pid,
-        'gem_home'   => @gem_home,
-        'temp_dir'   => @temp_dir,
-        'work_dir'   => work_dir,
-        'packages'   => staged.fetch(:unit).fetch('packages').map do |package|
-          package.merge('path' => staged.fetch(:package_paths).fetch(package.fetch('name')))
-        end,
-        'restart'    => {
+        'schema'         => 1,
+        'parent_pid'     => Process.pid,
+        'gem_home'       => @gem_home,
+        'temp_dir'       => @temp_dir,
+        'work_dir'       => work_dir,
+        'packages'       => packages.values,
+        'preserve_newer' => preserve_newer,
+        'restart'        => {
           'program' => File.expand_path($PROGRAM_NAME),
           'argv'    => ARGV,
           'chdir'   => Dir.pwd
@@ -408,7 +658,7 @@ module Lich
         moved = []
         replacements = []
         begin
-          backup_existing_packages(payload.fetch('packages'), rollback_dir, moved)
+          backup_existing_packages(payload.fetch('packages'), rollback_dir, moved, preserve_newer: payload['preserve_newer'] == true)
           refresh_rubygems!
           payload.fetch('packages').each do |package|
             verify_file!(package.fetch('path'), package.fetch('sha256'), "#{package.fetch('name')} gem")
@@ -458,13 +708,18 @@ module Lich
       end
     end
 
-    # @param pid [Integer]
+    # @param pid [Integer, String] process id of the Lich that scheduled the replacement
+    # @param timeout [Numeric] seconds to wait before giving up
     # @return [void]
-    def wait_for_parent_exit(pid)
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 120
+    # @raise [Error] if Lich is still running when the timeout expires
+    def wait_for_parent_exit(pid, timeout: PARENT_EXIT_TIMEOUT_SECONDS)
+      pid = Integer(pid)
+      return wait_for_windows_process_exit(pid, timeout) if Gem.win_platform?
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
       loop do
-        Process.kill(0, Integer(pid))
-        raise Error, 'timed out waiting for Lich to exit before native gem replacement' if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        Process.kill(0, pid)
+        raise Error, parent_exit_timeout_message if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
         sleep 0.1
       rescue Errno::ESRCH
@@ -472,14 +727,48 @@ module Lich
       end
     end
 
+    # Waits on the process handle, which is signalled when the process exits
+    # even while other processes still hold handles to it.
+    # @param pid [Integer]
+    # @param timeout [Numeric] seconds
+    # @return [void]
+    # @raise [Error] on timeout, or when Windows cannot open or wait on the process
+    def wait_for_windows_process_exit(pid, timeout)
+      handle, error = @windows_process_api.open(pid)
+      unless handle
+        # Windows reports a process id that names no process as an invalid
+        # parameter: Lich has already exited and nothing holds its handle.
+        return if error == WindowsProcessApi::ERROR_INVALID_PARAMETER
+
+        raise Error, "could not open Lich process #{pid} to wait for it to exit (Windows error #{error})"
+      end
+
+      begin
+        result, error = @windows_process_api.wait(handle, (timeout * 1000).ceil)
+        return if result == WindowsProcessApi::WAIT_OBJECT_0
+        raise Error, parent_exit_timeout_message if result == WindowsProcessApi::WAIT_TIMEOUT
+
+        raise Error, "could not wait for Lich process #{pid} to exit (wait result #{result}, Windows error #{error})"
+      ensure
+        @windows_process_api.close(handle)
+      end
+    end
+
+    # @return [String]
+    def parent_exit_timeout_message
+      'timed out waiting for Lich to exit before native gem replacement'
+    end
+
     # @param packages [Array<Hash>]
     # @param rollback_dir [String]
     # @param moved [Array<Array<String>>] caller-owned journal updated per move
     # @return [Array<Array<String>>] original and temporary paths
-    def backup_existing_packages(packages, rollback_dir, moved)
+    def backup_existing_packages(packages, rollback_dir, moved, preserve_newer: false)
       names = packages.map { |package| package.fetch('name') }.uniq
       specs = names.flat_map { |name| Gem::Specification.find_all_by_name(name) }.uniq(&:loaded_from)
       specs.each do |spec|
+        expected = packages.find { |package| package.fetch('name') == spec.name }
+        next if preserve_newer && spec.version > Gem::Version.new(expected.fetch('version'))
         [spec.full_gem_path, spec.loaded_from, spec.extension_dir].each do |path|
           next unless File.exist?(path)
           raise Error, "installed gem path is outside Ruby runtime: #{path}" unless path_within?(path, @gem_home)
@@ -574,20 +863,23 @@ module Lich
         installed = Gem::Specification.find_all_by_name(package.fetch('name'), requirement)
         raise Error, "#{package.fetch('name')} was not installed during native runtime replacement" if installed.empty?
       end
-      verify_gtk_load!(packages) if packages.any? { |package| package.fetch('name') == 'gtk3' }
+      entrypoints = %w[gtk3 sqlite3] & packages.map { |package| package.fetch('name') }
+      verify_native_load!(packages, entrypoints) unless entrypoints.empty?
     end
 
-    # Check the GTK entry point used by init.rb in a fresh process, before
+    # Check the native recovery entry points used by init.rb in a fresh process, before
     # discarding the prior suite. Loading it here would lock its native DLLs
     # and prevent rollback on Windows. A failed check never relaunches Lich.
     # @param packages [Array<Hash>]
+    # @param entrypoints [Array<String>]
     # @return [void]
-    def verify_gtk_load!(packages)
+    def verify_native_load!(packages, entrypoints)
+      label = entrypoints.include?('gtk3') ? 'GTK runtime' : 'sqlite3 runtime'
       script = <<~RUBY
         require 'rubygems'
         Gem.use_paths(ARGV.shift)
         ARGV.each_slice(2) { |name, version| gem(name, "= \#{version}") }
-        require 'gtk3'
+        #{entrypoints.inspect}.each { |name| require name }
       RUBY
       versions = packages.flat_map { |package| [package.fetch('name'), package.fetch('version')] }
       # RubyGems can activate a parent bundle before this script starts, even
@@ -596,7 +888,7 @@ module Lich
         'GEM_HOME' => @gem_home, 'GEM_PATH' => @gem_home, 'RUBYOPT' => nil, 'RUBYLIB' => nil,
         'BUNDLER_SETUP' => nil, 'RUBYGEMS_GEMDEPS' => nil
       }
-      Tempfile.create(['lich-gtk-load-', '.log'], @temp_dir) do |log|
+      Tempfile.create(['lich-native-load-', '.log'], @temp_dir) do |log|
         pid = Process.spawn(environment, rubyw_binary, '-e', script, @gem_home, *versions, out: log, err: log)
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + NATIVE_LOAD_TIMEOUT_SECONDS
         loop do
@@ -605,9 +897,9 @@ module Lich
             break if finished.last.success?
 
             log.rewind
-            raise Error, "GTK runtime could not load after replacement: #{log.read.strip}"
+            raise Error, "#{label} could not load after replacement: #{log.read.strip}"
           end
-          raise Error, 'timed out checking the replacement GTK runtime' if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+          raise Error, "timed out checking the replacement #{label}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
           sleep 0.05
         end
@@ -676,12 +968,18 @@ module Lich
     # @return [String]
     def fetch(url)
       uri = parse_https_uri!(url, 'manifest URL')
-      return @http_get.call(url) if @http_get
+      if @http_get
+        bytes = @http_get.call(url)
+        raise Error, 'manifest exceeds size limit' if bytes.bytesize > MAX_MANIFEST_BYTES
+        return bytes
+      end
 
       uri.open(http_open_options) do |remote|
         final_uri = remote.base_uri
         parse_https_uri!(final_uri.to_s, 'redirected manifest URL') if final_uri
-        remote.read
+        bytes = remote.read(MAX_MANIFEST_BYTES + 1)
+        raise Error, 'manifest exceeds size limit' if bytes.bytesize > MAX_MANIFEST_BYTES
+        bytes
       end
     end
 
@@ -852,16 +1150,31 @@ module Lich
     # @yield installation work
     # @return [Object]
     def with_install_lock
-      FileUtils.mkdir_p(@gem_home)
-      lock_path = File.join(@gem_home, LOCK_FILENAME)
-      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+      lock = open_install_lock
+      begin
         lock.flock(File::LOCK_EX)
         yield
       ensure
-        lock.flock(File::LOCK_UN) if lock
+        lock.flock(File::LOCK_UN)
+        lock.close
       end
     rescue Errno::EACCES, Errno::EROFS => e
       raise Error, "Cannot write Ruby runtime gem directory #{@gem_home}: #{e.message}"
+    end
+
+    # Opens (creating it if needed) the lock file in the gem home. A gem home
+    # that refuses this is reported like the preflight's refusals, since it
+    # is the first write a repair makes; often no lock file exists yet.
+    # Errors raised while the lock is held keep #with_install_lock's message.
+    # @return [File]
+    # @raise [GemHomeNotWritableError] if the lock file cannot be opened for writing
+    def open_install_lock
+      FileUtils.mkdir_p(@gem_home)
+      lock_path = File.join(@gem_home, LOCK_FILENAME)
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600)
+    rescue Errno::EACCES, Errno::EPERM, Errno::EROFS => e
+      denied = lock_path && File.exist?(lock_path) ? lock_path : nearest_existing_dir(@gem_home)
+      raise GemHomeNotWritableError, denied_dir_message(denied, e)
     end
 
     # Uses Lich's own temp directory rather than the platform AppData/system

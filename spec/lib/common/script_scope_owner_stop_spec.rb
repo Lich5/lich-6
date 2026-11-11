@@ -5,8 +5,8 @@ require 'webui'
 require 'open3'
 require 'rbconfig'
 
-# Shim callbacks that call exit stop their Script owner (1843:RC3, settled
-# decision B3): a queued or timed block, a signal handler, a close handler and
+# Shim callbacks that call exit stop their Script owner: a queued or timed
+# block, a signal handler, a close handler and
 # a destroy handler run from a close or an explicit destroy each reach the core
 # owner stop, which asks the Script to kill itself. Fresh process with a real
 # host service and a Script-shaped owner that records kill requests.
@@ -165,7 +165,7 @@ RSpec.describe 'script compatibility owner stop' do
     expect(output).to eq("ready\n")
   end
 
-  # 1843:RC18: while an owner is stopping, queue runs the block inline for that
+  # While an owner is stopping, queue runs the block inline for that
   # owner's own threads (legacy parity), so a killed thread's ensure that queues
   # and then waits with no timeout cannot hang the script stop. Real Script
   # owner and real host service in a fresh process; only the stop is bounded.

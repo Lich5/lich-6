@@ -7,6 +7,10 @@ module Lich
     # Registers a native WebUI page owned by the supplied core or script object.
     # Registration does not render or open a window. Render the page, start the
     # host, then open it; the owner remains responsible for its domain behavior.
+    # Dispatched native callbacks and background render workers use HostThread
+    # in ThreadGroup::Default, outside the owning script's thread. Do not assume
+    # Script.current or script pause context there. Keep callbacks nonblocking;
+    # enqueue game I/O back to the owning script's thread.
     #
     # @param owner [Object] lifetime identity used for page cleanup
     # @param id [String] page identifier unique within this owner
@@ -35,8 +39,11 @@ module Lich
       Lich::WebUI::Contract::VERSION
     end
 
-    # Creates a hosted imperative adapter; its first valid page render opens
-    # the window automatically. Consumers must not create their own server.
+    # Creates a hosted imperative adapter. Its first valid page render opens a
+    # window only when the core presentation policy is enabled. Otherwise it
+    # spawns no window and delivers the page's existing close lifecycle.
+    # Consumers must not create their own server.
+    # The callback and background-render thread rules for webui_page also apply.
     #
     # @param owner [Object] lifetime identity used for adapter page cleanup
     # @param viewer [String, nil] attachment id for viewer-local properties;
@@ -64,16 +71,20 @@ module Lich
       Lich::WebUI.launch_url(page: page)
     end
 
-    # Opens a browser app window. Render the page and start the host first.
-    # Reopening an already owned page reuses its existing window.
+    # Opens a browser app window when the core presentation policy is enabled.
+    # Render the page and start the host first. Reopening an already owned page
+    # reuses its existing window.
     #
     # @param page [Lich::WebUI::Page, nil] registered page, or the page selector
-    # @return [Boolean] whether opening succeeded or the page was already open
+    # @return [Boolean] whether opening succeeded or the page was already open;
+    #   false without spawning when policy is not enabled, including before
+    #   startup resolves it or when --no-gui disables it
     def self.webui_open(page: nil)
       Lich::WebUI.open(page: page)
     end
 
     # Renders current server state and delivers it to connected page viewers.
+    # This explicit refresh evaluates the render block on the calling thread.
     # @param page [Lich::WebUI::Page] page whose render block should run
     # @return [Integer] generated revision; concurrent work may deliver a newer one
     def self.webui_refresh(page)
@@ -89,6 +100,11 @@ module Lich
 
     # Requests a modal without blocking a WebUI callback. The caller must choose
     # a no-viewer policy; completion may represent a response or cancellation.
+    # Viewer presence (active or resumable) is checked for the owner at modal open.
+    # Opening a host window alone does not establish attachment; a newly opened
+    # viewer remains absent until it attaches. If neither an active nor a
+    # resumable viewer is present, abort/default complete immediately. The wait
+    # policy opts into waiting for attachment and is forbidden for credential prompts.
     #
     # @param options [Hash] keywords accepted by ModalCoordinator#open
     # @param content [Proc, nil] optional dialog content builder

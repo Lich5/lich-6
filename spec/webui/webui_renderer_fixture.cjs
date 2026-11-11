@@ -25,7 +25,7 @@ function fixture(target) {
     replaceChildren(...children) { this.children.forEach(child => { child.isConnected = false; }); this.children = []; this.append(...children); }
     focus() { document.activeElement = this; }
     closest() { return null; }
-    contains(other) { for (let node = other; node; node = node.parent) if (node === this) return true; return false; }
+    contains(target) { return this === target || this.children.some(child => child.contains?.(target)); }
     click() { this.listeners.click?.({}); }
     getClientRects() { return this.hidden ? [] : [this.getBoundingClientRect()]; }
     querySelector(selector) {
@@ -59,15 +59,16 @@ function fixture(target) {
     showModal() { this.open = true; }
   }
   const elements = Object.fromEntries(['pages', 'status', 'notifications', 'announcer'].map(id => [id, new Element('div')]));
-  const documentEvents = {};
+  const documentEvents = {}, documentListeners = {};
   const document = { title: '', activeElement: null, body: new Element('body'), createElement: tag => new Element(tag),
-    getElementById: id => elements[id], addEventListener(name, callback) {
+    getElementById: id => elements[id],
+    querySelectorAll: selector => elements.pages.querySelectorAll(selector),
+    addEventListener(name, callback) {
       // Several document handlers may share an event; call each in registration order.
-      const prior = documentEvents[name];
-      documentEvents[name] = prior ? event => { prior(event); callback(event); } : callback;
-    },
-    querySelectorAll: selector => elements.pages.querySelectorAll(selector) };
-  const sent = [], resized = [], listeners = {}, windowEvents = {};
+      (documentListeners[name] ||= []).push(callback);
+      documentEvents[name] ||= event => documentListeners[name].forEach(listener => listener(event));
+    } };
+  const sent = [], resized = [], listeners = {}, windowEvents = {}, windowListeners = {};
   let timer = 0;
   const frames = [];
   class WebSocket {
@@ -80,9 +81,14 @@ function fixture(target) {
     innerWidth: 800, innerHeight: 600, outerWidth: 800, outerHeight: 630, screenX: 0, screenY: 0,
     requestAnimationFrame: work => frames.push(work), resizeTo: (...size) => resized.push(size), setTimeout: () => ++timer, clearTimeout() {},
     setInterval: () => ++timer, clearInterval() {},
-    addEventListener: (name, callback) => { windowEvents[name] = callback; },
+    addEventListener(name, callback) {
+      (windowListeners[name] ||= []).push(callback);
+      windowEvents[name] ||= event => windowListeners[name].forEach(listener => listener(event));
+    },
     getComputedStyle: element => ({ visibility: element.style.visibility || 'visible' }),
-    removeEventListener: name => { delete windowEvents[name]; } };
+    removeEventListener(name, callback) {
+      windowListeners[name] = (windowListeners[name] || []).filter(listener => listener !== callback);
+    } };
   const context = vm.createContext({ window, document, WebSocket, URL, URLSearchParams,
     CSS: { escape: value => value }, queueMicrotask: work => work() });
   for (const asset of browserAssets()) vm.runInContext(asset.source, context, { filename: asset.name });

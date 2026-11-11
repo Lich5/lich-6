@@ -41,7 +41,7 @@ module Lich
       # Writes the fatal reason to the debug log and, when stderr was redirected
       # to that log, to the terminal stream as well. With no terminal attached (a
       # desktop launch) it is also shown through Lich.msgbox_alert, so a launcher
-      # that failed to start is not silent (1853:RC4).
+      # that failed to start is not silent.
       # @param message [String] authored, secret-free failure message
       # @return [void]
       def report_fatal(message)

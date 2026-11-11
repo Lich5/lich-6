@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 require_relative '../../spec_helper'
+require_relative '../../support/webui_fresh_process'
 require 'webui'
-require 'open3'
-require 'rbconfig'
 require 'timeout'
 
-# Host service boundaries: 1836:RC6, the P05 shares of 1836:RC10, 1853:RC1,
-# 1853:RC2 and 1853:RC7, and 1836:RC14.
+# Host service boundaries.
 RSpec.describe 'WebUI host service boundaries' do
+  include WebUIFreshProcess
+
   let(:owner) { Object.new }
   let(:registry) { Lich::WebUI::Registry.new }
   let(:logged) { [] }
@@ -26,7 +26,7 @@ RSpec.describe 'WebUI host service boundaries' do
     marker.pop(timeout: 2)
   end
 
-  describe 'closed-page lookup (1836:RC6)' do
+  describe 'closed-page lookup' do
     it 'refuses an unregistered page without inspecting it' do
       page = Lich::WebUI::Page.new(owner: owner, id: 'gone', title: 'Gone') {}
       expect(page).not_to receive(:inspect)
@@ -34,7 +34,7 @@ RSpec.describe 'WebUI host service boundaries' do
     end
   end
 
-  describe 'file routes after owner termination (1836:RC10)' do
+  describe 'file routes after owner termination' do
     it 'refuses registration after termination and host stop' do
       service.terminate_owner(owner)
       expect { service.register_files('assets', Lich::WebUI::Service::ASSETS_DIR, owner: owner) }
@@ -56,7 +56,7 @@ RSpec.describe 'WebUI host service boundaries' do
     end
   end
 
-  describe 'failed window start (P05 share of 1853:RC1)' do
+  describe 'failed window start' do
     let(:closes) { Queue.new }
 
     def closable_page
@@ -95,7 +95,7 @@ RSpec.describe 'WebUI host service boundaries' do
     end
   end
 
-  describe 'core presentation capability (P05 share of 1853:RC2)' do
+  describe 'core presentation capability' do
     after do
       Lich::WebUI.reset!
       Lich::WebUI.configure_presentation(enabled: nil)
@@ -144,7 +144,7 @@ RSpec.describe 'WebUI host service boundaries' do
     end
   end
 
-  describe 'process-exit window cleanup (P05 share of 1853:RC7)' do
+  describe 'process-exit window cleanup' do
     def owned_child_after(exit_code)
       code = <<~RUBY_CODE
         require 'webui'
@@ -163,7 +163,8 @@ RSpec.describe 'WebUI host service boundaries' do
         puts child
         #{exit_code}
       RUBY_CODE
-      output, errors, = Open3.capture3(RbConfig.ruby, '-I', LIB_DIR, '-e', code)
+      output, errors, status = run_ruby_with_deadline(code)
+      expect_child_within_deadline(status, output, errors, 'fresh-process owned window cleanup')
       pid = Integer(output.lines.first, exception: false)
       raise "fixture did not start a child: #{errors}" unless pid
 
@@ -193,7 +194,7 @@ RSpec.describe 'WebUI host service boundaries' do
     end
   end
 
-  describe 'settings form save failures (1836:RC14)' do
+  describe 'settings form save failures' do
     it 'shows a generic message, keeps the draft and logs no values for an unexpected normalizer error' do
       messages = []
       allow(Lich).to receive(:log) { |message| messages << message }

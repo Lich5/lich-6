@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 // Normalized once so every marker and regex below sees LF, as on a CRLF
-// checkout (core.autocrlf) the raw text would break indexOf and $ anchors (1852:RC12).
+// checkout (core.autocrlf) the raw text would break indexOf and $ anchors.
 const lf = text => text.replace(/\r\n/g, '\n');
 const workflow = lf(fs.readFileSync(path.join(__dirname, '../../.github/workflows/webui_tests.yaml'), 'utf8'));
 
@@ -82,15 +82,15 @@ for (const filename of [
   'spec/webui/browser.spec.cjs', 'spec/fixtures/webui/fixture.json', 'spec/lib/webui/runtime_spec.rb',
   'spec/lib/common/script_scope_widgets_spec.rb', 'spec/support/webui_browser.rb', 'spec/spec_helper.rb',
   'Gemfile', 'Gemfile.lock', '.github/workflows/webui_tests.yaml',
-  '.ruby-version', // setup-ruby reads it for the browser job (1852:RC10)
+  '.ruby-version', // setup-ruby reads it for the browser job
 ]) {
   test(`existing WebUI dependency remains selected: ${filename}`, async () => {
     assert.deepEqual((await classify({ files: [{ filename }] })).outputs, [['webui', 'true']]);
   });
 }
 
-// Files the launcher presentation browser spec and the login helpers load
-// (1852:RC4); each one maps to a distinct WEBUI_PATHS entry.
+// Files the launcher presentation browser spec and the login helpers load;
+// each one maps to a distinct WEBUI_PATHS entry.
 for (const filename of [
   'spec/lib/common/webui_launcher_presentation_browser_spec.rb', 'spec/support/data_dir.rb',
   '.rspec', '.rspec_parallel',
@@ -107,10 +107,10 @@ for (const filename of [
 
 // Every helper that .rspec or .rspec_parallel loads into all examples (browser
 // ones included) must select WebUI jobs, so an edit to the next globally loaded
-// helper cannot skip the browser checks (1852:RC11).
+// helper cannot skip the browser checks.
 // Parses the require targets of an rspec options file. The space, `=` and
 // attached (`-r./path`) forms are accepted; any other line that starts with
-// --require or -r fails visibly instead of being skipped (1852:RC12).
+// --require or -r fails visibly instead of being skipped.
 function rspecRequires(text) {
   const required = [];
   for (const line of lf(text).split('\n')) {

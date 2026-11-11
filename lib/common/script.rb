@@ -9,6 +9,7 @@
 
 require 'weakref'
 require_relative 'script_death'
+require_relative 'script_list_feed'
 require_relative 'script_execution_guard'
 require_relative 'script_scope'
 
@@ -382,7 +383,16 @@ module Lich
       }
 
       attr_reader :name, :vars, :safe, :file_name, :label_order, :at_exit_procs, :exit_error
-      attr_accessor :quiet, :no_echo, :jump_label, :current_label, :want_downstream, :want_downstream_xml, :want_upstream, :want_script_output, :hidden, :paused, :silent, :no_pause_all, :no_kill_all, :downstream_buffer, :upstream_buffer, :unique_buffer, :die_with, :match_stack_labels, :match_stack_strings, :watchfor, :command_line, :ignore_pause, :killed_externally, :kill_source
+      attr_accessor :quiet, :no_echo, :jump_label, :current_label, :want_downstream, :want_downstream_xml, :want_upstream, :want_script_output, :paused, :silent, :no_pause_all, :no_kill_all, :downstream_buffer, :upstream_buffer, :unique_buffer, :die_with, :match_stack_labels, :match_stack_strings, :watchfor, :command_line, :ignore_pause, :killed_externally, :kill_source
+
+      attr_reader :hidden
+
+      # Hiding or unhiding (hide_me) moves a script in or out of ;list, so the
+      # script list feed hears about it.
+      def hidden=(value)
+        @hidden = value
+        ScriptListFeed.changed!
+      end
 
       KILL_METRICS_FEATURE_FLAG = :script_kill_metrics
       CLEANUP_QUEUE_ENTRY_MARKER = Object.new.freeze
@@ -2681,6 +2691,7 @@ module Lich
             @@running.push(self) unless @@running.include?(self)
           end
         end
+        ScriptListFeed.changed!
         self
       end
       private :__publish
@@ -2695,6 +2706,7 @@ module Lich
             @@running.push(self)
           end
         end
+        ScriptListFeed.changed!
         self
       end
       private :__publish_generated
@@ -2726,6 +2738,7 @@ module Lich
             @stopped_condition&.broadcast
           end
         end
+        ScriptListFeed.changed!
         parent&.unregister_child(self)
         self
       end
@@ -2754,6 +2767,7 @@ module Lich
               @stopped_condition&.broadcast
             end
           end
+          ScriptListFeed.changed!
           late_workers.each { |thread| thread.kill rescue nil }
           workers_stopped = __wait_for_worker_shutdown(:wait => context != :shutdown)
           __finalize_stop if workers_stopped
@@ -2905,6 +2919,7 @@ module Lich
         else
           respond "--- Lich: #{@name} paused."
           @paused = true
+          ScriptListFeed.changed!
         end
       end
 
@@ -2912,6 +2927,7 @@ module Lich
         if @paused == true
           respond "--- Lich: #{@name} unpaused."
           @paused = false
+          ScriptListFeed.changed!
         else
           respond "--- Lich: #{@name} is not paused."
         end

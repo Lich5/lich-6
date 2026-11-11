@@ -313,6 +313,7 @@ module Lich
   # @param args [Hash] message, optional title and icon, as given to Lich.msgbox
   # @return [Boolean] whether a helper was invoked
   def Lich.msgbox_alert(args)
+    return false if defined?(Win32)
     return false unless args[:icon] == :error
     return false if STDOUT.isatty || STDERR.isatty
     return false unless defined?(Lich::GemCheck) && Lich::GemCheck.respond_to?(:show_notice)
@@ -1086,6 +1087,29 @@ module Lich
   #   always return their argument, not the method body's result
   def Lich.display_room_links=(val)
     write_display_setting(:display_room_links, val.to_s.match?(/on|true|yes/))
+  end
+
+  # Whether front ends that render stream windows (the streams capability)
+  # get the Lich Scripts window: the running scripts with pause/unpause and
+  # kill links, drawn by Lich (";display scriptwindow"). Off by default. A
+  # client that declared script_list gets the running-script data whatever
+  # this says (see Lich::Common::ScriptListFeed). Persisted in the
+  # lich_settings table.
+  # @return [Boolean, nil] nil until a game is identified and no value is stored
+  def Lich.display_script_window
+    read_display_setting(:display_script_window) do |val|
+      val = false if val.nil? && XMLData.game != ""
+      val.nil? ? nil : val.to_s.match?(/on|true|yes/)
+    end
+  end
+
+  # Sets and persists the Lich Scripts window toggle, then draws the window
+  # for the clients that now get it, or clears it for those that no longer do.
+  # @param val [Boolean, String] truthy values are any of on/true/yes
+  def Lich.display_script_window=(val)
+    enabled = val.to_s.match?(/on|true|yes/)
+    write_display_setting(:display_script_window, enabled)
+    Lich::Common::ScriptListFeed.window_setting_changed(enabled) if defined?(Lich::Common::ScriptListFeed)
   end
 
   # Whether the Lich-injected room lines (Room Number, Room Exits, StringProcs)
