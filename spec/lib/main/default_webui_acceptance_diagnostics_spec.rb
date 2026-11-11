@@ -31,12 +31,15 @@ RSpec.describe DefaultWebUIAcceptanceDiagnostics do
         expect(waiter.join(5)).not_to be_nil
         expect(stderr.read).to eq('')
 
+        # Capture preserves the redirected file's bytes, including Windows CRLF.
+        startup_log = File.binread(File.join(root, 'temp', 'debug-startup.log')).force_encoding(Encoding::UTF_8)
+        expect(startup_log).to match(/\Astartup blocked after dependency check\r?\n\z/)
         retained = described_class.capture(root)
         expect(retained).to include(
           'last_startup_stage' => 'gemcheck_entered',
           'startup_stages'     => ['probe_ready', 'gemcheck_entered'],
           'startup_logs'       => {
-            'temp/debug-startup.log'      => "startup blocked after dependency check\n",
+            'temp/debug-startup.log'      => startup_log,
             'temp/lich5-missing-gems.log' => "missing dependency\n" + [0xfffd].pack('U')
           }
         )

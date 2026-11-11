@@ -31,15 +31,19 @@ jobs:
     timeout-minutes: 45
     env:
       LICH_TESTBED_CANDIDATE_SHA: '65175b765455b2f91ba8f5e85279de298d4c072b'
-      BUNDLE_WITHOUT: 'vscode:profanity'
       LICH_CI_DEFAULT_WEBUI_ARTIFACT: tmp/windows-webui/default-entrypoint.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
-        with:
-          bundler-cache: true
+      - name: Acquire the published installer runtime inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/testbed_installer_runtime.ps1 -Stage Acquire
+      - name: Bake and preflight the published installer runtime
+        shell: pwsh
+        run: ./.github/scripts/testbed_installer_runtime.ps1 -Stage Install
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '26.5.0'
@@ -68,7 +72,7 @@ jobs:
             attempt = $env:GITHUB_RUN_ATTEMPT
             os = $env:RUNNER_OS
             image = $env:ImageVersion
-            ruby = (& ruby --version)
+            ruby = (& $env:LICH_TESTBED_RUBY --version)
             node = (& node --version)
           } | ConvertTo-Json | Set-Content tmp/windows-webui/runner.json
       - name: Run native Windows Ruby coverage
@@ -89,7 +93,7 @@ jobs:
             $name = $group.Key
             $specFiles = $group.Value
             $clock = [Diagnostics.Stopwatch]::StartNew()
-            & bundle exec rspec @specFiles --format progress --format json --out "tmp/windows-webui/$name.json" 2>&1 | Tee-Object "tmp/windows-webui/$name.log"
+            & $env:LICH_TESTBED_RUBY $env:LICH_TESTBED_RSPEC @specFiles --format progress --format json --out "tmp/windows-webui/$name.json" 2>&1 | Tee-Object "tmp/windows-webui/$name.log"
             $code = $LASTEXITCODE
             $clock.Stop()
             if ($code -ne 0) { $failed = $true }
