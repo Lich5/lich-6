@@ -13,7 +13,7 @@ RSpec.describe 'default WebUI entrypoint acceptance' do
   it 'authenticates the real page, exercises it, and shuts down without GTK' do
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, script, chdir: root)
 
-    expect(status).to be_success, stderr
+    expect(status).to be_success, "#{stderr}\n#{stdout}"
     result = JSON.parse(stdout)
     expect(result).to include(
       'verdict'                    => 'pass',
@@ -34,6 +34,8 @@ RSpec.describe 'default WebUI entrypoint acceptance' do
     )
     expect(result.fetch('launcher_start_source')).to match(%r{\Alib/common/webui_launcher\.rb:\d+\z})
     expect(result.fetch('launcher_await_source')).to match(%r{\Alib/common/webui_launcher\.rb:\d+\z})
+    expect(result.fetch('termination_requests')).to eq([])
+    expect(result.fetch('startup_stages')).to include('gemcheck_entered', 'gemcheck_returned', 'browser_hook_installed')
   end
 
   it 'prints a verdict when the entrypoint exits between the liveness check and the group signal' do
@@ -84,6 +86,10 @@ RSpec.describe 'default WebUI entrypoint acceptance' do
       result = JSON.parse(stdout.lines.last.to_s)
       expect(result).to include('verdict', 'exit_status', 'term_signal', 'escaped_roots')
       expect(result.fetch('term_signal')).to eq(Signal.list.fetch('TERM'))
+      expect(result.fetch('clean_shutdown')).to be false
+      expect(result.fetch('termination_requests')).to include(
+        'signal' => 'TERM', 'target' => 'process_group', 'outcome' => 'already_exited'
+      )
     end
   end
 end

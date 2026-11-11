@@ -80,7 +80,7 @@ jobs:
             launcher = @('spec/lib/common/webui_launcher/controller_regressions_spec.rb', 'spec/lib/common/webui_launcher/catalog_browser_path_spec.rb', 'spec/lib/common/webui_launcher/catalog_password_changes_spec.rb', 'spec/lib/common/webui_launcher/window_geometry_store_spec.rb', 'spec/lib/common/webui_launcher_workflows_spec.rb', 'spec/lib/common/frontend_choices_spec.rb', 'spec/lib/util/memoryreleaser_spec.rb')
             builder = @('spec/lib/common/script_scope_builder_spec.rb', 'spec/lib/common/script_scope_builder_remaining_spec.rb', 'spec/lib/common/script_scope_destroy_sibling_reads_spec.rb', 'spec/lib/common/script_scope_model_coalescing_spec.rb', 'spec/lib/common/script_scope_css_corpus_spec.rb')
             # The principal real-entrypoint example must execute on Windows.
-            entrypoint = @('spec/lib/main/webui_startup_spec.rb', 'spec/lib/main/default_webui_acceptance_spec.rb', 'spec/lib/main/default_webui_acceptance_report_spec.rb')
+            entrypoint = @('spec/lib/main/webui_startup_spec.rb', 'spec/lib/main/default_webui_acceptance_spec.rb', 'spec/lib/main/default_webui_acceptance_report_spec.rb', 'spec/lib/main/default_webui_acceptance_diagnostics_spec.rb')
           }
           # The testbed's informational gemcheck group is unrelated and omitted;
           # every selected group below is blocking, including entrypoint acceptance.

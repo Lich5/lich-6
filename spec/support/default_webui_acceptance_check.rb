@@ -6,6 +6,7 @@ require 'open3'
 require 'rbconfig'
 require 'tmpdir'
 require_relative 'default_webui_acceptance_report'
+require_relative 'default_webui_acceptance_diagnostics'
 
 # Subprocess supervisor for the real no-argument entrypoint with a protocol-only
 # browser substitute. The probe points the home, data, temp, script, map, log and
@@ -39,35 +40,44 @@ begin
   stdin.close
   drain = Thread.new { output << combined.read }
   raw = DefaultWebUIAcceptanceReport.receive(report_path, wait).to_s
+  record_state = raw.empty? ? (wait.alive? ? 'timeout' : 'exited_without_report') : 'received'
   wait.join(10)
+  termination_requests = []
   stops = own_process_group ? [['TERM', 2], ['KILL', nil]] : [['KILL', nil]]
   stops.each do |signal, grace|
     break unless wait.alive?
 
+    request = { 'signal' => signal, 'target' => own_process_group ? 'process_group' : 'child_pid' }
+    termination_requests << request
     begin
       Process.kill(signal, own_process_group ? -wait.pid : wait.pid)
+      request['outcome'] = 'sent'
     rescue Errno::ESRCH
       # The group exited between the liveness check and the signal; its own
       # exit status, reaped below, is the outcome.
-      nil
+      request['outcome'] = 'already_exited'
     end
     wait.join(grace)
   end
   status = wait.value
   drain.join
-  result = raw.empty? ? { 'verdict' => 'fail', 'error' => 'acceptance record timeout' } : JSON.parse(raw)
-  result['clean_shutdown'] = status.success?
+  error = record_state == 'timeout' ? 'acceptance record timeout' : 'entrypoint exited without acceptance record'
+  result = raw.empty? ? { 'verdict' => 'fail', 'error' => error } : JSON.parse(raw)
+  result['acceptance_record_state'] = record_state
+  result['termination_requests'] = termination_requests
+  result['clean_shutdown'] = status.success? == true && termination_requests.empty?
   result['exit_status'] = status.exitstatus
   result['term_signal'] = status.termsig
-  result['gtk_family_loaded_features'] ||= []
+  result['gtk_family_loaded_features'] = nil unless result.key?('gtk_family_loaded_features')
   isolated = File.realpath(acceptance_root)
-  escaped_roots = (result['effective_roots'] || {}).reject do |_name, path|
+  escaped_roots = result['effective_roots']&.reject do |_name, path|
     resolved = File.exist?(path) ? File.realpath(path) : File.expand_path(path)
     resolved == isolated || resolved.start_with?("#{isolated}/")
   end
   result['escaped_roots'] = escaped_roots
-  roots_isolated = result.key?('effective_roots') && escaped_roots.empty?
-  result['verdict'] = 'fail' unless result['clean_shutdown'] && result['gtk_family_loaded_features'].empty? && roots_isolated
+  roots_isolated = result['effective_roots']&.any? && escaped_roots.empty?
+  result['verdict'] = 'fail' unless result['clean_shutdown'] && result['gtk_family_loaded_features'] == [] && roots_isolated
+  result.merge!(DefaultWebUIAcceptanceDiagnostics.capture(acceptance_root))
   result['log'] = output unless result['verdict'] == 'pass'
   artifact = ENV['LICH_CI_DEFAULT_WEBUI_ARTIFACT']
   if artifact
