@@ -7,7 +7,6 @@ require 'socket'
 require 'timeout'
 require 'uri'
 require_relative 'default_webui_acceptance_report'
-require_relative 'default_webui_acceptance_diagnostics'
 
 acceptance_root = ENV.fetch('LICH_CI_DEFAULT_WEBUI_ROOT')
 FileUtils.mkdir_p(acceptance_root)
@@ -29,26 +28,11 @@ module LichCiDefaultWebUIAcceptance
   REQUIRED_TABS = ['Saved Entry', 'Manual Entry', 'Account Management', 'Frontends'].freeze
   GTK_FAMILY_PATTERN = /(?:gtk|gdk|gobject|glib)/i
 
-  # Observes GemCheck and intercepts browser opening after its class loads;
-  # production dependency checks, startup, and await methods run unchanged.
+  # Intercepts only browser opening after its class loads; leaves production startup/await intact.
   # This subprocess probe uses authenticated HTTP/WebSocket traffic, not a browser cookie jar.
   # @return [void]
   def install!
-    stage('probe_ready')
-    @startup_observer = TracePoint.new(:call, :return) do |trace|
-      next unless trace.method_id == :verify! && trace.path.tr('\\', '/').end_with?('/gemcheck.rb')
-      next unless defined?(Lich::GemCheck) && trace.self.equal?(Lich::GemCheck)
-
-      stage(trace.event == :call ? 'gemcheck_entered' : 'gemcheck_returned')
-      @startup_observer.disable if trace.event == :return
-    end
-    @startup_observer.enable
-    @installer = TracePoint.new(:class, :end) do |trace|
-      if trace.event == :class && trace.path.tr('\\', '/').end_with?('/webui/browser_launcher.rb') &&
-         defined?(Lich::WebUI::BrowserLauncher) && trace.self.equal?(Lich::WebUI::BrowserLauncher)
-        stage('browser_class_entered')
-      end
-      next unless trace.event == :end
+    @installer = TracePoint.new(:end) do |trace|
       next unless trace.path.end_with?('/webui/browser_launcher.rb')
       next unless defined?(Lich::WebUI::BrowserLauncher)
       next unless trace.self.equal?(Lich::WebUI::BrowserLauncher)
@@ -60,28 +44,21 @@ module LichCiDefaultWebUIAcceptance
         end
       end
       Lich::WebUI::BrowserLauncher.singleton_class.prepend(client)
-      stage('browser_hook_installed')
       @installer.disable
     end
     @installer.enable
   end
 
   # Starts the probe client and publishes a structured success/failure report for the parent.
-  # @param url [String] authenticated loopback launch URL, never written to progress
-  # @param on_exit [#call, nil] owned-browser exit callback
   # @return [Thread] client worker
   def start_client(url, on_exit: nil)
-    stage('client_requested')
     @client = Thread.new do
-      stage('client_started')
       result = exercise(url)
       report(result)
       # An owned browser window closes the launcher by exiting; a viewer detach
       # alone leaves the page open, so report the substitute's exit.
       on_exit&.call
-      stage('client_exit_notified')
     rescue StandardError => error
-      stage('client_failed')
       report(
         'verdict'   => 'fail',
         'error'     => "#{error.class}: #{error.message}",
@@ -92,11 +69,9 @@ module LichCiDefaultWebUIAcceptance
 
   # Checks no-argument startup, authentication, launcher tabs, and one real event/refresh cycle.
   # This proves transport/startup integration, not rendering or OS-window behavior.
-  # @param url [String] authenticated loopback launch URL
   # @return [Hash] acceptance evidence
   # @raise [RuntimeError] when an expected protocol or launcher step fails
   def exercise(url)
-    stage('exercise_started')
     raise 'default acceptance unexpectedly received arguments' unless ARGV.empty?
 
     start_source = launcher_source(:start)
@@ -111,13 +86,11 @@ module LichCiDefaultWebUIAcceptance
     )
     raise 'authenticated page request failed' unless page_response.start_with?('HTTP/1.1 200 OK')
 
-    stage('authenticated_http')
     socket = websocket(uri, cookie)
     hello = read_message(socket)
     raise 'authenticated WebSocket hello missing' unless hello['type'] == 'hello' &&
                                                          hello['contract_version'] == Lich::WebUI::Contract::VERSION
 
-    stage('authenticated_websocket')
     address = hello.fetch('pages').first.fetch('address')
     send_message(socket, type: 'attach', page: address, version: hello.fetch('contract_version'))
     render = read_until(socket) { |message| message['type'] == 'render' }
@@ -126,7 +99,6 @@ module LichCiDefaultWebUIAcceptance
     end
     raise 'required launcher tabs missing from authenticated render' unless tabs
 
-    stage('launcher_rendered')
     toggle = find_component(render.fetch('tree')) { |component| component['cid'].end_with?('toggle:gui-settings-toggle') }
     raise 'GUI Settings interaction target missing' unless toggle
 
@@ -144,7 +116,6 @@ module LichCiDefaultWebUIAcceptance
     end
     send_message(socket, type: 'detach', page: address, generation: changed.fetch('generation'))
     socket.close
-    stage('interaction_complete')
 
     {
       'verdict'                    => 'pass',
@@ -262,15 +233,6 @@ module LichCiDefaultWebUIAcceptance
   # @return [void]
   def report(result)
     DefaultWebUIAcceptanceReport.publish(ENV.fetch('LICH_CI_DEFAULT_WEBUI_REPORT'), result)
-    stage('report_published')
-  end
-
-  # Persists only a fixed stage literal, surviving a blocked or terminated child.
-  # @param name [String] fixed progress stage, never application or credential data
-  # @return [void]
-  # @api private
-  def stage(name)
-    DefaultWebUIAcceptanceDiagnostics.mark(ENV.fetch('LICH_CI_DEFAULT_WEBUI_ROOT'), name)
   end
 end
 

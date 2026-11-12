@@ -1,0 +1,82 @@
+name: Windows File Handoff
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "lib/dependency_recovery.rb"
+      - "spec/lib/dependency_recovery_spec.rb"
+      - "spec/support/native_dll_holder.rb"
+      - "spec/lib/native_dll_holder_spec.rb"
+      - "lib/internal_api/active_sessions.rb"
+      - "lib/internal_api/active_sessions/**"
+      - "spec/lib/internal_api/active_sessions*_spec.rb"
+      - "spec/lib/internal_api/active_sessions/**"
+      - "spec/support/coordination_handoff_child.rb"
+      - "lib/common/frontend_settings.rb"
+      - "lib/common/sharing_violation_retry.rb"
+      - "spec/lib/common/frontend_settings_spec.rb"
+      - "spec/lib/common/sharing_violation_retry_spec.rb"
+      - "lib/common/pipe_io.rb"
+      - "spec/lib/common/pipe_io_spec.rb"
+      - "spec/lib/common/pipe_io_windows_spec.rb"
+      - "spec/support/pipe_io_spawn_child.rb"
+      - "lib/common/update/snapshot_manager.rb"
+      - "spec/lib/common/update/snapshot_manager_windows_spec.rb"
+      - ".github/workflows/windows_file_handoff.yaml"
+  pull_request:
+    paths:
+      - "lib/dependency_recovery.rb"
+      - "spec/lib/dependency_recovery_spec.rb"
+      - "spec/support/native_dll_holder.rb"
+      - "spec/lib/native_dll_holder_spec.rb"
+      - "lib/internal_api/active_sessions.rb"
+      - "lib/internal_api/active_sessions/**"
+      - "spec/lib/internal_api/active_sessions*_spec.rb"
+      - "spec/lib/internal_api/active_sessions/**"
+      - "spec/support/coordination_handoff_child.rb"
+      - "lib/common/frontend_settings.rb"
+      - "lib/common/sharing_violation_retry.rb"
+      - "spec/lib/common/frontend_settings_spec.rb"
+      - "spec/lib/common/sharing_violation_retry_spec.rb"
+      - "lib/common/pipe_io.rb"
+      - "spec/lib/common/pipe_io_spec.rb"
+      - "spec/lib/common/pipe_io_windows_spec.rb"
+      - "spec/support/pipe_io_spawn_child.rb"
+      - "lib/common/update/snapshot_manager.rb"
+      - "spec/lib/common/update/snapshot_manager_windows_spec.rb"
+      - ".github/workflows/windows_file_handoff.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  active_sessions_handoff:
+    name: Exercise native Windows file handoff
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      BUNDLE_WITHOUT: 'vscode:profanity'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          bundler-cache: true
+      - name: Run ActiveSessions ownership and handoff specs
+        run: bundle exec rspec spec/lib/internal_api/active_sessions_spec.rb spec/lib/internal_api/active_sessions_handoff_spec.rb spec/lib/internal_api/active_sessions/server_client_spec.rb
+      - name: Run frontend settings specs
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/frontend_settings_spec.rb spec/lib/common/sharing_violation_retry_spec.rb
+      - name: Run dependency recovery specs
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/dependency_recovery_spec.rb spec/lib/native_dll_holder_spec.rb
+      - name: Run PipeIO specs (--pipe front-end transport)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/pipe_io_spec.rb spec/lib/common/pipe_io_windows_spec.rb
+      - name: Run snapshot rename specs (lich5-update)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/update/snapshot_manager_windows_spec.rb
