@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative 'default_webui_startup_diagnostic'
 require 'base64'
 require 'fileutils'
 require 'json'
