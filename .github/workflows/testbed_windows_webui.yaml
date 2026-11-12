@@ -1,4 +1,4 @@
-name: Windows Lich entrypoint smoke
+name: Windows Lich native gem repair
 
 on:
   push:
@@ -23,36 +23,19 @@ jobs:
       github.triggering_actor == 'OSXLich-Doug' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/testbed/webui-65175b76-20261111') ||
        github.event_name == 'workflow_dispatch')
-    name: Full Lich entrypoint smoke (serial)
+    name: Ruby 4.0.9 without DevKit - real gem repair
     runs-on: windows-latest
     timeout-minutes: 45
-    env:
-      BUNDLE_WITHOUT: 'vscode:profanity'
-      LICH_CI_DEFAULT_WEBUI_ARTIFACT: tmp/windows-webui/default-entrypoint.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          bundler-cache: true
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: '26.5.0'
-          cache: npm
-          cache-dependency-path: spec/webui/package-lock.json
-      - run: npm ci --prefix spec/webui
-      - name: Install renderer engines
-        working-directory: spec/webui
-        shell: pwsh
-        run: |
-          npx --no-install playwright install webkit
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe")
-          if (-not ($chrome | Where-Object { Test-Path $_ })) {
-            npx --no-install playwright install chrome
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+          ruby-version: '4.0.9'
+          windows-toolchain: none
+          bundler: none
+          bundler-cache: false
       - name: Record runner and candidate
         shell: pwsh
         run: |
@@ -64,20 +47,12 @@ jobs:
             os = $env:RUNNER_OS
             image = $env:ImageVersion
             ruby = (& ruby --version)
-            node = (& node --version)
+            devkit = $env:RI_DEVKIT
+            gem_home = (& ruby -e 'puts Gem.dir')
           } | ConvertTo-Json | Set-Content tmp/windows-webui/runner.json
-      - name: Run full Lich entrypoint smoke (serial)
+      - name: Start lich.rbw and accept its real gem repair dialog
         shell: pwsh
-        run: |
-          & bundle exec rspec spec/lib/main/default_webui_acceptance_spec.rb --example "authenticates the real page, exercises it, and shuts down without GTK" --format documentation --format json --out tmp/windows-webui/entrypoint.json 2>&1 | Tee-Object tmp/windows-webui/entrypoint.log
-          $code = $LASTEXITCODE
-          if (Test-Path tmp/windows-webui/entrypoint.json) {
-            $result = Get-Content tmp/windows-webui/entrypoint.json -Raw | ConvertFrom-Json
-            "Smoke: $($result.summary.example_count) example, $($result.summary.failure_count) failures, $($result.summary.pending_count) pending" | Out-File $env:GITHUB_STEP_SUMMARY -Append
-            $principal = @($result.examples | Where-Object { $_.full_description -eq 'default WebUI entrypoint acceptance authenticates the real page, exercises it, and shuts down without GTK' })
-            if ($result.summary.example_count -ne 1 -or $principal.Count -ne 1 -or $principal[0].status -ne 'passed') { $code = 1 }
-          } else { $code = 1 }
-          exit $code
+        run: ./.github/scripts/testbed_gem_repair.ps1
       - name: Upload Windows coverage and diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -85,6 +60,5 @@ jobs:
           name: windows-webui-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             tmp/windows-webui/
-            spec/webui/test-results/
           if-no-files-found: warn
           retention-days: 14
