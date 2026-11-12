@@ -28,8 +28,10 @@ output = +''
 nil
 
 begin
+  # Disposable startup diagnostic: retain inherited Ruby activation alongside the
+  # probe. Retire with this testbed once the startup diagnosis is complete.
   env = {
-    'RUBYOPT'                      => "-r#{probe}",
+    'RUBYOPT'                      => [ENV['RUBYOPT'], "-r#{probe}"].compact.join(' '),
     'LICH_CI_DEFAULT_WEBUI_REPORT' => report_path,
     'LICH_CI_DEFAULT_WEBUI_ROOT'   => acceptance_root
   }
