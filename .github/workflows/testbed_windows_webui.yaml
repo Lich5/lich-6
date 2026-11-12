@@ -1,4 +1,4 @@
-name: Windows Lich native gem repair
+name: Windows WebUI smoke after native gem repair
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
       github.triggering_actor == 'OSXLich-Doug' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/testbed/webui-65175b76-20261111') ||
        github.event_name == 'workflow_dispatch')
-    name: Ruby 4.0.9 without DevKit - real gem repair
+    name: Ruby 4.0.9 native repair and WebUI smoke
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -53,6 +53,18 @@ jobs:
       - name: Start lich.rbw and accept its real gem repair dialog
         shell: pwsh
         run: ./.github/scripts/testbed_gem_repair.ps1
+      - name: Run existing WebUI entrypoint smoke on the repaired runtime
+        shell: pwsh
+        env:
+          LICH_CI_DEFAULT_WEBUI_ARTIFACT: tmp/windows-webui/default-entrypoint.json
+        run: |
+          & ruby spec/support/default_webui_acceptance_check.rb 2>&1 | Tee-Object tmp/windows-webui/entrypoint.log
+          $code = $LASTEXITCODE
+          if (-not (Test-Path $env:LICH_CI_DEFAULT_WEBUI_ARTIFACT)) { throw 'WebUI smoke produced no acceptance artifact' }
+          $result = Get-Content $env:LICH_CI_DEFAULT_WEBUI_ARTIFACT -Raw | ConvertFrom-Json
+          if ($result.verdict -ne 'pass' -or -not $result.authenticated_http -or -not $result.authenticated_websocket -or -not $result.clean_shutdown) { $code = 1 }
+          "WebUI smoke: $($result.verdict); HTTP=$($result.authenticated_http); WebSocket=$($result.authenticated_websocket); shutdown=$($result.clean_shutdown)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          exit $code
       - name: Upload Windows coverage and diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
