@@ -7,10 +7,6 @@ require 'rbconfig'
 require 'tmpdir'
 
 RSpec.describe 'default WebUI entrypoint acceptance' do
-  # Temporary diagnostic exclusion. Restore when the Windows CI runtime can
-  # complete its production GemCheck prerequisite without intervention.
-  before { skip 'Full lich.rbw startup temporarily excluded pending Windows GemCheck prerequisite resolution' }
-
   let(:root) { File.expand_path('../../..', __dir__) }
   let(:script) { File.join(root, 'spec/support/default_webui_acceptance_check.rb') }
 
