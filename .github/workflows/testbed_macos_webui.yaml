@@ -64,7 +64,18 @@ jobs:
           bundler: none
           bundler-cache: false
       - name: Install test tooling
-        run: gem install rspec --version 3.13.2 --no-document
+        # This focused Mac runner starts with Ruby and installs only the tooling
+        # needed by the selected native presentation specs, not the full gem set.
+        # Their shared spec_helper unconditionally requires both os and ffi:
+        # os supplies real platform detection; ffi satisfies that helper's load
+        # contract even though these examples exercise AppKit through Swift.
+        # RSpec alone therefore fails before any native example can execute.
+        # Install the real gems here rather than stub OS or alter shared tests.
+        # These are runner-local test prerequisites, not new helper runtime
+        # dependencies; other runners retain their own dependency provisioning.
+        run: |
+          gem install rspec --version 3.13.2 --no-document
+          gem install os ffi --no-document
       - name: Execute native window scenarios
         env:
           NATIVE_HOST: '1'
