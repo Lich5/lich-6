@@ -75,9 +75,16 @@ RSpec.describe 'macOS native host presentation' do
                  HTML
           client.write("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}")
         end
-        client.close
+      rescue Errno::ECONNRESET, Errno::EPIPE
+        # WebKit may abandon a connection before sending its request. Close only
+        # that client and keep serving; native assertions still require every
+        # requested transition and the helper retains its execution timeout.
+        next
+      ensure
+        client&.close
+        client = nil
       end
-    rescue IOError, Errno::EBADF, Errno::EPIPE
+    rescue IOError, Errno::EBADF
       nil # The test owns and closes this disposable server.
     ensure
       client&.close
