@@ -1,0 +1,39 @@
+# Disposable routing only; retire this workflow with the testbed after owner acceptance.
+name: Disposable Windows File Handoff
+
+on:
+  push:
+    branches:
+      - testbed/webui-3381b066-20261112
+
+permissions:
+  contents: read
+
+jobs:
+  active_sessions_handoff:
+    name: Exercise native Windows file handoff
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      BUNDLE_WITHOUT: 'gtk:vscode:profanity'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          bundler-cache: true
+      - name: Run ActiveSessions ownership and handoff specs
+        run: bundle exec rspec spec/lib/internal_api/active_sessions_spec.rb spec/lib/internal_api/active_sessions_handoff_spec.rb spec/lib/internal_api/active_sessions/server_client_spec.rb
+      - name: Run frontend settings specs
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/frontend_settings_spec.rb spec/lib/common/sharing_violation_retry_spec.rb
+      - name: Run dependency recovery specs
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/dependency_recovery_spec.rb spec/lib/native_dll_holder_spec.rb
+      - name: Run PipeIO specs (--pipe front-end transport)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/pipe_io_spec.rb spec/lib/common/pipe_io_windows_spec.rb
+      - name: Run snapshot rename specs (lich5-update)
+        if: ${{ !cancelled() }}
+        run: bundle exec rspec spec/lib/common/update/snapshot_manager_windows_spec.rb
