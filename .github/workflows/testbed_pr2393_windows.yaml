@@ -27,7 +27,7 @@ jobs:
       - name: Install test gems
         shell: pwsh
         run: |
-          & gem install rspec os ffi --no-document
+          & gem install rspec os ffi terminal-table ascii_charts concurrent-ruby kramdown ox sequel tzinfo tzinfo-data webrick redis sqlite3 --no-document
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ruby --version
       - name: Run the PR's specs

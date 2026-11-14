@@ -2,6 +2,7 @@
 
 # Throwaway testbed probe for lich-5 #2393: what read_secret returns for each
 # Windows stdin source. Prints byte-level results; never fails the job.
+$LOAD_PATH.unshift(File.expand_path('../../lib', __dir__))
 require_relative '../../spec/support/frontend_mock'
 require_relative '../../spec/support/data_dir'
 require_relative '../../spec/login_spec_helper'
