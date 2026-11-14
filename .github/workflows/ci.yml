@@ -352,6 +352,9 @@ jobs:
               'spec/lib/webui/native_host_presentation_spec.rb', 'spec/webui/native_presentation.swift',
               'spec/spec_helper.rb', 'spec/support/data_dir.rb', 'spec/support/frontend_mock.rb',
               'spec/support/real_keychain_fence.rb', '.rspec',
+              // The macOS job also stores and reads through the real keychain tool.
+              'lib/common/gui/master_password_manager.rb', 'spec/login_spec_helper.rb',
+              'spec/lib/common/gui/master_password_manager_macos_keychain_spec.rb',
             ];
             // A change to how the suites are selected or run selects all of them.
             const ALL_SUITE_PATHS = [

@@ -91,7 +91,23 @@ const MACOS_FILES = [
   'spec/lib/webui/native_host_presentation_spec.rb', 'spec/webui/native_presentation.swift',
   'spec/spec_helper.rb', 'spec/support/data_dir.rb', 'spec/support/frontend_mock.rb',
   'spec/support/real_keychain_fence.rb', '.rspec',
+  // The keychain store and read, which the macOS job runs against the real tool.
+  'lib/common/gui/master_password_manager.rb', 'spec/login_spec_helper.rb',
 ];
+
+// Only the macOS job runs this spec against the real tool, and no other suite loads it.
+test('the macOS keychain spec selects macOS and nothing else', async () => {
+  const filename = 'spec/lib/common/gui/master_password_manager_macos_keychain_spec.rb';
+  for (const file of [
+    { filename, status: 'modified' }, { filename, status: 'removed' },
+    { filename: 'spec/retired_spec.rb', previous_filename: filename, status: 'renamed' },
+  ]) {
+    const result = await classify({ files: [file] });
+    assert.deepEqual(result.decisions, decide('macos'), file.status);
+    assert.ok(result.infos.some(message => message.startsWith('macos:') && message.includes(filename)), 'the matched path is explained');
+  }
+  assert.deepEqual(await decisionsFor(`${filename}.bak`), NONE);
+});
 
 // Startup and gem recovery, which only the Windows job runs end to end.
 const WINDOWS_STARTUP_FILES = [
@@ -142,7 +158,7 @@ for (const filename of [
 ]) {
   test(`launcher browser dependency selects the shared suites: ${filename}`, async () => {
     const result = await classify({ files: [{ filename }] });
-    assert.deepEqual(result.decisions, SHARED);
+    assert.deepEqual(result.decisions, expectedFor(filename));
     assert.deepEqual(result.calls, ['listFiles']);
     assert.deepEqual(result.notices, []);
   });

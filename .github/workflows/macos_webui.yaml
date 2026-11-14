@@ -52,6 +52,19 @@ jobs:
           assert data['summary']['pending_count'] == 0, data['summary']
           assert all(e['status'] == 'passed' for e in data['examples']), data['summary']
           PYCODE
+      - name: Store and read through the real keychain tool
+        # Runs the security tool against a throwaway keychain file the spec
+        # creates and deletes; the runner's own keychains are not used.
+        run: |
+          rspec spec/lib/common/gui/master_password_manager_macos_keychain_spec.rb --format documentation --format json --out tmp/macos-native/keychain.json
+          python3 - <<'PYCODE'
+          import json
+          data = json.load(open('tmp/macos-native/keychain.json'))
+          real = [e for e in data['examples'] if 'throwaway keychain' in e['full_description']]
+          assert len(real) >= 12, data['summary']
+          assert data['summary']['pending_count'] == 0, data['summary']
+          assert all(e['status'] == 'passed' for e in data['examples']), data['summary']
+          PYCODE
       - name: Build and exercise production helper
         run: |
           zsh lib/webui/native/macos/build.sh

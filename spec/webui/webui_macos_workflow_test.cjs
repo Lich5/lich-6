@@ -33,8 +33,11 @@ test('macOS runs two real native scenarios and the packaged helper within a boun
   assert.match(native, /gem install os ffi --no-document/);
   assert.match(native, /NATIVE_HOST: '1'/);
   const rspec = [...native.matchAll(/^\s+rspec (.+)$/gm)].map(match => match[1]);
-  assert.equal(rspec.length, 1);
+  assert.equal(rspec.length, 2);
   assert.match(rspec[0], /^spec\/lib\/webui\/native_host_presentation_spec\.rb --tag native_host /);
+  // The keychain examples must have run against the real tool, none skipped.
+  assert.match(rspec[1], /^spec\/lib\/common\/gui\/master_password_manager_macos_keychain_spec\.rb /);
+  assert.match(native, /real = \[e for e in data\['examples'\] if 'throwaway keychain' in e\['full_description'\]\]\n\s+assert len\(real\) >= 12/);
   assert.match(native, /assert data\['summary'\]\['example_count'\] == 2/);
   assert.match(native, /assert data\['summary'\]\['pending_count'\] == 0/);
   assert.match(native, /assert all\(e\['status'\] == 'passed' for e in data\['examples'\]\)/);
