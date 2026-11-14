@@ -79,3 +79,5 @@ begin
 ensure
   FileUtils.remove_entry(acceptance_root) if File.directory?(acceptance_root)
 end
+
+# testbed touch
