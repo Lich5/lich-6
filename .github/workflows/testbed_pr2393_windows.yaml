@@ -27,7 +27,7 @@ jobs:
       - name: Install test gems
         shell: pwsh
         run: |
-          & gem install rspec os ffi terminal-table ascii_charts concurrent-ruby kramdown ox sequel tzinfo tzinfo-data webrick redis sqlite3 --no-document
+          & gem install rspec os ffi terminal-table ascii_charts concurrent-ruby kramdown sequel tzinfo tzinfo-data webrick redis sqlite3 --no-document
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ruby --version
       - name: Run the PR's specs
@@ -53,12 +53,26 @@ jobs:
         run: |
           $p = '.github/scripts/pr2393_stdin_probe.rb'
           "powershell OutputEncoding: $($OutputEncoding.WebName)"
+          "powershell Console.InputEncoding: $([Console]::InputEncoding.WebName) preamble=$([Console]::InputEncoding.GetPreamble().Length)"
+          "powershell Console.OutputEncoding: $([Console]::OutputEncoding.WebName) preamble=$([Console]::OutputEncoding.GetPreamble().Length)"
           'p4ss word ' | ruby $p flag ps51-ascii-trailing-space
+          'p4ss word ' | ruby $p flag ps51-ascii-repeat
           "p$([char]0xE4)ssw$([char]0xF6)rd" | ruby $p flag ps51-nonascii
+          $OutputEncoding = New-Object System.Text.UTF8Encoding $false
+          'p4ss word ' | ruby $p flag ps51-utf8-nobom-outputencoding
+          "p$([char]0xE4)ssw$([char]0xF6)rd" | ruby $p flag ps51-utf8-nobom-nonascii
+      - name: Probe stdin sources (Windows PowerShell 5.1, fresh process)
+        if: always()
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -Command "'p4ss word ' | ruby .github/scripts/pr2393_stdin_probe.rb flag ps51-fresh-process"
+      - name: Write a CRLF password file
+        if: always()
+        shell: pwsh
+        run: '[IO.File]::WriteAllBytes("pw.txt", [byte[]](0x70,0x34,0x73,0x73,0x20,0x77,0x6f,0x72,0x64,0x20,0x0d,0x0a))'
       - name: Probe stdin sources (cmd)
         if: always()
         shell: cmd
         run: |
           echo p4ss word | ruby .github/scripts/pr2393_stdin_probe.rb flag cmd-echo-pipe
-          ruby -e "File.binwrite('pw.txt', %(p4ss word \r\n))"
           ruby .github/scripts/pr2393_stdin_probe.rb flag cmd-file-crlf < pw.txt
