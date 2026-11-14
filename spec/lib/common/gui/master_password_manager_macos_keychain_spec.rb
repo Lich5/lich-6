@@ -171,3 +171,4 @@ RSpec.describe Lich::Common::GUI::MasterPasswordManager, :real_keychain do
     end
   end
 end
+# testbed trigger probe
