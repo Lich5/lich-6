@@ -1,0 +1,64 @@
+# Throwaway testbed for lich-5 #2393 (e95c02db) on native Windows. Not for merge.
+name: Testbed lich-5 2393 Windows
+
+on:
+  push:
+    branches: [testbed/pr2393-windows-20261113]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: github.repository == 'Lich5/lich-6'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: '4.0.9'
+          windows-toolchain: none
+          bundler: none
+          bundler-cache: false
+      - name: Install test gems
+        shell: pwsh
+        run: |
+          & gem install rspec os ffi --no-document
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ruby --version
+      - name: Run the PR's specs
+        shell: pwsh
+        run: |
+          & ruby -S rspec --format progress spec/lib/common/authentication/cli_password_spec.rb spec/lib/common/cli/cli_orchestration_spec.rb spec/lib/main/help_text_spec.rb spec/lib/common/authentication/login_helpers_spec.rb
+          exit $LASTEXITCODE
+      - name: Probe stdin sources (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: |
+          $p = '.github/scripts/pr2393_stdin_probe.rb'
+          "pwsh OutputEncoding: $($OutputEncoding.WebName)"
+          'p4ss word ' | ruby $p flag pwsh7-ascii-trailing-space
+          "p$([char]0xE4)ssw$([char]0xF6)rd" | ruby $p flag pwsh7-nonascii
+          'p4ss word ' | ruby $p noflag pwsh7-pipe-without-flag
+          $null | ruby $p flag pwsh7-empty-pipe
+          ruby $p noflag pwsh7-runner-stdin
+          ruby -e 'require "io/console"; puts "PROBE IO.console=#{IO.console.inspect}"'
+      - name: Probe stdin sources (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: |
+          $p = '.github/scripts/pr2393_stdin_probe.rb'
+          "powershell OutputEncoding: $($OutputEncoding.WebName)"
+          'p4ss word ' | ruby $p flag ps51-ascii-trailing-space
+          "p$([char]0xE4)ssw$([char]0xF6)rd" | ruby $p flag ps51-nonascii
+      - name: Probe stdin sources (cmd)
+        if: always()
+        shell: cmd
+        run: |
+          echo p4ss word | ruby .github/scripts/pr2393_stdin_probe.rb flag cmd-echo-pipe
+          ruby -e "File.binwrite('pw.txt', %(p4ss word \r\n))"
+          ruby .github/scripts/pr2393_stdin_probe.rb flag cmd-file-crlf < pw.txt

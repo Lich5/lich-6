@@ -1,0 +1,916 @@
+# frozen_string_literal: true
+
+require File.join(LIB_DIR, 'common', 'xml_entities.rb')
+
+module Lich
+  module DragonRealms
+    module DRParser
+      module Pattern
+        # StatLine, ExpColumnsLine, TDPValue and PlayedSubscription write
+        # DRStats/DRSkill/UserVars, so they are anchored to the start of the line
+        # (cf. GameShutdown): another player's speech or ESP, e.g.
+        # [General][Name] "Evasion: 1 0% mind lock", must not rewrite the
+        # listener's state. Logs show the real lines start with only whitespace
+        # and/or tags (buffed INFO stats arrive wrapped in <preset id="speech">),
+        # so all four allow that same (?:<[^>]*>|\s)* prefix and nothing else.
+        # StatLine/ExpColumnsLine gate the line; StatValue/ExpColumns then scan
+        # every column on it. A gated line the ExpColumns scan reads nothing
+        # from falls through to the later branches.
+        ExpColumnsLine = /^(?:<[^>]*>|\s)*[a-zA-Z][a-zA-Z\s]*\b:\s*\d+\s+\d+%/.freeze
+        ExpColumns = /(?:\s*(?<skill>[a-zA-Z\s]+)\b:\s*(?<rank>\d+)\s+(?<percent>\d+)%\s+(?<rate>[a-zA-Z\s]+)\b)/.freeze
+        BriefExpOn = %r{<component id='exp .*?<d cmd='skill (?<skill>[a-zA-Z\s]+)'.*:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s*\[\s?(?<rate>\d+)\/34\].*?<\/component>}.freeze
+        BriefExpOff = %r{<component id='exp .*?\b(?<skill>[a-zA-Z\s]+)\b:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s+\b(?<rate>[a-zA-Z\s]+)\b.*?<\/component>}.freeze
+        NameRaceGuild = /^Name:\s+\b(?<name>.+)\b\s+Race:\s+\b(?<race>.+)\b\s+Guild:\s+\b(?<guild>.+)\b\s+/.freeze
+        GenderAgeCircle = /^Gender:\s+\b(?<gender>.+)\b\s+Age:\s+\b(?<age>.+)\b\s+Circle:\s+\b(?<circle>.+)/.freeze
+        StatLine = /^(?:<[^>]*>|\s)*(?:Strength|Agility|Discipline|Intelligence|Reflex|Charisma|Wisdom|Stamina|Favors|TDPs)\s+:\s+\d+/.freeze
+        StatValue = /(?<stat>Strength|Agility|Discipline|Intelligence|Reflex|Charisma|Wisdom|Stamina|Favors|TDPs)\s+:\s+(?<value>\d+)/.freeze
+        TDPValue = /^(?:<[^>]*>|\s)*You have (?<tdp>\d+) TDPs\./.freeze
+        EncumbranceValue = /^\s*Encumbrance\s+:\s+(?<encumbrance>[\w\s'?!]+)$/.freeze
+        LuckValue = /^\s*Luck\s+:\s+.*\((?<luck>[-\d]+)\/3\)/.freeze
+        BalanceValue = /^(?:You are|\[You're)(?:.*,)? (?<balance>#{Regexp.union(DR_BALANCE_VALUES)}) balanced?\b/.freeze
+        PositionValue = /balanced? (?:and|with) (?<position>#{Regexp.union(DR_POSITION_VALUES.keys)})/.freeze
+        ExpClearMindstate = %r{<component id='exp (?<skill>[a-zA-Z\s]+)'><\/component>}.freeze
+        RoomPlayers = %r{\'room players\'>Also here: (?<players>.*)\.</component>}.freeze
+        RoomPlayersEmpty = %r{\'room players\'></component>}.freeze
+        RoomObjs = %r{\'room objs\'>(?<objs>.*)</component>}.freeze
+        RoomObjsEmpty = %r{\'room objs\'></component>}.freeze
+        # How the game ends a room objs component it cut short because the room
+        # holds too much: "..., a woven sack and some other stuff.</component>".
+        # Container listings end the same way with "and a lot of other stuff.",
+        # so both are accepted. Anchored to the end of the component's text: a
+        # real object named like this mid-list must not count as a cut.
+        RoomObjsCut = / and (?:some|a lot of) other stuff\.\z/.freeze
+        # The full list continues the cut component's text with another object.
+        RoomObjsContinued = /\A(?:,| and) /.freeze
+        # A creature's status after its bold name: "(dead)", "(prone)", or the
+        # wordier "which appears dead", "that is caught in a cage of swirling
+        # darkness". The component and the main-stream view of the same room
+        # can word it differently (the view uses the short form once room
+        # descriptions are off), so lists are compared without it.
+        RoomObjStatus = %r{(?<=<popBold/>) (?:\([^()<>]*\)|(?:which|that) [^,<>]*?)(?=, | and |\.?\z)}.freeze
+        # The <nav/> (or <nav rm='...'/>) tag the game sends on every move.
+        Nav = /<nav\b/.freeze
+        GroupMembers = %r{<pushStream id="group"/>  (?<member>\w+):}.freeze
+        GroupMembersEmpty = %r{<pushStream id="group"/>Members of your group:}.freeze
+        ExpModsStart = /^(<.*?\/>)?The following skills are currently under the influence of a modifier/.freeze
+        ExpModLine = /^(?:<preset id="(?:speech|thought)">)?(?<sign>\+|--)(?<value>\d+)\s+(?<skill>[\w\s]+)(?:<\/preset>)?$/.freeze
+        KnownSpellsStart = /^You recall the spells you have learned/.freeze
+        BarbarianAbilitiesStart = /^You know the (Berserks:)/.freeze
+        ThiefKhriStart = /^From the Subtlety tree, you know the following khri:/.freeze
+        SpellBookFormat = /^You will .* (?<format>column-formatted|non-column) output for the SPELLS verb/.freeze
+        PlayedAccount = /^(?:<.*?\/>)?Account Info for (?<account>.+):/.freeze
+        PlayedSubscription = /^(?:<[^>]*>|\s)*Current Account Status: (?<subscription>F2P|Basic|Premium|Platinum)/.freeze
+        LastLogoff = /^\s+Logoff :  (?<weekday>[A-Z][a-z]{2}) (?<month>[A-Z][a-z]{2}) (?<day>[\s\d]{2}) (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2}) ET (?<year>\d{4})/.freeze
+        Rested_EXP = %r{^<component id='exp rexp'>Rested EXP Stored:\s*(?<stored>.*?)\s*Usable This Cycle:\s*(?<usable>.*?)\s*Cycle Refreshes:\s*(?<refresh>.*)</component>}.freeze
+        Rested_EXP_F2P = %r{^<component id='exp rexp'>\[Unlock Rested Experience}.freeze
+        TDPValue_XPWindow = %r{^<component id='exp tdp'>\s*TDPs:\s*(?<tdp>\d+)</component>}.freeze
+        FavorValue_XPWindow = %r{^<component id='exp favor'>\s*Favors:\s*(?<favor>\d+)</component>}.freeze
+        # Headers that open a DR inventory scrape whose <d> output we mine for
+        # item IDs. Only container contents are written when the linked
+        # worn-items stream (pushStream id='inv') owns the worn list, which the
+        # scrape must not overwrite; on the legacy stream the scrape still writes
+        # worn items too. The two differ in completeness, which decides how
+        # items are written (see .parse):
+        #   INV LIST -> COMPLETE: lists everything, so we clear and repopulate
+        #     the container contents.
+        #     "You take a moment and rummage about your person, taking stock of
+        #      your possessions..."
+        #   INV SEARCH <word> / INV <category> full -> PARTIAL: lists only the
+        #     matching items, so we upsert without clearing. The header's trailing
+        #     phrase is a per-category friendly name (e.g. "looking for gems...",
+        #     "looking for armor and shields...") and is not matched here.
+        #
+        # Both are anchored to the start of the stream line so quoted/chat/book
+        # text containing the phrase mid-line cannot open a (mutating) scrape
+        # (cf. GameShutdown). Logs confirm the exact prefixes: INV LIST is bare at
+        # line start; the "looking for" verbs carry exactly one leading
+        # <roundTime/>, which is allowed optionally.
+        InventoryListStart   = %r{^You take a moment and rummage about your person, taking stock of your possessions}.freeze
+        InventorySearchStart = %r{^(?:<roundTime[^>]*/>)?You rummage about your person, looking for}.freeze
+
+        # Scheduled shutdown announcement, e.g. "Announcement: DragonRealms will
+        # be shutting down in 15 minutes for routine maintenance." Anchored to
+        # the start of the line (with the optional "Announcement:" prefix) so
+        # quoted or chat text containing the phrase cannot trigger it. Only the
+        # stem is stable: the count drops to "1 minute" (singular) and the
+        # reason/trailing text varies ("...as soon as possible."), so match the
+        # stem and capture the count.
+        GameShutdown = /^(?:Announcement:\s+)?DragonRealms will be shutting down in (?<minutes>\d+) minutes?\b/.freeze
+
+        # Spell parsing patterns (check_known_spells)
+        OutputClassMono = %r{^<output class="mono"/>}.freeze
+        OutputClassEmpty = %r{^<output class=""/>}.freeze
+        SpellbookName = /^[\w\s]+:/.freeze
+        SpellSlotInfo = /Slot\(s\): \d+ \s+ Min Prep: \d+ \s+ Max Prep: \d+/.freeze
+        SpellChapterStart = /^In the chapter entitled|^You have temporarily memorized|^From your apprenticeship you remember practicing/.freeze
+        SpellFeatsStart = /^You recall proficiency with the magic feats of/.freeze
+        SpellsEnd = /^You can use SPELL STANCE|^You have (?:no|yet to receive any) training in the magical arts|You have no desire to soil yourself with magical trickery|^You really shouldn't be loitering here|\(Use SPELL|\(Use PREPARE/.freeze
+        ChapterEntitled = /^In the chapter entitled "[\w\s'-]+", you have notes on the /.freeze
+        TemporarilyMemorized = /^You have temporarily memorized the /.freeze
+        ApprenticeshipPractice = /^From your apprenticeship you remember practicing with the /.freeze
+        SpellSuffix = / spells?\./.freeze
+        CommaAnd = /,? and /.freeze
+        PopBoldTag = /<popBold\/>/.freeze
+
+        # Barbarian ability parsing patterns (check_known_barbarian_abilities)
+        BarbarianAbility = /^(?:<(?:push|pop)Bold\/>)?You know the (?:Berserks|Forms|Roars|Meditations):(?:<(?:push|pop)Bold\/>)?/.freeze
+        BarbarianMastery = /^(?:<(?:push|pop)Bold\/>)?You know the Masteries:(?:<(?:push|pop)Bold\/>)?/.freeze
+        BarbarianTrainingRemaining = /^You recall that you have \d+ training sessions? remaining with the Guild/.freeze
+
+        # Thief khri parsing patterns (check_known_thief_khri)
+        ThiefKhriTree = /^From the (?:Subtlety|Finesse|Potence) tree, you know the following khri:/.freeze
+        ThiefAvailableSlots = /^You have \d+ available slots?/.freeze
+        KhriType = /\(.+?\)/.freeze
+      end
+
+      # Class variables for parsing state (must be @@ not @ for module-level state)
+      @@parsing_exp_mods_output = false
+      @@parsing_inventory_get = false
+      # true while the active inventory scrape is PARTIAL (INV SEARCH / category)
+      # -> items are upserted; false for a COMPLETE INV LIST -> items replace.
+      @@inventory_partial = false
+      # true while the active scrape also writes worn (top-level) items: only on
+      # the legacy stream, whose worn list is plain text. Set when the scrape
+      # opens (see .worn_stream_linked?).
+      @@inventory_writes_worn = false
+
+      # Wall-clock time the game is expected to go down for maintenance, set
+      # from a shutdown announcement. nil when no shutdown is pending.
+      @@shutdown_at = nil
+
+      # Text of the last room objs component when the game cut it short, minus
+      # the "and some other stuff." marker ("You also see a, b, c"); nil when
+      # that component was complete. See {.full_room_listing}.
+      @@room_objs_cut = nil
+
+      # The Saga-identity stream wraps names in object links
+      # (<a exist="-10700002" noun="Aldric">Aldric</a>) and currently sends the
+      # bold around linked creatures doubled (<pushBold/><pushBold/>a <a ...>
+      # leopard</a><popBold/><popBold/>); a single bold works too. The legacy
+      # stream sends neither, so every DRParser pattern, every drdefs room helper
+      # and every script Flag was written against link-free, single-bold text.
+      # {.match_line} restores that shape.
+      LINK_TAG = %r{</?a\b[^>]*>}.freeze
+      PUSH_BOLD_RUN = %r{(?:<pushBold/>){2,}}.freeze
+      POP_BOLD_RUN = %r{(?:<popBold/>){2,}}.freeze
+
+      # Returns the line in the shape DRParser patterns and Flags expect: object
+      # links removed (their inner text kept) and doubled bold collapsed. A line
+      # with neither (the whole legacy stream) is returned unchanged, as the same
+      # object.
+      #
+      # @param line [String] one server string
+      # @return [String]
+      def self.match_line(line)
+        return line unless line.include?('</a>') || line.include?('<pushBold/><pushBold/>')
+
+        line.gsub(LINK_TAG, '').gsub(PUSH_BOLD_RUN, '<pushBold/>').gsub(POP_BOLD_RUN, '<popBold/>')
+      end
+
+      # Checks server output against registered Flag matchers.
+      # Updates Flags.flags hash when a pattern matches.
+      # @param server_string [String] A line of server output to check
+      # @return [String] The unmodified server_string
+      def self.check_events(server_string)
+        Flags.matchers.each do |key, regexes|
+          regexes.each do |regex|
+            if (matches = server_string.match(regex))
+              Flags.record_match(key, regexes, matches)
+              break
+            end
+          end
+        end
+        server_string
+      end
+
+      # Detects scheduled maintenance shutdown notices and records the target
+      # time, so any script can read DRParser.shutting_down? and
+      # DRParser.shutdown_minutes to wind down cleanly before the disconnect.
+      # Recomputing the target on every announcement keeps the estimate
+      # accurate as the warnings count down; a nil count (a final notice with
+      # no number) means shutdown is now.
+      # @param line [String] A line of server output to check
+      # @return [void]
+      def self.check_game_shutdown(line)
+        return unless (match = line.match(Pattern::GameShutdown))
+
+        minutes = match[:minutes]&.to_i
+        @@shutdown_at = minutes ? Time.now + (minutes * 60) : Time.now
+      end
+
+      # @return [Boolean] true once a maintenance shutdown has been announced
+      def self.shutting_down?
+        !@@shutdown_at.nil?
+      end
+
+      # Minutes remaining until the announced shutdown, counted down in real
+      # time (never negative). nil when no shutdown is pending.
+      # @return [Integer, nil]
+      def self.shutdown_minutes
+        return nil unless @@shutdown_at
+
+        [(@@shutdown_at - Time.now) / 60.0, 0].max.ceil
+      end
+
+      # Ox::Sax handler that extracts the cmd attribute and item name from the first
+      # <d> element of an inventory line, e.g. <d cmd='get #12345'>a small pouch</d>.
+      # Streaming means the element is captured before any trailing prose, which is
+      # not well-formed XML; the resulting parse error is swallowed by #error.
+      class InventoryItemSax
+        attr_reader :cmd, :name
+
+        def initialize
+          @in_d = false
+          @done = false
+          @cmd = nil
+          @name = nil
+        end
+
+        def start_element(name)
+          @in_d = true if name == "d" && !@done
+        end
+
+        def attr(name, value)
+          @cmd = value if @in_d && name == "cmd"
+        end
+
+        def text(value)
+          @name = value if @in_d && @name.nil?
+        end
+
+        def end_element(name)
+          return unless @in_d && name == "d"
+
+          @in_d = false
+          @done = true # ignore any later <d> elements; we only want the leading item
+        end
+
+        # Trailing prose after </d> is not valid XML. We have already captured the
+        # element by the time Ox reports it, so the error is intentionally ignored.
+        def error(_message, _line, _column); end
+      end
+
+      # Parses inventory search output and populates GameObj inventory.
+      # Called for each line when @@parsing_inventory_get is true.
+      # @param server_string [String] A line of server output
+      # @return [String] The unmodified server_string
+      def self.populate_inventory_get(server_string)
+        case server_string
+        when Pattern::OutputClassEmpty
+          if @@parsing_inventory_get
+            # Clean terminator: a COMPLETE INV LIST finished, so publish what it
+            # staged atomically. PARTIAL scrapes upsert as they go and stage
+            # nothing, so there is nothing to commit for them.
+            unless @@inventory_partial
+              GameObj.commit_inv if @@inventory_writes_worn
+              GameObj.commit_all_containers_full
+            end
+            @@parsing_inventory_get = false
+            @@inventory_partial = false
+            @@inventory_writes_worn = false
+          end
+        else
+          # This block parses a single line from the output of the `inv search <string>` verb,
+          # which lists items on your character. Each line is an XML-like string.
+          # Example: <d cmd='get #12345'>a small pouch</d>
+          # INV LIST nests a container's contents beneath it and prefixes each
+          # nested line with a dash (e.g. "   -<d cmd='get #1 in #2'>..."), while
+          # INV SEARCH output is flat. Strip a leading dash so both forms parse.
+          if @@parsing_inventory_get && (stripped = server_string.strip.sub(/\A-\s*/, '')).start_with?('<d cmd=')
+            # Pull the cmd attribute and item name out of the line's leading <d> element
+            # with a SAX handler. The element is captured as it streams in, before any
+            # trailing prose (e.g. "... is in your right hand.") -- which is not valid XML
+            # and would break a tree parse -- is reached.
+            handler = InventoryItemSax.new
+            # convert_special: false matches Game.process_xml_data: Ox never turns a
+            # numeric entity into UTF-8. Ox leaves the standard entities literal, so
+            # XmlEntities.decode restores them in the item name below.
+            Ox.sax_parse(handler, stripped, convert_special: false, symbolize: false, skip: :skip_none)
+
+            return server_string unless handler.cmd
+
+            # Normalize the item name by removing a leading article ('a', 'an',
+            # 'some'), case-insensitively: some inventory verbs lowercase the
+            # article ("a dirty inkpot") while others capitalize it ("A soft gem
+            # pouch"), and the same item must normalize identically either way.
+            item_name = Lich::Common::XmlEntities.decode(handler.name.to_s).sub(/^(?:a|an|some)\s/i, '').strip
+
+            # Extract the command and the unique item ID from the 'cmd' attribute.
+            cmd = handler.cmd.to_s.downcase.strip
+            # INV SEARCH links every item with a GET command. INV LIST links
+            # worn (top-level) items with a REMOVE command and their contents
+            # with GET, so accept either verb. Only nested items (with a
+            # container) are stored, into their container's contents.
+            id_match = /(?:get|remove) (?<itemID>#\d+)(?: in (?<container1>#\d+|[^']+))?(?: in (?<container2>#\d+|[^']+))?/.match(cmd)
+            # <!-- Regex to capture item and container IDs: cmd='(?:get|remove) (?<itemID>#\d+)(?: in (?<container1>#\d+|[^']+))?(?: in (?<container2>#\d+|[^']+))?' -->
+            # <d cmd='get #8286821 in #8286816 in #8286762'>A papyrus parchment</d> is in a black winter cloak crafted from thick cashmere, which is in a scuffed traveler's pack.
+            # <d cmd='get #8735861 in #8735860 in watery portal'>Some arzumodine cloth</d> is in a lumpy canvas sack, which is in an effervescent eddy of honey-hued light captured by a sungold frame.
+            # <d cmd='get #8761784'>A seagull feather quill with dyed snowy white barbs</d> is lying at your feet.
+            # <d cmd='get #8761784'>A seagull feather quill with dyed snowy white barbs</d> is in your right hand.
+
+            if id_match
+              id = id_match[:itemID].strip.delete('#').to_s
+              noun = nil # This isn't exposed in the DR XML stream
+              name = item_name
+              # An item reported "... is in your right/left hand" is held, not worn
+              # or in a container: its placement is the hand slot, tracked
+              # separately by the <right>/<left> stream. Storing it here (cmd has no
+              # "in #container", so container=nil -> worn inv) would recreate the
+              # held/worn duplicate that hand reconciliation removes on pickup. Drop
+              # any stale placement and skip the worn/container store.
+              if stripped =~ /\bis in your (?:right|left) hand\b/i
+                GameObj.remove_inv_item(id)
+                return server_string
+              end
+              # Only container1 (the item's immediate parent) is used -- it is the
+              # single placement each line establishes. The regex still captures
+              # container2 (the grandparent in a doubly-nested line) because it is
+              # needed to bound container1 correctly, but we do not read it: see
+              # the note below store_inv_item.
+              container1 = id_match[:container1].strip.delete('#') if id_match[:container1]
+              container = container1 || nil
+              # A line with no container is a worn item ("remove #id" in INV
+              # LIST, "... is being worn." in INV SEARCH) or one lying at your
+              # feet. When the linked worn-items stream owns the worn list (it
+              # sends the whole list at login and again with every hand change),
+              # writing them here replaced its entries with noun-less copies
+              # until the next push, so they are skipped; an item at your feet
+              # is not carried at all. The legacy stream's worn list is plain
+              # text, so there the scrape still writes worn items.
+              return server_string if container.nil? && !@@inventory_writes_worn
+
+              before = cmd
+              after = nil
+
+              # Store the parsed item into its immediate container.
+              # DRItems.update_item(item, id, cmd, full_description)
+              Lich.log("DRParser: Adding inventory item - ID: #{id}, Noun: #{noun}, Name: #{name}, Container: #{container}, Before: #{before}, After: #{after}")
+              store_inv_item(id, noun, name, container, before, after)
+              # A doubly-nested line (get #item in #mid in <parent>) also reveals
+              # that the middle container #mid sits inside <parent>, but we do NOT
+              # synthesize that placement here. A COMPLETE INV LIST is a recursive
+              # scrape, and #mid always carries its own id (the only idless item in
+              # DR is the portal, which only ever appears as <parent>), so #mid is
+              # always emitted on its own line -- "get #mid in <parent>" -- which
+              # registers it into <parent> with its REAL name via store_inv_item
+              # above. Re-deriving that edge from a child line could only add a
+              # second copy of #mid with name=nil (the child line never carries the
+              # middle container's name); because find_or_create keys on
+              # "id|noun|name", the nil-name copy never collides with the real one,
+              # leaving a phantom duplicate in GameObj.containers[<parent>]. A
+              # PARTIAL (INV SEARCH / category) scrape never listed the middle
+              # container either -- routing it through upsert_inv would blank its
+              # name and yank a worn parent out of GameObj.inv -- so both modes
+              # agree: only an item's own line establishes its placement.
+            end
+          end
+        end
+        server_string
+      end
+
+      # Whether this session's worn list comes from the linked worn-items
+      # stream: the parser has seen a linked item (<a exist=...>). The legacy
+      # stream (a front end handshake kept with --keep-fe-string) sends its worn
+      # list as plain text, so there the inventory scrapes are its only source.
+      # Read when a scrape opens: a linked session has sent linked items (room
+      # objects, the login worn list) long before any listing, and a legacy
+      # session never sends any.
+      # @return [Boolean]
+      def self.worn_stream_linked?
+        XMLData.stream_feature?(:links)
+      end
+
+      # Routes a parsed inventory item into GameObj according to the active
+      # scrape's completeness: a COMPLETE INV LIST replaces (items were cleared
+      # up front, so a plain add rebuilds the model), while a PARTIAL INV SEARCH /
+      # category scrape upserts by id so it refreshes only the matched items and
+      # never wipes unrelated inventory.
+      # @return [void]
+      def self.store_inv_item(id, noun, name, container, before, after)
+        if @@inventory_partial
+          GameObj.upsert_inv(id, noun, name, container, before, after)
+        else
+          GameObj.new_inv(id, noun, name, container, before, after)
+        end
+      end
+
+      # Parses 'exp mods' output and updates DRSkill.exp_modifiers.
+      # Called for each line when @@parsing_exp_mods_output is true.
+      # @param server_string [String] A line of server output
+      # @return [String] The unmodified server_string
+      def self.check_exp_mods(server_string)
+        # This method parses the output from `exp mods` command
+        # and updates the DRSkill.exp_modifiers hash with the skill and value.
+        # This is primarily used by the `skill-recorder` script.
+        #
+        # Example output without any modifiers:
+        #     The following skills are currently under the influence of a modifier:
+        #     <output class="mono"/>
+        #       None
+        #     <output class=""/>
+        #
+        # Example output with modifiers (XML format):
+        #     The following skills are currently under the influence of a modifier:
+        #     <output class="mono"/>
+        #     <preset id="speech">+75 Athletics</preset>
+        #     <preset id="thought">--10 Evasion</preset>
+        #     <output class=""/>
+        #
+        # Zero or more skills may be listed between the <output> tags
+        # but exactly one skill and its skill modifier are listed per line.
+        # Positive modifiers use <preset id="speech"> with single + sign.
+        # Negative modifiers use <preset id="thought"> with double -- sign.
+        #
+        case server_string
+        when Pattern::OutputClassEmpty
+          if @@parsing_exp_mods_output
+            @@parsing_exp_mods_output = false
+          end
+        else
+          if @@parsing_exp_mods_output
+            # Sample lines:
+            # <preset id="speech">+79 Attunement</preset>  (positive, single +)
+            # <preset id="thought">--10 Evasion</preset>   (negative, double --)
+            if (match = server_string.strip.match(Pattern::ExpModLine))
+              skill = match[:skill].strip
+              sign = match[:sign]
+              value = match[:value].to_i
+              value = -value if sign == '--'
+              DRSkill.update_mods(skill, value)
+            end
+          end
+        end
+        server_string
+      end
+
+      # Parses 'spells' command output for magic users.
+      # Populates DRSpells.known_spells and DRSpells.known_feats.
+      # Handles both column-formatted and non-column output formats.
+      # @param server_string [String] A line of server output
+      # @return [String] The unmodified server_string
+      def self.check_known_spells(server_string)
+        # This method parses the output from `spells` command for magic users
+        # and populates the known spells/feats based on the output.
+        #
+        # As of June 2022, There are two different output formats: column-formatted and non-column.
+        # https://elanthipedia.play.net/Post:Tuesday_Tidings_-_120_-_Spells_-_06/07/2022_-_18:34
+        #
+        # The XML stream for DragonRealms is whack at best.
+        #
+        # Examples of non-column output:
+        #     You recall the spells you have learned from your training.
+        #     In the chapter entitled "Analogous Patterns", you have notes on the Manifest Force [maf] and Gauge Flow [gaf] spells.
+        #     You have temporarily memorized the Tailwind [tw] spell.
+        #     You recall proficiency with the magic feats of Sorcerous Patterns, Alternate Preparation and Augmentation Mastery.
+        #     You are NOT currently set to recognize known spells when prepared by someone else in the area.  (Use SPELL RECOGNIZE ON to change this.)
+        #     You are currently set to display full cast messaging.  (Use SPELL BRIEFMSG ON to change this.)
+        #     You are currently attempting to hide your spell preparing.  (Use PREPARE /HIDE to change this.)
+        #     You can use SPELL STANCE [HELP] to view or modify your spellcasting preferences.
+        #
+        # Examples of column-formatted output:
+        #     You recall the spells you have learned from your training.
+        #     <output class="mono"/>
+        #     <pushBold/>
+        #     Analogous Patterns:
+        #     <popBold/>     maf  Manifest Force                  Slot(s): 1   Min Prep: 1     Max Prep: 100
+        #          gaf  Gauge Flow                      Slot(s): 2   Min Prep: 5     Max Prep: 100
+        #     <pushBold/>
+        #     Synthetic Creation:
+        #     <popBold/>     acs  Acid Splash                     Slot(s): 1   Min Prep: 1     Max Prep: 50
+        #           vs  Viscous Solution                Slot(s): 2   Min Prep: 10    Max Prep: 66
+        #     <output class=""/>
+        #     <output class="mono"/>
+        #     <pushBold/>
+        #     Temporarily Memorized:
+        #     <popBold/>      tw  Tailwind                        Slot(s): 1   Min Prep: 5     Max Prep: 100
+        #     <output class=""/>
+        #     You recall proficiency with the magic feats of Sorcerous Patterns, Alternate Preparation and Augmentation Mastery.
+        #     You are NOT currently set to recognize known spells when prepared by someone else in the area.  (Use SPELL RECOGNIZE ON to change this.)
+        #     You are currently set to display full cast messaging.  (Use SPELL BRIEFMSG ON to change this.)
+        #     You are currently attempting to hide your spell preparing.  (Use PREPARE /HIDE to change this.)
+        #     You can use SPELL STANCE [HELP] to view or modify your spellcasting preferences.
+        #
+        # One or more spells may be listed between a <popBold/> <pushBold/> pair,
+        # but only one spell and its information are ever listed per line.
+        case server_string
+        when Pattern::OutputClassMono
+          # Matched an xml tag while parsing spells, must be column-formatted output
+          if DRSpells.grabbing_known_spells
+            DRSpells.spellbook_format = 'column-formatted'
+          end
+        when Pattern::SpellbookName
+          # Matched the spellbook name in column-formatted output, ignore
+        when Pattern::SpellSlotInfo
+          # Matched the spell info in column-formatted output, parse
+          if DRSpells.grabbing_known_spells && DRSpells.spellbook_format == 'column-formatted'
+            spell = server_string
+                    .sub(Pattern::PopBoldTag, '') # remove xml tag at start of some lines
+                    .slice(10, 32) # grab the spell name, after the alias and before Slots
+                    .strip
+            DRSpells.known_spells[spell] = true unless spell.empty?
+          end
+          # Preserve the pop bold command we removed from start of spell line
+          # otherwise lots of game text suddenly are highlighted yellow
+        when Pattern::SpellChapterStart
+          if DRSpells.grabbing_known_spells
+            server_string
+              .sub(Pattern::ChapterEntitled, '')
+              .sub(Pattern::TemporarilyMemorized, '')
+              .sub(Pattern::ApprenticeshipPractice, '')
+              .sub(Pattern::SpellSuffix, '')
+              .sub(Pattern::CommaAnd, ',')
+              .split(',')
+              .map { |mapped_spell| mapped_spell.include?('[') ? mapped_spell.slice(0, mapped_spell.index('[')) : mapped_spell }
+              .map(&:strip)
+              .reject { |rejected_spell| rejected_spell.nil? || rejected_spell.empty? }
+              .each { |each_spell| DRSpells.known_spells[each_spell] = true }
+          end
+        when Pattern::SpellFeatsStart
+          if DRSpells.grabbing_known_spells
+            # The feats are listed without the Oxford comma separating the last item.
+            # This makes splitting the string by comma difficult because the next to last and last
+            # items would be captured together. The workaround is we'll replace ' and ' with a comma
+            # and hope no feats ever have the word 'and' in them...
+            server_string
+              .sub(Pattern::SpellFeatsStart, '')
+              .sub(Pattern::CommaAnd, ',')
+              .sub('.', '')
+              .split(',')
+              .map(&:strip)
+              .reject { |feat| feat.nil? || feat.empty? }
+              .each { |feat| DRSpells.known_feats[feat] = true }
+          end
+        when Pattern::SpellsEnd
+          DRSpells.grabbing_known_spells = false
+        end
+        server_string
+      end
+
+      # Parses 'ability' command output for Barbarians.
+      # Populates DRSpells.known_spells (abilities) and DRSpells.known_feats (masteries).
+      # @param server_string [String] A line of server output
+      # @return [String] The unmodified server_string
+      def self.check_known_barbarian_abilities(server_string)
+        # This method parses the output from `ability` command for Barbarians
+        # and populates the known spells/feats based on the known abilities/masteries.
+        #
+        # The XML stream for DragonRealms is whack at best.
+        #
+        # Examples of the data we're looking for:
+        #     You know the Berserks:<pushBold/> Avalanche, Drought.
+        #     <popBold/>You know the Forms:<pushBold/> Monkey.
+        #     <popBold/>You know the Roars:<pushBold/> Anger the Earth.
+        #     <popBold/>You know the Meditations:<pushBold/> Flame, Power, Contemplation.
+        #     <popBold/>You know the Masteries:<pushBold/> Juggernaut, Duelist.
+        #     <popBold/>
+        #     You recall that you have 0 training sessions remaining with the Guild.
+        case server_string
+        when Pattern::BarbarianAbility
+          if DRSpells.check_known_barbarian_abilities
+            server_string
+              .sub(Pattern::BarbarianAbility, '')
+              .sub('.', '')
+              .split(',')
+              .map(&:strip)
+              .reject { |ability| ability.nil? || ability.empty? }
+              .each { |ability| DRSpells.known_spells[ability] = true }
+          end
+        when Pattern::BarbarianMastery
+          # Barbarian masteries are the equivalent of magical feats.
+          if DRSpells.check_known_barbarian_abilities
+            server_string
+              .sub(Pattern::BarbarianMastery, '')
+              .sub('.', '')
+              .split(',')
+              .map(&:strip)
+              .reject { |mastery| mastery.nil? || mastery.empty? }
+              .each { |mastery| DRSpells.known_feats[mastery] = true }
+          end
+        when Pattern::BarbarianTrainingRemaining
+          DRSpells.check_known_barbarian_abilities = false
+        end
+        server_string
+      end
+
+      # Parses 'ability' command output for Thieves.
+      # Populates DRSpells.known_spells with known khri abilities.
+      # @param server_string [String] A line of server output
+      # @return [String] The unmodified server_string
+      def self.check_known_thief_khri(server_string)
+        # This method parses the output from `ability` command for Thieves
+        # and populates the known spells/feats based on the known khri.
+        #
+        # The XML stream for DragonRealms is whack at best.
+        #
+        # Examples of the data we're looking for:
+        #     From the Subtlety tree, you know the following khri: Darken (Aug), Dampen (Util/Ward), Strike (Aug), Silence (Util), Shadowstep (Util), Harrier (Aug)
+        #     From the Finesse tree, you know the following khri: Hasten (Util), Safe (Aug), Avoidance (Aug), Plunder (Aug), Flight (Aug/Ward), Elusion (Aug), Slight (Util)
+        #     From the Potence tree, you know the following khri: Focus (Aug), Prowess (Debil), Sight (Aug), Calm (Util), Steady (Aug), Eliminate (Debil), Serenity (Ward), Sagacity (Ward), Terrify (Debil)
+        #     You have 7 available slots.
+        case server_string
+        when Pattern::ThiefKhriTree
+          if DRSpells.grabbing_known_khri
+            server_string
+              .sub(Pattern::ThiefKhriTree, '')
+              .sub('.', '')
+              .gsub(Pattern::KhriType, '')
+              .split(',')
+              .map(&:strip)
+              .reject { |ability| ability.nil? || ability.empty? }
+              .each { |ability| DRSpells.known_spells[ability] = true }
+          end
+        when Pattern::ThiefAvailableSlots
+          DRSpells.grabbing_known_khri = false
+        end
+        server_string
+      end
+
+      # Sets DRRoom.npcs, DRRoom.dead_npcs, DRRoom.room_objs and UserVars.npcs
+      # from a room object list ("You also see ...").
+      #
+      # Only DRRoom and UserVars.npcs are rebuilt from a repaired list.
+      # GameObj.npcs/GameObj.loot and the DR Creature registry are built by
+      # XMLParser from the room objs component alone, so after a cut they still
+      # lack the objects listed after it.
+      # @param objs [String] the list, as {.match_line} leaves it
+      # @return [void]
+      def self.update_room_objs(objs)
+        DRRoom.npcs = find_npcs(objs)
+        UserVars.npcs = DRRoom.npcs
+        DRRoom.dead_npcs = find_dead_npcs(objs)
+        DRRoom.room_objs = find_objects(objs)
+      end
+
+      # Applies a room objs component and records whether it was cut short.
+      #
+      # When a room holds too much, the game ends the room objs component with
+      # "and some other stuff." and leaves out everything after that. The full
+      # list is still sent in the main stream, in the room view that follows the
+      # roomName line on entry and on LOOK:
+      #   <style id=""/>  You also see a, b, c, d and e.
+      # (with LOOK under room descriptions, the description comes first in a
+      # roomDesc preset on the same line). The component's text before the
+      # marker is therefore kept so {.full_room_listing} can recognise that
+      # view and rebuild the room from it.
+      #
+      # The game also resends the component, still cut, whenever something in
+      # the room changes, and no room view follows. Such a refresh is applied
+      # as sent, so an object listed after the cut drops out of DRRoom until
+      # the next room view (a LOOK or the next move). It is not merged with the
+      # room's last full list: the change that caused the refresh may be after
+      # the cut (a creature leaving, a ship pulling out), and a merge would keep
+      # listing what has gone, with nothing to show the list is stale. What a
+      # cut component lists is real, and its trailing "other stuff" entry tells
+      # a script the list is incomplete.
+      #
+      # A complete or empty component clears the cut record, so a complete room
+      # never reparses main-stream text.
+      # @param objs [String] the component's text, as {.match_line} leaves it
+      # @return [void]
+      def self.apply_room_objs(objs)
+        update_room_objs(objs)
+        @@room_objs_cut = Pattern::RoomObjsCut.match?(objs) ? objs.sub(Pattern::RoomObjsCut, '') : nil
+      end
+
+      # +list+ with every creature status removed, for comparing lists.
+      # @param list [String]
+      # @return [String]
+      def self.without_room_obj_status(list)
+        list.gsub(Pattern::RoomObjStatus, '')
+      end
+
+      # The full room object list from a main-stream room view, when the last
+      # room objs component was cut short and +line+ is that same room's view.
+      #
+      # A line is the same room's view only if a "You also see" list in it
+      # starts with the cut component's whole text (every object up to the cut,
+      # in order) followed by another object. Creature statuses are ignored in
+      # the comparison: the view may word them differently ("(dead)" for
+      # "which appears dead"). Another room's view, a container listing or an
+      # unrelated "You also see" line does not match, so it can never overwrite
+      # DRRoom. The record is cleared only by the next complete room objs
+      # component (or a <nav>), not at the prompt, so a later LOOK in the same
+      # room still repairs the list.
+      #
+      # @param line [String] a server line, as {.match_line} leaves it
+      # @return [String, nil] "You also see ..." through the end of the line, or
+      #   nil when there is no cut component or +line+ is not its room view
+      def self.full_room_listing(line)
+        cut = @@room_objs_cut
+        return nil unless cut
+
+        cut = without_room_obj_status(cut.lstrip)
+        start = -1
+        while (start = line.index('You also see ', start + 1))
+          listing = line[start..].rstrip
+          text = without_room_obj_status(listing)
+          return listing if text.start_with?(cut) && Pattern::RoomObjsContinued.match?(text[cut.length..])
+        end
+        nil
+      end
+
+      # Main parser entry point. Processes a line of server output
+      # and updates various game state objects (DRStats, DRRoom, DRSkill, etc.).
+      # Patterns and Flags are matched against {.match_line}; only the inline
+      # exp display rewrites +server_line+ itself (it is what reaches the client).
+      # @param server_line [String] A line of server output to parse
+      # @return [void]
+      def self.parse(server_line)
+        line = match_line(server_line)
+        check_events(line)
+        begin
+          check_game_shutdown(line)
+          # A move starts a new room; its own room objs component follows.
+          @@room_objs_cut = nil if @@room_objs_cut && Pattern::Nav.match?(line)
+          if Pattern::InventoryListStart.match?(line)
+            # COMPLETE inventory (INV LIST): stage a full replacement of the
+            # container contents and publish it only on the clean terminator (see
+            # populate_inventory_get). The live model stays visible until then, so
+            # an interrupted listing keeps the previous contents instead of wiping
+            # them. The worn list is staged too only on the legacy stream; the
+            # linked worn-items stream owns it otherwise.
+            @@inventory_writes_worn = !worn_stream_linked?
+            GameObj.begin_inv if @@inventory_writes_worn
+            GameObj.begin_all_containers
+            @@parsing_inventory_get = true
+            @@inventory_partial = false
+          elsif Pattern::InventorySearchStart.match?(line)
+            # PARTIAL inventory (INV SEARCH <word> / INV <category> full): only
+            # matching items are listed, so upsert them and leave the rest of the
+            # GameObj model intact -- no clear.
+            @@inventory_writes_worn = !worn_stream_linked?
+            @@parsing_inventory_get = true
+            @@inventory_partial = true
+          elsif (match = line.match(Pattern::GenderAgeCircle))
+            DRStats.gender = match[:gender]
+            DRStats.age = match[:age].to_i
+            DRStats.circle = match[:circle].to_i
+          elsif (match = line.match(Pattern::NameRaceGuild))
+            DRStats.race = match[:race]
+            DRStats.guild = match[:guild]
+          elsif (match = line.match(Pattern::EncumbranceValue))
+            DRStats.encumbrance = match[:encumbrance]
+          elsif (match = line.match(Pattern::LuckValue))
+            DRStats.luck = match[:luck].to_i
+          elsif Pattern::StatLine.match?(line)
+            line.scan(Pattern::StatValue) do |stat, value|
+              DRStats.send("#{stat.downcase}=", value.to_i)
+            end
+          elsif (match = line.match(Pattern::TDPValue))
+            DRStats.tdps = match[:tdp].to_i
+          elsif (match = line.match(Pattern::BalanceValue))
+            DRStats.balance = DR_BALANCE_VALUES.index(match[:balance])
+            if (position_match = line.match(Pattern::PositionValue))
+              DRStats.position = DR_POSITION_VALUES[position_match[:position]]
+            end
+          elsif Pattern::RoomPlayersEmpty.match?(line)
+            DRRoom.pcs = []
+          elsif (match = line.match(Pattern::RoomPlayers))
+            players = match[:players]&.dup || ''
+            DRRoom.pcs = find_pcs(players)
+            DRRoom.pcs_prone = find_pcs_prone(players)
+            DRRoom.pcs_sitting = find_pcs_sitting(players)
+          elsif (match = line.match(Pattern::RoomObjs))
+            # Also matches the empty component (RoomObjsEmpty never runs).
+            apply_room_objs(match[:objs]&.dup || '')
+          elsif Pattern::RoomObjsEmpty.match?(line)
+            DRRoom.npcs = []
+            DRRoom.dead_npcs = []
+            DRRoom.room_objs = []
+          elsif @@room_objs_cut && (full = full_room_listing(line))
+            update_room_objs(full)
+          elsif Pattern::GroupMembersEmpty.match?(line)
+            DRRoom.group_members = []
+          elsif (match = line.match(Pattern::GroupMembers))
+            DRRoom.group_members << match[:member]
+          elsif (match = line.match(Pattern::BriefExpOn)) || (match = line.match(Pattern::BriefExpOff))
+            skill    = match[:skill]
+            rank     = match[:rank].to_i
+            rate_raw = match[:rate]
+            rate     = rate_raw.to_i > 0 ? rate_raw : DR_LEARNING_RATES.index(rate_raw)
+            percent  = match[:percent]
+            DRSkill.update(skill, rank, rate, percent)
+
+            # Inline display of cumulative gained experience (from DRExpMonitor).
+            # The formatters edit server_line, the string the client receives,
+            # not the normalized copy. No captured exp component, in either
+            # dialect, carries a link or doubled bold, so match_line returns
+            # server_line itself for them; editing server_line keeps the client's
+            # line right if one ever did.
+            if DRExpMonitor.inline_display?
+              if rate_raw.to_i > 0
+                # BRIEFEXP ON format (rate is numeric)
+                server_line.replace(DRExpMonitor.format_briefexp_on(server_line, skill))
+              else
+                # BRIEFEXP OFF format (rate is word like "learning", "pondering")
+                server_line.replace(DRExpMonitor.format_briefexp_off(server_line, skill, rate_raw.strip))
+              end
+            end
+          elsif (match = line.match(Pattern::ExpClearMindstate))
+            skill = match[:skill]
+            DRSkill.clear_mind(skill)
+          elsif Pattern::ExpColumnsLine.match?(line) && !(columns = line.scan(Pattern::ExpColumns)).empty?
+            columns.each do |skill_value, rank_value, percent_value, rate_as_word|
+              rate_as_number = DR_LEARNING_RATES.index(rate_as_word) # convert word to number
+              DRSkill.update(skill_value, rank_value, rate_as_number, percent_value)
+            end
+          elsif Pattern::ExpModsStart.match?(line)
+            @@parsing_exp_mods_output = true
+            DRSkill.exp_modifiers.clear
+          elsif (match = line.match(Pattern::SpellBookFormat))
+            # Parse `toggle spellbook` command
+            DRSpells.spellbook_format = match[:format]
+          elsif Pattern::KnownSpellsStart.match?(line)
+            DRSpells.grabbing_known_spells = true
+            DRSpells.known_spells.clear
+            DRSpells.known_feats.clear
+            DRSpells.spellbook_format = 'non-column' # assume original format
+          elsif Pattern::BarbarianAbilitiesStart.match?(line)
+            DRSpells.check_known_barbarian_abilities = true
+            DRSpells.known_spells.clear
+            DRSpells.known_feats.clear
+          elsif Pattern::ThiefKhriStart.match?(line)
+            DRSpells.grabbing_known_khri = true
+            DRSpells.known_spells.clear
+            DRSpells.known_feats.clear
+          elsif (match = line.match(Pattern::PlayedAccount))
+            if Lich::Common::Account.name.nil?
+              Lich::Common::Account.name = match[:account].upcase
+            end
+          elsif (match = line.match(Pattern::PlayedSubscription))
+            if Lich::Common::Account.subscription.nil?
+              Lich::Common::Account.subscription = match[:subscription].gsub('Basic', 'Normal').gsub('F2P', 'Free').gsub('Platinum', 'Premium').upcase
+            end
+            UserVars.account_type = match[:subscription].gsub('Basic', 'Normal').gsub('F2P', 'Free').upcase
+            if Lich::Common::Account.subscription == 'PREMIUM' || XMLData.game == 'DRX' || XMLData.game == 'DRF'
+              UserVars.premium = true
+            else
+              UserVars.premium = false
+            end
+          elsif (match = line.match(Pattern::LastLogoff))
+            month = Date::ABBR_MONTHNAMES.find_index(match[:month])
+            weekdays = [nil, 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+            weekday_index = weekdays.find_index(match[:weekday])
+            # Guard: only process if weekday is recognized
+            if weekday_index
+              dst_check = match[:day].to_i - weekday_index
+              if month.between?(4, 10) || (month == 3 && dst_check >= 7) || (month == 11 && dst_check < 0)
+                tz = '-0400'
+              else
+                tz = '-0500'
+              end
+              $last_logoff = Time.new(match[:year].to_i, month, match[:day].to_i, match[:hour].to_i, match[:minute].to_i, match[:second].to_i, tz).getlocal
+            end
+          elsif (match = line.match(Pattern::Rested_EXP))
+            DRSkill.update_rested_exp(match[:stored].strip, match[:usable].strip, match[:refresh].strip)
+          elsif Pattern::Rested_EXP_F2P.match?(line)
+            # f2p characters without brain boost don't get rested exp
+            DRSkill.update_rested_exp('none', 'none', 'none')
+          elsif (match = line.match(Pattern::TDPValue_XPWindow))
+            DRStats.tdps = match[:tdp].to_i
+          elsif (match = line.match(Pattern::FavorValue_XPWindow))
+            DRStats.favors = match[:favor].to_i
+          end
+
+          # Safety valve: a scrape that never saw its closing <output class=""/>
+          # (interrupted or truncated stream) must not stay open and hijack later
+          # <d cmd> links in ordinary output. Any <prompt> ends the exchange, so
+          # reset there. In normal flow the flag is already false by the prompt.
+          if @@parsing_inventory_get && line.start_with?('<prompt')
+            # Reaching the prompt with the flag still set means the closing tag was
+            # never seen -- the listing was interrupted/truncated. For a COMPLETE
+            # INV LIST that means the staged full replacement is incomplete, so
+            # discard it (keeping the previously published model) and tell the user
+            # rather than silently leaving inventory half-updated.
+            unless @@inventory_partial
+              @@inventory_writes_worn ? GameObj.discard_inv_refresh : GameObj.discard_all_containers_refresh
+              Lich::Messaging.msg('warn', "DRParser: 'inv list' did not finish; keeping previous inventory. Re-run 'inv list' to refresh.")
+            end
+            @@parsing_inventory_get = false
+            @@inventory_partial = false
+            @@inventory_writes_worn = false
+          end
+
+          populate_inventory_get(line) if @@parsing_inventory_get
+          check_exp_mods(line) if @@parsing_exp_mods_output
+          check_known_barbarian_abilities(line) if DRSpells.check_known_barbarian_abilities
+          check_known_thief_khri(line) if DRSpells.grabbing_known_khri
+          check_known_spells(line) if DRSpells.grabbing_known_spells
+
+          # Parse bank transactions passively
+          Lich::DragonRealms::DRBanking.parse(line)
+        rescue StandardError => e
+          # Report the line as the server sent it (Saga markup is the likeliest
+          # cause), plus the copy the patterns saw when normalization changed it.
+          normalized = line.equal?(server_line) ? nil : line
+          Lich::Messaging.msg("bold", "DRParser: error in parse: #{e.message}")
+          Lich::Messaging.msg("bold", "DRParser: line: #{server_line}")
+          Lich::Messaging.msg("bold", "DRParser: matched as: #{normalized}") if normalized
+          Lich.log "error: DRParser.parse: #{e.message}\n\t#{e.backtrace.join("\n\t")}"
+          Lich.log "error: line: #{server_line}\n\t"
+          Lich.log "error: matched as: #{normalized}\n\t" if normalized
+        end
+      end
+    end
+  end
+end

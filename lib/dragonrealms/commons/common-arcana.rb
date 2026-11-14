@@ -1,0 +1,1616 @@
+# frozen_string_literal: true
+
+module Lich
+  module DragonRealms
+    module DRCA
+      module_function
+
+      CYCLIC_RELEASE_SUCCESS_PATTERNS = [
+        # Ranger spells
+        /^The world seems to accelerate around you as the spirit of the cheetah escapes you/, # Cheetah Swiftness
+        /^You feel distinctly frail and vulnerable as the spirit of the bear leaves you/, # Bear Strength
+        /^The forces of nature that you roused are no longer with you/, # Awaken Forest
+        # Empath spells
+        /^Aesandry Darlaeth loses cohesion, returning your reaction time to normal/, # Aesandry Darlaeth
+        /^You sense your hold on your Guardian Spirit weaken, then evaporate entirely/, # Guardian Spirit
+        /^The signs of empathic atrocity escape to the deepest pits of your personality, your touch no longer deadly/, # Icutu Zaharenela
+        /^The tingling across your body diminishes as you feel the motes of energy fade away/, # Regenerate
+        # Bard spells
+        /^You sing, purposely warbling some of the held notes for effec/, # Abandoned Heart (ABAN)
+        /^The final tones of your enchante end with an abrupt flourish that leaves stark silence in its wake/, # Aether Wolves (AEWO)
+        /^With a rising crescendo in your voice, you reprise the strong lines of the chorus of Albreda's Balm before bringing it to an abrupt conclusion/, # Albreda's Balm (ALB)
+        /^The final, quiet notes of Blessing of the Fae stir the air gently, and die away/, # Blessing of the Fae (BOTF)
+        /^The warm air swirling around you stills and begins to cool/, # Caress of the Sun (CARE)
+        /^A few fleeting, soporific notes tarry in the air before your lullaby slowly dies down like the night receding at Anduwen/, # Damaris' Lullaby (DALU)
+        /^You no longer feel the clarity of vision you had, as shadows creep across the area/, # Eye of Kertigen (EYE)
+        /^You let your voice fade even as the pace of Faenella's Grace slows, winding down to a quiet conclusion/, # Faenella's Grace (FAE)
+        /^The aethereal static subsides, returning your spellcasting abilities to normal/, # Glythtide's Joy (GJ)
+        /^As your rendition of Hodierna's Lilt winds down to a close, you let each note linger on the air a moment, drawing out the final moment with a reluctance to let the soothing melody fade/, # Hodierna's Lilt (HODI)
+        /^You build the final notes of Phoenix's Pyre with an upward scale that rises into a steep crescendo, and end with an abrupt silence/, # Phoenix's Pyre (PYRE)
+        /^The dome of light extinguishes as the final notes of music die away/, # Sanctuary
+        # Warrior Mage spells
+        /^The dark mantle of aether surrounding you fades away/, # Aether Cloak (AC)
+        /^You release your connection to the Elemental Plane of Electricity, allowing the static electricity to dissipate/, # Electrostatic Eddy (EE)
+        /^Your link to the Fire Rain matrix has been severed/, # Fire Rain (FR)
+        /^The chilling vapor surrounding you dissipates slowly/, # Rimefang (spell) (RIM)
+        /^The frost-covered blade circling around you shatters into a fine icy mist/, # Rimefang (spell) (RIM)
+        /^The jagged stone spears surrounding you at .* range tremble slightly, then crumble into a grey dust that is quickly reclaimed by the earth/, # Ring of Spears (ROS)
+        # Cleric spells
+        /^The deadening murk around you subsides/, # Hydra Hex (HYH)
+        /^The dark patch of grime around you subsides/, # Hydra Hex (HYH)
+        /^You sense the dark presence depart/, # Soul Attrition (SA)
+        # Resurrection (REZZ) does not have messaging that makes it usable here.
+        /^The heightened sense of spiritual awareness leaves you/, # Revelation (REV)
+        /^The swirling fog dissipates from around you/, # Ghost Shroud (GHS)
+        # Paladin spells
+        /^The .* radiance of your soul subsides, retreating into your body/, # Holy Warrior (HOW)
+        /^Truffenyi's Rally ends, leaving behind a momentary sensation of something stuck in your throat/, # Truffenyi's Rally (TR)
+        # Moon Mage spells
+        /^The web of shadows twitches one last time and then goes inert/, # Shadow Web (SHW)
+        /^You release your mental hold on the lunar energy that sustains your moongate/, # Moongate (MG)
+        /^The refractive field surrounding you fades away/, # Steps of Vuan (SOV)
+        /^A .* sphere suddenly flares with a cold light and vaporizes/, # Starlight Sphere (SLS)
+        # Trader spells
+        /^Your calligraphy of light assailing/, # Arbiter's Stylus (ARS)
+        /^The .* moonsmoke blows away from your face/, # Mask of the Moons (MOM)
+        # Necromancer spells
+        /^The Rite of Contrition matrix loses cohesion, leaving your aura naked/, # Rite of Contrition (ROC)
+        /^The Rite of Forbearance matrix loses cohesion, leaving you to wallow in temptation/, # Rite of Forbearance (ROF)
+        /^The Rite of Grace matrix loses cohesion, leaving your body exposed/, # Rite of Grace (ROG)
+        /^The greenish hues about you vanish as the Universal Solvent matrix loses its cohesion/, # Universal Solvent (USOL)
+        /^You sense your Call from Within spell weaken and disperse/ # Call from Within (CFW)
+      ].freeze
+
+      INFUSE_OM_SUCCESS_PATTERNS = [
+        'having reached its full capacity',
+        'A sense of fullness',
+        'Something in the area is interfering with your attempt to harness'
+      ].freeze
+
+      INFUSE_OM_FAILURE_PATTERNS = [
+        'as if it hungers for more',
+        'Your infusion fails completely',
+        "You don't have enough harnessed mana to infuse that much",
+        'You have no harnessed'
+      ].freeze
+
+      INFUSE_OM_MAX_RETRIES = 20
+      PREPARE_MAX_RETRIES = 3
+      CAST_MAX_RETRIES = 3
+      # How long, and how often, prep_confirmed? polls the prepared-spell
+      # indicator after prepare? returned '' (see prep_confirmed?).
+      PREP_CONFIRM_WAIT_SECONDS = 3
+      PREP_CONFIRM_POLL_SECONDS = 0.1
+      BARB_BUFF_MAX_RETRIES = 3
+      STOW_FOCUS_MAX_RETRIES = 3
+
+      WIELD_FOCUS_SUCCESS_PATTERNS = [
+        /^You draw out/,
+        /^You grab/,
+        /^You slip/,
+        /^You deftly remove/
+      ].freeze
+
+      WIELD_FOCUS_FAILURE_PATTERNS = [
+        /^What were you/,
+        /^Wield what/,
+        /^You need a free hand/
+      ].freeze
+
+      SHEATHE_FOCUS_SUCCESS_PATTERNS = [
+        /^You sheathe/,
+        /^Sheathing/,
+        /^You secure/,
+        /^You slip/,
+        /^You hang/,
+        /^You strap/,
+        /^You easily strap/
+      ].freeze
+
+      SHEATHE_FOCUS_FAILURE_PATTERNS = [
+        /^Sheathe your .* where/,
+        /^There's no room/
+      ].freeze
+
+      STARLIGHT_MESSAGES = [
+        'The smallest hint of starlight flickers within your aura',
+        'A bare flicker of starlight plays within your aura',
+        'A faint amount of starlight illuminates your aura',
+        'Your aura pulses slowly with starlight',
+        'A steady pulse of starlight runs through your aura',
+        'Starlight dances vividly across the confines of your aura',
+        'Strong pulses of starlight flare within your aura',
+        'Your aura seethes with brilliant starlight',
+        'Your aura is blinding',
+        'The power contained in your aura'
+      ].freeze
+
+      CHARGE_LEVELS = [
+        /^You sense nothing out of the ordinary.  Only magic could detect the useless trace of .* still in your system.$/,
+        /^A small charge lingers within your body, just above the threshold of perception.$/,
+        /^A small charge lingers within your body.$/,
+        /^A charge dances through your body.$/,
+        /^A charge dances just below the threshold of discomfort.$/,
+        /^A charge circulates through your body, causing a low hum to vibrate through your bones.$/,
+        /^Elemental essence floats freely within your body, leaving little untouched.$/,
+        /^Elemental essence has infused every inch of your body.  While you could contain more, you'd do so at the risk of your health.$/,
+        /^Extraplanar power crackles within your body, leaving you feeling mildly feverish.$/,
+        /^Extraplanar power crackles within your body, leaving you feeling acutely ill.$/,
+        /^Your body sings and crackles with a barely contained charge, destroying what little cenesthesia you had left.$/,
+        /^You have reached the limits of your body's capacity to store a charge.  The laws of the Elemental Plane of .* scream demands upon your physiology, threatening your life.$/
+      ].freeze
+
+      PERC_MANA_START_PATTERN = /streams of .* mana/
+      PERC_MANA_END_PATTERN = /Roundtime/
+      # One line of a Moon Mage's PERC MANA reply, one per Lunar spellbook, e.g.
+      # "You reach out with your senses and see glaring (19/21) streams of cold,
+      # white Lunar mana available for the Illusion book."
+      PERC_MANA_BOOK_PATTERN = %r{\A\s*You reach out with your .+? and (?:see|hear) (?<adj>\w+) (?:\((?<level>\d+)/(?<max>\d+)\) )?streams of .* mana available for the (?<book>.+?) book}
+      SYMBIOSIS_PATTERN = /combine the weaves of the (?<type>\w+) symbiosis/
+      DISCERN_SORCERY_PATTERN = /requires at minimum (?<min>\d+) mana streams/
+      DISCERN_FULL_PATTERN = /minimum (?<min>\d+) mana streams and you think you can reinforce it with (?<more>\d+) more/i
+
+      # Seconds check_discern waits before discerning a spell again after a
+      # discern drew no recognised reply, at most check_discern_timer_in_hours.
+      DISCERN_RETRY_SECONDS = 300
+
+      USELESS_RUNESTONE_PATTERNS = [
+        /^You get a useless/
+      ].freeze
+
+      GET_RUNESTONE_SUCCESS_PATTERNS = [
+        /^You get/,
+        /^You pick up/
+      ].freeze
+
+      GET_RUNESTONE_FAILURE_PATTERNS = [
+        /^What were you referring to/,
+        /^I could not find/
+      ].freeze
+
+      @backfired_status = false
+
+      def infuse_om(harness, amount)
+        return unless DRSpells.active_spells['Osrel Meraud'] && DRSpells.active_spells['Osrel Meraud'] < 90
+        return unless amount
+
+        retries = 0
+        loop do
+          if retries >= INFUSE_OM_MAX_RETRIES
+            Lich::Messaging.msg("bold", "DRCA: infuse_om exhausted #{INFUSE_OM_MAX_RETRIES} retries - giving up")
+            break
+          end
+          retries += 1
+
+          pause 5 while DRStats.mana <= 40
+          harness_mana([amount]) if harness
+          break if INFUSE_OM_SUCCESS_PATTERNS.include?(DRC.bput("infuse om #{amount}", INFUSE_OM_SUCCESS_PATTERNS, INFUSE_OM_FAILURE_PATTERNS))
+
+          pause 0.5
+          waitrt?
+        end
+      end
+
+      def harness?(mana)
+        result = DRC.bput("harness #{mana}", 'You tap into', 'Strain though you may')
+        pause 0.5
+        waitrt?
+        return result =~ /You tap into/
+      end
+
+      def harness_mana(amounts)
+        amounts.each do |mana|
+          break unless harness?(mana)
+        end
+      end
+
+      def start_khris(khris, settings)
+        khris
+          .each do |khri_set|
+            activate_khri?(settings.kneel_khri, khri_set)
+          end
+      end
+
+      # Needs to handle (based on current usage):
+      # - Hasten
+      # - Delay Hasten
+      # - Hasten Focus
+      # - Delay Hasten Focus
+      # - Khri Hasten
+      # - Khri Delay Hasten
+      # - Khri Delay Hasten Focus
+      def activate_khri?(settings_kneel, ability)
+        abilities = ability.split.map(&:capitalize)
+
+        # Standardize for with/without 'Khri' on the front
+        abilities = abilities.drop(1) if abilities.first.casecmp('khri') == 0
+
+        # Handling for 'Delay'
+        should_delay = abilities.first.casecmp('delay') == 0
+        abilities = abilities.drop(1) if should_delay
+
+        # Check each khri in the list against Active Spells, Drop any that are active
+        needed_abilities = abilities.select { |ability_to_check| DRSpells.active_spells["Khri #{ability_to_check}"].nil? }
+        return true if needed_abilities.empty?
+
+        kneel = needed_abilities.any? { |ability_to_check| kneel_for_khri?(settings_kneel, ability_to_check) }
+        DRC.retreat if kneel
+        DRC.bput('kneel', 'You kneel', 'You are already', 'You rise', "While swimming?  Don't be silly") if kneel && !kneeling?
+
+        result = DRC.bput("Khri #{should_delay ? 'Delay ' : ''}#{needed_abilities.join(' ')}", get_data('spells').khri_preps)
+        waitrt?
+        DRC.fix_standing
+
+        return ['Your mind and body are willing', 'Your body is willing', 'You have not recovered'].none?(result)
+      end
+
+      def kneel_for_khri?(kneel, ability)
+        if kneel.is_a? Array
+          kneel.map(&:downcase).include? ability.downcase.sub('khri ', '')
+        else
+          kneel
+        end
+      end
+
+      def start_barb_abilities(abilities, settings)
+        abilities.each { |name| activate_barb_buff?(name, settings.meditation_pause_timer, settings.sit_to_meditate) }
+      end
+
+      def activate_barb_buff?(name, meditation_pause_timer = 20, sit_to_meditate = false, retries: BARB_BUFF_MAX_RETRIES)
+        # Note, you must know Power meditation or Powermonger mastery
+        # for your active abilities to be detected by DRSpells.
+        return true if DRSpells.active_spells[name]
+
+        if retries <= 0
+          Lich::Messaging.msg("bold", "DRCA: activate_barb_buff? exhausted #{BARB_BUFF_MAX_RETRIES} retries for '#{name}' - giving up")
+          return false
+        end
+
+        activated = false
+        ability_data = get_data('spells').barb_abilities[name]
+        if ability_data['type'].eql?('meditation') && sit_to_meditate
+          DRC.retreat
+          DRC.bput('sit', 'You sit', 'You are already', 'You rise', 'While swimming?')
+        end
+        case DRC.bput(ability_data['start_command'], ability_data['activated_message'], 'You have not been trained', 'But you are already', 'Your inner fire lacks', 'find yourself lacking the inner fire', 'You should stand', 'You must be sitting', 'You must be unengaged', 'While swimming?')
+        when 'You must be unengaged'
+          DRC.retreat
+          activated = activate_barb_buff?(name, meditation_pause_timer, sit_to_meditate, retries: retries - 1)
+        when 'You must be sitting'
+          DRC.retreat
+          case DRC.bput('sit', 'You sit', 'You are already', 'You rise', 'While swimming?')
+          when 'While swimming?'
+            Lich::Messaging.msg("bold", "DRCA: cannot sit to activate '#{name}' - water is too deep")
+            activated = false
+          else
+            activated = activate_barb_buff?(name, meditation_pause_timer, sit_to_meditate, retries: retries - 1)
+          end
+        when 'You should stand'
+          DRC.fix_standing
+          activated = activate_barb_buff?(name, meditation_pause_timer, sit_to_meditate, retries: retries - 1)
+        when /#{ability_data['activated_message']}/
+          # Pause at least for the preferred amount of time
+          # to let the meditation take effect else it may fail.
+          if ability_data['type'].eql?('meditation') && meditation_pause_timer
+            pause meditation_pause_timer
+          end
+          # Wait for any remaining RT before proceeding
+          waitrt?
+          activated = true
+        else
+          activated = false
+        end
+        DRC.fix_standing
+        activated
+      end
+
+      def need_buffs?(buff_list)
+        # no need to iterate if list of buffs is already empty
+        return false if buff_list.nil? || buff_list.size == 0
+
+        # commoner's don't really have a way to check buffs so assume always yes
+        return true if DRStats.guild == "Commoner"
+
+        # no need to iterate if no buffs active and buff_list is not empty
+        return true if DRSpells.active_spells.empty?
+
+        case DRStats.guild
+        when 'Barbarian'
+          # barbarian buffs are an array of strings so we can just iterate over it and check if any are not in the active spells hash
+          buff_list.each { |buff| return true if !DRSpells.active_spells.key?("#{buff}") }
+        when 'Thief'
+          # thieves need special handling to convert buff_list to an array of JUST khri names due to the different options supported
+          buff_list.map { |buff| buff.sub(/khri /i, '') }
+                   .map { |buff| buff.sub(/delay /i, '') }
+                   .join(' ')
+                   .split(' ')
+                   .each { |khri| return true if !DRSpells.active_spells.key?("Khri #{khri}") }
+        else
+          # for MUs check list of required buffs against list of active spells and their durations/recast
+          buff_list.each do |spell, data|
+            # ignore spells which don't recast (ignite, etf, etc.) but not cyclics
+            next if data['recast'] < 0 && !data['cyclic']
+            # if any buff is not in the active spells, or whose duration is less than recast, need to buff
+            return true if !DRSpells.active_spells.key?(spell) || DRSpells.active_spells[spell] <= (data['recast'] ? data['recast'] : 1)
+          end
+        end
+
+        # all buffs were in active spells with longer durations than recast, no need to buff
+        return false
+      end
+
+      # Probe text for {#zero_width_pattern?}: a short sentence, a pangram in both
+      # cases, every digit and every ASCII punctuation mark, then a double space
+      # and a sentence ending the probe with a period. Word-boundary assertions
+      # and lookarounds for any single printable character, a double space, a
+      # line-final period, or a word in the probe find a position to match at.
+      # Must stay ASCII-only: a non-ASCII probe raises
+      # Encoding::CompatibilityError (not a RegexpError) against a binary pattern
+      # that carries high bytes.
+      ZERO_WIDTH_PROBE = %q(You a. 1! The quick brown fox jumps over the lazy dog, THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 0123456789 !"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~  You a.)
+
+      # Compiles a single player-supplied message into a case-insensitive Regexp
+      # for use as a bput pattern, matching how bput treats the built-in string
+      # patterns; leading/trailing whitespace is trimmed so an accidental space in
+      # yaml does not silently break matching. Returns nil -- so the entry is
+      # dropped rather than applied -- when the message is not a String, is
+      # blank/whitespace-only (an empty pattern compiles to //, matching every
+      # line), is not a valid regular expression (which would otherwise raise
+      # inside bput), or can match without consuming any text (see
+      # {#zero_width_pattern?}; like //, such a pattern matches every line).
+      # Shared guard for every custom_*_message key.
+      #
+      # @param message [String, nil] the player-supplied message
+      # @return [Regexp, nil] a case-insensitive pattern, or nil if not a usable string
+      def custom_message_pattern(message)
+        return nil unless message.is_a?(String)
+
+        stripped = message.strip
+        return nil if stripped.empty?
+
+        pattern = Regexp.new(stripped, Regexp::IGNORECASE)
+        return nil if zero_width_pattern?(pattern)
+
+        pattern
+      rescue RegexpError
+        nil
+      end
+
+      # Whether +pattern+ can succeed without consuming any text -- e.g. '.*',
+      # 'You|', '(foo)?', '^', '\b' or '(?=.)'. bput returns on the first line a
+      # pattern matches, so such a pattern accepts whatever line arrives first
+      # (returning it, or '') as though it were the expected message. Detected by
+      # an empty-string match, or a zero-length match at any position of
+      # {ZERO_WIDTH_PROBE}. A lookaround that needs a word or other multi-character
+      # context the probe lacks (e.g. '(?=Your)' or '(?=You feel a surge)') is
+      # not detected; it still makes an empty match, but only on lines that
+      # contain that text. The probe is matched like any game line, so a pattern
+      # with catastrophic backtracking hangs here just as it would inside bput.
+      #
+      # @param pattern [Regexp] a compiled custom message pattern
+      # @return [Boolean] true if the pattern can match zero characters
+      def zero_width_pattern?(pattern)
+        return true if pattern.match?('')
+
+        (0..ZERO_WIDTH_PROBE.length).any? do |position|
+          match = pattern.match(ZERO_WIDTH_PROBE, position)
+          match && match[0].empty?
+        end
+      end
+
+      # Appends the player's validated custom message patterns to a built-in
+      # message list. Each custom message is compiled by {#custom_message_pattern}
+      # and silently dropped if blank or invalid. (Duplicate detection is left to
+      # config validation, e.g. validate.lic; a duplicate here is merely redundant.)
+      #
+      # @param base_messages [Array<String>] built-in messages from base-spells.yaml
+      # @param custom_messages [Array<String, nil>] player messages to validate and append
+      # @return [Array<String, Regexp>] the built-in messages followed by the valid custom patterns
+      def with_custom_messages(base_messages, *custom_messages)
+        base_messages + custom_messages.filter_map { |message| custom_message_pattern(message) }
+      end
+
+      # The bput patterns for invoking: the built-in invoke messages plus the
+      # player's custom_invoke_message additions -- the per-character one (their
+      # ritual focus, from settings) and, for a runestone spell, the per-spell one
+      # from the spell's data.
+      #
+      # @param spell_custom_invoke_message [String, nil] a spell's custom_invoke_message (runestone spells)
+      # @return [Array<String, Regexp>] built-in invoke messages plus the valid custom patterns
+      def invoke_messages(spell_custom_invoke_message = nil)
+        with_custom_messages(get_data('spells').invoke_messages, get_settings.custom_invoke_message, spell_custom_invoke_message)
+      end
+
+      # Prepares a spell -- via a normal prep, or by invoking a runestone when
+      # +runestone_name+ is given -- retrying the transient "desire slips away"
+      # case and bailing on hard failures.
+      #
+      # @param abbrev [String, nil] the spell's prep abbreviation; returns false if nil
+      # @param mana [Integer] mana to prepare with
+      # @param symbiosis [Boolean] prepare a symbiosis first, releasing it on failure
+      # @param command [String] the prep command ('prepare', 'prep', 'incant', ...)
+      # @param tattoo_tm [Boolean] target after preparing (tattoo TM)
+      # @param runestone_name [String, nil] a runestone to invoke instead of a normal prep
+      # @param runestone_tm [Boolean] target after invoking the runestone
+      # @param custom_prep_message [String, nil] a per-spell prep message to also accept (see {#with_custom_messages})
+      # @param custom_invoke_message [String, nil] a per-spell invoke message to also accept when preparing via a runestone
+      # @param custom_spell_prep [String, nil] the global prep-message fallback (the custom_spell_prep setting); validated independently of custom_prep_message, so a blank/invalid per-spell value never suppresses a valid global one
+      # @param retries [Integer] remaining retries for the transient "slips away" case
+      # @return [String, false] the matched prep message; or +''+ (truthy) when
+      #   bput matched nothing: normally because no prep message arrived before
+      #   bput gave up (it still reads any lines already waiting when its
+      #   timeout passes, and restarts its timer on the replies it retries,
+      #   such as a wait or a stun). bput also returns +''+ at once for a line
+      #   that no built-in message matches when the first custom pattern that
+      #   matches the line makes an empty match there (bput returns the leftmost
+      #   match of the first pattern that matches), such as
+      #   +'(?=A goblin)'+ on a line starting "A goblin"; an empty match in a
+      #   per-spell pattern also hides a later custom_spell_prep one. That
+      #   applies only to a custom pattern {#custom_message_pattern} lets
+      #   through, and never to a line bput handles itself: it retries on a
+      #   wait, a stun or a type-ahead reply and skips the "can't move" line.
+      #   Or false on one of
+      #   the failure replies prepare? itself checks for (its +when+ arms other
+      #   than the retried "slips away" one, which returns the retry's result),
+      #   a nil +abbrev+, or exhausted retries. Any other matched reply is
+      #   returned as is, even one that reads like a failure.
+      #
+      # @note A timeout is not a failure. When nothing prepare? accepts (the
+      #   prep_messages plus the custom prep messages, or {#invoke_messages}
+      #   for a runestone) arrives before bput gives up, bput returns +''+
+      #   and prepare? returns it unchanged, after still sending the
+      #   tattoo/runestone +target+. A timeout is ambiguous: the prep may
+      #   have succeeded with a message that is not in the list (the reason
+      #   custom_prep_message exists) or with a reply delayed by a server
+      #   stall, and returning false there would abort a real prep. It can
+      #   also mean nothing was prepared at all. Callers that would otherwise
+      #   charge cambrinth, harness mana or cast on the strength of this
+      #   result should pass it to {#prep_confirmed?}, which accepts +''+
+      #   after a prep command only when the game shows a spell being
+      #   prepared (and after an invoke as is). {#cast_spell} and
+      #   {#ritual} do; {#crafting_prepare_spell} returns the result as is.
+      def prepare?(abbrev, mana, symbiosis = false, command = 'prepare', tattoo_tm = false, runestone_name = nil, runestone_tm = false, custom_prep_message = nil, custom_invoke_message: nil, custom_spell_prep: nil, retries: PREPARE_MAX_RETRIES)
+        return false unless abbrev
+        spell_prep_messages = with_custom_messages(get_data('spells').prep_messages, custom_prep_message, custom_spell_prep)
+
+        DRC.bput('prepare symbiosis', 'You recall the exact details of the', 'But you\'ve already prepared', 'Please don\'t do that here') if symbiosis
+        if runestone_name.nil?
+          match = DRC.bput("#{command} #{abbrev} #{mana}", spell_prep_messages)
+        else
+          match = DRC.bput("#{command} my #{runestone_name}", invoke_messages(custom_invoke_message))
+        end
+        case match
+        when 'Your desire to prepare this offensive spell suddenly slips away'
+          if retries <= 0
+            Lich::Messaging.msg("bold", "DRCA: prepare? exhausted #{PREPARE_MAX_RETRIES} retries for '#{abbrev}' - giving up")
+            return false
+          end
+          pause 1
+          return prepare?(abbrev, mana, symbiosis, command, tattoo_tm, runestone_name, runestone_tm, custom_prep_message, custom_invoke_message: custom_invoke_message, custom_spell_prep: custom_spell_prep, retries: retries - 1)
+        when 'Something in the area interferes with your spell preparations', 'You shouldn\'t disrupt the area right now', 'You have no idea how to cast that spell', 'You have yet to receive any training in the magical arts', 'Please don\'t do that here', 'You cannot use the tattoo while maintaining the effort to stay hidden'
+          DRC.bput('release symbiosis', 'You release the', 'But you haven\'t') if symbiosis
+          return false
+        when 'Well, that was fun'
+          DRCI.dispose_trash(runestone_name)
+          return false
+        when 'You\'ll have to hold it'
+          return false
+        end
+
+        DRC.bput("target", spell_prep_messages) if tattoo_tm || runestone_tm
+
+        match
+      end
+
+      # Returns true if preparing a spell, false otherwise.
+      def spell_preparing?
+        !spell_preparing.nil?
+      end
+
+      # Returns true if you're prepared to cast your spell.
+      # Infers this if you're preparing a spell and there's no more prep time to wait.
+      def spell_prepared?
+        spell_preparing? && checkcastrt <= 0
+      end
+
+      # Returns name of the spell being prepared, or nil if not preparing one.
+      def spell_preparing
+        name = XMLData.prepared_spell
+        name = nil if name.empty? || name.eql?('None')
+        name
+      end
+
+      # Whether a {#prepare?} result means a spell is now being prepared, so a
+      # caller can go on to charge cambrinth, harness mana, invoke a focus or
+      # cast. A matched prep message counts and false does not. For +''+
+      # (bput matched nothing; see {#prepare?}) the answer comes from the
+      # game's prepared-spell indicator ({#spell_preparing?}), which the game
+      # sends with its prep reply (on the same line or just before it),
+      # listed or not: it counts if a spell shows as being prepared within
+      # PREP_CONFIRM_WAIT_SECONDS, which also covers a prep reply that lands
+      # just after bput returned early (see {#prepare?}). Otherwise a bold
+      # message says so, +release spell+ is sent and the result is false.
+      # The game handles commands in order, so during a server stall that
+      # release lands behind the prep still waiting there and cancels it,
+      # rather than leaving it prepared for the next caller (whose own
+      # release is skipped while the indicator still shows no spell) to
+      # charge and cast as its own.
+      #
+      # The indicator rule covers preps made with a prep command. An invoke
+      # (a runestone, or a tattoo whose prep command is +invoke+) is not
+      # checked: there is no record of whether the game sets the indicator
+      # for those, and rejecting a real invoke would leave its spell
+      # prepared and uncast. For them +''+ counts, as it did before.
+      #
+      # @param prep_result [String, false] what {#prepare?} returned
+      # @param abbrev [String, nil] the spell's abbreviation, for the message
+      # @param command [String, nil] the prep command passed to {#prepare?}
+      # @param runestone_name [String, nil] the runestone passed to {#prepare?}
+      # @return [Boolean]
+      def prep_confirmed?(prep_result, abbrev, command: 'prepare', runestone_name: nil)
+        return false unless prep_result
+        return true unless prep_result == ''
+        return true if runestone_name || command.to_s.strip.match?(/\Ainvoke\b/i)
+
+        polls = (PREP_CONFIRM_WAIT_SECONDS / PREP_CONFIRM_POLL_SECONDS).round
+        polls.times do
+          return true if spell_preparing?
+
+          pause PREP_CONFIRM_POLL_SECONDS
+        end
+        return true if spell_preparing?
+
+        Lich::Messaging.msg("bold", "DRCA: no prep reply was recognised for '#{abbrev}' and no spell is being prepared - not casting")
+        DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
+        false
+      end
+
+      def ritual(data, settings)
+        DRC.retreat(settings.ignored_npcs) unless data['skip_retreat']
+        DRC.release_invisibility
+        DRC.set_stance('shield') unless data['skip_retreat']
+
+        command = 'prepare'
+        command = data['prep'] if data['prep']
+        command = data['prep_type'] if data['prep_type']
+
+        # As in cast_spell: drop a spell left prepared by an earlier caller, so
+        # the focus invoke and the cast below act on this ritual's prep.
+        DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell") unless checkprep == 'None'
+
+        prepared = prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], data['custom_prep_message'], custom_invoke_message: data['custom_invoke_message'], custom_spell_prep: settings['custom_spell_prep'])
+        return unless prep_confirmed?(prepared, data['abbrev'], command: command, runestone_name: data['runestone_name'])
+
+        prepare_time = Time.now
+        find_focus(data['focus'], data['worn_focus'], data['tied_focus'], data['sheathed_focus'])
+
+        invoke(data['focus'], nil, nil)
+        stow_focus(data['focus'], data['worn_focus'], data['tied_focus'], data['sheathed_focus'])
+        DRC.retreat(settings.ignored_npcs) unless data['skip_retreat']
+
+        if data['prep_time']
+          pause until Time.now - prepare_time >= data['prep_time']
+        else
+          waitcastrt?
+        end
+
+        return unless cast?(data['cast'], data['symbiosis'], data['before'], data['after'], data['custom_cast_message'])
+
+        DRC.retreat(settings.ignored_npcs) unless data['skip_retreat']
+      end
+
+      def prepare_to_cast_runestone?(spell, settings)
+        if DRCI.inside?("#{spell['runestone_name']}", settings.runestone_storage)
+          return false unless get_runestone?(spell['runestone_name'], settings)
+        else
+          Lich::Messaging.msg("bold", "DRCA: out of #{spell['runestone_name']}!")
+          return false
+        end
+        true
+      end
+
+      def get_runestone?(runestone, settings)
+        return true if DRCI.in_hands?(runestone)
+
+        result = DRC.bput(
+          "get my #{runestone} from my #{settings.runestone_storage}",
+          USELESS_RUNESTONE_PATTERNS, GET_RUNESTONE_SUCCESS_PATTERNS, GET_RUNESTONE_FAILURE_PATTERNS
+        )
+        if USELESS_RUNESTONE_PATTERNS.any? { |pat| pat.match?(result) }
+          DRCI.dispose_trash(runestone)
+          Lich::Messaging.msg("bold", "DRCA: got a useless #{runestone} - disposing and giving up")
+          return false
+        elsif GET_RUNESTONE_FAILURE_PATTERNS.any? { |pat| pat.match?(result) }
+          Lich::Messaging.msg("bold", "DRCA: could not find #{runestone} in #{settings.runestone_storage}")
+          return false
+        end
+        true
+      end
+
+      def backfired?
+        @backfired_status || false
+      end
+
+      # Casts the prepared spell, inferring success from the absence of a failure
+      # flag (see the Flags below), and handling the WM barrage fallback and the
+      # cyclic-too-recent / full-preparation retry cases.
+      #
+      # @param cast_command [String] the cast command ('cast', 'cast at ...', 'incant ...', 'barrage ...')
+      # @param symbiosis [Boolean] whether a symbiosis was prepared (released on failure)
+      # @param before [Array<Hash>] actions ({'message', 'matches'}) to bput before casting
+      # @param after [Array<Hash>] actions to bput after casting
+      # @param custom_cast_message [String, nil] a per-spell cast message to also accept (see {#with_custom_messages})
+      # @param retries [Integer] remaining retries for barrage-fallback / cyclic-too-recent / full-prep
+      # @return [Boolean] true if the spell cast without a failure flag being set,
+      #   including when no cast message arrived before DRC.bput gave up, and
+      #   when bput returned +''+ at once for a line that no built-in message
+      #   matches because the first custom pattern that matches the line makes
+      #   an empty match there (as +'(?=A goblin)'+ does on a line starting
+      #   "A goblin"; only a custom pattern {#custom_message_pattern} lets
+      #   through can do this, and never on a line bput handles itself: it
+      #   retries on a wait, a stun or a type-ahead reply and skips the
+      #   "can't move" line); false if the +spell-fail+ flag was set or a retry
+      #   limit ran out. In both +''+ cases the result rests on +spell-fail+ at
+      #   the moment it is read (see the note).
+      #
+      # @note A timeout counts as success. When nothing cast? accepts (the
+      #   cast_messages plus the custom cast message) arrives before bput gives
+      #   up (a server stall, or a successful cast whose message is not
+      #   listed), bput returns +''+, which no +when+ arm handles: the
+      #   barrage and cyclic/full-prep retry flags still apply, and the result
+      #   rests on the +spell-fail+ flag. That flag is read only after the cast
+      #   bput, the roundtime wait and the +after+ actions, so
+      #   the result is true unless a failure line arrived before then (in
+      #   which case mana, and any symbiosis, is released and the result is
+      #   false); a failure line that arrives later is missed. This is
+      #   deliberate. Mapping a timeout to false would make retry loops such as
+      #   +until cast_spell?(...)+ prepare and cast again after a cast that went
+      #   off but was not recognised (a stall, or a message that is not listed;
+      #   the reason custom_cast_message exists). A missed late failure line is
+      #   not always harmless: if it arrives while a later cast? is running,
+      #   that call takes it as its own failure, returns false and releases
+      #   mana (and any symbiosis) even if its own cast went off.
+      #   {#cast_spell}, {#cast_spell?} and {#crafting_cast_spell} pass this
+      #   result through ({#cast_spell} returns nil, and so {#cast_spell?}
+      #   returns false, for a ritual spell, after a successful segue, and
+      #   when the prep failed or {#prep_confirmed?} rejected it, in which
+      #   case cast? is not called).
+      def cast?(cast_command = 'cast', symbiosis = false, before = [], after = [], custom_cast_message = nil, retries: CAST_MAX_RETRIES)
+        before.each { |action| DRC.bput(action['message'], action['matches']) }
+
+        Flags.add('unknown-command', "Please rephrase that command")
+        Flags.add('barrage-fail', "That was an invalid attack choice.", "Wouldn't it be better if you used a melee weapon?", "You'll need to be using a weapon to BARRAGE your target", "You must have a fully developed target matrix to make a barrage attack", "You are unable to muster the energy to do that", "You do not know how to manipulate that pathway.", "You cannot BARRAGE with that spell.")
+        Flags.add('spell-fail', 'Currently lacking the skill to complete the pattern', "You don't have a spell prepared!", /^Your spell .*backfires/, 'Something is interfering with the spell', 'There is nothing else to face', 'You strain, but are too mentally fatigued', 'The spell pattern resists the influx of unfocused mana', 'Your target pattern dissipates because')
+        Flags.add('cyclic-too-recent', 'The mental strain of initiating a cyclic spell so recently prevents you from formulating the spell pattern')
+        Flags.add('spell-full-prep', /^This pattern may only be cast with full preparation/)
+        Flags.add('spell-backfired', /^Your spell .*backfires/)
+
+        cast_messages = with_custom_messages(get_data('spells').cast_messages, custom_cast_message)
+        case DRC.bput(cast_command || 'cast', cast_messages)
+        when /^Your target pattern dissipates/, /^You can't cast that at yourself/, /^You need to specify a body part to consume/, /^There is nothing else to face/
+          DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
+          DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+        when /You gesture/
+          pause 0.25
+        end
+        waitrt?
+
+        # Warrior Mage failed to use (or doesn't know) barrage ability. Do regular cast instead.
+        if cast_command =~ /\b(barrage)\b/i && (Flags['unknown-command'] || Flags['barrage-fail'])
+          return cast?('cast', symbiosis, [], after, custom_cast_message, retries: retries - 1) if retries > 0
+
+          Lich::Messaging.msg("bold", "DRCA: cast? barrage fallback exhausted retries - giving up")
+          return false
+        end
+
+        if Flags['cyclic-too-recent'] || Flags['spell-full-prep']
+          if retries <= 0
+            Lich::Messaging.msg("bold", "DRCA: cast? exhausted #{CAST_MAX_RETRIES} retries waiting for cyclic/full-prep - giving up")
+            return false
+          end
+          pause 1
+          Flags.delete('spell-full-prep')
+          return cast?(cast_command, symbiosis, [], after, custom_cast_message, retries: retries - 1)
+        end
+
+        after.each { |action| DRC.bput(action['message'], action['matches']) }
+
+        if symbiosis && Flags['spell-fail']
+          DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+          DRC.bput('release symbiosis', 'You release', 'But you haven\'t prepared')
+        elsif Flags['spell-fail']
+          DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+        end
+
+        @backfired_status = Flags['spell-backfired']
+
+        !Flags['spell-fail']
+      end
+
+      def find_charge_invoke_stow(cambrinth, stored_cambrinth, cambrinth_cap, dedicated_camb_use, charges, invoke_exact_amount = nil)
+        return unless charges
+
+        find_cambrinth(cambrinth, stored_cambrinth, cambrinth_cap)
+        charge_and_invoke(cambrinth, dedicated_camb_use, charges, invoke_exact_amount)
+        stow_cambrinth(cambrinth, stored_cambrinth, cambrinth_cap)
+      end
+
+      def find_focus(focus, worn, tied, sheathed)
+        return unless focus
+
+        if worn
+          DRCI.remove_item?(focus)
+        elsif tied
+          DRCI.untie_item?(focus, tied)
+        elsif sheathed
+          result = DRC.bput("wield my #{focus}", WIELD_FOCUS_SUCCESS_PATTERNS, WIELD_FOCUS_FAILURE_PATTERNS)
+          WIELD_FOCUS_FAILURE_PATTERNS.none? { |pattern| pattern =~ result }
+        else
+          DRCI.get_item?(focus)
+        end
+      end
+
+      def stow_focus(focus, worn, tied, sheathed, retries: STOW_FOCUS_MAX_RETRIES)
+        return unless focus
+
+        if worn
+          DRCI.wear_item?(focus)
+        elsif tied
+          result = DRCI.tie_item?(focus, tied)
+          unless result
+            if retries <= 0
+              Lich::Messaging.msg("bold", "DRCA: stow_focus exhausted #{STOW_FOCUS_MAX_RETRIES} retries tying #{focus} - giving up")
+              return false
+            end
+            DRC.retreat
+            return stow_focus(focus, worn, tied, sheathed, retries: retries - 1)
+          end
+          result
+        elsif sheathed
+          result = DRC.bput("sheathe my #{focus}", SHEATHE_FOCUS_SUCCESS_PATTERNS, SHEATHE_FOCUS_FAILURE_PATTERNS)
+          SHEATHE_FOCUS_FAILURE_PATTERNS.none? { |pattern| pattern =~ result }
+        else
+          DRCI.stow_item?(focus)
+        end
+      end
+
+      def find_cambrinth(cambrinth, stored_cambrinth, cambrinth_cap)
+        if stored_cambrinth
+          # Your config says you keep your cambrinth stowed.
+          # If item not in your hands, maybe you're wearing it by accident?
+          DRCI.get_item_if_not_held?(cambrinth) || DRCI.remove_item?(cambrinth)
+        elsif !skilled_to_charge_while_worn?(cambrinth_cap)
+          # Your config says you wear your cambrinth.
+          # But you're not skilled to charge it while worn.
+          # If item not in your hands, maybe you're wearing it or stowed it by accident?
+          DRCI.in_hands?(cambrinth) || DRCI.remove_item?(cambrinth) || DRCI.get_item?(cambrinth)
+        else
+          # Your config says you wear your cambrinth
+          # and you're skilled to charge it while worn.
+          # Let's hope you're wearing or holding it :)
+          # To verify that would require more commands
+          # and more time, and be more spammy.
+          # For now, no validation or recovery for this scenario.
+          true
+        end
+      end
+
+      def stow_cambrinth(cambrinth, stored_cambrinth, _cambrinth_cap)
+        if stored_cambrinth
+          # Your config says you keep your cambrinth stowed.
+          # If item not in your hands and not stowed, maybe you're wearing it by accident?
+          DRCI.get_item_if_not_held?(cambrinth) || DRCI.remove_item?(cambrinth)
+          DRCI.stow_item?(cambrinth)
+        elsif DRCI.in_hands?(cambrinth)
+          # Your config says you wear your cambrinth.
+          # For some reason it's currently in your hands.
+          # If can't wear item for some reason then stow it.
+          DRCI.wear_item?(cambrinth) || DRCI.stow_item?(cambrinth)
+        else
+          # Your config says you wear your cambrinth
+          # and you're not currently holding it so
+          # we'll assume you're wearing it.
+          # No further action needed.
+          true
+        end
+      end
+
+      def skilled_to_charge_while_worn?(cambrinth_cap)
+        DRSkill.getrank('Arcana').to_i >= ((cambrinth_cap.to_i * 2) + 100)
+      end
+
+      def charge_and_invoke(cambrinth, dedicated_camb_use, charges, invoke_exact_amount = nil)
+        return unless charges&.any?
+
+        charges.each do |mana|
+          break unless charge?(cambrinth, mana)
+        end
+
+        invoke_amount = invoke_exact_amount ? charges.inject(0, :+) : nil
+
+        invoke(cambrinth, dedicated_camb_use, invoke_amount)
+      end
+
+      def invoke(cambrinth, dedicated_camb_use, invoke_amount)
+        return unless cambrinth
+
+        result = DRC.bput("invoke my #{cambrinth} #{invoke_amount} #{dedicated_camb_use}".strip, invoke_messages, 'Invoke what?')
+        pause
+        waitrt?
+        case result
+        when /you find it too clumsy/
+          Lich::Messaging.msg("bold", "DRCA: your arcana skill is too low to invoke your cambrinth while worn")
+          # If the cambrinth is in your hands and you can't invoke it, nothing else to do.
+          unless DRCI.in_hands?(cambrinth)
+            # Otherwise, try to find the cambrinth and get it to your hands.
+            find_cambrinth(cambrinth, false, 999)
+            # If you were able to get the cambrinth into a hand then retry invoking it.
+            # You might not have been able to if your hands were full.
+            if DRCI.in_hands?(cambrinth)
+              invoke(cambrinth, dedicated_camb_use, invoke_amount)
+              stow_cambrinth(cambrinth, false, 999)
+            end
+          end
+        end
+      end
+
+      def charge?(cambrinth, mana)
+        charged = false
+        result = DRC.bput("charge my #{cambrinth} #{mana}", get_data('spells').charge_messages, 'I could not find')
+        pause
+        waitrt?
+        case result
+        when /You are in no condition to do that/
+          charged = harness?(mana)
+        when /You'll have to hold it/
+          # You're not wearing nor holding your cambrinth item, go find it again.
+          # Likely it's configured in your yaml that you wear it but it's stowed for some reason.
+          # Try to find the cambrinth and get it to your hands.
+          Lich::Messaging.msg("bold", "DRCA: where did your cambrinth go?")
+          retry_find_cambrinth = true
+        when /you find it too clumsy/
+          Lich::Messaging.msg("bold", "DRCA: your arcana skill is too low to charge your cambrinth while worn")
+          retry_find_cambrinth = true
+        else
+          charged = result =~ /absorbs? all of the energy/
+        end
+        if retry_find_cambrinth
+          # If the cambrinth is in your hands and you can't charge it, nothing else to do.
+          unless DRCI.in_hands?(cambrinth)
+            # Otherwise, try to find the cambrinth and get it to your hands.
+            find_cambrinth(cambrinth, false, 999)
+            # If you were able to get the cambrinth into a hand then retry charging it.
+            # You might not have been able to if your hands were full.
+            if DRCI.in_hands?(cambrinth)
+              charged = charge?(cambrinth, mana)
+              stow_cambrinth(cambrinth, false, 999)
+            end
+          end
+        end
+        charged
+      end
+
+      def release_cyclics(cyclic_no_release = [])
+        get_data('spells')
+          .spell_data
+          .select { |_name, properties| properties['cyclic'] }
+          .select { |name, _properties| DRSpells.active_spells.keys.include?(name) }
+          .reject { |name| cyclic_no_release.include?(name) }
+          .map { |_name, properties| properties['abbrev'] }
+          .each { |abbrev| DRC.bput("release #{abbrev}", CYCLIC_RELEASE_SUCCESS_PATTERNS, 'Release what?') }
+      end
+
+      def parse_regalia
+        return unless DRStats.trader?
+
+        snapshot = Lich::Util.issue_command("inv combat", /All of your worn combat|You aren't wearing anything like that/, /Use INVENTORY HELP for more options/, usexml: false, include_end: false)
+                             .map(&:strip)
+        regalia_items = snapshot - ["All of your worn combat equipment:", "You aren't wearing anything like that."]
+        regalia_items.select { |item| item.include?('rough-cut crystal') || item.include?('faceted crystal') || item.include?('resplendent crystal') }
+                     .map { |item| DRC.get_noun(item) }
+      end
+
+      def shatter_regalia?(worn_regalia = nil)
+        return false unless DRStats.trader?
+
+        worn_regalia ||= parse_regalia
+        return false if worn_regalia.empty?
+
+        worn_regalia.each do |item|
+          DRC.bput("remove my #{item}", 'into motes of silvery', 'Remove what?', "You .*#{item}")
+        end
+        true
+      end
+
+      def parse_mana_message(mana_msg)
+        manalevels = if mana_msg.include? 'weak'
+                       $MANA_MAP['weak']
+                     elsif mana_msg.include? 'developing'
+                       $MANA_MAP['developing']
+                     elsif mana_msg.include? 'improving'
+                       $MANA_MAP['improving']
+                     else
+                       $MANA_MAP['good']
+                     end
+
+        adj = mana_msg.split(' ')[-1]
+
+        manalevels.index(adj).to_i + 1
+      end
+
+      # Perceives the local mana level.
+      #
+      # A Moon Mage sends PERC MANA and gets one line per Lunar spellbook; the
+      # result is a Hash of book name (downcased, spaces as underscores, e.g.
+      # 'fabrication', 'illusion', 'noematics') to its level on the 21-step mana
+      # scale (1 = faint, 21 = blinding). Only the books named in the reply are
+      # keys. The level is the reply's (N/21) figure, or the adjective's place on
+      # the scale when the figure is missing or out of some other maximum; a book
+      # line with neither is skipped with a bold message. A cut-off reply prints a bold message and returns
+      # the books that arrived. Returns nil when no book line was captured.
+      #
+      # Other magic users send PERC and get a single Integer level.
+      #
+      # @return [Hash{String => Integer}, Integer, nil] nil for Barbarians,
+      #   Thieves, Traders and Commoners, and when a Moon Mage reply names no book
+      def perc_mana
+        return nil if DRStats.barbarian? || DRStats.thief? || DRStats.trader? || DRStats.commoner?
+
+        if DRStats.moon_mage?
+          lines, complete = DRC.capture_reply(
+            'perc mana',
+            PERC_MANA_START_PATTERN,
+            PERC_MANA_END_PATTERN,
+            usexml: false,
+            timeout: 5
+          )
+          if lines.empty?
+            Lich::Messaging.msg("bold", "DRCA: Failed to capture PERC MANA output (timeout).")
+            return nil
+          end
+          Lich::Messaging.msg("bold", "DRCA: PERC MANA output was cut off (timeout); the result may be incomplete.") unless complete
+
+          books = lines.each_with_object({}) do |line, levels|
+            match = PERC_MANA_BOOK_PATTERN.match(line)
+            next unless match
+
+            level = if match[:level] && match[:max].to_i == $MANA_MAP['good'].length
+                      match[:level].to_i
+                    elsif (idx = $MANA_MAP['good'].index(match[:adj]))
+                      idx + 1
+                    end
+            unless level
+              Lich::Messaging.msg("bold", "DRCA: PERC MANA reported an unknown mana level '#{match[:adj]}' for the #{match[:book]} book; skipping it.")
+              next
+            end
+
+            levels[match[:book].downcase.tr(' ', '_')] = level
+          end
+          books.empty? ? nil : books
+        else
+          mana_msg = DRC.bput('perc', '^You reach out with your .* and (see|hear) \w+')
+          parse_mana_message(mana_msg)
+        end
+      end
+
+      def perc_aura
+        return unless DRStats.trader?
+
+        Flags.add('aura-level', Regexp.union(STARLIGHT_MESSAGES))
+        Flags.add('aura-capped?', 'Your aura contains as much starlight as you can safely handle')
+        Flags.add('aura-growing?', 'Local conditions permit optimal growth of your aura', 'Local conditions are hindering the growth of your aura')
+        aura = {}
+        DRC.bput('perceive aura', 'Roundtime')
+        aura['level'] = Flags['aura-level'] ? STARLIGHT_MESSAGES.index(Flags['aura-level'][0]) : 0
+        aura['capped'] = Flags['aura-capped?'] ? true : false
+        aura['growing'] = Flags['aura-growing?'] ? true : false
+        Flags.delete('aura-level')
+        Flags.delete('aura-capped?')
+        Flags.delete('aura-growing?')
+        aura
+      end
+
+      def cast_spells(spells, settings, force_cambrinth = false, cast_lifecycle_lambda = nil)
+        infuse_om(!settings.osrel_no_harness, settings.osrel_amount)
+        spells.each do |name, data|
+          next if DRSpells.active_spells[name] && (data['recast'].nil? || DRSpells.active_spells[name].to_i > data['recast'])
+
+          while DRStats.mana < settings.waggle_spells_mana_threshold || DRStats.concentration < settings.waggle_spells_concentration_threshold
+            Lich::Messaging.msg("plain", "DRCA: waiting on mana over #{settings.waggle_spells_mana_threshold} or concentration over #{settings.waggle_spells_concentration_threshold}...")
+            pause 15
+          end
+          cast_spell(data, settings, force_cambrinth, cast_lifecycle_lambda)
+        end
+      end
+
+      def cast_spell?(data, settings, force_cambrinth = false, cast_lifecycle_lambda = nil)
+        !!cast_spell(data, settings, force_cambrinth, cast_lifecycle_lambda)
+      end
+
+      def cast_spell(data, settings, force_cambrinth = false, cast_lifecycle_lambda = nil)
+        return unless data
+        return unless settings
+
+        data = DRCMM.update_astral_data(data, settings)
+        return unless data # DRCMM.update_astral_data returns nil on failure
+
+        if (data['abbrev'] =~ /locat/i) && !DRSpells.active_spells['Clear Vision']
+          cast_spell({ 'abbrev' => 'cv', 'mana' => 1, 'prep_time' => 5 }, settings)
+        end
+
+        if data['ritual']
+          ritual(data, settings)
+          return
+        end
+
+        if data['runestone_name']
+          return unless prepare_to_cast_runestone?(data, settings)
+        end
+
+        cast_lifecycle_lambda&.call('pre-prep', data, settings)
+
+        command = 'prep'
+        command = data['prep'] if data['prep']
+        command = data['prep_type'] if data['prep_type']
+
+        if command == 'segue'
+          return if segue?(data['abbrev'], data['mana'])
+
+          command = 'prep'
+        end
+
+        release_cyclics if data['cyclic']
+        DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell") unless checkprep == 'None'
+        DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+
+        prepared = prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], data['custom_prep_message'], custom_invoke_message: data['custom_invoke_message'], custom_spell_prep: settings['custom_spell_prep'])
+        return unless prepared
+
+        DRCI.put_away_item?(data['runestone_name'], settings.runestone_storage) if DRCI.in_hands?(data['runestone_name'])
+        return unless prep_confirmed?(prepared, data['abbrev'], command: command, runestone_name: data['runestone_name'])
+
+        prepare_time = Time.now
+
+        normalize_cambrinth_items(settings)
+        if check_to_harness(settings.use_harness_when_arcana_locked) && !force_cambrinth
+          harness_mana(data['cambrinth'].flatten)
+        else
+          charge_cambrinth_items(data, settings)
+        end
+
+        cast_lifecycle_lambda&.call('post-prep', data, settings)
+
+        if data['prep_time']
+          pause until Time.now - prepare_time >= data['prep_time']
+        else
+          waitcastrt?
+        end
+
+        cast_lifecycle_lambda&.call('pre-cast', data, settings)
+        spell_cast = cast?(data['cast'], data['symbiosis'], data['before'], data['after'], data['custom_cast_message'])
+        cast_lifecycle_lambda&.call('post-cast', data, settings)
+
+        spell_cast
+      end
+
+      def segue?(abbrev, mana)
+        case DRC.bput("segue #{abbrev} #{mana}", get_data('spells').segue_messages)
+        when 'You must be performing a cyclic spell to segue from', 'It is too soon to segue', 'You are lacking the bardic flair'
+          return false
+        end
+        true
+      end
+
+      def check_discern(data, settings, spell_is_sorcery = false, more_override = nil)
+        UserVars.discerns = {} unless UserVars.discerns
+        discern_data = UserVars.discerns[data['abbrev']] || {}
+        held = false
+        if data['symbiosis'] || spell_is_sorcery
+          if discern_data.empty? || discern_data['min'].nil? || more_override
+            DRC.retreat
+            discern_result = DRC.bput("discern #{data['abbrev']}", 'requires at minimum \d+ mana streams')
+            match = discern_result.match(DISCERN_SORCERY_PATTERN)
+            if match
+              discern_data['mana'] = match[:min].to_i
+              discern_data['cambrinth'] = nil
+              discern_data['min'] = match[:min].to_i
+              discern_data['more'] = (more_override || 0)
+            end
+          end
+          calculate_mana(discern_data['min'], discern_data['more'], discern_data, false, settings)
+        elsif (discern_data.empty? || discern_data['time_stamp'].nil? || Time.now - discern_data['time_stamp'] > settings.check_discern_timer_in_hours * 60 * 60 || !discern_data['more'].nil? || stale_cambrinth_caps?(discern_data, settings)) && !discern_retry_pending?(discern_data, settings)
+          DRC.retreat
+          case discern = DRC.bput("discern #{data['abbrev']}", 'The spell requires at minimum \d+ mana streams and you think you can reinforce it with \d+ more', 'You don\'t think you are able to cast this spell', 'You have no idea how to cast that spell', 'You don\'t seem to be able to move to do that')
+          when /you don't think you are able/i, 'You have no idea how to cast that spell'
+            discern_data.delete('failed_at')
+            discern_data['time_stamp'] = Time.now
+            discern_data['mana'] = 1
+            discern_data['cambrinth'] = nil
+          when 'You don\'t seem to be able to move to do that'
+            # Held or rooted: the reply says nothing about the spell, so this
+            # cast is at the minimum. The stored entry is left alone: it keeps
+            # any earlier real answer, and its time stamp, so the next cast
+            # discerns again.
+            held = true
+          else
+            # Only a real answer is cached. A discern with no recognised reply
+            # is tried again after DISCERN_RETRY_SECONDS, so each cast in
+            # between doesn't pay for another retreat and bput timeout.
+            match = discern.match(DISCERN_FULL_PATTERN)
+            if match
+              discern_data.delete('failed_at')
+              discern_data['time_stamp'] = Time.now
+              calculate_mana(match[:min].to_i, match[:more].to_i, discern_data, data['cyclic'] || data['ritual'], settings)
+            else
+              discern_data['failed_at'] = Time.now
+            end
+          end
+        end
+        waitrt?
+        UserVars.discerns[data['abbrev']] = discern_data
+        # With no stored answer (a discern that drew no recognised reply, and
+        # its retry window), cast at the minimum as when held, not with nil.
+        minimum = held || discern_data['mana'].nil?
+        data['mana'] = minimum ? 1 : discern_data['mana']
+        data['cambrinth'] = minimum ? nil : discern_data['cambrinth']
+        data
+      end
+
+      # Whether a discern that drew no recognised reply was sent too recently
+      # to try again: within DISCERN_RETRY_SECONDS, or within
+      # check_discern_timer_in_hours when that is shorter.
+      #
+      # @param discern_data [Hash] the spell's entry in UserVars.discerns
+      # @param settings [OpenStruct] character settings
+      # @return [Boolean]
+      # @api private
+      def discern_retry_pending?(discern_data, settings)
+        failed_at = discern_data['failed_at']
+        return false unless failed_at
+
+        Time.now - failed_at < [DISCERN_RETRY_SECONDS, settings.check_discern_timer_in_hours * 60 * 60].min
+      end
+
+      def calculate_mana(min, more, discern_data, cyclic_or_ritual, settings)
+        total = min + more
+        total = (total * settings.prep_scaling_factor).floor
+        discern_data['mana'] = [(total / 5.0).ceil, min].max
+        remaining = total - discern_data['mana']
+        normalize_cambrinth_items(settings)
+        # Ignore cambrinth if charges to use is nil or 0
+        settings.cambrinth_num_charges ||= 0
+        if settings.cambrinth_distribute_charges
+          calculate_mana_by_item(total, remaining, discern_data, cyclic_or_ritual, settings)
+        else
+          calculate_mana_by_ratio(total, remaining, discern_data, cyclic_or_ritual, settings)
+        end
+      end
+
+      # Default. Splits the mana by the cap ratio of each cambrinth item, then gives
+      # every charge of an item the same size. It can charge an item past its cap,
+      # and integer division can drop mana. Kept as the default because a change to
+      # the charge amounts affects every profile.
+      def calculate_mana_by_ratio(total, remaining, discern_data, cyclic_or_ritual, settings)
+        settings.cambrinth_items = [] if settings.cambrinth_num_charges == 0
+        total_cambrinth_cap = settings.cambrinth_items.map { |x| x['cap'] }.inject(&:+) || 0
+        charges_count_floor = remaining >= settings.cambrinth_num_charges ? settings.cambrinth_num_charges : 1
+        settings.cambrinth_items.each do |item|
+          item['charges'] = ((item['cap'].to_f / total_cambrinth_cap) * charges_count_floor).ceil
+        end
+        total_cambrinth_charges = settings.cambrinth_items.map { |x| x['charges'] }.inject(&:+) || 0
+        if remaining > total_cambrinth_cap
+          discern_data['mana'] = discern_data['mana'] + (remaining - total_cambrinth_cap)
+          remaining = total - discern_data['mana']
+        end
+        if cyclic_or_ritual || total_cambrinth_charges == 0
+          discern_data['cambrinth'] = nil
+          discern_data['mana'] = discern_data['mana'] + remaining
+        elsif remaining > 0
+          total_cambrinth_mana = [remaining, total_cambrinth_cap].min
+          settings.cambrinth_items.each_with_index do |item, index|
+            discern_data['cambrinth'] ||= []
+            charge_amount = (total_cambrinth_mana / total_cambrinth_charges) * item['charges']
+            discern_data['cambrinth'][index] = []
+            charge_amount.times do |i|
+              # Lich patches NilClass#+ so that nil + 1 is 1. Spell it out here so
+              # that this does not depend on the patch.
+              slot = i % item['charges']
+              discern_data['cambrinth'][index][slot] = (discern_data['cambrinth'][index][slot] || 0) + 1
+            end
+          end
+        else
+          discern_data['cambrinth'] = nil
+        end
+      end
+
+      # Opt in with cambrinth_distribute_charges. Splits the mana into whole charges,
+      # then fills each item up to its cap before it uses the next, the same way
+      # cast.lic does. No item goes over its cap and no mana is dropped.
+      def calculate_mana_by_item(total, remaining, discern_data, cyclic_or_ritual, settings)
+        cambrinth_items = settings.cambrinth_num_charges == 0 ? [] : settings.cambrinth_items
+        discern_data['cambrinth_caps'] = cambrinth_caps(settings)
+        total_cambrinth_cap = cambrinth_items.map { |item| item['cap'].to_i }.sum
+        if remaining > total_cambrinth_cap
+          discern_data['mana'] = discern_data['mana'] + (remaining - total_cambrinth_cap)
+          remaining = total - discern_data['mana']
+        end
+        if cyclic_or_ritual || cambrinth_items.empty?
+          discern_data['cambrinth'] = nil
+          discern_data['mana'] = discern_data['mana'] + remaining
+        elsif remaining > 0
+          num_charges = remaining >= settings.cambrinth_num_charges ? settings.cambrinth_num_charges : 1
+          distribution, leftover = allocate_cambrinth_charges(remaining, cambrinth_items, num_charges)
+          # Mana that fits in no cambrinth item goes into the base prep instead.
+          discern_data['mana'] = discern_data['mana'] + leftover
+          discern_data['cambrinth'] = distribution.empty? ? nil : distribution
+        else
+          discern_data['cambrinth'] = nil
+        end
+      end
+
+      # The mana capacity of one cambrinth item. An unset or non-positive cap means
+      # the config never declared a limit, so do not enforce one.
+      def cambrinth_item_cap(item)
+        cap = item['cap'].to_i
+        cap <= 0 ? Float::INFINITY : cap
+      end
+
+      # Works out how to charge an amount of mana into the cambrinth items.
+      #
+      # Each item takes as much as its cap allows, in the order the config lists
+      # them, so a small worn item fills before a large stored one. Each item then
+      # splits its own share into charges. Returns the per-item nested array and
+      # the mana that fits in no item.
+      def allocate_cambrinth_charges(mana, cambrinth_items, num_charges)
+        return [[], mana] if mana <= 0 || num_charges <= 0
+        return [[], mana] if cambrinth_items.nil? || cambrinth_items.empty?
+
+        allocations = Array.new(cambrinth_items.length, 0)
+        unallocated = mana
+        usable_cambrinth_indexes(cambrinth_items, num_charges).each do |index|
+          allocations[index] = [unallocated, cambrinth_item_cap(cambrinth_items[index])].min
+          unallocated -= allocations[index]
+        end
+
+        counts = cambrinth_charge_counts(allocations, num_charges)
+        distribution = allocations.each_with_index.map do |allocation, index|
+          split_cambrinth_charges(allocation, counts[index])
+        end
+        # Drop trailing empty entries so unused items are skipped entirely.
+        [distribution.reverse.drop_while(&:empty?).reverse, unallocated]
+      end
+
+      # Every item that holds mana needs at least one charge, so the charge budget
+      # limits how many items can be used. When there are more items than charges,
+      # keep the items with the largest caps.
+      def usable_cambrinth_indexes(cambrinth_items, num_charges)
+        indexes = (0...cambrinth_items.length).to_a
+        return indexes if indexes.length <= num_charges
+
+        indexes.max_by(num_charges) { |index| cambrinth_item_cap(cambrinth_items[index]) }.sort
+      end
+
+      # Gives one charge to every item that holds mana, then spends what is left of
+      # the charge budget on the largest charge, while that makes it smaller. This
+      # keeps each charge inside what the character can channel at once.
+      def cambrinth_charge_counts(allocations, num_charges)
+        counts = allocations.map { |allocation| allocation > 0 ? 1 : 0 }
+        funded = allocations.each_index.select { |index| allocations[index] > 0 }
+        spare = num_charges - funded.length
+        while spare > 0
+          index = funded.max_by { |i| [allocations[i].to_f / counts[i], allocations[i]] }
+          break if counts[index] >= allocations[index]
+
+          largest = funded.map { |i| allocations[i].to_f / counts[i] }.max
+          split = funded.map { |i| allocations[i].to_f / (i == index ? counts[i] + 1 : counts[i]) }.max
+          break if split >= largest
+
+          counts[index] += 1
+          spare -= 1
+        end
+        counts
+      end
+
+      # Splits an amount of mana into num_charges charge values, largest first.
+      # For example, 53 mana over 4 charges becomes [14, 13, 13, 13].
+      def split_cambrinth_charges(total_mana, num_charges)
+        return [] if total_mana <= 0 || num_charges <= 0
+
+        charge_values = []
+        rest = total_mana
+        charges_left = num_charges
+        while rest > 0 && charges_left > 0
+          next_charge = (rest * 1.0 / charges_left).ceil
+          charge_values << next_charge
+          rest -= next_charge
+          charges_left -= 1
+        end
+        charge_values
+      end
+
+      # Packs a flat list of charge values into the cambrinth items. Each item is
+      # filled up to its cap before the next item is used. Returns the per-item
+      # nested array and the mana that fits in no item.
+      def distribute_cambrinth_charges(charge_values, cambrinth_items)
+        pending = Array(charge_values).flatten.map(&:to_i).reject { |value| value <= 0 }
+        return [[], pending.sum] if cambrinth_items.nil? || cambrinth_items.empty?
+
+        distribution = Array.new(cambrinth_items.length) { [] }
+        charged = Array.new(cambrinth_items.length, 0)
+        leftover = 0
+        pending.each do |charge_value|
+          index = cambrinth_items.each_index.find do |i|
+            charged[i] + charge_value <= cambrinth_item_cap(cambrinth_items[i])
+          end
+          if index
+            distribution[index] << charge_value
+            charged[index] += charge_value
+          else
+            leftover += charge_value
+          end
+        end
+        # Drop trailing empty entries so unused items are skipped entirely.
+        [distribution.reverse.drop_while(&:empty?).reverse, leftover]
+      end
+
+      # Signature of the configured cambrinth items. A change to it invalidates any
+      # cached discern data, because the cached charges are split per item.
+      def cambrinth_caps(settings)
+        normalize_cambrinth_items(settings)
+        settings.cambrinth_items.map { |item| item['cap'].to_i }
+      end
+
+      # True when cached discern data was calculated against a different set of
+      # cambrinth items. Only the cambrinth_distribute_charges path records the
+      # signature, so the default path never invalidates on it.
+      def stale_cambrinth_caps?(discern_data, settings)
+        return false unless settings.cambrinth_distribute_charges
+
+        discern_data['cambrinth_caps'] != cambrinth_caps(settings)
+      end
+
+      def check_to_harness(should_harness)
+        return false unless should_harness
+        return false if DRSkill.getxp('Attunement') > DRSkill.getxp('Arcana')
+
+        true
+      end
+
+      def crafting_cast_spell(data, settings)
+        return unless data
+        return unless settings
+
+        normalize_cambrinth_items(settings)
+        if check_to_harness(settings.use_harness_when_arcana_locked)
+          harness_mana(data['cambrinth'].flatten)
+        else
+          charge_cambrinth_items(data, settings)
+        end
+
+        cast?(data['cast'], data['symbiosis'], data['before'], data['after'], data['custom_cast_message'])
+      end
+
+      def crafting_prepare_spell(data, settings)
+        return unless data
+        return unless settings
+
+        # Skip preparing lunar spell if no moons available
+        return unless DRCMM.set_moon_data(data)
+
+        release_cyclics if data['cyclic']
+        DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell") unless checkprep == 'None'
+        DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+
+        command = 'prep'
+        command = data['prep'] if data['prep']
+        command = data['prep_type'] if data['prep_type']
+
+        prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], data['custom_prep_message'], custom_invoke_message: data['custom_invoke_message'], custom_spell_prep: settings['custom_spell_prep'])
+      end
+
+      def crafting_magic_routine(settings)
+        training_spells = settings.crafting_training_spells
+
+        return if training_spells.empty?
+        return if DRStats.mana <= settings.waggle_spells_mana_threshold
+
+        if checkcastrt > 0
+          return
+        elsif !XMLData.prepared_spell.eql?('None') && checkcastrt == 0
+          spell = XMLData.prepared_spell
+          data = training_spells.find { |_skill, info| info['name'] == spell }.last
+          crafting_cast_spell(data, settings)
+        end
+
+        return if checkcastrt > 0
+
+        needs_training = %w[Warding Utility Augmentation]
+        needs_training.append("Sorcery") if (settings.crafting_training_spells_enable_sorcery && !Script.running?('forge')) ||
+                                            (settings.crafting_training_spells_enable_sorcery && settings.crafting_training_spells_enable_sorcery_forging)
+        needs_training = needs_training.select { |skill| training_spells[skill] }
+                                       .select { |skill| DRSkill.getxp(skill) < 31 }
+                                       .sort_by { |skill| [DRSkill.getxp(skill), DRSkill.getrank(skill)] }
+                                       .first
+
+        return unless needs_training
+
+        crafting_prepare_spell(training_spells[needs_training], settings)
+      end
+
+      # Whether a spell's day/night restriction allows casting it now: a
+      # 'night' spell only at night, a 'day' spell only by day, anything else
+      # always. Reads UserVars.sun, which moonwatch keeps current; with no sun
+      # data, day and night spells are both skipped. Scripts that decide
+      # whether to cast or wait on a waggle spell should use this so they agree
+      # with {#do_buffs}.
+      #
+      # @param data [Hash] the spell's waggle data
+      # @return [Boolean] true if the spell can be cast at this time of day
+      def day_night_ok?(data)
+        sun = UserVars.sun || {}
+        return false if data['night'] && !sun['night']
+        return false if data['day'] && !sun['day']
+
+        true
+      end
+
+      def do_buffs(settings, set_name)
+        return unless settings.waggle_sets[set_name]
+
+        spells = settings.waggle_sets[set_name]
+
+        if DRStats.barbarian?
+          start_barb_abilities(spells, settings)
+        elsif DRStats.thief?
+          start_khris(spells, settings)
+        else
+          # Non-mutating select: select! returns nil when it removes nothing,
+          # which skipped the day filter, and it deleted out-of-season spells
+          # from the caller's settings.waggle_sets.
+          spells = spells.select { |_name, data| day_night_ok?(data) }
+
+          spells.values
+                .select { |spell| spell['use_auto_mana'] }
+                .each { |spell| check_discern(spell, settings) }
+
+          cast_spells(spells, settings, settings.waggle_force_cambrinth)
+        end
+      end
+
+      def update_avtalia
+        DRC.bput("focus cambrinth", /^The .+ pulses? .+ (\d+)/, 'dim, almost magically null', '^You let your magical senses wander')
+        waitrt?
+      end
+
+      def invoke_avtalia(cambrinth, dedicated_camb_use, invoke_amount)
+        return unless cambrinth
+        return unless Script.running?('avtalia')
+
+        invoke(cambrinth, dedicated_camb_use, invoke_amount)
+        UserVars.avtalia[cambrinth]['mana'] -= [DRStats.mana, invoke_amount].min
+      end
+
+      def charge_avtalia(cambrinth, charge_amount)
+        return unless cambrinth
+        return unless Script.running?('avtalia')
+
+        if !charge?(cambrinth, charge_amount)
+          UserVars.avtalia[cambrinth]['mana'] = UserVars.avtalia[cambrinth]['cap']
+        else
+          # Experiments show very roughly 10% falloff regardless of cap every 10 minutes
+          # Assume 10% every 5 minutes.  No falloff in starlight, but that's not tracked ATM.
+          time_diff = Time.now - UserVars.avtalia[cambrinth]['time_seen']
+          time_mod = (time_diff / 300.0).floor
+          time_adjust = 1 - [time_mod * 0.10, 1.0].min
+          assumed_reserve = (UserVars.avtalia[cambrinth]['mana'] * time_adjust).floor + charge_amount
+          UserVars.avtalia[cambrinth]['mana'] = [assumed_reserve, UserVars.avtalia[cambrinth]['cap']].min
+        end
+        UserVars.avtalia[cambrinth]['time_seen'] = Time.now
+      end
+
+      def choose_avtalia(charge_needed, mana_percentage)
+        UserVars.avtalia.select { |_camb, data| data['time_seen'] && data['cap'] && data['mana'] }
+                .select { |_camb, data| Time.now - data['time_seen'] < 600.0 }
+                .select { |_camb, data| (data['mana'].to_f / data['cap'].to_f) * 100 >= mana_percentage }
+                .select { |_camb, data| data['mana'] > charge_needed / 10 }
+                .max_by { |_camb, data| data['mana'] }
+      end
+
+      # Determine the numerical range of a Warrior Mage's elemental charge.
+      # This can be used to know if the mage is ready to perform certain abilities, like barrage.
+      # Returns a number between 0 (no charge) and 11 (max charge).
+      # https://elanthipedia.play.net/Summoning_skill#Charge_levels
+      def check_elemental_charge
+        return 0 unless DRStats.warrior_mage?
+
+        result = DRC.bput("pathway sense", *CHARGE_LEVELS)
+        CHARGE_LEVELS.find_index { |pattern| pattern =~ result }
+      end
+
+      # check which symbiotic research is active
+      def perc_symbiotic_research
+        result = DRC.bput('perceive', SYMBIOSIS_PATTERN, /Roundtime/)
+        match = result.match(SYMBIOSIS_PATTERN)
+        match ? match[:type] : nil
+      end
+
+      # release symbiotic research
+      def release_magical_research
+        2.times { DRC.bput("release symbiosis", "Are you sure", "You intentionally wipe", "But you haven't") }
+      end
+
+      def normalize_cambrinth_items(settings)
+        return if settings.cambrinth_items[0]['name']
+
+        settings.cambrinth_items = [{
+          'name'   => settings.cambrinth,
+          'cap'    => settings.cambrinth_cap,
+          'stored' => settings.stored_cambrinth
+        }]
+      end
+
+      def charge_cambrinth_items(data, settings)
+        if settings.cambrinth_distribute_charges
+          charge_cambrinth_items_by_item(data, settings)
+        else
+          charge_cambrinth_items_repeated(data, settings)
+        end
+      end
+
+      # Default. A nested cambrinth list gives one entry to each item. A flat list
+      # goes to every item in full, so several items each charge the whole list.
+      def charge_cambrinth_items_repeated(data, settings)
+        settings.cambrinth_items.each_with_index do |item, index|
+          case data['cambrinth'].first
+          when Array
+            find_charge_invoke_stow(item['name'], item['stored'], item['cap'], settings.dedicated_camb_use, data['cambrinth'][index], settings.cambrinth_invoke_exact_amount)
+          when Integer
+            find_charge_invoke_stow(item['name'], item['stored'], item['cap'], settings.dedicated_camb_use, data['cambrinth'], settings.cambrinth_invoke_exact_amount)
+          end
+        end
+      end
+
+      # Opt in with cambrinth_distribute_charges. A flat list is spread over the
+      # items instead of charged into every one of them.
+      def charge_cambrinth_items_by_item(data, settings)
+        charges = data['cambrinth']
+        return unless charges.is_a?(Array) && !charges.empty?
+
+        unless charges.first.is_a?(Array)
+          return unless charges.first.is_a?(Integer)
+
+          charges = spread_flat_cambrinth_charges(charges, settings.cambrinth_items)
+        end
+
+        settings.cambrinth_items.each_with_index do |item, index|
+          item_charges = charges[index]
+          next if item_charges.nil? || item_charges.empty?
+
+          find_charge_invoke_stow(item['name'], item['stored'], item['cap'], settings.dedicated_camb_use, item_charges, settings.cambrinth_invoke_exact_amount)
+        end
+      end
+
+      # Turns one flat list of charge values, as written in a spell config, into one
+      # list for each cambrinth item.
+      #
+      # A single item takes the list unchanged. In this path cambrinth_cap feeds the
+      # arcana check in skilled_to_charge_while_worn?, not a charge limit, and many
+      # configs charge well past it on purpose.
+      #
+      # Several items need the list spread over them, because the whole list into
+      # every item charges the same mana again for each item.
+      def spread_flat_cambrinth_charges(charge_values, cambrinth_items)
+        return [charge_values] if cambrinth_items.nil? || cambrinth_items.length <= 1
+
+        distribution, leftover = distribute_cambrinth_charges(charge_values, cambrinth_items)
+        return distribution if leftover <= 0
+
+        # Never drop mana. What fits nowhere goes to the item with the largest cap.
+        largest = cambrinth_items.each_with_index.max_by { |item, _index| item['cap'].to_i }.last
+        distribution[largest] = (distribution[largest] || []) + [leftover]
+        Lich::Messaging.msg("bold", "DRCA: #{leftover} mana does not fit your cambrinth_items caps and went into your #{cambrinth_items[largest]['name']}. Check those caps.")
+        distribution
+      end
+    end
+  end
+end

@@ -1,0 +1,1534 @@
+# frozen_string_literal: true
+
+require_relative '../../spec_helper'
+
+# Load spell data for realistic testing
+load_spell_data
+
+# Load production code
+require "common/sharedbuffer"
+require "common/buffer"
+require "games"
+require "gemstone/overwatch"
+require "gemstone/infomon"
+require "attributes/stats"
+require "attributes/resources"
+require "attributes/skills"
+require "attributes/enhancive"
+require "gemstone/currency"
+require "gemstone/infomon/status"
+require "gemstone/experience"
+require "util/util"
+require "gemstone/psms"
+require "gemstone/psms/ascension"
+require "gemstone/society"
+
+# Top-level aliases for constants used by production code
+Skills = Lich::Gemstone::Skills unless defined?(Skills)
+
+# Mock respond method in Infomon module for cli.rb methods that use it
+unless Lich::Gemstone::Infomon.respond_to?(:respond)
+  module Lich
+    module Gemstone
+      module Infomon
+        def self.respond(msg)
+          pp msg if ENV['DEBUG']
+          msg # Return the message so Infomon.show returns the array
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::Infomon, ".setup!" do
+  before(:each) do
+    # Reset database for test isolation
+    Lich::Gemstone::Infomon.reset!
+  end
+
+  context "can set itself up" do
+    it "creates a db" do
+      Lich::Gemstone::Infomon.setup!
+      File.exist?(Lich::Gemstone::Infomon.file) or fail("infomon sqlite db was not created")
+    end
+  end
+
+  context "can manipulate data" do
+    it "upserts a new key/value pair" do
+      k = "stat.influence"
+      # handles when value doesn't exist
+      Lich::Gemstone::Infomon.set(k, 30)
+      expect(Lich::Gemstone::Infomon.get(k)).to eq(30)
+      Lich::Gemstone::Infomon.set(k, 40)
+      # handles upsert on already existing values
+      expect(Lich::Gemstone::Infomon.get(k)).to eq(40)
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::Infomon::Parser, ".parse" do
+  before(:each) do
+    # ensure clean db on every test
+    Lich::Gemstone::Infomon.reset!
+  end
+
+  context "citizenship" do
+    it "handles citizenship in a town" do
+      Lich::Gemstone::Infomon::Parser.parse %[You currently have full citizenship in Wehnimer's Landing.]
+      expect(Lich::Gemstone::Infomon.get("citizenship")).to eq(%[Wehnimer's Landing])
+    end
+
+    it "handles no citizenship" do
+      Lich::Gemstone::Infomon::Parser.parse %[You don't seem to have citizenship.]
+      expect(Lich::Gemstone::Infomon.get("citizenship")).to eq("None")
+    end
+  end
+
+  context "stats" do
+    it "handles stats" do
+      test_stats = <<~STUFFED
+        Name: testing Race: Half-Krolvin  Profession: Monk (not shown)
+        Gender: Male    Age: 0    Expr: 167,500    Level:  12
+              Strength (STR):   110 (30)    ...  110 (30)
+          Constitution (CON):   104 (22)    ...  104 (22)
+             Dexterity (DEX):   100 (35)    ...  100 (35)
+               Agility (AGI):   100 (30)    ...  100 (30)
+            Discipline (DIS):   110 (20)    ...  110 (20)
+                  Aura (AUR):   100 (-35)   ...  100 (35)
+                 Logic (LOG):   108 (29)    ...  118 (34)
+             Intuition (INT):    99 (29)    ...   99 (29)
+                Wisdom (WIS):    84 (22)    ...   84 (22)
+             Influence (INF):   100 (20)    ...  108 (24)
+        Mana:  415   Silver: 0
+      STUFFED
+      test_stats.split("\n").each { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("stat.aura")).to eq(100)
+      expect(Lich::Gemstone::Infomon.get("stat.aura_bonus")).to eq(-35)
+      expect(Lich::Gemstone::Infomon.get("stat.logic.enhanced")).to eq(118)
+      expect(Lich::Gemstone::Infomon.get("stat.logic.enhanced_bonus")).to eq(34)
+
+      expect(Lich::Gemstone::Stats.aura.value).to eq(100)
+      expect(Lich::Gemstone::Stats.aura.bonus).to eq(-35)
+      expect(Lich::Gemstone::Stats.logic.enhanced.value).to eq(118)
+      expect(Lich::Gemstone::Stats.logic.enhanced.bonus).to eq(34)
+
+      expect(Lich::Gemstone::Stats.aur).to eq([100, -35])
+      expect(Lich::Gemstone::Stats.enhanced_log).to eq([118, 34])
+    end
+
+    it "handles info full with base stats" do
+      test_stats = <<~Stuffed
+        Name: Nisugi Race: Half-Elf  Profession: Ranger (shown as: Hero)
+        Gender: Male    Age: 35    Expr: 43,904,921    Level:  100
+                          Normal (Bonus)  ...  Ascended (Bonus)  ...  Enhanced (Bonus)
+            Strength (STR):   100 (25)    ...  115 (32)          ...  155 (52)
+        Constitution (CON):    97 (23)    ...   97 (23)          ...  134 (42)
+           Dexterity (DEX):   100 (30)    ...  116 (38)          ...  156 (58)
+             Agility (AGI):    98 (34)    ...  102 (36)          ...  142 (56)
+          Discipline (DIS):    98 (19)    ...   98 (19)          ...  138 (39)
+                Aura (AUR):    98 (24)    ...   98 (24)          ...  104 (27)
+               Logic (LOG):    95 (22)    ...   95 (22)          ...  115 (32)
+           Intuition (INT):    98 (24)    ...   98 (24)          ...  133 (41)
+              Wisdom (WIS):   100 (25)    ...  114 (32)          ...  154 (52)
+           Influence (INF):    90 (25)    ...   90 (25)          ...   90 (25)
+        Mana:  431   Silver: 0
+      Stuffed
+      test_stats.split("\n").each { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      # Base stats (from 'info full')
+      expect(Lich::Gemstone::Infomon.get("stat.Strength.base")).to eq(100)
+      expect(Lich::Gemstone::Infomon.get("stat.Strength.base_bonus")).to eq(25)
+      expect(Lich::Gemstone::Infomon.get("stat.Aura.base")).to eq(98)
+      expect(Lich::Gemstone::Infomon.get("stat.Aura.base_bonus")).to eq(24)
+
+      # Ascended stats (value/bonus)
+      expect(Lich::Gemstone::Infomon.get("stat.Strength")).to eq(115)
+      expect(Lich::Gemstone::Infomon.get("stat.Strength_bonus")).to eq(32)
+
+      # Enhanced stats
+      expect(Lich::Gemstone::Infomon.get("stat.Strength.enhanced")).to eq(155)
+      expect(Lich::Gemstone::Infomon.get("stat.Strength.enhanced_bonus")).to eq(52)
+
+      # Stats module accessors
+      expect(Lich::Gemstone::Stats.strength.base.value).to eq(100)
+      expect(Lich::Gemstone::Stats.strength.base.bonus).to eq(25)
+      expect(Lich::Gemstone::Stats.strength.value).to eq(115)
+      expect(Lich::Gemstone::Stats.strength.bonus).to eq(32)
+      expect(Lich::Gemstone::Stats.strength.enhanced.value).to eq(155)
+      expect(Lich::Gemstone::Stats.strength.enhanced.bonus).to eq(52)
+
+      # Shorthand accessors
+      expect(Lich::Gemstone::Stats.base_str).to eq([100, 25])
+      expect(Lich::Gemstone::Stats.str).to eq([115, 32])
+      expect(Lich::Gemstone::Stats.enhanced_str).to eq([155, 52])
+    end
+
+    it "handles levelup" do
+      levelup = <<-LEVELUP
+            Strength (STR) :  65   +1  ...      7    +1
+        Constitution (CON) :  78   +1  ...      9
+           Dexterity (DEX) :  37   +1  ...      4
+             Agility (AGI) :  66   +1  ...     13
+          Discipline (DIS) :  78   +1  ...      4
+           Intuition (INT) :  66   +1  ...     13
+              Wisdom (WIS) :  66   +1  ...     13
+      LEVELUP
+      levelup.split("\n").each { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("stat.dexterity")).to eq(37)
+      expect(Lich::Gemstone::Infomon.get("stat.dexterity_bonus")).to eq(4)
+      expect(Lich::Gemstone::Infomon.get("stat.strength_bonus")).to eq(7)
+    end
+
+    it "handles experience info" do
+      output = <<-EXPERIENCE
+                  Level: 100                         Fame: 4,804,958
+             Experience: 37,136,999             Field Exp: 1,350/1,010
+          Ascension Exp: 4,170,132          Recent Deaths: 0
+              Total Exp: 41,307,131         Death's Sting: None
+          Long-Term Exp: 26,266                     Deeds: 20
+          Exp until lvl: 30,000
+      EXPERIENCE
+
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("experience.fame")).to eq(4_804_958)
+      expect(Lich::Gemstone::Infomon.get("experience.field_experience_current")).to eq(1_350)
+      expect(Lich::Gemstone::Infomon.get("experience.field_experience_max")).to eq(1_010)
+      expect(Lich::Gemstone::Infomon.get("experience.ascension_experience")).to eq(4_170_132)
+      expect(Lich::Gemstone::Infomon.get("experience.total_experience")).to eq(41_307_131)
+      expect(Lich::Gemstone::Infomon.get("experience.long_term_experience")).to eq(26_266)
+      expect(Lich::Gemstone::Infomon.get("experience.deeds")).to eq(20)
+      expect(Lich::Gemstone::Infomon.get("experience.deaths_sting")).to eq("None")
+
+      expect(Lich::Gemstone::Experience.fame).to eq(4_804_958)
+      expect(Lich::Gemstone::Experience.lte).to eq(26_266)
+      expect(Lich::Gemstone::Experience.deeds).to eq(20)
+      expect(Lich::Gemstone::Experience.deaths_sting).to eq("None")
+    end
+  end
+
+  context "ascension" do
+    it "handles ascension info" do
+      output = <<~ASCENSION
+        testing, the following Ascension Abilities are available:
+
+            Skill                Mnemonic        Ranks Type           Category        Subcategory
+            -------------------------------------------------------------------------------------
+            Spirit Mana Control  spiritmc        0/50  Passive        Common          Skill
+            Spiritual Lore - Ble slblessings     0/50  Passive        Common          Skill
+            Spiritual Lore - Rel slreligion      0/50  Passive        Common          Skill
+            Spiritual Lore - Sum slsummoning     1/50  Passive        Common          Skill
+            Stalking and Hiding  stalking        0/50  Passive        Common          Skill
+            Stamina Regeneration regenstamina    19/50 Passive        Common          Regen
+            Steam Resistance     resiststeam     0/40  Passive        Common          Resist
+            Strength             strength        0/40  Passive        Common          Stat
+            Survival             survival        0/50  Passive        Common          Skill
+            Swimming             swimming        2/50  Passive        Common          Skill
+            Thrown Weapons       thrownweapons   4/50  Passive        Common          Skill
+            Trading              trading         0/50  Passive        Common          Skill
+            Two Weapon Combat    twoweaponcombat 0/50  Passive        Common          Skill
+            Two-Handed Weapons   twohandedweapon 0/50  Passive        Common          Skill
+            Unbalance Resistance resistunbalance 0/40  Passive        Common          Resist
+            Vacuum Resistance    resistvacuum    0/40  Passive        Common          Resist
+            Wisdom               wisdom          0/40  Passive        Common          Stat
+        The output listed above was generated based on the following filters:
+            Availability: profession
+                  Type: all
+              Category: all
+           Subcategory: all
+      ASCENSION
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("ascension.regenstamina")).to eq(19)
+      expect(Lich::Gemstone::Infomon.get("ascension.swimming")).to eq(2)
+      expect(Lich::Gemstone::Ascension['thrownweapons']).to eq(4)
+      expect(Lich::Gemstone::Ascension['Spiritual Lore Summoning']).to eq(1)
+    end
+
+    # Captured from the live game after the Artificer, Arcane Archer and Voln
+    # Avenger elite abilities were added. A trained row is wrapped in
+    # <pushBold/>..<popBold/>, so the popBold lands at the start of the NEXT row.
+    it "handles the full XML ascension list, including bolded trained rows" do
+      fixture = File.read(File.expand_path('../../fixtures/ascension_list.xml', __dir__))
+      rows = fixture.scan(/HELP (\w+)'>\w+<\/d>\s+(\d+)\/\d+/).to_h { |cmd, rank| [cmd, rank.to_i] }
+      expect(rows.size).to eq(92)
+      # Subset, not equality: this capture is filtered to one profession (see footer).
+      expect(Lich::Gemstone::Ascension.ascension_lookups.map { |l| l[:short_name] }).to include(*rows.keys)
+
+      # Seed a stale value so a rank of 0 has to be written, not just defaulted.
+      rows.each_key { |cmd| Lich::Gemstone::Infomon.set("ascension.#{cmd}", 9) }
+
+      fixture.split("\n").each do |line|
+        stripped = Lich::Common::Markup.strip_xml(line)
+        Lich::Gemstone::Infomon::Parser.parse(stripped) unless stripped.nil? || stripped.empty?
+      end
+
+      rows.each do |cmd, rank|
+        expect(Lich::Gemstone::Infomon.get("ascension.#{cmd}")).to eq(rank), "ascension.#{cmd}"
+      end
+      expect(Lich::Gemstone::Ascension.aura).to eq(5)
+      expect(Lich::Gemstone::Ascension.blunt_weapons).to eq(0)
+      expect(Lich::Gemstone::Ascension["Kai's Touch"]).to eq(0)
+      expect(Lich::Gemstone::Ascension['Effective Accessorization']).to eq(0)
+      expect(Lich::Gemstone::Ascension.grizzled_voln_ascendant).to eq(0)
+    end
+
+    # Kai's Touch is the first ascension ability whose name carries an apostrophe.
+    it "handles learning and unlearning an ascension ability with an apostrophe" do
+      Lich::Gemstone::Infomon.set('ascension.kaistouch', 0)
+      Lich::Gemstone::Infomon::Parser.parse("You have now achieved rank 2 of Kai's Touch, costing 2 Ascension Ability points.")
+      expect(Lich::Gemstone::Infomon.get('ascension.kaistouch')).to eq(2)
+      Lich::Gemstone::Infomon::Parser.parse("You decide to unlearn rank 2 of Kai's Touch, regaining 2 Ascension Ability points.")
+      expect(Lich::Gemstone::Infomon.get('ascension.kaistouch')).to eq(1)
+    end
+
+    # Captured from the live game (ASCENSION LEARN/UNLEARN, then CONFIRM).
+    it "handles the live ascension learn and unlearn messages" do
+      Lich::Gemstone::Infomon.set('ascension.strength', 40)
+      Lich::Gemstone::Infomon.set('ascension.elair', 50)
+      Lich::Gemstone::Infomon::Parser.parse("You decide to unlearn rank 40 of Strength, regaining 8 Ascension Ability points.")
+      Lich::Gemstone::Infomon::Parser.parse("You decide to unlearn rank 50 of Elemental Lore - Air, regaining 10 Ascension Ability points.")
+      expect(Lich::Gemstone::Infomon.get('ascension.strength')).to eq(39)
+      expect(Lich::Gemstone::Infomon.get('ascension.elair')).to eq(49)
+      Lich::Gemstone::Infomon::Parser.parse("You have now achieved rank 40 of Strength, costing 8 Ascension Ability points.")
+      Lich::Gemstone::Infomon::Parser.parse("You have now achieved rank 50 of Elemental Lore - Air, costing 10 Ascension Ability points.")
+      expect(Lich::Gemstone::Infomon.get('ascension.strength')).to eq(40)
+      expect(Lich::Gemstone::Infomon.get('ascension.elair')).to eq(50)
+      expect(Lich::Gemstone::Ascension['Elemental Lore - Air']).to eq(50)
+    end
+
+    it "ignores confirmation prompts and learn lines whose name is not in the lookups" do
+      expect(Lich::Gemstone::Infomon).not_to receive(:set)
+      [
+        "You have now achieved rank 1 of Mental Lore - Transformation, costing 1 Ascension Ability points.",
+        "You decide to unlearn rank 1 of Mental Lore - Transformation, regaining 1 Ascension Ability points.",
+        "[You are no longer trained in Weapon Technique: Nonexistent Strike.]",
+        # The confirmation prompts arrive before CONFIRM and must not change the rank.
+        "You have chosen to learn rank 40 in Strength at a cost of 8 Ascension Ability points.  If this is acceptable, please enter ASCENSION LEARN CONFIRM within the next 30 seconds to confirm your Ascension Ability choice.  If it is not acceptable, please enter ASCENSION LEARN CANCEL and try again.",
+        "You have chosen to unlearn rank 40 in Strength to regain 8 Ascension Ability points.  If this is acceptable, please enter ASCENSION UNLEARN CONFIRM within the next 30 seconds to confirm your Ascension Ability choice.  If it is not acceptable, please enter ASCENSION UNLEARN CANCEL and try again.",
+      ].each { |line| expect(Lich::Gemstone::Infomon::Parser.parse(line)).to eq(:noop) }
+    end
+  end
+
+  context "resource" do
+    it "handles resource info" do
+      output = <<~RESOURCE
+        Health: 140/140     Mana: 407/407     Stamina: 110/110     Spirit: 11/11
+        Voln Favor: 39,613,200
+        Essence: 34,000/50,000 (Weekly)     78,507/200,000 (Total)
+        Suffused Essence: 1,678
+      RESOURCE
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("resources.weekly")).to eq(34000)
+      expect(Lich::Gemstone::Infomon.get("resources.total")).to eq(78507)
+      expect(Lich::Gemstone::Infomon.get("resources.suffused")).to eq(1678)
+      expect(Lich::Gemstone::Infomon.get("resources.type")).to eq("Essence")
+      expect(Lich::Resources.weekly).to eq(34000)
+      expect(Lich::Resources.total).to eq(78507)
+      expect(Lich::Resources.suffused).to eq(1678)
+      expect(Lich::Resources.type).to eq("Essence")
+    end
+  end
+
+  context "currency" do
+    it "handles wealth info" do
+      output = <<~WEALTH
+        You have 5,585 silver with you.
+        You are carrying 6,112 silver stored within your coin pouch.
+        You are carrying a total of 11,697 silver.
+
+        You are carrying 16 gigas artifact fragments.
+      WEALTH
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("currency.silver")).to eq(5585)
+      expect(Lich::Gemstone::Infomon.get("currency.silver_container")).to eq(6112)
+      expect(Lich::Gemstone::Infomon.get("currency.gigas_artifact_fragments")).to eq(16)
+      expect(Lich::Gemstone::Currency.silver).to eq(5585)
+      expect(Lich::Gemstone::Currency.silver_container).to eq(6112)
+      expect(Lich::Gemstone::Currency.gigas_artifact_fragments).to eq(16)
+      expect(Lich::Gemstone::Currency.silver_total).to eq(11697)
+    end
+
+    it "handles wealth notes" do
+      output = <<~NOTES
+        Listing accessible bank notes in your inventory...
+
+        Total note value: 100,000
+      NOTES
+      output.split("
+").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("currency.notes")).to eq(100000)
+      expect(Lich::Gemstone::Currency.notes).to eq(100000)
+    end
+
+    it "handles ticket balance info" do
+      output = <<~TICKET
+               General - 1,417 tickets.
+         Troubled Waters - 95 blackscrip.
+          Duskruin Arena - 78,634 bloodscrip.
+                    Reim - 295,702 ethereal scrip.
+               Ebon Gate - 53,058 soul shards.
+             Rumor Woods - 38,847 raikhen.
+      TICKET
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("currency.tickets")).to eq(1417)
+      expect(Lich::Gemstone::Infomon.get("currency.blackscrip")).to eq(95)
+      expect(Lich::Gemstone::Infomon.get("currency.bloodscrip")).to eq(78634)
+      expect(Lich::Gemstone::Infomon.get("currency.ethereal_scrip")).to eq(295702)
+      expect(Lich::Gemstone::Infomon.get("currency.soul_shards")).to eq(53058)
+      expect(Lich::Gemstone::Infomon.get("currency.raikhen")).to eq(38847)
+      expect(Lich::Gemstone::Currency.tickets).to eq(1417)
+      expect(Lich::Gemstone::Currency.blackscrip).to eq(95)
+      expect(Lich::Gemstone::Currency.bloodscrip).to eq(78634)
+      expect(Lich::Gemstone::Currency.ethereal_scrip).to eq(295702)
+      expect(Lich::Gemstone::Currency.soul_shards).to eq(53058)
+      expect(Lich::Gemstone::Currency.raikhen).to eq(38847)
+    end
+
+    it "handles beast status info" do
+      output = <<~BEAST
+        Spirit Beast Information:
+
+            Redsteel Marks:            3441
+            Beasts in Collection:      10
+            Beasts Captured:           5
+
+            Talondown Arena Level:     0 (9 wins 'til next)
+
+            Total Matches Won:         0
+            Total Matches:             0
+      BEAST
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("currency.redsteel_marks")).to eq(3441)
+      expect(Lich::Gemstone::Currency.redsteel_marks).to eq(3441)
+    end
+  end
+
+  context "psm" do
+    it "handles shield info" do
+      output = <<~SHIELD
+        testing, the following Shield Specializations are available:
+
+            Skill                Mnemonic        Ranks Type           Category        Subcategory
+            -------------------------------------------------------------------------------------
+            Deflect the Elements deflectelements 1/3   Passive
+            Shield Bash          bash            4/5   Setup
+            Shield Forward       forward         3/3   Passive
+            Shield Spike Mastery spikemastery    2/2   Passive
+            Shield Swiftness     swiftness       3/3   Passive
+            Shield Throw         throw           5/5   Area of Effect
+            Small Shield Focus   sfocus          5/5   Passive
+        The output listed above was generated based on the following filters:
+            Availability: profession
+                  Type: all
+              Category: all
+           Subcategory: all
+      SHIELD
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("shield.bash")).to eq(4)
+      expect(Lich::Gemstone::Infomon.get("shield.throw")).to eq(5)
+    end
+
+    it "handles cman info" do
+      output = <<~CMAN
+        testing, the following Combat Maneuvers are available:
+
+              Skill                Mnemonic        Ranks Type           Category        Subcategory
+              -------------------------------------------------------------------------------------
+              Cheapshots           cheapshots      6/6   Setup          Rogue Guild
+              Combat Mobility      mobility        1/1   Passive
+              Combat Toughness     toughness       3/3   Passive
+              Cutthroat            cutthroat       3/5   Setup
+              Divert               divert          6/6   Setup          Rogue Guild
+              Duck and Weave       duckandweave    3/3   Martial Stance
+              Evade Specialization evadespec       3/3   Passive
+              Eviscerate           eviscerate      4/5   Area of Effect
+              Eyepoke              eyepoke         6/6   Setup          Rogue Guild
+              Footstomp            footstomp       6/6   Setup          Rogue Guild
+              Hamstring            hamstring       3/5   Setup
+              Kneebash             kneebash        6/6   Setup          Rogue Guild
+              Mug                  mug             1/5   Attack
+              Nosetweak            nosetweak       6/6   Setup          Rogue Guild
+              Predator's Eye       predator        3/3   Martial Stance
+              Spike Focus          spikefocus      2/2   Passive
+              Stun Maneuvers       stunman         6/6   Buff           Rogue Guild
+              Subdue               subdue          6/6   Setup          Rogue Guild
+              Sweep                sweep           6/6   Setup          Rogue Guild
+              Swiftkick            swiftkick       6/6   Setup          Rogue Guild
+              Templeshot           templeshot      6/6   Setup          Rogue Guild
+              Throatchop           throatchop      6/6   Setup          Rogue Guild
+              Weapon Specializatio wspec           5/5   Passive
+              Whirling Dervish     dervish         3/3   Martial Stance
+
+        The output listed above was generated based on the following filters:
+          Availability: profession
+                  Type: all
+              Category: all
+           Subcategory: all
+      CMAN
+
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+
+      expect(Lich::Gemstone::Infomon.get("cman.toughness")).to eq(3)
+      expect(Lich::Gemstone::Infomon.get("cman.subdue")).to eq(6)
+    end
+
+    it "handles armor info" do
+      output = <<~ARMOR
+        testing, the following Armor Specializations are available:
+
+          Skill                Mnemonic        Ranks Type           Category        Subcategory
+          -------------------------------------------------------------------------------------
+          Armor Blessing       blessing        1/5   Buff
+          Armor Reinforcement  reinforcement   2/5   Buff
+          Armor Spike Mastery  spikemastery    2/2   Passive
+          Armor Support        support         3/5   Buff
+          Armored Casting      casting         4/5   Buff
+          Armored Evasion      evasion         5/5   Buff
+          Armored Fluidity     fluidity        4/5   Buff
+          Armored Stealth      stealth         3/5   Buff
+          Crush Protection     crush           2/5   Passive
+          Puncture Protection  puncture        1/5   Passive
+          Slash Protection     slash           0/5   Passive
+        The output listed above was generated based on the following filters:
+          Availability: profession
+                  Type: all
+              Category: all
+           Subcategory: all
+      ARMOR
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get("armor.support")).to eq(3)
+      expect(Lich::Gemstone::Infomon.get("armor.crush")).to eq(2)
+    end
+
+    it "handles weapon info" do
+      output = <<~WEAPON
+        testing, the following Weapon Techniques are available:
+
+          Skill                Mnemonic        Ranks Type           Category        Subcategory
+          -------------------------------------------------------------------------------------
+            Cripple              cripple         5/5   Setup          Edged Weapons
+            Flurry               flurry          5/5   Assault        Edged Weapons
+            Riposte              riposte         5/5   Reaction       Edged Weapons
+            Whirling Blade       wblade          5/5   Area of Effect Edged Weapons
+        The output listed above was generated based on the following filters:
+          Availability: profession
+                  Type: all
+              Category: all
+           Subcategory: all
+      WEAPON
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get("weapon.flurry")).to eq(5)
+      expect(Lich::Gemstone::Infomon.get("weapon.riposte")).to eq(5)
+    end
+
+    it "handles feat info" do
+      output = <<~FEAT
+        testing, the following Feats are available:
+
+          Skill                Mnemonic        Ranks Type           Category        Subcategory
+          -------------------------------------------------------------------------------------
+          Light Armor Proficie lightarmor      1/1   Passive
+          Martial Mastery      martialmastery  1/1   Passive
+          Scale Armor Proficie scalearmor      1/1   Passive
+          Shadow Dance         shadowdance     1/1   Buff
+          Silent Strike        silentstrike    5/5   Attack
+          Vanish               vanish          1/1   Buff
+        The output listed above was generated based on the following filters:
+          Availability: profession
+                  Type: all
+              Category: all
+           Subcategory: all
+      FEAT
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get("feat.martialmastery")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("feat.silentstrike")).to eq(5)
+    end
+
+    it "handles Learning a new PSM" do
+      # Check LearnPSM
+      Lich::Gemstone::Infomon.set('cman.krynch', 1)
+      Lich::Gemstone::Infomon.set('cman.vaultkick', 0)
+      # Check LearnTechnique
+      Lich::Gemstone::Infomon.set('feat.perfectself', 0)
+      Lich::Gemstone::Infomon.set('shield.pin', 2)
+      output = <<~LEARNING
+        You have now achieved rank 2 of Rolling Krynch Stance, costing 6 Combat Maneuver points.
+        You have now achieved rank 1 of Vault Kick, costing 2 Combat Maneuver points.
+        [You have gained rank 1 of Feat: Perfect Self.]
+        [You have increased to rank 3 of Shield Specialization: Pin.]
+      LEARNING
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get("cman.krynch")).to eq(2)
+      expect(Lich::Gemstone::Infomon.get("cman.vaultkick")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("feat.perfectself")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("shield.pin")).to eq(3)
+    end
+
+    it "handles Unlearning an existing PSM" do
+      # Check UnlearnPSM
+      Lich::Gemstone::Infomon.set('cman.krynch', 1)
+      Lich::Gemstone::Infomon.set('cman.vaultkick', 5)
+      # Check UnlearnTechnique
+      Lich::Gemstone::Infomon.set('armor.stealth', 2)
+      Lich::Gemstone::Infomon.set('shield.pin', 2)
+      # Check LostTechnique
+      Lich::Gemstone::Infomon.set("weapon.fury", 1)
+      output = <<~UNLEARNINGS
+        You decide to unlearn rank 5 of Vault Kick, regaining 20 Combat Maneuver points.
+        You decide to unlearn rank 1 of Rolling Krynch Stance, regaining 2 Combat Maneuver points.
+        [You have decreased to rank 1 of Armor Specialization: Armored Stealth.]
+        [You have decreased to rank 1 of Shield Specialization: Pin.]
+        [You are no longer trained in Weapon Technique: Fury.]
+      UNLEARNINGS
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get("cman.krynch")).to eq(0)
+      expect(Lich::Gemstone::Infomon.get('cman.vaultkick')).to eq(4)
+      expect(Lich::Gemstone::Infomon.get("armor.stealth")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("shield.pin")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("weapon.fury")).to eq(0)
+    end
+  end
+
+  context "warcry" do
+    it "handles warcry info" do
+      output = <<~WARCRY
+        You have learned the following War Cries:
+            Bertrandt's Bellow
+            Yertie's Yowlp
+            Gerrelle's Growl
+            Seanette's Shout
+            Carn's Cry
+            Horland's Holler
+      WARCRY
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get("warcry.cry")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("warcry.yowlp")).to eq(1)
+    end
+  end
+
+  context "Society status" do
+    it "handles no society" do
+      output = <<~SOCIETYCOMMAND
+        Current society status:
+           You are not a member of any society at this time.
+      SOCIETYCOMMAND
+
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get('society.status')).to eq('None')
+    end
+
+    it "handles member of society" do
+      output = <<~SOCIETYSTATUS
+        Current society status:
+           You are a member in the Order of Voln at step 13.
+      SOCIETYSTATUS
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get('society.status')).to eq('Order of Voln')
+      expect(Lich::Gemstone::Infomon.get('society.rank')).to eq(13)
+    end
+
+    it "handles master of society" do
+      output = <<~SOCIETYMASTER
+        Current society status:
+           You are a Master in the Council of Light.
+      SOCIETYMASTER
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get('society.status')).to eq('Council of Light')
+      expect(Lich::Gemstone::Infomon.get('society.rank')).to eq(20)
+    end
+  end
+
+  context "CHE from PROFILE" do
+    let(:parser_state) { Lich::Gemstone::Infomon::Parser::State }
+
+    before(:each) do
+      allow(Char).to receive(:name).and_return("Testchar")
+      parser_state.set(parser_state::Ready)
+    end
+
+    after(:each) { parser_state.set(parser_state::Ready) }
+
+    def parse_profile(output)
+      output.split("\n").each { |line| Lich::Gemstone::Infomon::Parser.parse(line) unless line.empty? }
+    end
+
+    let(:own_profile) do
+      <<~PROFILE
+        PERSONAL INFORMATION
+        Name: Testchar
+        Profession: Wizard   Level: 100
+        Race: Dark Elf   Gender: Male
+        Age: very young (0)
+        AFFILIATIONS
+        Full citizen of Solhaven
+        No MHO affiliation
+        Master in the Order of Voln
+        Member of the Wizard Guild
+        No Deity chosen
+        Member of House Sylvanfair
+        ACHIEVEMENTS
+        Strongest foe vanquished: a creature (level 100)
+      PROFILE
+    end
+
+    it "records the House from the character's own profile" do
+      parse_profile(own_profile)
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('sylvanfair')
+      expect(parser_state.get).to eq(parser_state::Ready)
+    end
+
+    it "records no House from the character's own profile" do
+      parse_profile(own_profile.sub("Member of House Sylvanfair", "No House affiliation"))
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('none')
+    end
+
+    it "records the House when the character's own Name: line carries a status tag" do
+      parse_profile(own_profile.sub("Name: Testchar", "Name: Testchar Surname  (LOOKING FOR GROUP)"))
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('sylvanfair')
+    end
+
+    it "ignores another player's House title when their surname has an apostrophe and a status tag" do
+      Lich::Gemstone::Infomon.set('che', 'sylvanfair')
+      parse_profile(<<~PROFILE)
+        PERSONAL INFORMATION
+
+        Name: Otherchar Ar'Example  (LOOKING FOR GROUP)
+        Title: Artist
+        Race: Sylvankind   Gender: Female
+        Age: in the bloom of youth (286)
+
+        AFFILIATIONS
+
+        Full citizen of Wehnimer's Landing
+        Officer of The Example Irregulars
+        Member of Example Manor
+        No Deity chosen
+        Chatelaine of Rone Academy
+
+        ACHIEVEMENTS
+
+        Strongest foe vanquished: a creature (level 188)
+      PROFILE
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('sylvanfair')
+      expect(parser_state.get).to eq(parser_state::Ready)
+    end
+
+    it "ignores another player's 'No House affiliation'" do
+      Lich::Gemstone::Infomon.set('che', 'sylvanfair')
+      parse_profile(own_profile.sub("Name: Testchar", "Name: Otherchar Smith-Jones")
+                               .sub("Member of House Sylvanfair", "No House affiliation"))
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('sylvanfair')
+    end
+
+    it "ignores another player whose surname matches the character's name" do
+      Lich::Gemstone::Infomon.set('che', 'sylvanfair')
+      parse_profile(own_profile.sub("Name: Testchar", "Name: Otherchar Testchar")
+                               .sub("Member of House Sylvanfair", "Member of House Paupers"))
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('sylvanfair')
+    end
+
+    it "ignores the House line when the Name: line cannot be parsed" do
+      Lich::Gemstone::Infomon.set('che', 'sylvanfair')
+      parse_profile(<<~PROFILE)
+        PERSONAL INFORMATION
+        Name: (unknown)
+        AFFILIATIONS
+        Member of House Paupers
+      PROFILE
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('sylvanfair')
+    end
+
+    it "accepts a following PROFILE after a short profile with no AFFILIATIONS section once the prompt arrives" do
+      Lich::Gemstone::Infomon.set('che', 'sylvanfair')
+      parse_profile(<<~PROFILE)
+        PERSONAL INFORMATION
+        Name: Testchar
+        Profession: Rogue
+        Race: Halfling   Gender: Male
+      PROFILE
+      expect(parser_state.get).to eq(parser_state::ProfileSelf)
+      Lich::Gemstone::Infomon::XMLParser.parse(%(<prompt time="1700000000">&gt;</prompt>))
+      expect(parser_state.get).to eq(parser_state::Ready)
+
+      parse_profile(own_profile.sub("Member of House Sylvanfair", "Member of House Paupers"))
+      expect(Lich::Gemstone::Infomon.get('che')).to eq('paupers')
+    end
+  end
+
+  context "Society Join or Resign" do
+    before do
+      Lich::Gemstone::Infomon.set('society.status', 'None')
+      Lich::Gemstone::Infomon.set('society.rank', 0)
+      # Voln ability metadata resolves favor cost and duration using level.
+      allow(Lich::Gemstone::Stats).to receive(:level).and_return(20)
+    end
+
+    it "handles joining the Order of Voln through membership and ability readers" do
+      output = <<~SOCIETYJOIN
+        The Grandmaster says, "Welcome to the Order of Voln."
+      SOCIETYJOIN
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get('society.status')).to eq('Order of Voln')
+      expect(Lich::Gemstone::Infomon.get('society.rank')).to eq(1)
+      expect(Lich::Gemstone::Society.serialize).to eq(['Order of Voln', 1])
+      expect(Lich::Gemstone::Societies::OrderOfVoln.member?(1)).to be true
+      expect(Lich::Gemstone::Societies::OrderOfVoln.known?('recognition')).to be true
+      expect(Lich::Gemstone::Societies::OrderOfVoln.known?('blessing')).to be false
+    end
+
+    it "handles joining the Guardians of Sunfist through membership and ability readers" do
+      output = <<~SOCIETYJOIN
+        The Grandmaster says, "You are now a member of the Guardians of Sunfist."
+      SOCIETYJOIN
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get('society.status')).to eq('Guardians of Sunfist')
+      expect(Lich::Gemstone::Infomon.get('society.rank')).to eq(0)
+      expect(Lich::Gemstone::Society.serialize).to eq(['Guardians of Sunfist', 0])
+      expect(Lich::Gemstone::Societies::GuardiansOfSunfist.member?(0)).to be true
+      expect(Lich::Gemstone::Societies::GuardiansOfSunfist.known?('recognition')).to be false
+    end
+
+    it "handles joining the Council of Light through membership and ability readers" do
+      result = Lich::Gemstone::Infomon::Parser.parse('The Grand Poohbah smiles broadly.  "Welcome to the Lodge," he cries')
+
+      expect(result).to eq(:ok)
+      expect(Lich::Gemstone::Society.serialize).to eq(['Council of Light', 1])
+      expect(Lich::Gemstone::Societies::CouncilOfLight.member?(1)).to be true
+      expect(Lich::Gemstone::Societies::CouncilOfLight.known?('recognition')).to be true
+      expect(Lich::Gemstone::Societies::CouncilOfLight.known?('signal')).to be false
+    end
+
+    it "handles resigning froim a society" do
+      output = <<~SOCIETYRESIGN
+        The Grandmaster says, "I'm sorry to hear that.  You are no longer in our service.
+      SOCIETYRESIGN
+      output.split("\n").map { |line| Lich::Gemstone::Infomon::Parser.parse(line) }
+      expect(Lich::Gemstone::Infomon.get('society.status')).to eq('None')
+      expect(Lich::Gemstone::Infomon.get('society.rank')).to eq(0)
+    end
+  end
+
+  context "Infomon.show displays 0 values, or not" do
+    it "handles Infomon.show(full = true) and (full = false)" do
+      Lich::Gemstone::Infomon.set('cman.krynch', 1)
+      Lich::Gemstone::Infomon.set('skill.ambush', 1)
+      Lich::Gemstone::Infomon.set('skill.swimming', 0)
+      Lich::Gemstone::Infomon.set('society.status', 'None')
+      # Explicit flush to ensure async writes complete before reading
+      Lich::Gemstone::Infomon.flush
+      test_results = Lich::Gemstone::Infomon.show(true)
+      expect(test_results.any? { |s| s.include?('cman.krynch : 1') }).to be(true)
+      expect(test_results.any? { |s| s.include?('skill.swimming : 0') }).to be(true)
+      expect(test_results.any? { |s| s.include?('society.status : "None"') }).to be(true)
+      test2_results = Lich::Gemstone::Infomon.show
+      expect(test2_results.any? { |s| s.include?('cman.krynch : 1') }).to be(true)
+      expect(test2_results.any? { |s| s.include?('skill.ambush : 1') }).to be(true)
+      expect(test2_results.any? { |s| s.include?('skill.swimming : 0') }).to be(false)
+    end
+  end
+
+  context "db feature method - Infomon.delete!(key)" do
+    it "allows for selective deletion of a row in the infomon.db" do
+      Lich::Gemstone::Infomon.set('skill.edged_weapon', 1)
+      Lich::Gemstone::Infomon.set('weapon.pummel', 5)
+      Lich::Gemstone::Infomon.set('stat.aura_bonus', 18)
+      expect(Lich::Gemstone::Infomon.get('skill.edged_weapon')).to eq(1)
+      expect(Lich::Gemstone::Infomon.get('weapon.pummel')).to eq(5)
+      expect(Lich::Gemstone::Infomon.get('stat.aura_bonus')).to eq(18)
+      Lich::Gemstone::Infomon.delete!('weapon.pummel')
+      expect(Lich::Gemstone::Infomon.get('skill.edged_weapon')).to eq(1)
+      expect(Lich::Gemstone::Infomon.get('weapon.pummel')).to be(nil)
+      expect(Lich::Gemstone::Infomon.get('stat.aura_bonus')).to eq(18)
+      Lich::Gemstone::Infomon.delete!('stat.aura_bonus')
+      expect(Lich::Gemstone::Infomon.get('skill.edged_weapon')).to eq(1)
+      expect(Lich::Gemstone::Infomon.get('stat.aura_bonus')).to be(nil)
+    end
+  end
+
+  # booleen status checks below
+
+  context "booleans" do
+    before(:each) do
+      XMLData.reset_dialogs
+    end
+
+    it "handles sleeping? boolean true" do
+      output = <<~TESTINPUT
+        Your mind goes completely blank.
+        You close your eyes and slowly drift off to sleep.
+        You slump to the ground and immediately fall asleep.  You must have been exhausted!
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      XMLData.save_dialogs("Debuffs", { 'Sleep' => (Time.now + 5) }) # to test if Effects has this key
+      expect(Lich::Gemstone::Status.sleeping?).to be(true)
+      expect(Lich::Gemstone::Status.muckled?).to be(true) # discount IconMAP presently - future update
+    end
+
+    it "handles sleeping? boolean false" do
+      output = <<~TESTINPUT
+        Your thoughts slowly come back to you as you find yourself lying on the ground.  You must have been sleeping.
+        You wake up from your slumber.
+        You are awoken by a sloth bear!
+        You awake
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      expect(Lich::Gemstone::Status.sleeping?).to be(false)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles bound? boolean true" do
+      output = <<~TESTINPUT
+        An unseen force envelops you, restricting all movement.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      XMLData.save_dialogs("Debuffs", { 'Bind' => (Time.now + 5) }) # to test if Effects has this key
+      expect(Lich::Gemstone::Status.bound?).to be(true)
+      expect(Lich::Gemstone::Status.muckled?).to be(true)
+    end
+
+    it "handles bound? boolean false" do
+      output = <<~TESTINPUT
+        The restricting force that envelops you dissolves away.
+        You shake off the immobilization that was restricting your movements!
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      expect(Lich::Gemstone::Status.bound?).to be(false)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles silenced? boolean true" do
+      output = <<~TESTINPUT
+        A pall of silence settles over you.
+        The pall of silence settles more heavily over you.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      XMLData.save_dialogs("Debuffs", { 'Silenced' => (Time.now + 5) }) # to test if Effects has this key
+      expect(Lich::Gemstone::Status.silenced?).to be(true)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles silenced? boolean false" do
+      output = <<~TESTINPUT
+        The pall of silence leaves you.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      expect(Lich::Gemstone::Status.silenced?).to be(false)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles calmed? boolean true" do
+      output = <<~TESTINPUT
+        A calm washes over you.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      XMLData.save_dialogs("Debuffs", { 'Calm' => (Time.now + 5) }) # to test if Effects has this key
+      expect(Lich::Gemstone::Status.calmed?).to be(true)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles calmed? boolean false" do
+      output = <<~TESTINPUT
+        You are enraged by Ferenghi Warlord's attack!
+        The feeling of calm leaves you.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      expect(Lich::Gemstone::Status.calmed?).to be(false)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles cutthroat? boolean true" do
+      output = <<~TESTINPUT
+        The Ferenghi Warlord slices deep into your vocal cords!
+        All you manage to do is cough up some blood.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      XMLData.save_dialogs("Debuffs", { 'Major Bleed' => (Time.now + 5) }) # to test if Effects has this key
+      expect(Lich::Gemstone::Status.cutthroat?).to be(true)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+
+    it "handles cutthroat? boolean false" do
+      output = <<~TESTINPUT
+        The horrible pain in your vocal cords subsides as you spit out the last of the blood clogging your throat.
+      TESTINPUT
+      output.split("\n").map { |line|
+        Lich::Gemstone::Infomon::Parser.parse(line).eql?(:ok) or fail("did not parse:\n%s" % line)
+      }
+      expect(Lich::Gemstone::Status.cutthroat?).to be(false)
+      expect(Lich::Gemstone::Status.muckled?).to be(false)
+    end
+  end
+
+  context "db performance" do
+    it "has a cache that will lazily load" do
+      k = "answer.life"
+      # Reduced from 100 to 10 iterations - still validates cache behavior without slow test.
+      # 10 iterations is sufficient to verify consistent cache load/flush behavior.
+      10.times do
+        Lich::Gemstone::Infomon.reset!
+        Lich::Gemstone::Infomon.cache.flush!
+
+        expect(Lich::Gemstone::Infomon.get(k)).to be_nil
+        Lich::Gemstone::Infomon.set(k, 42)
+        expect(Lich::Gemstone::Infomon.get(k)).to eq(42)
+        expect(Lich::Gemstone::Infomon.cache.include?(k)).to be(true)
+        Lich::Gemstone::Infomon.cache.flush!
+        # no longer in cache
+        expect(Lich::Gemstone::Infomon.cache.include?(k)).to be(false)
+        # will load from DB
+        expect(Lich::Gemstone::Infomon.get(k)).to eq(42)
+        # is now back in cache
+        expect(Lich::Gemstone::Infomon.cache.include?(k)).to be(true)
+      end
+    end
+
+    it "can handle concurrent scripts accessing it simultaneously" do
+      k = "answer.life"
+      # Reduced from 100 to 10 threads - still validates concurrency without slow test.
+      # Original test with 100 threads and `sleep rand` could take up to 100 seconds.
+      # 10 threads is sufficient to verify thread-safe behavior.
+      scripts = (0..9).to_a.map { |n|
+        Thread.new {
+          Lich::Gemstone::Infomon.set(k, n)
+          expect((0..9).include?(n)).to be(true)
+          # Use small fixed sleep instead of random - still tests concurrency without long waits
+          sleep 0.01
+          Lich::Gemstone::Infomon.set(k, n)
+          expect((0..9).include?(n)).to be(true)
+        }
+      }
+      scripts.map(&:value)
+    end
+  end
+
+  context "error mid-section" do
+    let(:parser) { Lich::Gemstone::Infomon::Parser }
+    let(:state) { Lich::Gemstone::Infomon::Parser::State }
+
+    around(:each) do |example|
+      state.set(state::Ready)
+      example.run
+    ensure
+      state.set(state::Ready)
+      Lich::Gemstone::Infomon.mutex_unlock
+    end
+
+    it "does not take the DB lock when an enhancive header arrives in a stuck state" do
+      parser.parse("Skill goals updated!") # state is now Goals, with no "goals ended" line to come
+      parser.parse("Stats:") # State.set(EnhanciveStats) raises from Goals
+      parser.parse("      Strength (STR): 12/40")
+      parser.parse("For more details, see INVENTORY ENHANCIVE TOTALS DETAILS.")
+
+      expect(Lich::Gemstone::Infomon.mutex).not_to be_locked
+    end
+
+    it "keeps collecting a skills section after a non-terminator line raises" do
+      parser.parse(" Testing (at level 12), your current skill bonuses and ranks (including all modifiers) are:")
+      parser.parse("  Two Weapon Combat..................|  12            2")
+      parser.parse("Skill goals updated!")
+      parser.parse("Skill goals updated!") # raises: state is already Goals
+      parser.parse("  Armor Use..........................|  40            8")
+      parser.parse("Training Points: 100 Phy 50 Mnt")
+      Lich::Gemstone::Infomon.flush
+
+      expect(Lich::Gemstone::Infomon.get("skill.two_weapon_combat")).to eq(2)
+      expect(Lich::Gemstone::Infomon.get("skill.armor_use")).to eq(8)
+      expect(Lich::Gemstone::Infomon.mutex).not_to be_locked
+    end
+
+    it "keeps values parsed before a non-terminator raise in an enhancive section" do
+      parser.parse("Stats:")
+      parser.parse("      Strength (STR): 12/40")
+      parser.parse("Skill goals updated!") # raises: State.set(Goals) from an enhancive state
+      parser.parse("Skills:")
+      parser.parse("                Edged Weapons Ranks:  7/50")
+      parser.parse("For more details, see INVENTORY ENHANCIVE TOTALS DETAILS.")
+      Lich::Gemstone::Infomon.flush
+
+      expect(Lich::Gemstone::Enhancive.strength.value).to eq(12)
+      expect(Lich::Gemstone::Enhancive.edged_weapons.ranks).to eq(7)
+      expect(Lich::Gemstone::Infomon.mutex).not_to be_locked
+    end
+
+    it "releases the DB lock when a section terminator raises" do
+      Lich::Gemstone::Infomon::Parser.parse(" Testing (at level 12), your current skill bonuses and ranks (including all modifiers) are:")
+      expect(Lich::Gemstone::Infomon.mutex).to be_owned
+      allow(Lich::Gemstone::Infomon).to receive(:upsert_batch).and_raise(StandardError, "boom")
+      Lich::Gemstone::Infomon::Parser.parse("  Two Weapon Combat..................|  12            2")
+      Lich::Gemstone::Infomon::Parser.parse("Training Points: 100 Phy 50 Mnt")
+
+      expect(Lich::Gemstone::Infomon.mutex).not_to be_locked
+      reader = Thread.new { Lich::Gemstone::Infomon.get("uncached.key") }
+      expect(reader.join(2)).not_to be_nil, "Infomon.get blocked on a mutex left held by the parser"
+    end
+
+    it "resets enhancive state so the next enhancive header starts fresh" do
+      Lich::Gemstone::Infomon::Parser.parse("Stats:")
+      allow(Lich::Gemstone::Infomon).to receive(:upsert_batch).and_raise(StandardError, "boom")
+      Lich::Gemstone::Infomon::Parser.parse("For more details, see INVENTORY ENHANCIVE TOTALS DETAILS.")
+
+      expect(Lich::Gemstone::Infomon::Parser::State.get).to eq(Lich::Gemstone::Infomon::Parser::State::Ready)
+      expect(Lich::Gemstone::Infomon.mutex).not_to be_locked
+    end
+  end
+
+  context "flush barrier" do
+    it "returns true immediately when queue is empty" do
+      # Ensure queue is empty first
+      Lich::Gemstone::Infomon.flush
+      expect(Lich::Gemstone::Infomon.flush).to be(true)
+    end
+
+    it "waits for pending writes to complete" do
+      k = "flush.test"
+      Lich::Gemstone::Infomon.set(k, 123)
+      # Flush ensures the write is complete before we proceed
+      result = Lich::Gemstone::Infomon.flush
+      expect(result).to be(true)
+      # Now we can safely read from DB (bypassing cache)
+      Lich::Gemstone::Infomon.cache.flush!
+      expect(Lich::Gemstone::Infomon.get(k)).to eq(123)
+    end
+
+    it "handles multiple rapid writes followed by flush" do
+      10.times do |i|
+        Lich::Gemstone::Infomon.set("rapid.#{i}", i * 10)
+      end
+      expect(Lich::Gemstone::Infomon.flush).to be(true)
+      # Verify all writes completed
+      Lich::Gemstone::Infomon.cache.flush!
+      10.times do |i|
+        expect(Lich::Gemstone::Infomon.get("rapid.#{i}")).to eq(i * 10)
+      end
+    end
+
+    # Rejects inserts of `key` (optionally only when the value is `value`) while the block runs.
+    def with_rejected_write(key, value = nil)
+      infomon = Lich::Gemstone::Infomon
+      cond = "NEW.key = #{infomon.db.literal(key)}"
+      cond += " AND NEW.value = #{infomon.db.literal(value)}" unless value.nil?
+      infomon.db.run("CREATE TRIGGER reject_write_failure_test BEFORE INSERT ON #{infomon.db.literal(infomon.table_name)} WHEN #{cond} BEGIN SELECT RAISE(FAIL, 'injected'); END")
+      yield
+      infomon.flush
+    ensure
+      infomon.db.run("DROP TRIGGER IF EXISTS reject_write_failure_test")
+    end
+
+    it "shows one short in-game line per failure streak" do
+      infomon = Lich::Gemstone::Infomon
+      allow(Lich).to receive(:log)
+      allow(infomon).to receive(:respond)
+      table = infomon.db.literal(infomon.table_name)
+      infomon.db.run("CREATE TRIGGER reject_all_writes_test BEFORE INSERT ON #{table} BEGIN SELECT RAISE(FAIL, 'injected'); END")
+      begin
+        infomon.upsert_batch((1..52).map { |i| ["streak.key#{i}", i] })
+        20.times { |i| infomon.set("streak.single", i) }
+        infomon.flush
+      ensure
+        infomon.db.run("DROP TRIGGER IF EXISTS reject_all_writes_test")
+      end
+      expect(infomon).to have_received(:respond).once
+      expect(infomon).to have_received(:respond).with(a_string_matching(/failed for 52 key\(s\) \(streak\.key1, streak\.key2, streak\.key3, \.\.\.\): .*injected/).and(satisfy { |m| m.length < 200 }))
+      expect(Lich).to have_received(:log).with(/Infomon write failed for/).exactly(21).times
+
+      # once a successful write clears every unpersisted key, a new failure is shown again
+      infomon.upsert_batch((1..52).map { |i| ["streak.key#{i}", i] })
+      infomon.set("streak.single", 19)
+      infomon.flush
+      with_rejected_write("streak.other") { infomon.set("streak.other", 1) }
+      expect(infomon).to have_received(:respond).twice
+    end
+
+    it "ends a failure streak at any successful write, even if a failed key is never re-set" do
+      infomon = Lich::Gemstone::Infomon
+      allow(Lich).to receive(:log)
+      allow(infomon).to receive(:respond)
+      with_rejected_write("status.calmed") { infomon.set("status.calmed", true) }
+      10.times { |i| infomon.set("streak.ok#{i}", i) }
+      infomon.flush
+      with_rejected_write("currency.silver") { infomon.set("currency.silver", 5) }
+      expect(infomon).to have_received(:respond).twice
+    end
+
+    it "allows a failed write to be retried" do
+      infomon = Lich::Gemstone::Infomon
+      k = "write_failure.test"
+      infomon.set(k, 1)
+      infomon.flush
+      infomon.get(k) # ensure the cache is loaded so the next get is served from it
+      allow(Lich).to receive(:log)
+      allow(infomon).to receive(:respond)
+      with_rejected_write(k) { infomon.set(k, 2) }
+      expect(Lich).to have_received(:log).with(/Infomon write failed for #{k}: Sequel::\w+.*injected/)
+      expect(infomon).to have_received(:respond).with(/Infomon write failed for 1 key\(s\) \(#{k}\): .*injected/)
+      # the cache keeps the last value set; only the DB is behind
+      expect(infomon.get(k)).to eq(2)
+      expect(infomon.table[key: k][:value]).to eq(1)
+      expect(infomon.set(k, 2)).not_to eq(:noop)
+      infomon.flush
+      expect(infomon.table[key: k][:value]).to eq(2)
+      expect(infomon.set(k, 2)).to eq(:noop)
+    end
+
+    it "persists nil set after a failed write" do
+      infomon = Lich::Gemstone::Infomon
+      k = "write_failure.nil"
+      infomon.set(k, 1)
+      infomon.flush
+      allow(Lich).to receive(:log)
+      with_rejected_write(k, 2) { infomon.set(k, 2) }
+      expect(infomon.set(k, nil)).not_to eq(:noop)
+      infomon.flush
+      expect(infomon.table[key: k][:value]).to be_nil
+      expect(infomon.get(k)).to be_nil
+    end
+
+    it "persists nil for a key the DB has but the cache does not" do
+      infomon = Lich::Gemstone::Infomon
+      k = "write_failure.uncached"
+      infomon.set(k, 1)
+      infomon.flush
+      infomon.cache.delete(k)
+      expect(infomon.set(k, nil)).not_to eq(:noop)
+      infomon.flush
+      expect(infomon.table[key: k][:value]).to be_nil
+    end
+
+    it "keeps relative updates across a failed write" do
+      infomon = Lich::Gemstone::Infomon
+      gain = "You violently shatter the bond on the soul of the troll.  As you draw it into yourself, you manipulate the chaotic and broken life forces, forming shadow essence."
+      Lich::Gemstone::Infomon::Parser.parse("Accumulated Shadow Essence: 1")
+      infomon.flush
+      allow(Lich).to receive(:log)
+      with_rejected_write("resources.shadow_essence", 2) do
+        # flush between lines so the first write has failed before the second is parsed
+        2.times { Lich::Gemstone::Infomon::Parser.parse(gain); infomon.flush }
+      end
+      expect(Lich).to have_received(:log).with(/Infomon write failed for resources.shadow_essence/)
+      expect(Lich::Resources.shadow_essence).to eq(3)
+      expect(infomon.table[key: "resources.shadow_essence"][:value]).to eq(3)
+    end
+
+    it "re-queues a failed upsert_batch on retry" do
+      infomon = Lich::Gemstone::Infomon
+      batch = { "write_failure.batch_a" => 5, "write_failure.batch_b" => 6 }
+      allow(Lich).to receive(:log)
+      with_rejected_write("write_failure.batch_a") { infomon.upsert_batch(batch) }
+      expect(infomon.table[key: "write_failure.batch_a"]).to be_nil
+      expect(infomon.upsert_batch(batch)).not_to eq(:noop)
+      infomon.flush
+      expect(infomon.table[key: "write_failure.batch_a"][:value]).to eq(5)
+      expect(infomon.table[key: "write_failure.batch_b"][:value]).to eq(6)
+      expect(infomon.upsert_batch(batch)).to eq(:noop)
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::Infomon::XMLParser, ".parse" do
+  context "NPC Death" do
+    let(:wraith) { Struct.new(:id, :status).new("1283966", nil) }
+
+    before { allow(GameObj).to receive(:npcs).and_return([wraith]) }
+
+    it "handles NPC death message not handled by normal xmlparser" do
+      expect(Lich::Gemstone::Infomon::XMLParser.parse(%[The <pushBold/><a exist="1283966" noun="wraith">wraith</a><popBold/> falls to the ground motionless.])).to eq(:ok)
+      expect(wraith.status).to eq("dead")
+    end
+
+    it "leaves the NPC alive for a non-death line" do
+      expect(Lich::Gemstone::Infomon::XMLParser.parse(%[The <pushBold/><a exist="1283966" noun="wraith">wraith</a><popBold/> glares at you.])).to eq(:noop)
+      expect(wraith.status).to be_nil
+    end
+
+    it "does not mark a different NPC dead" do
+      expect(Lich::Gemstone::Infomon::XMLParser.parse(%[The <pushBold/><a exist="999" noun="wraith">wraith</a><popBold/> falls to the ground motionless.])).to eq(:ok)
+      expect(wraith.status).to be_nil
+    end
+
+    it "does not overwrite a gone NPC" do
+      wraith.status = "gone"
+      expect(Lich::Gemstone::Infomon::XMLParser.parse(%[The <pushBold/><a exist="1283966" noun="wraith">wraith</a><popBold/> falls to the ground motionless.])).to eq(:ok)
+      expect(wraith.status).to eq("gone")
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::Infomon, "when the database is busy" do
+  let(:infomon) { Lich::Gemstone::Infomon }
+
+  before(:each) do
+    infomon.reset!
+    allow(Lich).to receive(:log)
+    allow(infomon).to receive(:respond)
+  end
+
+  # Polls for a condition for up to `seconds`; the writer thread runs async.
+  def wait_until(seconds = 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    until yield
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+      sleep 0.01
+    end
+    true
+  end
+
+  # Another connection holding the write lock, as another Lich process would.
+  def hold_write_lock(file, seconds)
+    ready = Queue.new
+    holder = Thread.new do
+      conn = SQLite3::Database.new(file)
+      conn.execute('BEGIN IMMEDIATE')
+      ready << true
+      sleep seconds
+      conn.execute('COMMIT')
+    ensure
+      conn&.close
+    end
+    ready.pop
+    holder
+  end
+
+  def row(key)
+    infomon.table[key: key]
+  end
+
+  it "opens infomon.db with the Ruby busy handler used for lich.db3" do
+    expect(infomon.db).to be_a(Lich::SQLiteBusyWait::Transactions)
+  end
+
+  it "keeps the process running while a write waits for another connection's lock" do
+    holder = hold_write_lock(infomon.file, 0.6)
+    ticks = 0
+    stop = false
+    ticker = Thread.new do
+      until stop
+        sleep 0.01
+        ticks += 1
+      end
+    end
+    infomon.set("busy.wait", 1)
+    expect(wait_until { row("busy.wait") }).to be(true)
+    stop = true
+    ticker.join
+    holder.join
+    # a C busy timeout holds the GVL for the whole wait: no ticks at all
+    expect(ticks).to be > 20
+  end
+
+  context "with a short busy timeout" do
+    # Infomon.db is opened once at load with the default 5 s timeout; a second
+    # connection to the same file with a short one stands in for it.
+    let(:short_db) do
+      allow(Lich).to receive(:sqlite_busy_timeout_ms).and_return(150)
+      Lich.open_sequel_sqlite(infomon.file)
+    end
+
+    before do
+      stub_const("#{described_class}::BUSY_BACKOFF_START_S", 0.2)
+      allow(infomon).to receive(:db).and_return(short_db)
+    end
+
+    after { short_db.disconnect }
+
+    it "starts each busy streak at the configured backoff, also after reset!" do
+      holder = hold_write_lock(infomon.file, 0.5)
+      infomon.set("busy.s", 1)
+      expect(wait_until { infomon.write_cooling_down? }).to be(true)
+      # 0.2 s from the stubbed constant, not a backoff left over from load or an earlier streak
+      expect(infomon.instance_variable_get(:@busy_until) - infomon.monotonic_now).to be <= 0.2
+      expect(wait_until { row("busy.s") }).to be(true)
+      holder.join
+
+      infomon.instance_variable_set(:@busy_until, infomon.monotonic_now + 30)
+      infomon.instance_variable_set(:@busy_backoff, 30.0)
+      infomon.reset!
+      expect(infomon.write_cooling_down?).to be(false)
+      expect(infomon.instance_variable_get(:@busy_backoff)).to be_nil
+    end
+
+    it "keeps values whose writes are deferred when the cache first loads" do
+      infomon.set("busy.load", 1)
+      expect(wait_until { row("busy.load") }).to be(true)
+      # a fresh session: nothing cached, the first get loads the table
+      infomon.cache.clear
+      infomon.instance_variable_set(:@cache_loaded, false)
+      holder = hold_write_lock(infomon.file, 0.6)
+      infomon.set("busy.load", 2)
+      expect(wait_until { infomon.write_cooling_down? }).to be(true)
+      expect(infomon.get("busy.load")).to eq(2)
+      holder.join
+      expect(wait_until { row("busy.load")[:value] == 2 }).to be(true)
+      expect(infomon.get("busy.load")).to eq(2)
+    end
+
+    it "does not cache a row whose delete! is still deferred" do
+      infomon.set("busy.del", 5)
+      expect(wait_until { row("busy.del") }).to be(true)
+      infomon.get("busy.del") # loads the cache once, as at login (reset! unloaded it)
+      holder = hold_write_lock(infomon.file, 0.6)
+      infomon.delete!("busy.del")
+      expect(wait_until { infomon.write_cooling_down? }).to be(true)
+      # the DELETE has not landed: the row is still on disk
+      expect(row("busy.del")).not_to be_nil
+      expect(infomon.get("busy.del")).to be_nil
+      expect(infomon.cache.include?("busy.del")).to be(false)
+      holder.join
+      expect(wait_until { row("busy.del").nil? }).to be(true)
+      expect(infomon.get("busy.del")).to be_nil
+    end
+
+    it "tells a busy database from other write errors" do
+      busy = begin
+        begin
+          raise SQLite3::BusyException, 'database is locked'
+        rescue SQLite3::Exception
+          raise Sequel::DatabaseError, 'wrapped'
+        end
+      rescue Sequel::DatabaseError => e
+        e
+      end
+      expect(infomon.busy_error?(busy)).to be_truthy
+      expect(infomon.busy_error?(Sequel::DatabaseError.new('constraint'))).to be_falsey
+      expect(infomon.busy_error?(RuntimeError.new('other'))).to be_falsey
+    end
+
+    it "retries queued writes in order once the lock frees, with one lock wait per backoff" do
+      busy_failures = 0
+      allow(Lich).to receive(:log) { |msg| busy_failures += 1 if msg.to_s.include?('write deferred (database busy)') }
+      holder = hold_write_lock(infomon.file, 1.0)
+      infomon.set("busy.a", 1)
+      infomon.set("busy.a", 2)
+      (1..8).each { |i| infomon.set("busy.k#{i}", i) }
+      expect(wait_until { row("busy.k8") }).to be(true)
+      holder.join
+      # without the backoff the writer keeps waiting out a 150 ms timeout per queued
+      # write for the whole second (6-7 failures); with it, a few probes of the lock
+      expect(busy_failures).to be_between(1, 4)
+      expect(row("busy.a")[:value]).to eq(2) # replayed in queue order: the later value wins
+      (1..8).each { |i| expect(row("busy.k#{i}")[:value]).to eq(i) }
+      expect(infomon.instance_variable_get(:@unpersisted)).to be_empty
+    end
+
+    it "does not hold the Infomon mutex while writes back off" do
+      holder = hold_write_lock(infomon.file, 1.0)
+      (1..5).each { |i| infomon.set("busy.m#{i}", i) }
+      # the first attempt waits 150 ms for the lock and fails; the backoff starts
+      expect(wait_until { infomon.write_cooling_down? }).to be(true)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      infomon.mutex.synchronize { nil }
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.1
+      expect(wait_until { row("busy.m5") }).to be(true)
+      holder.join
+    end
+
+    it "reports one in-game line for a busy streak and logs each failure" do
+      holder = hold_write_lock(infomon.file, 0.9)
+      infomon.set("busy.r", 1)
+      expect(wait_until { row("busy.r") }).to be(true)
+      holder.join
+      expect(infomon).to have_received(:respond).with(/database is busy/).once
+      expect(Lich).to have_received(:log).with(/write deferred \(database busy\) for busy.r/).at_least(:once)
+    end
+
+    it "drops the oldest pending writes past the cap and marks their keys unpersisted" do
+      stub_const("#{described_class}::MAX_DEFERRED_WRITES", 2)
+      pending = infomon.instance_variable_get(:@deferred)
+      begin
+        4.times { |i| infomon.defer_write(["SELECT 1", ["cap.#{i}"]]) }
+        expect(pending.size).to eq(2)
+        expect(infomon.instance_variable_get(:@unpersisted).keys).to include("cap.0", "cap.1")
+        expect(Lich).to have_received(:log).with(/dropped 1 pending write/).twice
+      ensure
+        pending.clear
+      end
+    end
+
+    it "does not run a pending write the writer picked up before reset! cleared it" do
+      holder = hold_write_lock(infomon.file, 0.3)
+      infomon.set("busy.reset", 1)
+      expect(wait_until { infomon.write_cooling_down? }).to be(true)
+      infomon.mutex.synchronize do
+        # the 0.2 s backoff runs out while this thread holds the mutex, so the writer
+        # takes the pending write and waits here for the mutex, as it does behind
+        # reset!'s own lock wait on a busy file
+        holder.join
+        sleep 0.4
+        infomon.reset!
+      end
+      expect(infomon.flush).to be(true)
+      expect(wait_until(0.5) { row("busy.reset") }).to be(false)
+      expect(infomon.instance_variable_get(:@deferred)).to be_empty
+    end
+
+    it "forgets pending writes on reset!" do
+      pending = infomon.instance_variable_get(:@deferred)
+      pending << ["SELECT 1", ["reset.key"]]
+      infomon.reset!
+      expect(pending).to be_empty
+    end
+  end
+
+  describe "setup! and reset! locking" do
+    after { infomon.mutex_unlock }
+
+    it "releases the Infomon mutex when a database call raises" do
+      raw = infomon.instance_variable_get(:@db)
+      allow(raw).to receive(:table_exists?).and_raise(Sequel::DatabaseError, "database is locked")
+      expect { infomon.setup! }.to raise_error(Sequel::DatabaseError)
+      expect(infomon.mutex.locked?).to be(false)
+    end
+
+    it "leaves a lock the caller already holds in place" do
+      infomon.mutex_lock
+      infomon.setup!
+      expect(infomon.mutex.owned?).to be(true)
+      infomon.reset!
+      expect(infomon.mutex.owned?).to be(true)
+
+      raw = infomon.instance_variable_get(:@db)
+      allow(raw).to receive(:table_exists?).and_raise(Sequel::DatabaseError, "database is locked")
+      expect { infomon.setup! }.to raise_error(Sequel::DatabaseError)
+      expect(infomon.mutex.owned?).to be(true)
+    end
+
+    it "returns the table when it has to rebuild an old schema" do
+      raw = infomon.instance_variable_get(:@db)
+      raw.drop_table?(infomon.table_name)
+      raw.create_table(infomon.table_name) do
+        text :key, primary_key: true
+        any :value
+      end
+      expect(infomon.setup!).to be_a(Sequel::Dataset)
+      expect(raw.schema(infomon.table_name).map(&:first)).to include(:updated_at)
+      expect(infomon.mutex.locked?).to be(false)
+    end
+  end
+end

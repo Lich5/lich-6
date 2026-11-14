@@ -1,0 +1,2985 @@
+# frozen_string_literal: true
+
+require_relative '../spec_helper'
+require 'socket'
+require 'timeout'
+
+# Load production code
+require "ox"
+require "common/class_exts/synchronizedsocket"
+require "common/detachable_client_registry"
+require "common/client_capabilities"
+require "common/sharedbuffer"
+require "common/shutdown_coordinator"
+require "common/xmlparser"
+require "common/downstreamhook"
+require "common/front-end"
+require "util/util"
+require "games"
+require "gemstone/wounds"
+require "gemstone/scars"
+require "gemstone/gift"
+
+RSpec.describe Lich::GameBase do
+  describe Lich::GameBase::XMLCleaner do
+    it 'cleans nested single quotes' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"<link id='2' value='Ever wondered about the time you've spent in Elanthia?  Check the PLAYED verb!' cmd='played' echo='played' />"
+      output = Lich::GameBase::XMLCleaner.clean_nested_quotes(input)
+      expect(output).to include("&apos;ve")
+    end
+
+    it 'cleans nested double quotes' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +'<subtitle=" - [Avlea\'s Bows, "The Straight and Arrow"]">'
+      output = Lich::GameBase::XMLCleaner.clean_nested_quotes(input)
+      expect(output).to include('&quot;The')
+    end
+
+    it 'removes bell characters' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"\aYOU HAVE BEEN IDLE TOO LONG. PLEASE RESPOND.\a\n"
+      output = Lich::GameBase::XMLCleaner.fix_invalid_characters(input)
+      expect(output).not_to include("\a")
+    end
+
+    it 'fixes open-ended XML tags' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"<component id='room objs'>  You also see a granite altar with several candles and a water jug on it, and a granite font.\r\n"
+      output = Lich::GameBase::XMLCleaner.fix_xml_tags(input)
+      expect(output).to include("</component>")
+    end
+
+    it 'removes dangling closing tags' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"</component>\r\n"
+      output = Lich::GameBase::XMLCleaner.fix_xml_tags(input)
+      expect(output).to eq("")
+    end
+  end
+
+  describe Lich::GameBase::Game do
+    before do
+      allow(Lich).to receive(:log)
+      allow(XMLData).to receive(:tag_start)
+      allow(XMLData).to receive(:tag_end)
+      allow(XMLData).to receive(:text)
+    end
+
+    it 'maps stream desync errors to shutdown reason' do
+      error = Lich::GameBase::GameStreamDesyncError.new('Missing end tag')
+
+      expect(described_class.shutdown_reason_for_thread_exit(error)).to eq(:game_stream_desync)
+    end
+
+    it 'returns a read timeout sentinel when the game socket has no readable data' do
+      socket = instance_double(TCPSocket)
+      described_class.instance_variable_set(:@socket, socket)
+
+      allow(socket).to receive(:wait_readable).with(0.01).and_return(nil)
+      allow(socket).to receive(:gets)
+
+      expect(described_class.read_server_string(read_timeout: 0.01)).to equal(Lich::GameBase::Game::READ_TIMEOUT)
+      expect(socket).not_to have_received(:gets)
+    end
+
+    it 'reads a game line when the socket is readable' do
+      socket = instance_double(TCPSocket)
+      described_class.instance_variable_set(:@socket, socket)
+
+      allow(socket).to receive(:wait_readable).with(0.01).and_return(socket)
+      allow(socket).to receive(:gets).and_return("<prompt/>\r\n")
+
+      expect(described_class.read_server_string(read_timeout: 0.01)).to eq("<prompt/>\r\n")
+    end
+
+    it 'preserves nil reads as game EOF after the socket becomes readable' do
+      socket = instance_double(TCPSocket)
+      described_class.instance_variable_set(:@socket, socket)
+
+      allow(socket).to receive(:wait_readable).with(0.01).and_return(socket)
+      allow(socket).to receive(:gets).and_return(nil)
+
+      expect(described_class.read_server_string(read_timeout: 0.01)).to be_nil
+    end
+
+    it 'records remote EOF when the game reader receives it' do
+      begin
+        described_class.initialize_buffers
+        allow(described_class).to receive(:read_server_string).and_return(nil)
+        allow(described_class).to receive(:record_shutdown_reason)
+
+        described_class.start_socket_reader_thread
+        described_class.reader_thread.join(1)
+
+        expect(described_class.remote_eof?).to be(true)
+      ensure
+        described_class.reader_thread&.kill
+        described_class.initialize_buffers
+      end
+    end
+
+    it 'handles connection reset as a recognized fatal disruption without a backtrace log' do
+      error = Errno::ECONNRESET.new
+      error.set_backtrace(['games.rb:1'])
+
+      expect(described_class.handle_thread_error(error)).to be(false)
+      expect(Lich).to have_received(:log).with(/info: server_thread: Errno::ECONNRESET:/)
+      expect(Lich).to have_received(:log).with('info: connection error - will not retry')
+      expect(Lich).not_to have_received(:log).with(/error: server_thread:.*\n\t/m)
+      expect(Lich).not_to have_received(:log).with(/debug: server_thread backtrace:/)
+    end
+
+    it 'logs recognized disruption backtraces only when shutdown diagnostics are enabled' do
+      error = Errno::ECONNRESET.new
+      error.set_backtrace(['games.rb:1'])
+      allow(ARGV).to receive(:include?).with('--debug').and_return(true)
+
+      expect(described_class.handle_thread_error(error)).to be(false)
+      expect(Lich).to have_received(:log).with("debug: server_thread backtrace: games.rb:1")
+    end
+
+    it 'handles repeated timeout as a recognized fatal disruption after threshold' do
+      error = IO::TimeoutError.new('read timed out')
+
+      expect(described_class.handle_thread_error(error)).to be(false)
+      expect(Lich).to have_received(:log).with('info: server_thread: IO::TimeoutError: read timed out')
+      expect(Lich).to have_received(:log).with('info: game timeout - will not retry')
+      expect(described_class.shutdown_reason_for_thread_exit(error)).to eq(:game_timeout)
+    end
+
+    it 'reports total elapsed no-data time for consecutive read timeouts' do
+      expect(described_class.total_read_timeout_seconds).to eq(300)
+      expect(described_class.total_read_timeout_seconds(2)).to eq(200)
+    end
+
+    it 'keeps stream desync disruption logging to one line in the thread handler' do
+      error = Lich::GameBase::GameStreamDesyncError.new("Missing end tag\nLine: 2")
+
+      expect(described_class.handle_thread_error(error)).to be(false)
+      expect(Lich).to have_received(:log).with('info: server_thread: GameStreamDesyncError: Missing end tag')
+      expect(Lich).to have_received(:log).with('info: game stream desync detected - will not retry')
+    end
+
+    it 'treats a WebSocket framing violation as a recognized fatal disruption without retry' do
+      error = Lich::Common::WebSocket::Frame::ProtocolError.new('reserved bits set (16)')
+
+      expect(described_class.handle_thread_error(error)).to be(false)
+      expect(Lich).to have_received(:log)
+        .with('info: server_thread: Lich::Common::WebSocket::Frame::ProtocolError: reserved bits set (16)')
+      expect(Lich).to have_received(:log).with('info: WebSocket protocol error - will not retry')
+      expect(described_class.shutdown_reason_for_thread_exit(error)).to eq(:websocket_protocol_error)
+    end
+
+    describe 'bounded parser queue' do
+      before do
+        Lich::Common::ShutdownCoordinator.reset!
+        described_class.instance_variable_set(:@server_queue, SizedQueue.new(1))
+      end
+
+      after do
+        described_class.thread&.kill
+        described_class.instance_variable_set(:@socket, nil)
+        described_class.initialize_buffers
+        Lich::Common::ShutdownCoordinator.reset!
+      end
+
+      it 'raises instead of blocking or dropping input when full' do
+        described_class.enqueue_server_string('first', 1.0)
+
+        expect { described_class.enqueue_server_string('second', 2.0) }
+          .to raise_error(Lich::GameBase::Game::ServerQueueOverflow)
+      end
+
+      it 'maps queue overflow to an unrecoverable shutdown' do
+        error = Lich::GameBase::Game::ServerQueueOverflow.new('full')
+
+        expect(described_class.handle_thread_error(error)).to be false
+        expect(described_class.shutdown_reason_for_thread_exit(error)).to eq(:unrecoverable_game_thread_error)
+      end
+
+      it 'stops the session after an unexpected parser exception' do
+        socket = instance_double(TCPSocket, close: nil)
+        described_class.instance_variable_set(:@socket, socket)
+        allow(described_class).to receive(:process_server_string).and_raise(RuntimeError, 'broken parser state')
+
+        described_class.start_server_processor_thread
+        described_class.server_queue << ['bad input', Process.clock_gettime(Process::CLOCK_MONOTONIC)]
+        described_class.thread.join(1)
+
+        expect(described_class.thread).not_to be_alive
+        expect(socket).to have_received(:close)
+        expect(Lich::Common::ShutdownCoordinator.reason).to eq(:unrecoverable_game_thread_error)
+        expect(Lich::Common::ShutdownCoordinator.current.source).to eq('game_parser')
+        expect(described_class.thread.thread_variable_get(:lich_game_ingress_time)).to be_nil
+      end
+
+      it 'exposes the original queued timestamp only inside its exact parser dispatch' do
+        entered, release, seen = Queue.new, Queue.new, []
+        allow(described_class).to receive(:process_server_string) do |line|
+          seen << [line, described_class.current_ingress_time, Thread.current]
+          entered << true
+          release.pop if line == 'old queued attack'
+        end
+        described_class.start_server_processor_thread
+        described_class.enqueue_server_string('old queued attack', 9.0, ingress_monotonic_at: 1.0)
+        entered.pop
+        expect(described_class.current_ingress_time).to be_nil
+        release << true
+        described_class.server_queue << 'legacy unstamped input'
+        entered.pop
+        described_class.server_queue << nil
+        expect(described_class.thread.join(1)).to eq(described_class.thread)
+        expect(seen.map { |row| row.first(2) }).to eq([['old queued attack', 1.0], ['legacy unstamped input', nil]])
+        expect(seen.map(&:last).uniq).to eq([described_class.thread])
+        expect(described_class.thread.thread_variable_get(:lich_game_ingress_time)).to be_nil
+      ensure
+        release << true if release && release.empty?
+      end
+    end
+  end
+end
+
+RSpec.describe Lich::GameBase::GameInstance do
+  describe Lich::GameBase::GameInstance::Base do
+    let(:game_instance) { Lich::GameBase::GameInstance::Base.new }
+
+    it 'initializes with default values' do
+      expect(game_instance.combat_count).to eq(0)
+      expect(game_instance.atmospherics).to eq(false)
+    end
+
+    it 'raises NotImplementedError for abstract methods' do
+      expect { game_instance.clean_serverstring("test") }.to raise_error(NotImplementedError)
+      expect { game_instance.get_documentation_url }.to raise_error(NotImplementedError)
+      expect { game_instance.process_game_specific_data("test") }.to raise_error(NotImplementedError)
+      expect { game_instance.modify_room_display("test") }.to raise_error(NotImplementedError)
+      expect { game_instance.process_room_display("test") }.to raise_error(NotImplementedError)
+    end
+
+    it 'shares one combat/atmospherics stream-tag implementation across both games' do
+      [Lich::Gemstone::GameInstance, Lich::DragonRealms::GameInstance].each do |klass|
+        expect(klass.instance_method(:handle_combat_tags).owner).to be(described_class)
+        expect(klass.instance_method(:handle_atmospherics).owner).to be(described_class)
+      end
+    end
+
+    # GemStone and an unknown game send the client line as it is.
+    it 'returns the client line itself from adapt_for_frontend' do
+      line = +%(<pushBold/><pushBold/>a <a exist="1" noun="rat">rat</a><popBold/><popBold/>\r\n)
+      expect(game_instance.adapt_for_frontend(line)).to equal(line)
+      expect(Lich::Gemstone::GameInstance.new.adapt_for_frontend(line)).to equal(line)
+      expect(Lich::Gemstone::GameInstance.new.adapt_for_frontend(line, [])).to equal(line)
+    end
+
+    # DragonRealms rewrites by the capability set it is handed, never in place.
+    it 'applies only the DragonRealms rewrites the capability set lacks' do
+      line = +%(<pushBold/><pushBold/>a <a exist="1" noun="rat">rat</a><popBold/><popBold/>\r\n)
+      dr = Lich::DragonRealms::GameInstance.new
+      expect(dr.adapt_for_frontend(line, %i[game_links double_bold])).to equal(line)
+      expect(dr.adapt_for_frontend(line, [:game_links])).to eq(%(<pushBold/>a <a exist="1" noun="rat">rat</a><popBold/>\r\n))
+      expect(dr.adapt_for_frontend(line, [:double_bold])).to eq(%(<pushBold/><pushBold/>a rat<popBold/><popBold/>\r\n))
+      expect(dr.adapt_for_frontend(line, [])).to eq(%(<pushBold/>a rat<popBold/>\r\n))
+      expect(line).to eq(%(<pushBold/><pushBold/>a <a exist="1" noun="rat">rat</a><popBold/><popBold/>\r\n))
+    end
+
+    # Both the base and DragonRealms default the set to nil, the session's set.
+    it 'applies the session capability set when DragonRealms is handed none or nil' do
+      line = +%(<pushBold/><pushBold/>a <a exist="1" noun="rat">rat</a><popBold/><popBold/>\r\n)
+      dr = Lich::DragonRealms::GameInstance.new
+      allow(Lich::Common::ClientCapabilities).to receive(:session_default).and_return([:double_bold])
+      expect(dr.adapt_for_frontend(line, nil)).to eq(%(<pushBold/><pushBold/>a rat<popBold/><popBold/>\r\n))
+      expect(dr.adapt_for_frontend(line)).to eq(%(<pushBold/><pushBold/>a rat<popBold/><popBold/>\r\n))
+      allow(Lich::Common::ClientCapabilities).to receive(:session_default).and_return(%i[game_links double_bold])
+      expect(dr.adapt_for_frontend(line, nil)).to equal(line)
+      expect(Lich::Gemstone::GameInstance.new.adapt_for_frontend(line, nil)).to equal(line)
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::GameInstance do
+  before do
+    XMLData.reset
+    XMLData.game = 'GS'
+  end
+
+  let(:game_instance) { Lich::Gemstone::GameInstance.new }
+
+  describe '#clean_serverstring' do
+    it 'fixes The Rift, Scatter issue' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"Some room description  <compDef id='room text'></compDef>"
+      output = game_instance.clean_serverstring(input)
+      expect(output).to include("<compDef id='room desc'>Some room description</compDef>")
+    end
+
+    it 'returns the string unchanged if no issues' do
+      input = +"Normal string with no issues"
+      output = game_instance.clean_serverstring(input)
+      expect(output).to eq(input)
+    end
+  end
+
+  describe '#handle_combat_tags' do
+    it 'tracks combat count correctly' do
+      # Use +@ to unfreeze strings for in-place modification
+      input1 = +"Combat text<pushStream id=\"combat\" />more combat"
+      game_instance.handle_combat_tags(input1)
+      expect(game_instance.combat_count).to eq(1)
+
+      # Check if combat tags are handled correctly
+      input2 = +"End combat<prompt>prompt</prompt>"
+      output2 = game_instance.handle_combat_tags(input2)
+      expect(output2).to include("<popStream id=\"combat\" />")
+      expect(game_instance.combat_count).to eq(0)
+    end
+  end
+
+  describe '#handle_atmospherics' do
+    it 'handles atmospherics correctly' do
+      # Use +@ to unfreeze strings for in-place modification
+      input1 = +"Some text<pushStream id=\"atmospherics\" />atmospheric text"
+      game_instance.handle_atmospherics(input1)
+      expect(game_instance.atmospherics).to be true
+
+      # Check if the next string gets the popStream
+      input2 = +"More text without popStream"
+      output2 = game_instance.handle_atmospherics(input2)
+      expect(output2).to include("<popStream id=\"atmospherics\" />")
+      expect(game_instance.atmospherics).to be false
+    end
+  end
+
+  describe '#get_documentation_url' do
+    it 'returns the correct documentation URL for Gemstone' do
+      expect(game_instance.get_documentation_url).to eq("https://gswiki.play.net/Lich:Software/Installation")
+    end
+  end
+
+  describe '#modify_room_display' do
+    it 'modifies room display correctly for Gemstone' do
+      Lich.display_lichid = true
+      Lich.display_uid = true
+
+      # Use +@ to unfreeze string for in-place modification
+      alt_string = +"[Test Room] (123)"
+
+      result = game_instance.modify_room_display(alt_string)
+      # The lichid comes from Room["u123"], and the spec_helper stand-in maps a
+      # uid lookup to the same number, so 123 is the uid in alt_string above.
+      expect(result).to include(" - 123]")
+    end
+  end
+end
+
+RSpec.describe Lich::DragonRealms::GameInstance do
+  before do
+    XMLData.reset
+    XMLData.game = 'DR'
+    XMLData.name = 'testing'
+    XMLData.room_title = "[Test DR Room]"
+  end
+
+  let(:game_instance) { Lich::DragonRealms::GameInstance.new }
+
+  describe '#clean_serverstring' do
+    it 'removes superfluous tags' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"Some text<pushStream id=\"combat\" /><popStream id=\"combat\" />more text"
+      output = game_instance.clean_serverstring(input)
+      expect(output).to eq("Some textmore text")
+    end
+
+    it 'fixes combat wrapping components' do
+      # Use +@ to unfreeze string for in-place modification
+      input = +"Some text<pushStream id=\"combat\" /><component id='test'>content</component>"
+      output = game_instance.clean_serverstring(input)
+      expect(output).to include("<component id='test'>")
+      expect(output).not_to include("<pushStream id=\"combat\" />")
+    end
+  end
+
+  # Raw server lines cut by a roundtime refusal, from 2026-10 XML logs unless
+  # noted (long object lists and descriptions shortened).
+  describe '#buffer_split_line' do
+    require 'common/wait_response'
+    require 'common/room_block'
+
+    combat_cut = %(<a exist="-10609868" noun="Jazriel">Jazriel</a> steps back, then quickly steps forward spinning like a dervish, <a exist="-10609868" noun="Jazriel">his</a> <a exist="35307396" noun="greatsword">greatsword</a>...wait 1 seconds.\r\n)
+    combat_rest = %( lashing out at everything within reach!\r\n)
+    after_space_cut = %(<pushStream id="combat" />* A jeol moradu sidesteps and bashes at you.  ...wait 1 seconds.\r\n)
+    after_space_rest = "You counter most of the sword with a pugilist's armguard of layered black steel plates.  \r\n"
+    line_end_cut = %(<pushStream id="combat" />Catheroine gouges her fingers at a jeol moradu.  The fingers lands a good strike to its chest!  ...wait 4 seconds.\r\n)
+    tag_cut = %(<pushStream id="combat" />...wait 1 seconds.\r\n)
+    tag_rest = "* A jeol moradu feints high at you.  You evade.  \r\n"
+    bold_cut = %(<pushStream id="combat" />&lt; You punch your armor-clad fist at a jeol moradu.  A jeol moradu attempts to dodge.  <pushBold/>The fist lands a solid hit that knocks it down and out with a blow to the nether regions (Total loss of bowel control accompanies a twitching death!)....wait 2 seconds.\r\n)
+    room_cut = %(<resource picture="0"/><room><name>[Jeol'gelvmoraen, Ice Grottos] (4217406)</name><description>The expansive pale blue passage of glittering ice seems to stretch on forever.</description><exists>You also see <pushBold/><pushBold/>a <a exist="33519917" noun="moradu">jeol moradu</a><popBold/><popBold/>, a <a exist="33516509" noun="bar">small pewter bar</a>...wait 2 seconds.\r\n)
+    room_rest = %(, an <a exist="33493149" noun="card">Immortal Murrula card</a>, <pushBold/><pushBold/>a <a exist="33524296" noun="moradu">jeol moradu</a><popBold/><popBold/> and some junk.</exists><crtrStatus exist="33519917" hostile="1" disengaged="1"/><crtrStatus exist="33524296" hostile="1" disengaged="1"/><players></players><exits>Obvious exits: <d>northeast</d>, <d>east</d>, <d>southeast</d>.</exits><extra></extra></room>\r\n)
+    room_head_cut = %(<resource picture="0"/><room>...wait 4 seconds.\r\n)
+    room_head_rest = %(<name>[Jeol'gelvmoraen, Ice Grottos] (4217404)</name><description>Shifting beams of light filter through a partially obstructed opening.</description><exists>You also see <pushBold/><pushBold/>a <a exist="32145136" noun="moradu">jeol moradu</a><popBold/><popBold/>.</exists><players>Also here: Musician <a exist="-10618410" noun="Kvofe">Kvofe</a>.</players><exits>Obvious exits: <d>north</d>, <d>west</d>.</exits><extra></extra></room>\r\n)
+    # From #1149 (2026-01-21).
+    component_cut = "<component id='room objs'>You also see <pushBold/>a jeol moradu<popBold/>, <pushBold/>a jeol moradu<popBold/> which appears dead, ...wait 1 seconds.\r\n"
+    component_rest = "<pushBold/>a jeol moradu<popBold/> that is caught in a cage of swirling darkness and some junk.</component>\r\n"
+
+    def refusal_of(cut)
+      cut[/\.\.\.wait \d+ seconds?\.\r\n\z/]
+    end
+
+    def held_of(cut)
+      cut.sub(/\.\.\.wait \d+ seconds?\.\r\n\z/, '')
+    end
+
+    before { allow(Lich).to receive(:log) }
+
+    {
+      'cut mid-word, rest after a space'                    => [combat_cut, combat_rest],
+      'cut after a space, rest without one'                 => [after_space_cut, after_space_rest],
+      'cut after its opening tag'                           => [tag_cut, tag_rest],
+      'cut before its closing bold tag'                     => [bold_cut, "<popBold/>\r\n"],
+      'cut at its line end, which follows as an empty line' => [line_end_cut, "\r\n"]
+    }.each do |label, (cut, rest)|
+      it "passes the refusal on at once and rejoins a line #{label}" do
+        refusal = game_instance.buffer_split_line(+cut)
+        expect(refusal).to eq(refusal_of(cut))
+        expect(refusal).to match(Lich::Common::WAIT_RESPONSE_PATTERN)
+        expect(game_instance.buffer_split_line(+rest)).to eq(held_of(cut) + rest)
+        expect(game_instance.buffer_split_line(+"<prompt time=\"1793039258\">R&gt;</prompt>\r\n")).to eq("<prompt time=\"1793039258\">R&gt;</prompt>\r\n")
+      end
+    end
+
+    it 'holds again when the joined line is itself cut' do
+      game_instance.buffer_split_line(+"Gorkus swings his greatsword with wild abandon...wait 3 seconds.\r\n")
+      expect(game_instance.buffer_split_line(+" weaving it through the air...wait 2 seconds.\r\n")).to eq("...wait 2 seconds.\r\n")
+      expect(game_instance.buffer_split_line(+" in a flurry of blows.\r\n")).to eq(
+        "Gorkus swings his greatsword with wild abandon weaving it through the air in a flurry of blows.\r\n"
+      )
+    end
+
+    ["...wait 1 seconds.\r\n", "...wait 1 second.\r\n"].each do |standalone|
+      it "passes the standalone refusal #{standalone.inspect} through and holds nothing" do
+        expect(game_instance.buffer_split_line(+standalone)).to eq(standalone)
+        expect(game_instance.buffer_split_line(+tag_rest)).to eq(tag_rest)
+      end
+    end
+
+    [
+      +"Kythkani says, \"Wait 3 seconds.\"\r\n",
+      +"...wait 1 seconds. You feel ready.\r\n",
+      +"Gorkus swings his greatsword...wait 3 seconds."
+    ].each do |line|
+      it "leaves #{line.inspect} alone" do
+        expect(game_instance.buffer_split_line(line)).to eq(line)
+      end
+    end
+
+    it 'rejoins a cut <room> block, so RoomBlock can rewrite it' do
+      expect(game_instance.buffer_split_line(+room_cut)).to eq("...wait 2 seconds.\r\n")
+      joined = game_instance.buffer_split_line(+room_rest)
+      expect(joined).to eq(held_of(room_cut) + room_rest)
+      expect(Lich::Common::Markup.strip_xml(Lich::Common::RoomBlock.legacy_shape(joined))).to include(
+        'You also see a jeol moradu, a small pewter bar, an Immortal Murrula card, a jeol moradu and some junk.'
+      )
+    end
+
+    it 'holds a <room> block cut straight after its opening tag' do
+      expect(game_instance.buffer_split_line(+room_head_cut)).to eq("...wait 4 seconds.\r\n")
+      expect(game_instance.buffer_split_line(+room_head_rest)).to eq(%(<resource picture="0"/><room>) + room_head_rest)
+    end
+
+    # Constructed: the game keeps a <room> block on one line, so no capture
+    # has a cut one whose rest lacks </room>. If one ever did, the hold must
+    # still end after one line, or every later line would be swallowed.
+    it 'releases a cut <room> block after one line even without its closing tag' do
+      game_instance.buffer_split_line(+room_head_cut)
+      expect(game_instance.buffer_split_line(+"<name>[Jeol'gelvmoraen, Ice Grottos] (4217404)</name>\r\n")).to eq(
+        %(<resource picture="0"/><room><name>[Jeol'gelvmoraen, Ice Grottos] (4217404)</name>\r\n)
+      )
+      expect(game_instance.buffer_split_line(+"<prompt time=\"1793039258\">R&gt;</prompt>\r\n")).to eq("<prompt time=\"1793039258\">R&gt;</prompt>\r\n")
+      expect(game_instance.buffer_split_line(+"You stroll north.\r\n")).to eq("You stroll north.\r\n")
+    end
+
+    it 'rejoins a cut room objs component, keeping the refusal and the line end' do
+      expect(game_instance.buffer_split_line(+component_cut)).to eq("...wait 1 seconds.\r\n")
+      expect(game_instance.buffer_split_line(+component_rest)).to eq(held_of(component_cut) + component_rest)
+    end
+
+    it 'joins a complete room objs component cut at its line end to that line end only' do
+      line = +"<component id='room objs'>You also see a jeol moradu.</component>...wait 1 seconds.\r\n"
+      expect(game_instance.buffer_split_line(line)).to eq("...wait 1 seconds.\r\n")
+      expect(game_instance.buffer_split_line(+"\r\n")).to eq("<component id='room objs'>You also see a jeol moradu.</component>\r\n")
+    end
+
+    it 'passes the rejoined lines through clean_serverstring' do
+      expect(game_instance.clean_serverstring(+combat_cut)).to eq("...wait 1 seconds.\r\n")
+      expect(game_instance.clean_serverstring(+combat_rest)).to include('greatsword</a> lashing out at everything within reach!')
+    end
+  end
+
+  describe '#get_documentation_url' do
+    it 'returns the correct documentation URL for DragonRealms' do
+      expect(game_instance.get_documentation_url).to eq("https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich")
+    end
+  end
+
+  describe '#modify_room_display' do
+    it 'modifies room display correctly for DragonRealms' do
+      Lich.display_uid = true
+
+      # Use +@ to unfreeze string for in-place modification
+      alt_string = +"Room [Test Room] (**)"
+
+      result = game_instance.modify_room_display(alt_string)
+      expect(result).not_to include("(**)")
+    end
+  end
+
+  describe '#process_room_display' do
+    it 'adds DR-specific room number information' do
+      Lich.display_lichid = true
+      Lich.display_uid = true
+      XMLData.room_id = 789
+      # Frontend.client is mocked in spec_helper
+
+      # Use +@ to unfreeze string for in-place modification
+      alt_string = +"Room prompt"
+      result = game_instance.process_room_display(alt_string)
+
+      expect(result).to include("Room Number: 1234 - (u789)")
+    end
+  end
+end
+
+# The DragonRealms room-id/RealID display: "what to show" is display_lichid/display_uid,
+# "where to show it" is Lich.display_roomid_location (title | line | both, default line).
+# modify_room_display handles the inline room-name (title) injection; process_room_display
+# handles the below-room "Room Number:" line. Defaults are unchanged (flags off, placement
+# line), and the inline injection must never touch XMLData (scripts read the clean title).
+RSpec.describe 'DragonRealms room-id placement (games.rb)' do
+  let(:dr) { Lich::DragonRealms::GameInstance.new }
+  let(:gs) { Lich::Gemstone::GameInstance.new }
+
+  before do
+    XMLData.reset
+    XMLData.game = 'DR'
+    XMLData.room_title = '[Test Room]'
+    XMLData.room_id = 230008
+    Lich.display_lichid = false
+    Lich.display_uid = false
+    Lich.hide_uid_flag = false
+    Lich.display_exits = false
+    Lich.display_stringprocs = false
+    Lich.display_room_links = false
+    Lich.display_room_mono = false
+    Lich.display_roomid_location = nil
+    allow(Frontend).to receive(:client).and_return('profanity') # not a room-window frontend
+    allow(Frontend).to receive(:supports_mono?).and_return(false)
+  end
+
+  # Reset the shared mock accessors so per-example toggles do not leak (random order).
+  after do
+    Lich.display_lichid = nil
+    Lich.display_uid = nil
+    Lich.hide_uid_flag = nil
+    Lich.display_exits = nil
+    Lich.display_stringprocs = nil
+    Lich.display_room_links = nil
+    Lich.display_room_mono = nil
+    Lich.display_roomid_location = nil
+  end
+
+  describe '#modify_room_display (inline room-name injection)' do
+    it 'injects the lich id into the room name for the "title" placement' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room]')).to eq('[Test Room - 1234]')
+    end
+
+    it 'injects the uid into the room name for the "title" placement' do
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room]')).to eq('[Test Room - (u230008)]')
+    end
+
+    it 'injects both id and uid for the "title" placement' do
+      Lich.display_lichid = true
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room]')).to eq('[Test Room - 1234 - (u230008)]')
+    end
+
+    it 'renders (**) for a no-uid room (room_id 0) in the title' do
+      XMLData.room_id = 0
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room]')).to eq('[Test Room - (**)]')
+    end
+
+    it 'preserves a game-supplied RealID GemStone-style when only lichid is on' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      # ";display lichid" alone must read like GemStone: lich id inside the bracket,
+      # the game's RealID left untouched after it - not stripped.
+      expect(dr.modify_room_display(+'[Test Room] (230008)')).to eq('[Test Room - 1234] (230008)')
+    end
+
+    it 'strips the game RealID before injecting when display_uid is also on (no duplicate)' do
+      Lich.display_lichid = true
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'title'
+      # With Lich rendering its own "(u230008)", keeping the game RealID too would duplicate it.
+      expect(dr.modify_room_display(+'[Test Room] (230008)')).to eq('[Test Room - 1234 - (u230008)]')
+    end
+
+    it 'strips the game RealID when hide_uid_flag is set (player asked to hide it)' do
+      Lich.display_lichid = true
+      Lich.hide_uid_flag = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room] (230008)')).to eq('[Test Room - 1234]')
+    end
+
+    it 'preserves a game (**) no-uid marker when only lichid is on' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room] (**)')).to eq('[Test Room - 1234] (**)')
+    end
+
+    it 'injects nothing (and does not raise) when the room is unmapped and only lichid is on' do
+      allow(Map).to receive(:current).and_return(nil)
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.modify_room_display(+'[Test Room]')).to eq('[Test Room]')
+    end
+
+    it 'does not inject for the "line" placement (room name left as sent)' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'line'
+      expect(dr.modify_room_display(+'[Test Room] (230008)')).to eq('[Test Room] (230008)')
+    end
+
+    it 'still hides the game RealID for the "line" placement when display_uid is on (historical behavior)' do
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'line'
+      expect(dr.modify_room_display(+'[Test Room] (230008)')).to eq('[Test Room]')
+    end
+
+    it 'does not mutate XMLData.room_title when injecting into the title' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      dr.modify_room_display(+'[Test Room]')
+      expect(XMLData.room_title).to eq('[Test Room]')
+    end
+  end
+
+  describe '#process_room_display (below-room "Room Number:" line)' do
+    it 'shows the Room Number line for the "line" placement' do
+      Lich.display_lichid = true
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'line'
+      expect(dr.process_room_display(+'PROMPT')).to include('Room Number: 1234 - (u230008)')
+    end
+
+    it 'shows the Room Number line by default (nil placement behaves as "line")' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = nil
+      expect(dr.process_room_display(+'PROMPT')).to include('Room Number: 1234')
+    end
+
+    it 'omits the Room Number line for the "title" placement' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.process_room_display(+'PROMPT')).not_to include('Room Number:')
+    end
+
+    it 'renders in both the title and the below-room line for the "both" placement' do
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'both'
+      expect(dr.modify_room_display(+'[Test Room]')).to eq('[Test Room - 1234]')
+      expect(dr.process_room_display(+'PROMPT')).to include('Room Number: 1234')
+    end
+
+    it 'adds no line and does not raise when the room is unmapped and only lichid is on' do
+      allow(Map).to receive(:current).and_return(nil)
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'line'
+      expect(dr.process_room_display(+'PROMPT')).not_to include('Room Number:')
+    end
+  end
+
+  # The room-window subtitle (the window title bar) is a title surface too. Lich's own id/UID
+  # rides it for every placement, and the game-supplied RealID is re-appended whenever the game
+  # displayed it (ShowRoomID on) - independent of ";display roomid", which governs only where
+  # Lich's id goes. The subtitle is rebuilt from the (always UID-free) XMLData.room_title, so
+  # the RealID is synthesized from the authoritative nav UID (XMLData.room_id) and gated on
+  # XMLData.show_room_id (the game's ShowRoomID flag state).
+  describe '#process_room_display (room-window subtitle parity)' do
+    before do
+      allow(Frontend).to receive(:supports_room_window?).and_return(true)
+      # The parser double-brackets DR room_title (e.g. "[[Test Room]]"); process_room_display
+      # slices [2..-3] to recover the bare name, so mirror that exact shape here.
+      XMLData.room_title = '[[Test Room]]'
+    end
+
+    it 'appends the preserved RealID to the window title when ShowRoomID is on and only lichid is set' do
+      XMLData.show_room_id = true
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234] (230008)"))
+    end
+
+    it 'omits the RealID from the window title when ShowRoomID is off (nothing for the game to preserve)' do
+      XMLData.show_room_id = false
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234]"))
+    end
+
+    it 'renders (**) in the window title for a no-uid room the game is displaying' do
+      XMLData.show_room_id = true
+      XMLData.room_id = 0
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234] (**)"))
+    end
+
+    it 'does not double the RealID when display_uid renders its own uid' do
+      XMLData.show_room_id = true
+      Lich.display_lichid = true
+      Lich.display_uid = true
+      Lich.display_roomid_location = 'title'
+      # Lich manages the uid, so the game RealID is suppressed - the subtitle carries the
+      # "(u230008)" form once, with no trailing "(230008)".
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234 - (u230008)]"))
+    end
+
+    it 'keeps the window title and the room-name line byte-identical (GS parity, lichid only)' do
+      XMLData.show_room_id = true
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      room_name = dr.modify_room_display(+'[Test Room] (230008)')
+      subtitle = dr.process_room_display(+'PROMPT')[/subtitle=" - (?<title>.*?)"/, :title]
+      expect(subtitle).to eq(room_name)
+    end
+
+    it 'shows the game RealID in the window title for the "line" placement (default DR path)' do
+      # ";display roomid line" places Lich's id in the below-room line, but the game RealID still
+      # belongs in the window title when ShowRoomID is on: the game shows it there regardless of
+      # where Lich puts its own id, and it already rides the room-name line for this placement.
+      XMLData.show_room_id = true
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'line'
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234] (230008)"))
+    end
+
+    it 'shows the game RealID in the window title for the nil (unset) placement' do
+      XMLData.show_room_id = true
+      Lich.display_lichid = true
+      Lich.display_roomid_location = nil
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234] (230008)"))
+    end
+
+    it 'synthesizes the window-title RealID from the authoritative nav UID, not any room-name literal' do
+      # nav (XMLData.room_id) is the primary UID source for every game (see the <nav> handler);
+      # the subtitle is rebuilt from the UID-free room_title, so it must follow nav. Force nav to
+      # a value no room-name literal here carries and confirm the window title reports nav.
+      XMLData.show_room_id = true
+      XMLData.room_id = 999999
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'title'
+      expect(dr.process_room_display(+'PROMPT')).to include(%(subtitle=" - [Test Room - 1234] (999999)"))
+    end
+  end
+
+  describe 'GemStone is unaffected by the DR placement setting' do
+    it 'GS #modify_room_display ignores display_roomid_location' do
+      XMLData.game = 'GS'
+      Lich.display_lichid = true
+      Lich.display_roomid_location = 'line' # suppresses DR title injection; must not affect GS
+      # Room["u123"] in the spec_helper stand-in reports 123, the uid above.
+      expect(gs.modify_room_display(+'[Test Room] (123)')).to include(' - 123]')
+    end
+  end
+end
+
+# Unit coverage for the shared formatting mixin, exercised on a throwaway host
+# class so the helpers are tested in isolation from the game instances.
+RSpec.describe Lich::GameBase::RoomFormatter do
+  # The formatting helpers are private (they add no public surface to the game
+  # instances). Re-publicize them on this throwaway host class so the unit
+  # examples can drive each one directly instead of reaching through .send.
+  let(:formatter) do
+    Class.new do
+      include Lich::GameBase::RoomFormatter
+      public :room_mono?, :room_links?, :room_styled,
+             :room_stringproc_entries, :room_exit_entries, :prepend_room_lines
+    end.new
+  end
+
+  before do
+    XMLData.reset
+    XMLData.game = 'DR'
+    Lich.display_lichid = false
+    Lich.display_uid = false
+    Lich.display_exits = false
+    Lich.display_stringprocs = false
+    Lich.display_room_links = false
+    Lich.display_room_mono = false
+    allow(Frontend).to receive(:supports_mono?).and_return(false)
+  end
+
+  # Reset the shared mock accessors so per-example toggles do not leak into other
+  # describe blocks (the suite runs in random order).
+  after do
+    Lich.display_lichid = nil
+    Lich.display_uid = nil
+    Lich.display_exits = nil
+    Lich.display_stringprocs = nil
+    Lich.display_room_links = nil
+    Lich.display_room_mono = nil
+  end
+
+  describe '#room_styled' do
+    it 'wraps the body in mono tags when mono is on and the frontend supports it' do
+      Lich.display_room_mono = true
+      allow(Frontend).to receive(:supports_mono?).and_return(true)
+
+      expect(formatter.room_styled('Room Exits: go door'))
+        .to eq('<output class="mono"/>Room Exits: go door<output class=""/>')
+    end
+
+    it 'returns the body unchanged when mono is off' do
+      Lich.display_room_mono = false
+
+      expect(formatter.room_styled('Room Exits: go door')).to eq('Room Exits: go door')
+    end
+
+    it 'returns the body unchanged when mono is on but the frontend lacks mono support' do
+      Lich.display_room_mono = true
+      allow(Frontend).to receive(:supports_mono?).and_return(false)
+
+      expect(formatter.room_styled('Room Exits: go door')).to eq('Room Exits: go door')
+    end
+  end
+
+  describe '#room_exit_entries' do
+    before do
+      map = double('map', wayto: { 1 => 'north', 2 => 'go arched door' }, timeto: {}, id: 100)
+      allow(Map).to receive(:current).and_return(map)
+    end
+
+    it 'returns an empty array when the exits toggle is off' do
+      Lich.display_exits = false
+
+      expect(formatter.room_exit_entries).to eq([])
+    end
+
+    it 'renders clickable command links when links are on' do
+      Lich.display_exits = true
+      Lich.display_room_links = true
+
+      expect(formatter.room_exit_entries).to eq(["<d cmd='go arched door'>go arched door</d>"])
+    end
+
+    it 'renders plain text and no <d> tags when links are off' do
+      Lich.display_exits = true
+      Lich.display_room_links = false
+
+      expect(formatter.room_exit_entries).to eq(['go arched door'])
+    end
+
+    it 'filters out obvious compass/up/down/out exits' do
+      Lich.display_exits = true
+      Lich.display_room_links = false
+
+      expect(formatter.room_exit_entries).not_to include('north')
+    end
+
+    it 'excludes StringProc exits (those are handled separately)' do
+      sp = StringProc.new('nil')
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 3 => sp }, timeto: { 3 => 5 }, id: 100))
+      Lich.display_exits = true
+
+      expect(formatter.room_exit_entries).to eq([])
+    end
+
+    it 'coerces a non-String wayto value via to_s instead of raising on #dump' do
+      # An Integer responds to #to_s but not #dump; the defensive to_s keeps the
+      # downstream hook from crashing if a non-String value ever reaches here.
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 5 => 123 }, timeto: {}, id: 100))
+      Lich.display_exits = true
+      Lich.display_room_links = false
+
+      expect { formatter.room_exit_entries }.not_to raise_error
+      expect(formatter.room_exit_entries).to eq(['123'])
+    end
+  end
+
+  describe '#room_stringproc_entries' do
+    let(:stringproc) { StringProc.new('nil') }
+
+    before do
+      allow(Map).to receive(:[]).with(42).and_return(double('dest', title: ['[Dest Room]'], id: 99))
+    end
+
+    it 'returns an empty array when the stringprocs toggle is off' do
+      Lich.display_stringprocs = false
+
+      expect(formatter.room_stringproc_entries).to eq([])
+    end
+
+    it 'includes routable StringProcs (numeric timeto) as go2 links when links are on' do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+      Lich.display_stringprocs = true
+      Lich.display_room_links = true
+
+      expect(formatter.room_stringproc_entries).to eq(["<d cmd=';go2 42'>Dest Room</d>"])
+    end
+
+    it 'shows the destination title (not raw source) as plain text when links are off' do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+      Lich.display_stringprocs = true
+      Lich.display_room_links = false
+
+      expect(formatter.room_stringproc_entries).to eq(['Dest Room'])
+    end
+
+    it 'appends the lich id when display_lichid is on' do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+      Lich.display_stringprocs = true
+      Lich.display_room_links = false
+      Lich.display_lichid = true
+
+      expect(formatter.room_stringproc_entries).to eq(['Dest Room(99)'])
+    end
+
+    it 'includes a StringProc whose timeto StringProc returns a numeric' do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => StringProc.new('5') }, id: 100))
+      Lich.display_stringprocs = true
+      Lich.display_room_links = false
+
+      expect(formatter.room_stringproc_entries).to eq(['Dest Room'])
+    end
+
+    it 'filters out StringProcs whose timeto is not numeric (not routable)' do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => nil }, id: 100))
+      Lich.display_stringprocs = true
+
+      expect(formatter.room_stringproc_entries).to eq([])
+    end
+
+    it 'skips a dangling wayto reference (destination missing from the mapdb) without raising' do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+      allow(Map).to receive(:[]).with(42).and_return(nil)
+      Lich.display_stringprocs = true
+
+      expect { formatter.room_stringproc_entries }.not_to raise_error
+      expect(formatter.room_stringproc_entries).to eq([])
+    end
+
+    it 'detects StringProcs via is_a? even though StringProc reports Proc for class/kind_of?' do
+      # Guards the core StringProc quirk: it overrides #class and #kind_of? but not #is_a?.
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+      Lich.display_stringprocs = true
+      Lich.display_room_links = false
+
+      expect(formatter.room_stringproc_entries).to eq(['Dest Room'])
+    end
+  end
+
+  describe '#prepend_room_lines' do
+    let(:stringproc) { StringProc.new('nil') }
+
+    before do
+      allow(Map).to receive(:current).and_return(double('map', wayto: { 2 => 'go door', 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+      allow(Map).to receive(:[]).with(42).and_return(double('dest', title: ['[Dest Room]'], id: 99))
+    end
+
+    it 'leaves alt_string untouched when there are no entries' do
+      expect(formatter.prepend_room_lines(+'PROMPT', [], [])).to eq('PROMPT')
+    end
+
+    it 'prepends exits above stringprocs, both above the original string' do
+      Lich.display_room_mono = false
+
+      result = formatter.prepend_room_lines(+'PROMPT', ['Dest Room'], ['go door'])
+      expect(result).to eq("Room Exits: go door\r\nStringProcs: Dest Room\r\nPROMPT")
+    end
+
+    it 'keeps live <d> links inside a mono-wrapped line (toggles are independent)' do
+      Lich.display_room_mono = true
+      allow(Frontend).to receive(:supports_mono?).and_return(true)
+
+      result = formatter.prepend_room_lines(+'PROMPT', [], ["<d cmd='go door'>go door</d>"])
+      expect(result).to include('<output class="mono"/>Room Exits: ')
+      expect(result).to include("<d cmd='go door'>go door</d>")
+    end
+  end
+end
+
+# GS/DR parity: the shared exit/StringProc rendering must be byte-identical
+# across games; only the game-specific tails (GS room-window echo, DR room
+# number) differ.
+RSpec.describe 'process_room_display GS/DR parity' do
+  let(:gs) { Lich::Gemstone::GameInstance.new }
+  let(:dr) { Lich::DragonRealms::GameInstance.new }
+  let(:stringproc) { StringProc.new('nil') }
+
+  before do
+    XMLData.reset
+    XMLData.room_id = 789
+    XMLData.room_title = '[Test Room]'
+    Lich.display_lichid = false # no DR room-number line
+    Lich.display_uid = false
+    Lich.display_exits = true
+    Lich.display_stringprocs = true
+    Lich.display_room_links = true
+    Lich.display_room_mono = false
+    allow(Frontend).to receive(:supports_mono?).and_return(false)
+    allow(Frontend).to receive(:client).and_return('profanity') # not a room-window frontend
+    allow(Map).to receive(:current).and_return(double('map', wayto: { 2 => 'go door', 42 => stringproc }, timeto: { 42 => 5 }, id: 100))
+    allow(Map).to receive(:[]).with(42).and_return(double('dest', title: ['[Dest Room]'], id: 99))
+  end
+
+  # Reset the shared mock accessors so per-example toggles do not leak into other
+  # describe blocks (the suite runs in random order).
+  after do
+    Lich.display_lichid = nil
+    Lich.display_uid = nil
+    Lich.display_exits = nil
+    Lich.display_stringprocs = nil
+    Lich.display_room_links = nil
+    Lich.display_room_mono = nil
+  end
+
+  it 'renders a byte-identical shared exit/StringProc block in both games even when the game tails differ' do
+    Lich.display_lichid = true # DR now appends a "Room Number:" tail; GS still has none
+
+    # lichid=true also appends the dest id to the StringProc label - identically
+    # in both games, since both build it through the shared mixin.
+    shared = "Room Exits: <d cmd='go door'>go door</d>\r\n" \
+             "StringProcs: <d cmd=';go2 42'>Dest Room(99)</d>\r\n"
+    gs_out = gs.process_room_display(+'PROMPT')
+    dr_out = dr.process_room_display(+'PROMPT')
+
+    expect(gs_out).to include(shared)
+    expect(dr_out).to include(shared)
+    # The tails genuinely diverge (DR carries the room-number line), so matching
+    # the shared block is a real invariant - not the tautology of comparing two
+    # outputs whose game-specific tails have both been suppressed.
+    expect(gs_out).not_to eq(dr_out)
+  end
+
+  it 'DR adds a Room Number line but GS does not' do
+    Lich.display_lichid = true
+
+    expect(dr.process_room_display(+'PROMPT')).to include('Room Number:')
+    expect(gs.process_room_display(+'PROMPT')).not_to include('Room Number:')
+  end
+
+  it 'GS mirrors exits into the room window on a room-window frontend, DR does not' do
+    allow(Frontend).to receive(:client).and_return('stormfront')
+    allow(Frontend).to receive(:supports_room_window?).and_return(true)
+
+    expect(gs.process_room_display(+'PROMPT')).to include("<pushStream id='room'")
+    expect(dr.process_room_display(+'PROMPT')).not_to include("<pushStream id='room'")
+  end
+
+  it 'GS does not mirror exits on a non-room-window frontend' do
+    allow(Frontend).to receive(:client).and_return('profanity')
+    allow(Frontend).to receive(:supports_room_window?).and_return(false)
+
+    expect(gs.process_room_display(+'PROMPT')).not_to include("<pushStream id='room'")
+  end
+end
+
+RSpec.describe Lich::GameBase::GameInstanceFactory do
+  it 'creates a game type GS' do
+    discovered_game = Lich::GameBase::GameInstanceFactory.create('GS')
+    expect(discovered_game).to be_a(Lich::Gemstone::GameInstance)
+  end
+
+  it 'creates a game type DR' do
+    discovered_game = Lich::GameBase::GameInstanceFactory.create('DR')
+    expect(discovered_game).to be_a(Lich::DragonRealms::GameInstance)
+  end
+
+  it 'creates a base game type Unknown' do
+    discovered_game = Lich::GameBase::GameInstanceFactory.create('Unknown')
+    expect(discovered_game).to be_a(Lich::GameBase::GameInstance::Base)
+  end
+end
+
+RSpec.describe Lich::Gemstone::Game do
+  it 'initializes with Gemstone' do
+    discovered_game = Lich::Gemstone::Game.new
+    expect(discovered_game).to be_a(Lich::GameBase::Game)
+  end
+end
+
+RSpec.describe Lich::DragonRealms::Game do
+  it 'initializes with DragonRealms' do
+    discovered_game = Lich::DragonRealms::Game.new
+    expect(discovered_game).to be_a(Lich::GameBase::Game)
+  end
+end
+
+RSpec.describe Lich::Gemstone::Wounds do
+  # Use shared injury context from spec_helper (DRY)
+  include_context 'Gemstone injury data'
+
+  before do
+    XMLData.reset
+    # Set specific injury values for wound tests
+    set_injuries(
+      'leftEye'  => { 'wound' => 0, 'scar' => 1 },
+      'rightEye' => { 'wound' => 2, 'scar' => 3 }
+    )
+  end
+
+  it 'returns correct wound values' do
+    expect(Lich::Gemstone::Wounds.leftEye).to eq(0)
+    expect(Lich::Gemstone::Wounds.rightEye).to eq(2)
+  end
+
+  it 'returns maximum wound value for arms' do
+    expect(Lich::Gemstone::Wounds.arms).to eq(0)
+  end
+
+  it 'returns maximum wound value for limbs' do
+    expect(Lich::Gemstone::Wounds.limbs).to eq(0)
+  end
+
+  it 'returns maximum wound value for torso' do
+    expect(Lich::Gemstone::Wounds.torso).to eq(2)
+  end
+
+  it 'handles invalid areas gracefully' do
+    expect(Lich::Gemstone::Wounds.invalid_area).to be_nil
+  end
+end
+
+RSpec.describe Lich::Gemstone::Scars do
+  # Use shared injury context from spec_helper (DRY)
+  include_context 'Gemstone injury data'
+
+  before do
+    XMLData.reset
+    # Set specific injury values for scar tests
+    set_injuries(
+      'leftEye'   => { 'wound' => 0, 'scar' => 1 },
+      'rightEye'  => { 'wound' => 2, 'scar' => 3 },
+      'rightArm'  => { 'wound' => 0, 'scar' => 1 },
+      'rightHand' => { 'wound' => 0, 'scar' => 1 },
+      'rightLeg'  => { 'wound' => 0, 'scar' => 2 }
+    )
+  end
+
+  it 'returns correct scar values' do
+    expect(Lich::Gemstone::Scars.leftEye).to eq(1)
+    expect(Lich::Gemstone::Scars.rightEye).to eq(3)
+  end
+
+  it 'returns maximum scar value for arms' do
+    expect(Lich::Gemstone::Scars.arms).to eq(1)
+  end
+
+  it 'returns maximum scar value for limbs' do
+    expect(Lich::Gemstone::Scars.limbs).to eq(2)
+  end
+
+  it 'returns maximum scar value for torso' do
+    expect(Lich::Gemstone::Scars.torso).to eq(3)
+  end
+
+  it 'handles invalid areas gracefully' do
+    expect(Lich::Gemstone::Scars.invalid).to be_nil
+  end
+end
+
+RSpec.describe Lich::Gemstone::Gift do
+  before do
+    Lich::Gemstone::Gift.started
+  end
+
+  it 'initializes with default values' do
+    expect(Lich::Gemstone::Gift.pulse_count).to eq(0)
+    expect(Lich::Gemstone::Gift.gift_start).to be_a(Time)
+  end
+
+  it 'increments pulse count correctly' do
+    Lich::Gemstone::Gift.pulse
+    expect(Lich::Gemstone::Gift.pulse_count).to eq(1)
+  end
+
+  it 'calculates remaining time correctly' do
+    Lich::Gemstone::Gift.pulse
+    expect(Lich::Gemstone::Gift.remaining).to eq(21540.0) # (360-1)*60
+  end
+
+  it 'calculates restart time correctly' do
+    start_time = Lich::Gemstone::Gift.gift_start
+    expect(Lich::Gemstone::Gift.restarts_on).to eq(start_time + 594000)
+  end
+
+  it 'serializes data correctly' do
+    serialized = Lich::Gemstone::Gift.serialize
+    expect(serialized).to be_an(Array)
+    expect(serialized.size).to eq(2)
+    expect(serialized[0]).to be_a(Time)
+    expect(serialized[1]).to eq(0) # From previous test
+  end
+
+  it 'loads serialized data correctly' do
+    time = Time.now - 3600 # 1 hour ago
+    Lich::Gemstone::Gift.load_serialized = [time, 42]
+    expect(Lich::Gemstone::Gift.gift_start).to eq(time)
+    expect(Lich::Gemstone::Gift.pulse_count).to eq(42)
+  end
+
+  it 'ends gift correctly' do
+    Lich::Gemstone::Gift.ended
+    expect(Lich::Gemstone::Gift.pulse_count).to eq(360)
+    expect(Lich::Gemstone::Gift.remaining).to eq(0.0)
+  end
+end
+
+# Tests for GameBase::Game class variable refactoring (from main)
+# NOTE: class_variable_set/get is acceptable in these tests because they are
+# specifically verifying the class variable implementation itself - the refactor
+# from instance variables (@) to class variables (@@). This is testing the
+# implementation detail by design, not testing through public API.
+RSpec.describe Lich::GameBase::Game do
+  describe '.intentional_shutdown_close_error?' do
+    let(:closed_socket) { double('socket', closed?: true) }
+    let(:open_socket) { double('socket', closed?: false) }
+
+    before do
+      Lich::Common::ShutdownCoordinator.reset!
+      described_class.instance_variable_set(:@socket, closed_socket)
+    end
+
+    after do
+      Lich::Common::ShutdownCoordinator.reset!
+      described_class.instance_variable_set(:@socket, nil)
+    end
+
+    it 'recognizes reader-thread close errors during orderly user shutdown' do
+      Lich::Common::ShutdownCoordinator.request(reason: :user_exit, source: :primary_frontend)
+
+      expect(described_class.intentional_shutdown_close_error?(IOError.new('stream closed in another thread'))).to be_truthy
+      expect(described_class.intentional_shutdown_close_error?(Errno::EBADF.new)).to be_truthy
+    end
+
+    it 'does not recognize close errors outside orderly user shutdown' do
+      Lich::Common::ShutdownCoordinator.request(reason: :game_eof, source: :game_reader)
+
+      expect(described_class.intentional_shutdown_close_error?(IOError.new('stream closed in another thread'))).to be false
+      expect(described_class.intentional_shutdown_close_error?(Errno::EBADF.new)).to be false
+    end
+
+    it 'does not recognize orderly shutdown errors while the socket is open' do
+      Lich::Common::ShutdownCoordinator.request(reason: :user_exit, source: :primary_frontend)
+      described_class.instance_variable_set(:@socket, open_socket)
+
+      expect(described_class.intentional_shutdown_close_error?(IOError.new('stream closed in another thread'))).to be false
+    end
+  end
+
+  describe '.autostarted?' do
+    before do
+      # Reset the class variable for test isolation
+      described_class.class_variable_set(:@@autostarted, false) if described_class.class_variable_defined?(:@@autostarted)
+    end
+
+    it 'returns false initially' do
+      described_class.class_variable_set(:@@autostarted, false)
+      expect(described_class.autostarted?).to be false
+    end
+
+    it 'returns true when @@autostarted is set to true' do
+      described_class.class_variable_set(:@@autostarted, true)
+      expect(described_class.autostarted?).to be true
+    end
+
+    it 'reflects the value of the @@autostarted class variable' do
+      described_class.class_variable_set(:@@autostarted, false)
+      expect(described_class.autostarted?).to be false
+
+      described_class.class_variable_set(:@@autostarted, true)
+      expect(described_class.autostarted?).to be true
+    end
+  end
+
+  describe 'initialization state management' do
+    before do
+      described_class.class_variable_set(:@@autostarted, false) if described_class.class_variable_defined?(:@@autostarted)
+    end
+
+    context 'during startup lifecycle' do
+      it 'starts with autostarted as false' do
+        # Simulate fresh start
+        described_class.send(:initialize_buffers) if described_class.respond_to?(:initialize_buffers)
+        expect(described_class.autostarted?).to be false
+      end
+
+      it 'becomes true after handle_autostart is called' do
+        # Stub dependencies to isolate the state transition
+        stub_const('LICH_VERSION', '5.0.0')
+        stub_const('RECOMMENDED_RUBY', '3.0.0')
+        allow(Lich).to receive(:core_updated_with_lich_version).and_return('5.0.0')
+        allow(Script).to receive(:exists?).and_return(false) if defined?(Script)
+        # Prevent background sync thread from leaking into other specs.
+        # Lich::Util::Update may not be loaded in this spec context, so
+        # stub_const ensures the module and method exist for the stub.
+        sync_stub = Module.new { def self.sync_all_repos; end }
+        stub_const('Lich::Util::Update', sync_stub)
+        # stub_const alone doesn't stop the leak: handle_autostart spawns a
+        # real Thread, which can still be mid-flight (or not yet scheduled)
+        # when this example ends and stub_const reverts the constant. That
+        # thread then resolves Lich::Util::Update for real and throws a mock
+        # error into whatever unrelated spec happens to be running by then.
+        # Run the block inline so no thread survives past this example.
+        allow(Thread).to receive(:new) { |&block| block.call; nil }
+
+        described_class.send(:handle_autostart)
+        expect(described_class.autostarted?).to be true
+      end
+    end
+  end
+
+  describe '.settings_init_needed?' do
+    before do
+      described_class.class_variable_set(:@@settings_init_needed, false)
+    end
+
+    it 'returns false initially' do
+      expect(described_class.settings_init_needed?).to be false
+    end
+
+    it 'returns true when @@settings_init_needed is set' do
+      described_class.class_variable_set(:@@settings_init_needed, true)
+      expect(described_class.settings_init_needed?).to be true
+    end
+  end
+
+  describe 'class variable vs instance variable' do
+    it 'uses a class variable (@@autostarted) not instance variable (@autostarted)' do
+      # This test verifies the refactor from @ to @@
+      expect(described_class.class_variable_defined?(:@@autostarted)).to be true
+
+      # Set via class variable
+      described_class.class_variable_set(:@@autostarted, true)
+
+      # Should be readable via the method
+      expect(described_class.autostarted?).to be true
+    end
+  end
+
+  describe '._puts' do
+    let(:mock_socket) { double('socket') }
+
+    before do
+      described_class.instance_variable_set(:@socket, mock_socket)
+      described_class.instance_variable_set(:@mutex, Mutex.new)
+      allow(Lich).to receive(:log)
+    end
+
+    it 'writes to the socket' do
+      allow(mock_socket).to receive(:puts)
+      expect(described_class.send(:_puts, 'test')).to be(true)
+      expect(mock_socket).to have_received(:puts).with('test')
+    end
+
+    # -- Errno::EPIPE (pre-existing) ----------------------------------------
+
+    context 'when socket raises Errno::EPIPE' do
+      before { allow(mock_socket).to receive(:puts).and_raise(Errno::EPIPE) }
+
+      it 'does not propagate the exception' do
+        expect { described_class.send(:_puts, 'test') }.not_to raise_error
+      end
+
+      it 'returns nil' do
+        expect(described_class.send(:_puts, 'test')).to be_nil
+      end
+
+      it 'logs the error' do
+        described_class.send(:_puts, 'test')
+        expect(Lich).to have_received(:log).with(/error: _puts: Broken pipe/)
+      end
+    end
+
+    # -- IOError (pre-existing) ---------------------------------------------
+
+    context 'when socket raises IOError' do
+      before { allow(mock_socket).to receive(:puts).and_raise(IOError, 'closed stream') }
+
+      it 'does not propagate the exception' do
+        expect { described_class.send(:_puts, 'test') }.not_to raise_error
+      end
+
+      it 'returns nil' do
+        expect(described_class.send(:_puts, 'test')).to be_nil
+      end
+
+      it 'logs the error' do
+        described_class.send(:_puts, 'test')
+        expect(Lich).to have_received(:log).with(/error: _puts: closed stream/)
+      end
+    end
+
+    # -- Errno::ECONNRESET (the bug that caused 9,089 lines of spam) --------
+
+    context 'when socket raises Errno::ECONNRESET' do
+      before { allow(mock_socket).to receive(:puts).and_raise(Errno::ECONNRESET) }
+
+      it 'does not propagate the exception' do
+        expect { described_class.send(:_puts, 'go north') }.not_to raise_error
+      end
+
+      it 'returns nil' do
+        expect(described_class.send(:_puts, 'go north')).to be_nil
+      end
+
+      it 'logs the error with class name and backtrace' do
+        described_class.send(:_puts, 'go north')
+        expect(Lich).to have_received(:log).with(/error: _puts:.*(?:Connection reset|forcibly closed)/i)
+      end
+
+      it 'absorbs rapid successive ECONNRESET bursts without raising' do
+        50.times do
+          expect { described_class.send(:_puts, "command_#{_1}") }.not_to raise_error
+        end
+      end
+    end
+
+    # -- Errno::ECONNABORTED ------------------------------------------------
+
+    context 'when socket raises Errno::ECONNABORTED' do
+      before { allow(mock_socket).to receive(:puts).and_raise(Errno::ECONNABORTED) }
+
+      it 'does not propagate the exception' do
+        expect { described_class.send(:_puts, 'go north') }.not_to raise_error
+      end
+
+      it 'returns nil' do
+        expect(described_class.send(:_puts, 'go north')).to be_nil
+      end
+
+      it 'logs the error' do
+        described_class.send(:_puts, 'go north')
+        expect(Lich).to have_received(:log).with(/error: _puts:/)
+      end
+    end
+
+    # -- Non-connection errors must still propagate -------------------------
+
+    context 'when socket raises a non-connection error' do
+      it 'raises RuntimeError' do
+        allow(mock_socket).to receive(:puts).and_raise(RuntimeError, 'unexpected')
+        expect { described_class.send(:_puts, 'go north') }.to raise_error(RuntimeError, 'unexpected')
+      end
+
+      it 'raises NoMethodError' do
+        allow(mock_socket).to receive(:puts).and_raise(NoMethodError, 'undefined method')
+        expect { described_class.send(:_puts, 'go north') }.to raise_error(NoMethodError)
+      end
+
+      it 'raises ArgumentError' do
+        allow(mock_socket).to receive(:puts).and_raise(ArgumentError, 'bad args')
+        expect { described_class.send(:_puts, 'go north') }.to raise_error(ArgumentError)
+      end
+    end
+
+    # -- Thread safety ------------------------------------------------------
+
+    context 'thread safety under connection failure' do
+      it 'serializes concurrent writes through the mutex even when failing' do
+        call_order = []
+        mutex = Mutex.new
+
+        allow(mock_socket).to receive(:puts) do |str|
+          mutex.synchronize { call_order << str }
+          raise Errno::ECONNRESET
+        end
+
+        threads = 10.times.map do |i|
+          Thread.new { described_class.send(:_puts, "cmd_#{i}") }
+        end
+        threads.each(&:join)
+
+        expect(call_order.size).to eq(10)
+      end
+
+      it 'does not deadlock when socket raises inside mutex' do
+        allow(mock_socket).to receive(:puts).and_raise(Errno::ECONNRESET)
+
+        result = Timeout.timeout(2) do
+          5.times { described_class.send(:_puts, 'test') }
+          :completed
+        end
+
+        expect(result).to eq(:completed)
+      end
+    end
+
+    # -- Mixed error sequences ----------------------------------------------
+
+    context 'alternating error types' do
+      it 'handles EPIPE then ECONNRESET then IOError in sequence' do
+        call_count = 0
+        allow(mock_socket).to receive(:puts) do
+          call_count += 1
+          case call_count
+          when 1 then raise Errno::EPIPE
+          when 2 then raise Errno::ECONNRESET
+          when 3 then raise IOError, 'closed stream'
+          end
+        end
+
+        3.times do
+          expect { described_class.send(:_puts, 'test') }.not_to raise_error
+        end
+
+        expect(Lich).to have_received(:log).exactly(3).times
+      end
+    end
+  end
+
+  describe '.send_to_client' do
+    def eventually(timeout: 1)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      loop do
+        begin
+          return yield
+        rescue RSpec::Expectations::ExpectationNotMetError
+          raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+          sleep 0.005
+        end
+      end
+    end
+
+    before do
+      allow(Lich).to receive(:log)
+    end
+
+    context 'when using detachable clients' do
+      let(:raw_socket) { double('raw_detachable_socket', closed?: false) }
+      let(:second_raw_socket) { double('second_raw_detachable_socket', closed?: false) }
+      let(:mock_detachable) { Lich::Common::SynchronizedSocket.new(raw_socket, role: :detachable) }
+      let(:second_detachable) { Lich::Common::SynchronizedSocket.new(second_raw_socket, role: :detachable) }
+
+      before do
+        allow(raw_socket).to receive(:close)
+        allow(second_raw_socket).to receive(:close)
+        # Save the globals this group swaps out; spec_helper (or an earlier
+        # file) owns them, and nil is not necessarily what they held.
+        @saved_registry = $_DETACHABLE_CLIENT_REGISTRY_
+        @saved_detachable = $_DETACHABLE_CLIENT_
+        $_DETACHABLE_CLIENT_REGISTRY_ = Lich::Common::DetachableClientRegistry.new
+        $_DETACHABLE_CLIENT_REGISTRY_.register(mock_detachable)
+        $_DETACHABLE_CLIENT_REGISTRY_.register(second_detachable)
+        $_DETACHABLE_CLIENT_ = nil
+        Lich::Common::ShutdownCoordinator.reset!
+      end
+
+      after do
+        mock_detachable.close rescue nil
+        second_detachable.close rescue nil
+        $_DETACHABLE_CLIENT_REGISTRY_ = @saved_registry
+        $_DETACHABLE_CLIENT_ = @saved_detachable
+        Lich::Common::ShutdownCoordinator.reset!
+      end
+
+      it 'fans output out to every detachable client' do
+        allow(raw_socket).to receive(:write)
+        allow(second_raw_socket).to receive(:write)
+        described_class.send(:send_to_client, 'test data')
+        eventually { expect(raw_socket).to have_received(:write).with('test data') }
+        eventually { expect(second_raw_socket).to have_received(:write).with('test data') }
+      end
+
+      it 'continues writing to another client when one write fails' do
+        allow(raw_socket).to receive(:write).and_raise(Errno::EPIPE)
+        allow(second_raw_socket).to receive(:write)
+        expect { described_class.send(:send_to_client, 'test data') }.not_to raise_error
+        eventually { expect(mock_detachable.alive?).to be false }
+        expect(raw_socket).to have_received(:close)
+        eventually { expect(second_raw_socket).to have_received(:write).with('test data') }
+        expect(Lich::Common::ShutdownCoordinator.current).to be_nil
+      end
+    end
+
+    context 'when using non-detachable client' do
+      let(:raw_socket) { double('raw_client_socket', closed?: false) }
+      let(:mock_client) { Lich::Common::SynchronizedSocket.new(raw_socket) }
+
+      before do
+        allow(raw_socket).to receive(:close)
+        @saved_registry = $_DETACHABLE_CLIENT_REGISTRY_
+        @saved_detachable = $_DETACHABLE_CLIENT_
+        @saved_client = $_CLIENT_
+        $_DETACHABLE_CLIENT_REGISTRY_ = nil
+        $_DETACHABLE_CLIENT_ = nil
+        $_CLIENT_ = mock_client
+      end
+
+      after do
+        mock_client.close rescue nil
+        # Restore spec_helper's stub client rather than leaving nil for the
+        # next file sharing this process.
+        $_CLIENT_ = @saved_client
+        $_DETACHABLE_CLIENT_ = @saved_detachable
+        $_DETACHABLE_CLIENT_REGISTRY_ = @saved_registry
+      end
+
+      it 'writes to the client' do
+        allow(raw_socket).to receive(:write)
+        described_class.send(:send_to_client, 'test data')
+        eventually { expect(raw_socket).to have_received(:write).with('test data') }
+      end
+
+      it 'absorbs Errno::EPIPE without raising' do
+        allow(raw_socket).to receive(:write).and_raise(Errno::EPIPE)
+        allow(raw_socket).to receive(:close)
+        expect { described_class.send(:send_to_client, 'test data') }.not_to raise_error
+        eventually { expect(Lich).to have_received(:log).with(/client socket write failed.*EPIPE/) }
+      end
+
+      it 'absorbs IOError without raising' do
+        allow(raw_socket).to receive(:write).and_raise(IOError, 'closed stream')
+        allow(raw_socket).to receive(:close)
+        expect { described_class.send(:send_to_client, 'test data') }.not_to raise_error
+        eventually { expect(Lich).to have_received(:log).with(/client socket write failed.*closed stream/) }
+      end
+    end
+  end
+
+  describe '.process_downstream_hooks with a sentinel-supporting frontend' do
+    # Regression coverage for the reported production bug: a Saga session
+    # (the only frontend with :sentinel) saw a literal, visible 0x1F Unit
+    # Separator character during quiet-suppressed issue_command output.
+    # util_spec.rb confirms Lich::Util.preserve_quiet_state_tags itself
+    # returns a newline-terminated tag; this confirms that value survives
+    # end-to-end through DownstreamHook.run, Game#process_downstream_hooks,
+    # and Game#prefix_origin_sentinel to the actual client write, which is
+    # where the bug actually manifested -- a passing unit test on the
+    # util.rb side alone would not have caught a regression introduced at
+    # this layer (e.g. a future change to prefix_origin_sentinel's line
+    # matching, or to how/when it's invoked).
+    def eventually(timeout: 1)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      loop do
+        begin
+          return yield
+        rescue RSpec::Expectations::ExpectationNotMetError
+          raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+          sleep 0.005
+        end
+      end
+    end
+
+    before do
+      allow(Lich).to receive(:log)
+      # games.rb calls DownstreamHook/Frontend as bare top-level constants
+      # (production relies on `include Lich::Common` at boot for that to
+      # resolve). spec_helper.rb separately defines lightweight top-level
+      # mocks for both, guarded by `unless defined?`, for specs that don't
+      # need real behavior -- neither mock implements .add/.remove
+      # (DownstreamHook) or supports_sentinel? (Frontend). Rebind both to
+      # the real classes for this block, independent of file load order
+      # across the suite (see util_spec.rb for the load-order failure this
+      # protects against).
+      stub_const('DownstreamHook', Lich::Common::DownstreamHook)
+      stub_const('Frontend', Lich::Common::Frontend)
+
+      @raw_socket = instance_double('raw_client_socket', closed?: false, write: nil, close: nil)
+      @saved_registry = $_DETACHABLE_CLIENT_REGISTRY_
+      @saved_detachable = $_DETACHABLE_CLIENT_
+      @saved_client = $_CLIENT_
+      @saved_frontend = $frontend
+      $_DETACHABLE_CLIENT_REGISTRY_ = nil
+      $_DETACHABLE_CLIENT_ = nil
+      $_CLIENT_ = Lich::Common::SynchronizedSocket.new(@raw_socket)
+      $frontend = 'saga' # the only registered :sentinel frontend
+    end
+
+    after do
+      $_CLIENT_.close rescue nil
+      # Restore what spec_helper set up: a nil $_CLIENT_ or $frontend leaks
+      # into every later file in the same parallel_rspec process.
+      $_CLIENT_ = @saved_client
+      $frontend = @saved_frontend
+      $_DETACHABLE_CLIENT_ = @saved_detachable
+      $_DETACHABLE_CLIENT_REGISTRY_ = @saved_registry
+      Frontend.sentinel_requested = false
+      DownstreamHook.remove('spec_quiet_hook')
+    end
+
+    it 'delivers a quiet-preserved tag to the client with the sentinel and terminator intact' do
+      # Mirrors exactly what Lich::Util.issue_command registers for
+      # quiet: true.
+      DownstreamHook.add('spec_quiet_hook', proc { |line| Lich::Util.preserve_quiet_state_tags(line) })
+
+      # The exact bundled chunk from the original bug report: the game
+      # bundles the mono-closing tag onto the same raw chunk as the prompt
+      # a quiet-filtered range ends on.
+      bundled_end_chunk = %(<output class=""/>\n<prompt time="1787075465">H&gt;</prompt>)
+
+      described_class.send(:process_downstream_hooks, bundled_end_chunk)
+
+      eventually { expect(@raw_socket).to have_received(:write).with(%(\x1F<output class=""/>\n)) }
+    end
+
+    it 'does not sentinel-prefix the tag for a frontend without the :sentinel capability' do
+      $frontend = 'wrayth' # xml + mono, but no :sentinel
+      DownstreamHook.add('spec_quiet_hook', proc { |line| Lich::Util.preserve_quiet_state_tags(line) })
+
+      bundled_end_chunk = %(<output class=""/>\n<prompt time="1787075465">H&gt;</prompt>)
+
+      described_class.send(:process_downstream_hooks, bundled_end_chunk)
+
+      eventually { expect(@raw_socket).to have_received(:write).with(%(<output class=""/>\n)) }
+    end
+
+    it 'sentinel-prefixes for a frontend without the capability once --sentinel requested it' do
+      $frontend = 'stormfront'
+      Frontend.sentinel_requested = true
+
+      described_class.send(:process_downstream_hooks, %(You see nothing unusual.\n))
+
+      eventually { expect(@raw_socket).to have_received(:write).with(%(\x1FYou see nothing unusual.\n)) }
+    end
+  end
+end
+
+RSpec.describe Lich::GameBase::Game, '.open_with_timeout' do
+  it 'returns without error when Game.open succeeds' do
+    allow(described_class).to receive(:open).and_return(:socket)
+    expect { described_class.open_with_timeout('host', 1, 1) }.not_to raise_error
+  end
+
+  it 'raises when the connect does not finish within the timeout' do
+    allow(described_class).to receive(:open) { sleep 5 } # hangs past the timeout
+    expect { described_class.open_with_timeout('host', 1, 0.3) }
+      .to raise_error(/timed out connecting/)
+  end
+
+  # Long-standing bug (currently failing; present since the original connect-loop
+  # in "Base Lich 5"): a Game.open that raises (e.g. connection refused) must
+  # surface so the caller's rescue (retry / clean exit) runs instead of proceeding
+  # with a dead socket. The connect thread dies with an exception
+  # (Thread#status == nil), which the current code treats the same as a normal
+  # finish (status == false).
+  it 'raises when Game.open fails to connect' do
+    allow(described_class).to receive(:open).and_raise(Errno::ECONNREFUSED)
+    expect { described_class.open_with_timeout('unreachable.host', 1, 1) }
+      .to raise_error(Errno::ECONNREFUSED)
+  end
+end
+
+# The stream desync guard: pre-Ox, strict REXML raised on truncated fragments
+# and Game.process_xml_data's rescue logged the fragment and reset XMLData --
+# parser strictness doubled as stream-desync detection. Ox is permissive: it
+# parses truncated fragments without raising (auto-closing elements,
+# fabricating empty attribute values) and reports problems only through the
+# optional error callback. These specs prove the callback-based guard restores
+# the pre-Ox failure mode (GameStreamDesyncError -> log + reset) for
+# truncation, while still tolerating the routine almost-XML that Ox was
+# adopted to absorb without REXML's clean-and-retry dance.
+RSpec.describe 'Lich::GameBase stream desync guard' do
+  # Collects Ox parse errors through the real XMLParser error callback while
+  # neutering tag handlers (parser state side effects are irrelevant here).
+  let(:quiet_parser_class) do
+    Class.new(Lich::Common::XMLParser) do
+      def tag_start(_name, _attributes); end
+
+      def tag_end(_name); end
+
+      def text(_value); end
+    end
+  end
+
+  def parse_errors(parser, fragment)
+    Ox.sax_parse(parser, fragment, convert_special: false, symbolize: false, skip: :skip_none)
+    parser.sax_parse_errors
+  end
+
+  def check!(fragment)
+    Lich::GameBase::Game.check_stream_desync!(parse_errors(quiet_parser_class.new, fragment))
+  end
+
+  describe 'Game.check_stream_desync!' do
+    context 'with truncated (desynced) fragments REXML used to raise on' do
+      it 'raises when a fragment is cut off inside a quoted attribute value' do
+        expect { check!('<a exist="123" noun="swo') }
+          .to raise_error(Lich::GameBase::GameStreamDesyncError, /quoted value not terminated/)
+      end
+
+      it 'raises when a fragment is cut off after an attribute equals sign' do
+        expect { check!('<pushStream id="room"/><compDef id=') }
+          .to raise_error(Lich::GameBase::GameStreamDesyncError)
+      end
+
+      it 'raises when a fragment is cut off inside an element name' do
+        expect { check!('<dialogDa') }
+          .to raise_error(Lich::GameBase::GameStreamDesyncError, /document not terminated/)
+      end
+
+      it 'raises when a start tag never gets its closing bracket' do
+        expect { check!('<dialogData id="minivitals"><progressBar id="health"') }
+          .to raise_error(Lich::GameBase::GameStreamDesyncError, /not terminated|not closed/)
+      end
+    end
+
+    context 'with routine almost-XML the stream sends constantly' do
+      it 'tolerates plain prose lines (Ox still reports text not terminated)' do
+        errors = parse_errors(quiet_parser_class.new, 'You also see a wooden barrel.')
+        expect(errors).not_to be_empty # proves toleration is a choice, not absence of errors
+        expect { Lich::GameBase::Game.check_stream_desync!(errors) }.not_to raise_error
+      end
+
+      it 'tolerates multiple top-level elements with trailing text' do
+        expect { check!('<popBold/><pushStream id="room"/>text after') }.not_to raise_error
+      end
+
+      it 'tolerates nested single quotes in attribute values' do
+        expect { check!("<d cmd='look Tsetem's pack'>Tsetem's pack</d>") }.not_to raise_error
+      end
+
+      it "tolerates elements missing their end tag (Simu's </d> bug)" do
+        expect { check!("<d cmd='go gate'>gate<d>more") }.not_to raise_error
+      end
+
+      it 'tolerates unescaped ampersands' do
+        expect { check!('a large bin labeled "Lost & Found"') }.not_to raise_error
+      end
+
+      it 'tolerates the settingsInfo space-not-found server bug' do
+        expect { check!("<settingsInfo  crc='612586004' instance='GS4' space not found ItemCmds='1' />") }
+          .not_to raise_error
+      end
+
+      it 'tolerates a complete unquoted attribute value (not a truncation)' do
+        # <a x=y> emits "attribute value not in quotes" but is a complete line;
+        # matching it would false-reset a fully-parsed fragment.
+        expect { check!('<a x=y>text</a>') }.not_to raise_error
+      end
+    end
+  end
+
+  describe 'Game.process_xml_data with a truncated fragment' do
+    it 'logs the desync and resets XMLData' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      allow(Lich).to receive(:log)
+      allow(parser).to receive(:reset).and_call_original
+      Lich::GameBase::Game.process_xml_data(+'<a exist="123" noun="swo')
+      expect(Lich).to have_received(:log).with(/stream desync/)
+      expect(Lich).not_to have_received(:log).with(/undone/) # nothing was repaired
+      expect(parser).to have_received(:reset)
+    end
+
+    it 'does not reset XMLData for a clean fragment' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      # strip_xml lives outside games.rb and is not loaded here; the assertion
+      # under test is only that the parse stage does not trigger recovery.
+      # It returns the stripped line as a String; the callsite splits it on CRLF.
+      allow(Lich::GameBase::Game).to receive(:strip_xml).and_return('')
+      allow(parser).to receive(:reset).and_call_original
+      Lich::GameBase::Game.process_xml_data(+"<prompt time=\"1746000000\">&gt;</prompt>\r\n")
+      expect(parser).not_to have_received(:reset)
+    end
+
+    it 'repairs nested quotes and reparses when Ox flags a valueless attribute' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      allow(Lich::GameBase::Game).to receive(:strip_xml).and_return('')
+      allow(parser).to receive(:reset).and_call_original
+      # title='Tsetem's Items' makes Ox emit "no attribute value"; the retry
+      # escapes the inner quote, resets the junk first parse, and reparses.
+      server_string = +"<openDialog id='quux' title='Tsetem's Items'/>"
+      Lich::GameBase::Game.process_xml_data(server_string)
+      expect(server_string).to include("title='Tsetem&apos;s Items'")
+      expect(parser).to have_received(:reset)
+    end
+
+    it 'does not reparse a genuinely valueless attribute (nothing to escape)' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      allow(Lich::GameBase::Game).to receive(:strip_xml).and_return('')
+      allow(parser).to receive(:reset).and_call_original
+      # <a foo> also emits "no attribute value", but clean_nested_quotes finds
+      # no nested quote to escape, so there is no reset/reparse.
+      Lich::GameBase::Game.process_xml_data(+"<a foo>x</a>")
+      expect(parser).not_to have_received(:reset)
+    end
+
+    # A DragonRealms inventoryManager response (real items, trimmed) whose
+    # double-quoted name/long values carry the game's unescaped inner quotes.
+    # The book's makes Ox report "document not terminated", a desync-class
+    # error, alongside the repairable "no attribute value" ones.
+    let(:inventory_with_quoted_names) do
+      +("<inventoryManager id='imc6d07c8a1018d537e' room='230008'>" \
+        "<i id='204804792' loc='in,204445392' name=\"a small,gift,bag\" weight='20' in_max='2000'/>" \
+        "<i id='204804793' loc='in,204804792' name=\"a sleek,black,book\" " \
+        "long=\"a sleek black book titled \"Style: Do you have it?\"\" weight='5' in_max='150'/>" \
+        "<i id='204804838' loc='in,204804834' name=\"a,green,tapestry\" " \
+        "long=\"a green tapestry embroidered with the words \"Herb Today, Tarragon Tomorrow\"\" weight='15'/>" \
+        "<i id='204445198' loc='in,204445163' name=\"\"a,trinket,box\" " \
+        "long=\"a smooth wooden trinket box with a penguin carved into the lid\" weight='5' in_max='1500'/>" \
+        "<i id='204445106' loc='worn,player' name=\"some,storm grey,boots\" weight='20'/>" \
+        "</inventoryManager>\r\n")
+    end
+
+    it 'repairs nested double quotes before judging desync, so an inventoryManager line is not reset' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      allow(Lich).to receive(:log)
+      allow(Lich::GameBase::Game).to receive(:strip_xml).and_return('')
+      server_string = inventory_with_quoted_names
+      expect { check!(server_string.dup) }.to raise_error(Lich::GameBase::GameStreamDesyncError) # unrepaired
+      Lich::GameBase::Game.process_xml_data(server_string)
+      expect(Lich).not_to have_received(:log).with(/stream desync/)
+      expect(server_string).to include('long="a sleek black book titled &quot;Style: Do you have it?&quot;"')
+      expect(server_string).to include('long="a green tapestry embroidered with the words ' \
+                                       '&quot;Herb Today, Tarragon Tomorrow&quot;"')
+      expect(server_string).to include('name="&quot;a,trinket,box"')
+      # The caller hands this same (repaired-in-place) string on to
+      # Inventory.observe, which rejects a response with any parse error.
+      expect(parse_errors(quiet_parser_class.new, server_string)).to be_empty
+    end
+
+    it 'still resets a truncated fragment that also has a repairable nested quote' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      allow(Lich).to receive(:log)
+      allow(parser).to receive(:reset).and_call_original
+      allow(Lich::GameBase::Game).to receive(:strip_xml)
+      received = "<openDialog id='quux' title='Tsetem's Items'/><a exist=\"123\" noun=\"swo"
+      server_string = +received
+      Lich::GameBase::Game.process_xml_data(server_string)
+      expect(Lich).to have_received(:log).with(/nested single quotes XML tags fixed to/) # the repair ran
+      expect(Lich).to have_received(:log).with(/stream desync/)
+      expect(Lich::GameBase::Game).not_to have_received(:strip_xml) # returned before downstream processing
+      # The repair didn't save it, so it is undone: the desync log, and the
+      # caller's Inventory.observe and clients, get the fragment as received,
+      # and the desync log says the "fixed to" line above it was undone.
+      expect(server_string).to eq(received)
+      expect(Lich).to have_received(:log)
+        .with(/stream desync.*\(repair logged above undone\): #{Regexp.escape(received.inspect)}/)
+    end
+
+    it 'repairs a malformed settingsInfo via the retry path and flags an init re-seed' do
+      parser = quiet_parser_class.new
+      stub_const('XMLData', parser)
+      allow(Lich::GameBase::Game).to receive(:strip_xml).and_return('')
+      allow(parser).to receive(:reset).and_call_original
+      # @@settings_init_needed is a production class variable with no reset! hook.
+      Lich::GameBase::Game.class_variable_set(:@@settings_init_needed, false)
+      server_string = +"<settingsInfo crc='0' instance='GS4' space not found ItemCmds='1'/>"
+      Lich::GameBase::Game.process_xml_data(server_string)
+      expect(server_string).to include("client='1.0.1.28'")
+      expect(Lich::GameBase::Game.settings_init_needed?).to be true
+      expect(parser).to have_received(:reset)
+    end
+  end
+
+  # Ox tolerates the malformed settingsInfo (see the check_stream_desync! test
+  # above), so the repair + @@settings_init_needed flag -- which REXML reached
+  # via its raise/rescue -- now has to run in the normal flow instead.
+  describe 'Game.fix_invalid_settings_info' do
+    before do
+      # @@settings_init_needed is a production class variable with no reset! hook;
+      # clear it so each example starts from a known state.
+      Lich::GameBase::Game.class_variable_set(:@@settings_init_needed, false)
+    end
+
+    it 'repairs the space-not-found settingsInfo and flags an init re-seed' do
+      server_string = +"<settingsInfo  crc='612586004' instance='GS4' space not found ItemCmds='1' />"
+      allow(Lich).to receive(:log)
+      Lich::GameBase::Game.fix_invalid_settings_info(server_string)
+      expect(server_string).to include("client='1.0.1.28'")
+      expect(server_string).not_to include('space not found')
+      expect(Lich::GameBase::Game.settings_init_needed?).to be true
+    end
+
+    it 'leaves a well-formed settingsInfo untouched and does not flag' do
+      server_string = +"<settingsInfo client='1.0.1.28' crc='0' instance='GS4' />"
+      Lich::GameBase::Game.fix_invalid_settings_info(server_string)
+      expect(server_string).to eq("<settingsInfo client='1.0.1.28' crc='0' instance='GS4' />")
+      expect(Lich::GameBase::Game.settings_init_needed?).to be false
+    end
+  end
+end
+
+# The room-number display hooks key on the room line. The legacy stream sends it
+# as the roomName style; the Saga-identity stream as the inline <room> block.
+RSpec.describe Lich::GameBase::Game, '.process_room_information' do
+  legacy = "<resource picture=\"0\"/><style id=\"roomName\" />[Bosque Deriel, Hermit's Shacks] (230008)\r\n"
+  saga = "<resource picture=\"0\"/><room><name>[Bosque Deriel, Hermit's Shacks] (230008)</name><description>A clearing.</description>" \
+         "<exits>Obvious paths: <d>north</d>.</exits><extra></extra></room>\r\n"
+
+  let(:instance) { instance_double(Lich::DragonRealms::GameInstance, modify_room_display: nil) }
+
+  before do
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    described_class.instance_variable_set(:@game_instance, instance)
+    allow(Lich).to receive(:display_lichid).and_return(true)
+  end
+
+  after do
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    described_class.instance_variable_set(:@game_instance, nil)
+  end
+
+  { 'legacy roomName line' => legacy, 'Saga <room> block' => saga }.each do |label, line|
+    it "arms the after-prompt room display and rewrites the title for a #{label}" do
+      expect(instance).to receive(:modify_room_display).with(line)
+      described_class.process_room_information(+line)
+      expect(described_class.instance_variable_get(:@room_number_after_ready)).to be true
+    end
+  end
+
+  it 'ignores ordinary story lines' do
+    described_class.process_room_information(+"You stroll south.\r\n")
+    expect(described_class.instance_variable_get(:@room_number_after_ready)).to be false
+  end
+end
+
+# The Saga-identity stream's inline <room> block reaches only front ends that
+# render it (:room_element, Saga); every other front end gets the legacy layout.
+# DragonRealms' links and doubled bold reach only front ends that handle them
+# (:game_links, :double_bold; Saga); every other front end gets the legacy line.
+RSpec.describe Lich::GameBase::Game, '.process_downstream_hooks with DragonRealms links and doubled bold' do
+  objs = %(<component id='room objs'>You also see <pushBold/><pushBold/>a <a exist="195769088" noun="moradu">jeol moradu</a><popBold/><popBold/>, a <a exist="1" noun="sword">ice-edged sword</a>.</component>\r\n)
+  legacy_objs = %(<component id='room objs'>You also see <pushBold/>a jeol moradu<popBold/>, a ice-edged sword.</component>\r\n)
+
+  def eventually(timeout: 1)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      begin
+        return yield
+      rescue RSpec::Expectations::ExpectationNotMetError
+        raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.005
+      end
+    end
+  end
+
+  before do
+    allow(Lich).to receive(:log)
+    allow(Lich).to receive(:display_lichid).and_return(false)
+    allow(Lich).to receive(:display_uid).and_return(false)
+    allow(Lich).to receive(:hide_uid_flag).and_return(false)
+    stub_const('DownstreamHook', Lich::Common::DownstreamHook)
+    stub_const('Frontend', Lich::Common::Frontend)
+    @saved_globals = [$_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline]
+    @raw_socket = instance_double('raw_client_socket', closed?: false, write: nil, close: nil)
+    $_DETACHABLE_CLIENT_REGISTRY_ = nil
+    $_DETACHABLE_CLIENT_ = nil
+    $sftowiz_multiline = nil
+    $_CLIENT_ = Lich::Common::SynchronizedSocket.new(@raw_socket)
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    @saved_game_instance = described_class.instance_variable_get(:@game_instance)
+    described_class.instance_variable_set(:@game_instance, Lich::DragonRealms::GameInstance.new)
+    XMLData.game = 'DR'
+  end
+
+  after do
+    $_CLIENT_.close rescue nil
+    $_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline = @saved_globals
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    described_class.instance_variable_set(:@game_instance, @saved_game_instance)
+  end
+
+  %w[wrayth genie profanity frostbite].each do |fe|
+    it "gives #{fe} the legacy line: no links, one bold pair" do
+      $frontend = fe
+      described_class.send(:process_downstream_hooks, +objs)
+      eventually { expect(@raw_socket).to have_received(:write).with(legacy_objs) }
+    end
+  end
+
+  # The legacy stream sends creature names in assess and action lines plain
+  # (dr_legacy_hunt.xml:135-137); the Saga stream bolds them once.
+  assess = %(<popStream/><pushStream id="assess"/><d cmd='look #195758165'><pushBold/>A <a exist="195758165" noun="moradu">jeol moradu</a><popBold/></d> (1: cursed and nimbly balanced) is flanking you at melee range.  | <d cmd='face #195758165'>F</d>\r\n)
+  action = %(The <pushBold/><a exist="195762664" noun="moradu">jeol moradu</a><popBold/> moves into a position to parry.\r\n)
+
+  %w[genie frostbite].each do |fe|
+    it "gives #{fe} assess and action lines with the creature names plain" do
+      $frontend = fe
+      described_class.send(:process_downstream_hooks, +assess)
+      described_class.send(:process_downstream_hooks, +action)
+      eventually do
+        expect(@raw_socket).to have_received(:write).with(
+          %(<popStream/><pushStream id="assess"/><d cmd='look #195758165'>A jeol moradu</d> (1: cursed and nimbly balanced) is flanking you at melee range.  | <d cmd='face #195758165'>F</d>\r\n)
+        )
+        expect(@raw_socket).to have_received(:write).with("The jeol moradu moves into a position to parry.\r\n")
+      end
+    end
+  end
+
+  it 'keeps the creature bold for a front end that handles doubled bold' do
+    $frontend = 'genie'
+    allow(Lich::Common::Frontend).to receive(:has_capability?).and_call_original
+    allow(Lich::Common::Frontend).to receive(:has_capability?).with('genie', :double_bold).and_return(true)
+    described_class.send(:process_downstream_hooks, +action)
+    eventually { expect(@raw_socket).to have_received(:write).with("The <pushBold/>jeol moradu<popBold/> moves into a position to parry.\r\n") }
+  end
+
+  it 'keeps a whole bold combat line' do
+    $frontend = 'genie'
+    line = %(<pushStream id="combat" /><pushBold/>Corwin's fingers lands a hard hit to the moradu's head.  <popBold/>\r\n)
+    described_class.send(:process_downstream_hooks, +line)
+    eventually { expect(@raw_socket).to have_received(:write).with(line) }
+  end
+
+  it 'gives a front end Lich does not know the legacy line' do
+    $frontend = 'unknown'
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(@raw_socket).to have_received(:write).with(legacy_objs) }
+  end
+
+  it 'passes the line through unchanged to Saga (behind its origin sentinel)' do
+    $frontend = 'saga'
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(@raw_socket).to have_received(:write).with("\x1F#{objs}") }
+  end
+
+  # Each capability gates only its own transform: a front end can declare one
+  # without the other.
+  it 'strips only the links for a front end that handles doubled bold' do
+    $frontend = 'genie'
+    allow(Lich::Common::Frontend).to receive(:has_capability?).and_call_original
+    allow(Lich::Common::Frontend).to receive(:has_capability?).with('genie', :double_bold).and_return(true)
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(@raw_socket).to have_received(:write).with(Lich::Common::Markup.strip_game_links(objs)) }
+  end
+
+  it 'collapses only the bold for a front end that handles links' do
+    $frontend = 'genie'
+    allow(Lich::Common::Frontend).to receive(:has_capability?).and_call_original
+    allow(Lich::Common::Frontend).to receive(:has_capability?).with('genie', :game_links).and_return(true)
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(@raw_socket).to have_received(:write).with(Lich::Common::Markup.collapse_double_bold(objs)) }
+  end
+
+  # GemStone sends links under both client identities; its front ends get its
+  # bold unchanged too.
+  it 'leaves a GemStone line alone' do
+    XMLData.game = 'GS'
+    described_class.instance_variable_set(:@game_instance, Lich::Gemstone::GameInstance.new)
+    $frontend = 'genie'
+    line = %(Also here: <pushBold/><pushBold/>a <a exist="1" noun="rat">rat</a><popBold/><popBold/>.\r\n)
+    described_class.send(:process_downstream_hooks, +line)
+    eventually { expect(@raw_socket).to have_received(:write).with(line) }
+  end
+
+  # The Wizard conversion turns each bold into a GSL code, so a doubled bold
+  # would reach Wizard as doubled codes.
+  it 'gives Wizard one GSL bold code pair per creature' do
+    $frontend = 'wizard'
+    require_relative '../../lib/common/markup'
+    allow(described_class).to receive(:sf_to_wiz) { |line| Lich::Common::Markup.sf_to_wiz(line) }
+    line = %(<pushBold/><pushBold/>A <a exist="1" noun="moradu">jeol moradu</a><popBold/><popBold/> gestures.\r\n)
+    described_class.send(:process_downstream_hooks, +line)
+    eventually { expect(@raw_socket).to have_received(:write).with("\034GSL\r\nA jeol moradu\034GSM\r\n gestures.\r\n") }
+  end
+
+  it 'gives the rewritten <room> block the legacy lines: no links, one bold pair, the compass' do
+    $frontend = 'frostbite'
+    XMLData.room_id = 4_227_080
+    room = %(<resource picture="0"/><room><name>[Cragstone Vale, Tunnel] (4227080)</name><description>Rising steeply.</description>) +
+           %(<exists>You also see <pushBold/><pushBold/>a <a exist="1" noun="moradu">jeol moradu</a><popBold/><popBold/>.</exists>) +
+           %(<players>Also here: Universalist <a exist="-10700003" noun="Corwin">Corwin</a>.</players>) +
+           %(<exits>Obvious paths: <d>up</d>.</exits><extra></extra></room>\r\n)
+    described_class.send(:process_downstream_hooks, +room)
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(
+        %(<resource picture="0"/><style id="roomName" />[Cragstone Vale, Tunnel] (4227080)\r\n) +
+        %(<style id=""/><preset id='roomDesc'>Rising steeply.</preset>  You also see <pushBold/>a jeol moradu<popBold/>.\r\n) +
+        %(Also here: Universalist Corwin.\r\n) +
+        %(Obvious paths: <d>up</d>.\r\n) +
+        %(<compass><dir value="up"/></compass>\r\n)
+      )
+    end
+  end
+
+  # Before the game is known there is no game instance to ask.
+  it 'leaves the line alone before a game instance is set' do
+    described_class.instance_variable_set(:@game_instance, nil)
+    $frontend = 'genie'
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(@raw_socket).to have_received(:write).with(objs) }
+  end
+
+  # Scripts see what the server sent: the hooks run first.
+  it 'hands downstream hooks the line as the server sent it' do
+    $frontend = 'genie'
+    seen = []
+    DownstreamHook.add('spec_game_links_hook', proc { |line| seen << line.dup; line })
+    described_class.send(:process_downstream_hooks, +objs)
+    expect(seen).to eq([objs])
+  ensure
+    DownstreamHook.remove('spec_game_links_hook')
+  end
+
+  # dr-scripts' textsubs injects <a href> from a downstream hook.
+  it "keeps a downstream hook's own <a href> link" do
+    $frontend = 'genie'
+    DownstreamHook.add('spec_href_hook', proc { |line| line.sub('jeol moradu', '<a href="https://example.test">jeol moradu</a>') })
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(legacy_objs.sub('jeol moradu', '<a href="https://example.test">jeol moradu</a>'))
+    end
+  ensure
+    DownstreamHook.remove('spec_href_hook')
+  end
+end
+
+RSpec.describe Lich::GameBase::Game, '.process_downstream_hooks with a <room> block' do
+  saga_room = %(<resource picture="0"/><room><name>[Bosque Deriel, Burial Ground] (230007)</name><description>An Elven burial ground.</description><exits>Obvious paths: <d>north</d>.</exits><extra></extra></room>\r\n)
+
+  def eventually(timeout: 1)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      begin
+        return yield
+      rescue RSpec::Expectations::ExpectationNotMetError
+        raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.005
+      end
+    end
+  end
+
+  # The Kernel-level sf_to_wiz lives in global_defs.rb, which specs do not
+  # load; route it to the real converter it delegates to.
+  def stub_wizard_conversion
+    require_relative '../../lib/common/markup'
+    allow(described_class).to receive(:sf_to_wiz) { |line| Lich::Common::Markup.sf_to_wiz(line) }
+  end
+
+  before do
+    allow(Lich).to receive(:log)
+    allow(Lich).to receive(:display_lichid).and_return(false)
+    allow(Lich).to receive(:display_uid).and_return(false)
+    allow(Lich).to receive(:hide_uid_flag).and_return(false)
+    stub_const('DownstreamHook', Lich::Common::DownstreamHook)
+    stub_const('Frontend', Lich::Common::Frontend)
+    # spec_helper sets these globals once per process; save them so the after
+    # hook restores them rather than leaving nil for later specs.
+    # $sftowiz_multiline is the Wizard conversion's split-element buffer,
+    # which another file's examples can leave holding an unbalanced line;
+    # start from an empty buffer so the Wizard output does not depend on
+    # spec order.
+    @saved_globals = [$_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline]
+    @raw_socket = instance_double('raw_client_socket', closed?: false, write: nil, close: nil)
+    $_DETACHABLE_CLIENT_REGISTRY_ = nil
+    $_DETACHABLE_CLIENT_ = nil
+    $sftowiz_multiline = nil
+    $_CLIENT_ = Lich::Common::SynchronizedSocket.new(@raw_socket)
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+  end
+
+  after do
+    $_CLIENT_.close rescue nil
+    $_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline = @saved_globals
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+  end
+
+  it 'passes the block through unchanged to Saga (behind its origin sentinel)' do
+    $frontend = 'saga'
+    described_class.send(:process_downstream_hooks, +saga_room)
+    eventually { expect(@raw_socket).to have_received(:write).with("\x1F#{saga_room}") }
+  end
+
+  # The legacy stream followed the exits line of every room view with a
+  # top-level compass; the Saga-identity stream sends none.
+  %w[wrayth genie profanity frostbite].each do |fe|
+    it "rewrites the block to the legacy roomName/roomDesc layout and compass for #{fe}" do
+      $frontend = fe
+      described_class.send(:process_downstream_hooks, +saga_room)
+      eventually do
+        expect(@raw_socket).to have_received(:write).with(
+          %(<resource picture="0"/><style id="roomName" />[Bosque Deriel, Burial Ground] (230007)\r\n) +
+          %(<style id=""/><preset id='roomDesc'>An Elven burial ground.</preset>  \r\n) +
+          %(Obvious paths: <d>north</d>.\r\n) +
+          %(<compass><dir value="n"/></compass>\r\n)
+        )
+      end
+    end
+  end
+
+  # Wizard gets exits from XMLParser's GSL code; a compass line would only
+  # strip to a blank line.
+  it 'gives Wizard no compass and no blank line' do
+    $frontend = 'wizard'
+    stub_wizard_conversion
+    described_class.send(:process_downstream_hooks, +saga_room)
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(
+        "\034GSo\r\n[Bosque Deriel, Burial Ground] (230007)\r\n\034GSp\r\n" \
+        "An Elven burial ground.  \r\nObvious paths: north.\r\n"
+      )
+    end
+  end
+
+  # Scripts see what the server sent: downstream hooks run before the
+  # rewrite, and the compass is added only on the way to the client.
+  it 'hands downstream hooks the block as the server sent it' do
+    $frontend = 'genie'
+    seen = []
+    DownstreamHook.add('spec_room_compass_hook', proc { |line| seen << line.dup; line })
+    described_class.send(:process_downstream_hooks, +saga_room)
+    expect(seen).to eq([saga_room])
+  ensure
+    DownstreamHook.remove('spec_room_compass_hook')
+  end
+  # A Moon Mage's Locate shows the target's room as a bare <room> block; the
+  # legacy stream followed it with that room's compass
+  # (spec/fixtures/room_block/dr_legacy_locate.xml).
+  it 'sends the compass of a block of a room the character is not in' do
+    XMLData.room_id = 230_008
+    XMLData.room_exits = %w[north south]
+    $frontend = 'frostbite'
+    described_class.send(:process_downstream_hooks, +saga_room)
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(
+        %(<resource picture="0"/><style id="roomName" />[Bosque Deriel, Burial Ground] (230007)\r\n) +
+        %(<style id=""/><preset id='roomDesc'>An Elven burial ground.</preset>  \r\n) +
+        %(Obvious paths: <d>north</d>.\r\n) +
+        %(<compass><dir value="n"/></compass>\r\n)
+      )
+    end
+  end
+
+  # PEER NORTH from 230008 returns a bare <room> block of 230009
+  # (spec/fixtures/room_block/dr_saga_peer.xml); like a Locate view, it gets
+  # the compass of the room peered into.
+  it 'sends the compass of the room peered into after a captured PEER view' do
+    peer_block = File.foreach(File.expand_path('../fixtures/room_block/dr_saga_peer.xml', __dir__)).find { |l| l.include?('(230009)</name>') }
+    XMLData.room_id = 230_008
+    XMLData.room_exits = %w[north south]
+    $frontend = 'genie'
+    described_class.send(:process_downstream_hooks, +"#{peer_block.chomp}\r\n")
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(
+        a_string_ending_with(%(Obvious paths: <d>south</d>, <d>northwest</d>.\r\n<compass><dir value="s"/><dir value="nw"/></compass>\r\n))
+          .and(start_with(%(<resource picture="0"/><style id="roomName" />[Bosque Deriel, Dense Woods] (230009)\r\n)))
+      )
+    end
+  end
+
+  # With ShowRoomID off the name carries no room number; the compass still
+  # comes from the block's own exits.
+  it 'sends the compass for a block without a room number' do
+    XMLData.room_id = 230_008
+    XMLData.room_exits = %w[west]
+    $frontend = 'genie'
+    unnumbered = saga_room.sub(' (230007)', '')
+    described_class.send(:process_downstream_hooks, +unnumbered)
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(
+        %(<resource picture="0"/><style id="roomName" />[Bosque Deriel, Burial Ground]\r\n) +
+        %(<style id=""/><preset id='roomDesc'>An Elven burial ground.</preset>  \r\n) +
+        %(Obvious paths: <d>north</d>.\r\n) +
+        %(<compass><dir value="n"/></compass>\r\n)
+      )
+    end
+  end
+
+  # The same room captured in both dialects (see room_block_spec): a legacy
+  # front end gets, byte for byte, the lines the legacy stream sent for it.
+  it 'gives a legacy front end the captured legacy lines for a captured Saga block' do
+    fixtures = File.expand_path('../fixtures', __dir__)
+    legacy_view = File.read(File.join(fixtures, 'room_block/dr_legacy_desc_no_objects.xml')).lines.map(&:chomp)
+    saga_block = File.foreach(File.join(fixtures, 'streams/dr_saga_locate_descflag.xml')).find { |l| l.include?('(230007)</name>') }
+    # The legacy stream followed these lines with this compass, the next
+    # element sharing its line.
+    compass = %(<compass><dir value="n"/><dir value="se"/></compass>)
+    XMLData.room_id = 230_007
+    XMLData.room_exits = %w[north southeast]
+    $frontend = 'wrayth'
+    described_class.send(:process_downstream_hooks, +"#{saga_block.chomp}\r\n")
+    eventually { expect(@raw_socket).to have_received(:write).with(legacy_view.map { |l| "#{l}\r\n" }.join + "#{compass}\r\n") }
+  end
+
+  it 'still arms the room display after rewriting' do
+    $frontend = 'wrayth'
+    described_class.send(:process_downstream_hooks, +saga_room)
+    expect(described_class.instance_variable_get(:@room_number_after_ready)).to be true
+  end
+
+  # Pins the ordering at unit level: sf_to_wiz keys on the legacy layout, so
+  # the rewrite must run before it. (The DR description is the roomDesc
+  # preset, which translate_room leaves as text, as for the DR legacy stream.)
+  it 'gives Wizard its GSL room-name codes' do
+    $frontend = 'wizard'
+    stub_wizard_conversion
+    described_class.send(:process_downstream_hooks, +saga_room)
+    eventually do
+      expect(@raw_socket).to have_received(:write).with(
+        "\034GSo\r\n[Bosque Deriel, Burial Ground] (230007)\r\n\034GSp\r\n" \
+        "An Elven burial ground.  \r\nObvious paths: north.\r\n"
+      )
+    end
+  end
+end
+
+# Each client connection carries its own rich-stream capabilities
+# (Lich::Common::ClientCapabilities): what it declared with SET_FRONTEND_CAPS,
+# else the --frontend-caps launch set, else the catalog's for $frontend. One
+# server line reaches clients with different capabilities as different bytes;
+# a client that declared nothing gets exactly what every client got before.
+RSpec.describe Lich::GameBase::Game, '.process_downstream_hooks with per-client capabilities' do
+  objs = %(<component id='room objs'>You also see <pushBold/><pushBold/>a <a exist="195769088" noun="moradu">jeol moradu</a><popBold/><popBold/>, a <a exist="1" noun="sword">ice-edged sword</a>.</component>\r\n)
+  legacy_objs = %(<component id='room objs'>You also see <pushBold/>a jeol moradu<popBold/>, a ice-edged sword.</component>\r\n)
+  room = %(<resource picture="0"/><room><name>[Bosque Deriel, Burial Ground] (230007)</name><description>An Elven burial ground.</description>) +
+         %(<exists>You also see <pushBold/><pushBold/>a <a exist="1" noun="moradu">jeol moradu</a><popBold/><popBold/>.</exists>) +
+         %(<exits>Obvious paths: <d>north</d>.</exits><extra></extra></room>\r\n)
+  legacy_room = %(<resource picture="0"/><style id="roomName" />[Bosque Deriel, Burial Ground] (230007)\r\n) +
+                %(<style id=""/><preset id='roomDesc'>An Elven burial ground.</preset>  You also see <pushBold/>a jeol moradu<popBold/>.\r\n) +
+                %(Obvious paths: <d>north</d>.\r\n) +
+                %(<compass><dir value="n"/></compass>\r\n)
+  all_caps = 'SET_FRONTEND_CAPS room_element game_links double_bold'
+
+  def eventually(timeout: 1)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      begin
+        return yield
+      rescue RSpec::Expectations::ExpectationNotMetError
+        raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.005
+      end
+    end
+  end
+
+  # A detachable client on a recording raw socket; writes land in the array.
+  def attach_client(declaration = nil)
+    written = []
+    raw = instance_double('raw_detachable_socket', closed?: false, close: nil)
+    allow(raw).to receive(:write) { |data| written << data.dup; data.bytesize }
+    client = Lich::Common::SynchronizedSocket.new(raw, role: :detachable)
+    Lich::Common::ClientCapabilities.declare(client, declaration) if declaration
+    @registry.register(client)
+    @clients << client
+    written
+  end
+
+  before do
+    allow(Lich).to receive(:log)
+    allow(Lich).to receive(:display_lichid).and_return(false)
+    allow(Lich).to receive(:display_uid).and_return(false)
+    allow(Lich).to receive(:hide_uid_flag).and_return(false)
+    stub_const('DownstreamHook', Lich::Common::DownstreamHook)
+    stub_const('Frontend', Lich::Common::Frontend)
+    # A declaration hands the client to the script list feed, which would
+    # start its thread on a streams session and write its own lines to these
+    # recording clients. This block is about the game stream only.
+    allow(Lich::Common::ScriptListFeed).to receive(:client_ready)
+    # Saved and restored, never left nil (spec_helper sets some of them once).
+    @saved_globals = [$_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline,
+                      Lich::Common::ClientCapabilities.launch_capabilities, described_class.instance_variable_get(:@game_instance)]
+    @registry = Lich::Common::DetachableClientRegistry.new
+    @clients = []
+    @primary_raw = instance_double('raw_client_socket', closed?: false, write: nil, close: nil)
+    $_DETACHABLE_CLIENT_REGISTRY_ = @registry
+    $_DETACHABLE_CLIENT_ = nil
+    $_CLIENT_ = Lich::Common::SynchronizedSocket.new(@primary_raw)
+    $sftowiz_multiline = nil
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    described_class.instance_variable_set(:@game_instance, Lich::DragonRealms::GameInstance.new)
+    XMLData.game = 'DR'
+    XMLData.room_id = 230_007
+    XMLData.room_exits = ['north']
+  end
+
+  after do
+    (@clients + [$_CLIENT_]).each { |client| client.close rescue nil }
+    $_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline,
+      Lich::Common::ClientCapabilities.launch_capabilities, game_instance = @saved_globals
+    described_class.instance_variable_set(:@game_instance, game_instance)
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+  end
+
+  it 'gives a client that declared the rich stream the server line, and an undeclared one the legacy line' do
+    $frontend = 'profanity'
+    rich = attach_client(all_caps)
+    legacy = attach_client
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect([rich, legacy]).to eq([[objs], [legacy_objs]]) }
+  end
+
+  it 'gives a client that declared room_element the <room> block, and an undeclared one the legacy room and compass' do
+    $frontend = 'profanity'
+    rich = attach_client(all_caps)
+    legacy = attach_client
+    described_class.send(:process_downstream_hooks, +room)
+    eventually { expect([rich, legacy]).to eq([[room], [legacy_room]]) }
+  end
+
+  it 'applies each declared capability on its own' do
+    $frontend = 'genie'
+    links_only = attach_client('SET_FRONTEND_CAPS game_links')
+    bold_only = attach_client('SET_FRONTEND_CAPS double_bold')
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually do
+      expect(links_only).to eq([objs.gsub('<pushBold/><pushBold/>', '<pushBold/>').gsub('<popBold/><popBold/>', '<popBold/>')])
+      expect(bold_only).to eq([objs.gsub(/<a exist="\d+" noun="\w+">|<\/a>/, '')])
+    end
+  end
+
+  # The creature bold in action lines follows double_bold: the legacy stream
+  # named the creature plain.
+  it 'keeps the creature bold in an action line only for a client that declared double_bold' do
+    $frontend = 'genie'
+    action = %(The <pushBold/><a exist="195762664" noun="moradu">jeol moradu</a><popBold/> moves into a position to parry.\r\n)
+    rich = attach_client(all_caps)
+    bold_only = attach_client('SET_FRONTEND_CAPS double_bold')
+    links_only = attach_client('SET_FRONTEND_CAPS game_links')
+    legacy = attach_client
+    described_class.send(:process_downstream_hooks, +action)
+    eventually do
+      expect(rich).to eq([action])
+      expect(bold_only).to eq(["The <pushBold/>jeol moradu<popBold/> moves into a position to parry.\r\n"])
+      expect(links_only).to eq([%(The <a exist="195762664" noun="moradu">jeol moradu</a> moves into a position to parry.\r\n)])
+      expect(legacy).to eq(["The jeol moradu moves into a position to parry.\r\n"])
+    end
+  end
+
+  # A Saga session with a legacy client attached alongside.
+  it 'lets a client declare less than the session frontend has' do
+    $frontend = 'saga'
+    saga = attach_client
+    legacy = attach_client('SET_FRONTEND_CAPS')
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect([saga, legacy]).to eq([["\x1F#{objs}"], ["\x1F#{legacy_objs}"]]) }
+  end
+
+  %w[genie profanity frostbite wrayth saga unknown].each do |fe|
+    it "gives undeclared #{fe} clients the bytes a lone client of that frontend gets" do
+      $frontend = fe
+      clients = [attach_client, attach_client]
+      described_class.send(:process_downstream_hooks, +objs)
+      described_class.send(:process_downstream_hooks, +room)
+      expected_objs = fe == 'saga' ? "\x1F#{objs}" : legacy_objs
+      expected_room = fe == 'saga' ? "\x1F#{room}" : legacy_room
+      eventually { expect(clients).to all(eq([expected_objs, expected_room])) }
+    end
+  end
+
+  it 'gives the primary client its own declaration when no detachable client is attached' do
+    $frontend = 'genie'
+    $_DETACHABLE_CLIENT_REGISTRY_ = nil
+    Lich::Common::ClientCapabilities.declare($_CLIENT_, all_caps)
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(@primary_raw).to have_received(:write).with(objs) }
+  end
+
+  it 'still sends the primary client nothing while a detachable client is attached' do
+    $frontend = 'genie'
+    attach_client(all_caps)
+    described_class.send(:process_downstream_hooks, +objs)
+    sleep 0.05
+    expect(@primary_raw).not_to have_received(:write)
+  end
+
+  context 'with --frontend-caps' do
+    it 'gives undeclared clients the launch set instead of the catalog set' do
+      $frontend = 'genie'
+      Lich::Common::ClientCapabilities.launch_capabilities = [:game_links]
+      launch = attach_client
+      declared = attach_client('SET_FRONTEND_CAPS')
+      described_class.send(:process_downstream_hooks, +objs)
+      eventually do
+        expect(launch).to eq([objs.gsub('<pushBold/><pushBold/>', '<pushBold/>').gsub('<popBold/><popBold/>', '<popBold/>')])
+        expect(declared).to eq([legacy_objs])
+      end
+    end
+  end
+
+  # Wizard's GSL conversion keeps state across lines, so every client of a
+  # GSL session gets the session's set.
+  it 'ignores declarations in a Wizard session' do
+    $frontend = 'wizard'
+    allow(described_class).to receive(:sf_to_wiz) { |line| Lich::Common::Markup.sf_to_wiz(line) }
+    declared = attach_client(all_caps)
+    plain = attach_client
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect([declared.size, plain.size]).to eq([1, 1]) }
+    expect(declared).to eq(plain)
+    expect(plain.first).to eq(Lich::Common::Markup.sf_to_wiz(legacy_objs.dup))
+  end
+
+  describe 'transform count' do
+    it 'rewrites a line once per distinct capability set, not once per client' do
+      $frontend = 'genie'
+      allow(Lich::Common::Markup).to receive(:strip_game_links).and_call_original
+      allow(Lich::Common::RoomBlock).to receive(:legacy_shape_with_compass).and_call_original
+      # Two sets that both strip links: the catalog's and room_element only.
+      3.times { attach_client }
+      2.times { attach_client('SET_FRONTEND_CAPS room_element') }
+      2.times { attach_client(all_caps) }
+      described_class.send(:process_downstream_hooks, +room)
+      expect(Lich::Common::Markup).to have_received(:strip_game_links).twice
+      expect(Lich::Common::RoomBlock).to have_received(:legacy_shape_with_compass).once
+    end
+
+    it 'finishes a line once when every set gives the same bytes' do
+      $frontend = 'genie'
+      allow(described_class).to receive(:process_room_information).and_call_original
+      attach_client
+      attach_client(all_caps)
+      described_class.send(:process_downstream_hooks, +"You stroll south.\r\n")
+      expect(described_class).to have_received(:process_room_information).once
+    end
+  end
+
+  # The room-number display fires at the first prompt after a room view;
+  # each client's version of that prompt line must get it.
+  it 'gives every distinct version of a prompt line the room display' do
+    $frontend = 'genie'
+    game_instance = Lich::DragonRealms::GameInstance.new
+    allow(game_instance).to receive(:process_room_display) { |line| "Room Number: 7\r\n#{line}" }
+    described_class.instance_variable_set(:@game_instance, game_instance)
+    described_class.instance_variable_set(:@room_number_after_ready, true)
+    rich = attach_client(all_caps)
+    legacy = attach_client
+    prompt = %(You see <a exist="1" noun="rat">a rat</a>.\r\n<prompt time="1">&gt;</prompt>\r\n)
+    described_class.send(:process_downstream_hooks, +prompt)
+    eventually do
+      expect(rich).to eq(["Room Number: 7\r\n#{prompt}"])
+      expect(legacy).to eq(["Room Number: 7\r\nYou see a rat.\r\n<prompt time=\"1\">&gt;</prompt>\r\n"])
+    end
+    expect(described_class.instance_variable_get(:@room_number_after_ready)).to be false
+  end
+
+  it 'skips a dead client and still writes to the others' do
+    $frontend = 'genie'
+    dead = attach_client(all_caps)
+    @clients.last.close
+    live = attach_client
+    described_class.send(:process_downstream_hooks, +objs)
+    eventually { expect(live).to eq([legacy_objs]) }
+    expect(dead).to be_empty
+  end
+
+  # Scripts and hooks see one stream, whatever the clients declared.
+  it 'hands downstream hooks the line as the server sent it' do
+    $frontend = 'genie'
+    attach_client(all_caps)
+    attach_client
+    seen = []
+    DownstreamHook.add('spec_per_client_hook', proc { |line| seen << line.dup; line })
+    described_class.send(:process_downstream_hooks, +objs)
+    expect(seen).to eq([objs])
+  ensure
+    DownstreamHook.remove('spec_per_client_hook')
+  end
+end
+
+# DragonRealms' FLAG DESCRIPTION OFF: the legacy stream sends the room view
+# without the description; the Saga-identity stream's <room> block keeps it, a
+# confirmed game bug. With the opt-in setting (;display descflag), the client
+# gets the view without it, in either layout; scripts keep it, and a view of
+# another room (Locate) keeps it. Real lines from dr_saga_group_bank.xml
+# (names pseudonymized) and a 2026-10-16 Locate capture.
+RSpec.describe Lich::GameBase::Game, '.process_downstream_hooks with room descriptions off' do
+  fixture = File.readlines(File.expand_path('../fixtures/streams/dr_saga_group_bank.xml', __dir__), chomp: true)
+  off_index = fixture.index('You will no longer see room descriptions.')
+  off_reply = "#{fixture[off_index]}\r\n"
+  on_reply = "You will now see room descriptions.\r\n"
+  # The game re-sends the character's room after the OFF reply.
+  shacks = "#{fixture[off_index..].find { |line| line.include?('<room>') }}\r\n"
+  shacks_name = "[Bosque Deriel, Hermit's Shacks] (230008)"
+  shacks_desc = shacks[%r{<description>(.*?)</description>}, 1]
+  shacks_players = shacks[%r{<players>(.*?)</players>}, 1]
+  shacks_exits = shacks[%r{<exits>(.*?)</exits>}, 1]
+  # A Moon Mage's Locate: another room, the same bare block, with its description.
+  locate = %(<resource picture="0"/><room><name>[Bosque Deriel, Burial Ground] (230007)</name><description>You come upon an ) +
+           %(Elven burial ground in the shade of sacred groves.</description><exists></exists><players></players>) +
+           %(<exits>Obvious paths: <d>north</d>, <d>southeast</d>.</exits><extra></extra></room>\r\n)
+
+  def eventually(timeout: 1)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      begin
+        return yield
+      rescue RSpec::Expectations::ExpectationNotMetError
+        raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.005
+      end
+    end
+  end
+
+  def deliver(*lines)
+    lines.each { |line| described_class.send(:process_downstream_hooks, +line) }
+  end
+
+  # What the client got, in order (each write is one server string).
+  def written
+    eventually { expect(@writes).not_to be_empty }
+    @writes
+  end
+
+  # The legacy layout of the re-sent view, as a front end without links gets
+  # it (no objects here, so the line after the name is the description and
+  # the two spaces before them).
+  legacy_view = lambda do |description:|
+    desc = description ? "<preset id='roomDesc'>#{description}</preset>" : ''
+    players = shacks_players.gsub(%r{<a [^>]*>|</a>}, '')
+    %(<resource picture="0"/><style id="roomName" />#{shacks_name}\r\n<style id=""/>#{desc}  \r\n) +
+      %(#{players}\r\n#{shacks_exits}\r\n<compass><dir value="n"/><dir value="s"/></compass>\r\n)
+  end
+
+  around do |example|
+    filter = Lich::Common::RoomDescriptionFilter
+    saved_filter = filter.descriptions_off?
+    filter.reset
+    example.run
+  ensure
+    filter.instance_variable_set(:@descriptions_off, saved_filter)
+  end
+
+  before do
+    allow(Lich).to receive(:log)
+    allow(Lich).to receive(:display_lichid).and_return(false)
+    allow(Lich).to receive(:display_uid).and_return(false)
+    allow(Lich).to receive(:hide_uid_flag).and_return(false)
+    allow(Lich).to receive(:follow_description_flag).and_return(true)
+    stub_const('DownstreamHook', Lich::Common::DownstreamHook)
+    stub_const('Frontend', Lich::Common::Frontend)
+    @saved_globals = [$_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline]
+    @saved_room = [XMLData.game, XMLData.room_id, XMLData.room_exits]
+    @saved_game_instance = described_class.instance_variable_get(:@game_instance)
+    @writes = []
+    writes = @writes
+    @raw_socket = instance_double('raw_client_socket', closed?: false, close: nil)
+    allow(@raw_socket).to receive(:write) { |data| writes << data.dup }
+    $_DETACHABLE_CLIENT_REGISTRY_ = nil
+    $_DETACHABLE_CLIENT_ = nil
+    $sftowiz_multiline = nil
+    $_CLIENT_ = Lich::Common::SynchronizedSocket.new(@raw_socket)
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    described_class.instance_variable_set(:@game_instance, Lich::DragonRealms::GameInstance.new)
+    XMLData.game = 'DR'
+    XMLData.room_id = 230_008
+    XMLData.room_exits = %w[north south]
+  end
+
+  after do
+    $_CLIENT_.close rescue nil
+    $_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_, $frontend, $sftowiz_multiline = @saved_globals
+    XMLData.game, XMLData.room_id, XMLData.room_exits = @saved_room
+    described_class.instance_variable_set(:@room_number_after_ready, false)
+    described_class.instance_variable_set(:@game_instance, @saved_game_instance)
+  end
+
+  it 'replays real lines: the OFF reply, then the re-sent view of the room' do
+    expect(off_index).not_to be_nil
+    expect(shacks).to include("<name>#{shacks_name}</name>")
+    expect(shacks_desc).to start_with('Here on the route')
+  end
+
+  context 'for a front end that gets the legacy layout' do
+    before { $frontend = 'frostbite' }
+
+    # The legacy stream's view after the OFF reply (dr_legacy_hunt.xml):
+    #   <style id=""/>  You also see ...
+    it 'sends the view without the roomDesc preset, as the legacy stream does' do
+      deliver(off_reply, shacks)
+      eventually { expect(written.size).to eq(2) }
+      expect(written).to eq([off_reply, legacy_view.call(description: nil)])
+    end
+
+    it 'sends the description again after the ON reply' do
+      deliver(off_reply, shacks, on_reply, shacks)
+      eventually { expect(written.size).to eq(4) }
+      expect(written[1]).not_to include(shacks_desc)
+      expect(written[2]).to eq(on_reply)
+      expect(written[3]).to eq(legacy_view.call(description: shacks_desc))
+    end
+
+    it 'keeps the description of a view of another room (Locate)' do
+      deliver(off_reply, locate)
+      eventually { expect(written.size).to eq(2) }
+      expect(written[1]).to include("<preset id='roomDesc'>You come upon an Elven burial ground")
+      # It gets the located room's compass, as in the legacy stream.
+      expect(written[1]).to end_with(%(<compass><dir value="n"/><dir value="se"/></compass>\r\n))
+    end
+
+    it 'sends the room desc component unchanged, as the legacy stream does' do
+      component = "<component id='room desc'>#{shacks_desc}</component>\r\n"
+      deliver(off_reply, component)
+      eventually { expect(written.size).to eq(2) }
+      expect(written[1]).to eq(component)
+    end
+  end
+
+  context 'for a front end that renders the <room> block' do
+    before { $frontend = 'saga' }
+
+    it 'sends the block with an empty description' do
+      deliver(off_reply, shacks)
+      eventually { expect(written.size).to eq(2) }
+      expect(written[1]).to eq("\x1F#{shacks.sub(%r{<description>.*?</description>}, '<description></description>')}")
+    end
+
+    it 'sends the description again after the ON reply' do
+      deliver(off_reply, shacks, on_reply, shacks)
+      eventually { expect(written.size).to eq(4) }
+      expect(written[3]).to eq("\x1F#{shacks}")
+    end
+
+    it 'keeps the description of a view of another room (Locate)' do
+      deliver(off_reply, locate)
+      eventually { expect(written.size).to eq(2) }
+      expect(written[1]).to eq("\x1F#{locate}")
+    end
+  end
+
+  it 'gives Wizard the view without the description' do
+    $frontend = 'wizard'
+    require_relative '../../lib/common/markup'
+    allow(described_class).to receive(:sf_to_wiz) { |line| Lich::Common::Markup.sf_to_wiz(line) }
+    deliver(off_reply, shacks)
+    eventually { expect(written.size).to eq(2) }
+    expect(written[1]).to start_with("\034GSo\r\n#{shacks_name}\r\n\034GSp\r\n  \r\n")
+    expect(written[1]).not_to include(shacks_desc)
+  end
+
+  # Scripts see what the server sent: the hooks run before the filter.
+  it 'hands downstream hooks the block with its description' do
+    $frontend = 'genie'
+    seen = []
+    DownstreamHook.add('spec_desc_off_hook', proc { |line| seen << line.dup; line })
+    deliver(off_reply, shacks)
+    expect(seen).to eq([off_reply, shacks])
+  ensure
+    DownstreamHook.remove('spec_desc_off_hook')
+  end
+
+  it 'follows a reply a downstream hook squelches' do
+    $frontend = 'genie'
+    DownstreamHook.add('spec_desc_off_squelch', proc { |line| line.include?('see room descriptions') ? nil : line })
+    deliver(off_reply, shacks)
+    eventually { expect(written.size).to eq(1) }
+    expect(written.first).not_to include(shacks_desc)
+  ensure
+    DownstreamHook.remove('spec_desc_off_squelch')
+  end
+
+  # The bare FLAG listing's Description row (the real Saga-identity rows from
+  # the ON and OFF listings in spec/fixtures/flag/). DRInfomon's startup
+  # issues FLAG quietly, which squelches the listing in a downstream hook.
+  context 'with the bare FLAG listing' do
+    description_row = lambda do |name|
+      lines = File.readlines(File.expand_path("../fixtures/flag/#{name}", __dir__), chomp: true)
+      "#{lines.find { |line| line.include?('>Description</d>') }}\r\n"
+    end
+    listing_on = description_row.call('dr_saga_flag_listing.xml')
+    listing_off = description_row.call('dr_saga_flag_listing_description_off.xml')
+
+    before { $frontend = 'frostbite' }
+
+    it 'follows a listing row that says OFF, then one that says ON' do
+      deliver(listing_off, shacks, listing_on, shacks)
+      eventually { expect(written.size).to eq(4) }
+      expect(written[1]).to eq(legacy_view.call(description: nil))
+      expect(written[3]).to eq(legacy_view.call(description: shacks_desc))
+    end
+
+    it 'follows a listing a downstream hook squelches' do
+      DownstreamHook.add('spec_desc_off_listing', proc { |line| line.include?('Description') ? nil : line })
+      deliver(listing_off, shacks)
+      eventually { expect(written.size).to eq(1) }
+      expect(written.first).to eq(legacy_view.call(description: nil))
+    ensure
+      DownstreamHook.remove('spec_desc_off_listing')
+    end
+  end
+
+  # GemStone follows its own setting and sends no <room> block.
+  it 'leaves GemStone alone' do
+    XMLData.game = 'GS'
+    $frontend = 'saga'
+    deliver(off_reply, shacks)
+    eventually { expect(written.size).to eq(2) }
+    expect(written[1]).to eq("\x1F#{shacks}")
+  end
+
+  context 'with the setting off (the default)' do
+    before { allow(Lich).to receive(:follow_description_flag).and_return(false) }
+
+    %w[frostbite saga wizard].each do |fe|
+      it "sends #{fe} what it gets with descriptions on" do
+        $frontend = fe
+        if fe == 'wizard'
+          require_relative '../../lib/common/markup'
+          allow(described_class).to receive(:sf_to_wiz) { |line| Lich::Common::Markup.sf_to_wiz(line) }
+        end
+        deliver(shacks)
+        eventually { expect(written.size).to eq(1) }
+        baseline = written.dup
+        @writes.clear
+        deliver(off_reply, shacks)
+        eventually { expect(written.size).to eq(2) }
+        expect(written[1]).to eq(baseline.first)
+        expect(written[1]).to include(shacks_desc)
+      end
+    end
+
+    it 'still follows the replies, so turning the setting on applies at once' do
+      $frontend = 'frostbite'
+      deliver(off_reply)
+      allow(Lich).to receive(:follow_description_flag).and_return(true)
+      deliver(shacks)
+      eventually { expect(written.size).to eq(2) }
+      expect(written[1]).not_to include(shacks_desc)
+    end
+  end
+end
+
+RSpec.describe Lich::GameBase::Game, '.process_server_string with a line cut by a roundtime refusal' do
+  before do
+    @saved = [$_SERVERBUFFER_, XMLData.game]
+    $_SERVERBUFFER_ = []
+    XMLData.game = ''
+    described_class.instance_variable_set(:@game_instance, Lich::DragonRealms::GameInstance.new)
+    @parsed = []
+    @hooked = []
+    allow(Lich).to receive(:log)
+    allow(described_class).to receive(:process_xml_data) { |line| @parsed << line }
+    allow(described_class).to receive(:process_downstream_hooks) { |line| @hooked << line }
+    allow(Lich::Common::Inventory).to receive(:observe) if defined?(Lich::Common::Inventory)
+  end
+
+  after do
+    described_class.instance_variable_set(:@game_instance, nil)
+    $_SERVERBUFFER_, XMLData.game = @saved
+  end
+
+  it 'delivers the refusal first and then the rejoined line, to the parser, hooks and server buffer alike' do
+    described_class.process_server_string(+"Jazriel steps back, then quickly steps forward spinning like a dervish, his greatsword...wait 1 seconds.\r\n")
+    described_class.process_server_string(+" lashing out at everything within reach!\r\n")
+    expected = ["...wait 1 seconds.\r\n", "Jazriel steps back, then quickly steps forward spinning like a dervish, his greatsword lashing out at everything within reach!\r\n"]
+    expect(@hooked).to eq(expected)
+    expect(@parsed).to eq(expected)
+    expect($_SERVERBUFFER_).to eq(expected)
+  end
+
+  it 'delivers nothing for the empty line that ends a line cut at its end' do
+    described_class.process_server_string(+"The fingers lands a good strike to its chest!  ...wait 4 seconds.\r\n")
+    described_class.process_server_string(+"\r\n")
+    described_class.process_server_string(+"<prompt time=\"1793017427\">&gt;</prompt>\r\n")
+    expect(@hooked).to eq(["...wait 4 seconds.\r\n", "The fingers lands a good strike to its chest!  \r\n", "<prompt time=\"1793017427\">&gt;</prompt>\r\n"])
+  end
+end

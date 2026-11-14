@@ -1,0 +1,270 @@
+{
+  name: "stunted halfling bloodspeaker",
+  noun: "bloodspeaker",
+  url: "https://gswiki.play.net/Stunted_halfling_bloodspeaker",
+  picture: "",
+  level: 103,
+  family: "Humanoid",
+  type: "biped",
+  undead: false,
+  blood: true,
+  bones: nil,
+  limbs: true,
+  witherable: true,
+  sympathy: true,
+  muggable: true,
+  sleepable: true,
+  boss: false,
+  boss_type: nil,
+  otherclass: [],
+  areas: [
+    {
+      name: "Hinterwilds",
+      uids: [7503101..7503146]
+    }
+  ],
+  bcs: true,
+  max_hp: 362,
+  speed: 6,
+  height: 3,
+  size: "small",
+  attack_attributes: {
+    physical_attacks: [
+      {
+        name: "attack",
+        as: (420..550)
+      },
+      {
+        name: "Shark-like teeth",
+        as: (505..522)
+      },
+      {
+        name: "Tusks",
+        as: (499..519)
+      },
+      {
+        name: "Charge",
+        as: (504..529)
+      },
+      {
+        name: "Huge hooves",
+        as: 529
+      },
+      {
+        name: "Misshapen limbs",
+        as: 499
+      }
+    ],
+    bolt_spells: [],
+    warding_spells: [
+      {
+        name: "blood burst (701)",
+        cs: (455..473)
+      },
+      {
+        name: "bone shatter (1106)",
+        cs: (439..454)
+      },
+      {
+        name: "corrupt essence (703)",
+        cs: (455..473)
+      },
+      {
+        name: "limb disruption (708)",
+        cs: (455..473)
+      },
+      {
+        name: "wither (1115)",
+        cs: (439..454)
+      },
+      {
+        name: "Point",
+        cs: 467
+      }
+    ],
+    offensive_spells: [],
+    maneuvers: [
+      {
+        name: "Point"
+      }
+    ],
+    special_abilities: [],
+    special_notes: []
+  },
+  defense_attributes: {
+    asg: "2",
+    immunities: [],
+    melee: (438..675),
+    ranged: (439..586),
+    bolt: (439..586),
+    udf: (471..686),
+    bar_td: 470,
+    cle_td: (455..476),
+    emp_td: 461,
+    pal_td: (424..433),
+    ran_td: (400..421),
+    sor_td: (482..503),
+    wiz_td: nil,
+    mje_td: (506..537),
+    mne_td: (506..537),
+    mjs_td: nil,
+    mns_td: (450..461),
+    mnm_td: nil,
+    defensive_spells: [
+      {
+        name: "prayer (313)"
+      },
+      {
+        name: "foresight (1204)"
+      },
+      {
+        name: "mindward (1208)"
+      }
+    ],
+    defensive_abilities: [
+      {
+        name: "health regen",
+        note: "similar to trolls blood or regeneration?"
+      },
+      {
+        name: "unstun",
+        note: "able to break stuns"
+      }
+    ],
+    special_defenses: []
+  },
+  special_other: "",
+  abilities: [
+    {
+      id: :corrupt_essence,
+      name: "Corrupt Essence (703)",
+      type: :debuff,
+      target: :opponent,
+      typical_duration_s: 17,
+      effects: { spell_failure_chance: true },
+      dispellable: nil,
+      notes: "Warding, CS 461-464."
+    }
+  ],
+  alchemy: [],
+  equipment: [
+    "a gnarled dark wooden crook adorned with sinuous patterns",
+    "some dark homespun robes patterned with serpentine symbols"
+  ],
+  treasure: {
+    coins: true,
+    magic_items: nil,
+    gems: true,
+    boxes: true,
+    skin: false,
+    other: ["herbs", "gigas fragments", "ayanad crystal", "n'ayanad crystal", "petrified mammoth tusk"],
+    blunt_required: false,
+    armaments: nil,
+    transmogs: nil
+  },
+  messaging: {
+    description: "Small even for a halfling, the bloodspeaker is twisted of limb and stunted of form.  Bulging eyes the color of dried blood peer out from a face like molten wax.  The ritualistic burn scars marring {pronoun} flesh look painful beyond the most grotesque of imaginings.  The bloodspeaker wears heavy robes of red velvet that do little to conceal the broken-puppet jangle of {pronoun} misshapen body beneath them.  {pronoun} tongue is bisected and lolls forth from a mouth that looks like a wet gash in {pronoun} obscene face.",
+    arrival: [
+      "A stunted halfling bloodspeaker hurries in, ebon eyes darting about in paranoia.",
+      "A stunted halfling bloodspeaker just arrived.",
+      "A stunted halfling bloodspeaker just came through a break in the trees.",
+      "A stunted halfling bloodspeaker just came through a cracked black granite arch."
+    ],
+    flee: [
+      "Ebon eyes darting about in paranoia, a stunted halfling bloodspeaker hurries {direction}.",
+      "A stunted halfling bloodspeaker just went into a thatched timber smithy."
+    ],
+    spell_prep: [
+      "A stunted halfling bloodspeaker utters a garbled, sibilant phrase as globules of crimson light spin around {pronoun} gnarled hands.",
+      "A stunted halfling bloodspeaker concentrates intently on you, and a pulse of pearlescent energy ripples toward you!",
+      "A stunted halfling bloodspeaker concentrates intently on {target}, and a pulse of pearlescent energy ripples toward {pronoun}!"
+    ],
+    death: [
+      "A stunted halfling bloodspeaker's eyes bulge as {pronoun} stares toward the heavens, mouthing a gurgling prayer as {pronoun} succumbs to death.",
+      "A stunted halfling bloodspeaker's body collapses in upon itself as if everything solid within has turned to liquid, the sanguine remains oozing out of the remaining folds of skin."
+    ],
+    decay: [
+      "A stunted halfling bloodspeaker's body collapses in upon itself as if everything solid within has turned to liquid, the sanguine remains oozing out of the remaining folds of skin."
+    ],
+    search: [
+      "A stunted halfling bloodspeaker licks her lips as she looks around, as if certain that she has missed something.",
+      "a stunted halfling bloodspeaker's sniffs the air, bulging eyes darting about wildly",
+      "A stunted halfling bloodspeaker lets out a soft grunt as {pronoun} twists {pronoun} body to look around, the heavy scars of {pronoun} face tugging painfully."
+    ],
+
+    stun_break: [
+      "Rivulets of swirling incarnadine energy envelop a stunted halfling bloodspeaker's scarred flesh, allowing {pronoun} to move freely once more."
+    ],
+    attacks: {
+      attack: [
+        "With incongruous alacrity, a stunted halfling bloodspeaker swings {weapon} at you!"
+      ],
+      bone_shatter: [
+        "A stunted halfling bloodspeaker concentrates intently on you, and a pulse of pearlescent energy ripples toward you!"
+      ],
+      cast: [
+        "A stunted halfling bloodspeaker points a blunt, swollen finger at {target}!"
+      ],
+      wither: [
+        "The force of a stunted halfling bloodspeaker's power warps the air as it surges toward you!"
+      ]
+    },
+    triggers: {
+      corrupt_essence: [
+        "A stunted halfling bloodspeaker points a blunt, swollen finger at you!",
+        "You feel weakened as a blood red haze forms around you."
+      ],
+      health_regen: [
+        "A stunted halfling bloodspeaker raises {pronoun} malformed fingers overhead, contorting them into jarring patterns as globules of carmine radiance pirouette through the air around {pronoun}. The spinning beads of radiance gather into a dripping sanguine orb that hovers in the air nearby, pulsing with otherworldly light.",
+        "Eldritch radiance from a swirling sanguine orb bathes a stunted halfling bloodspeaker, causing {pronoun} wounds to sluggishly tug themselves closed in the sanguine light."
+      ]
+    },
+    stand: [
+      "A stunted halfling bloodspeaker struggles, grunting and cursing as {pronoun} rises to {pronoun} feet."
+    ],
+    info: {
+      general: [
+        "* Warding casters will have more success against this creature with a high TD if they cast dispelling magic upon it first.\n* SMR-based attacks like Condemn (309), Earthen Fury (917), and Spike Thorn (616) frequently tear through bloodspeakers. Animal companions can also do significant damage.\n* Silencing tactics like Cutthroat and Sucker Punch, or the similar Corrupt Essence (703), will halt their threatening Wither (1115) spell. (Silence (210) itself is unlikely to hit barring an unusual build heavily focused on Major Spiritual ranks.)"
+      ],
+      class_tips: {
+        cleric: [],
+        paladin: [],
+        ranger: [],
+        bard: [],
+        wizard: [],
+        empath: [],
+        rogue: [],
+        warrior: [],
+        sorcerer: []
+      },
+      miscellany: []
+    },
+  }
+}
+
+=begin
+description, arrival, flee, death, decay, search, spell_prep, creature specific
+# blood burst
+A stunted halfling bloodspeaker points a blunt, swollen finger at you!
+  CS: +455 - TD: +410 + CvA: +5 + d94: +91 - -5 == +146
+  Warding failed!
+Blood sprays from your neck in a crimson arc!
+   ... 10 points of damage!
+Attenuated droplets of Nisugi's blood are drawn into the sanguine lattice encircling a stunted halfling bloodspeaker.
+
+# limb disruption
+A stunted halfling bloodspeaker points a blunt, swollen finger at you!
+  CS: +473 - TD: +410 + CvA: +5 + d91: +48 - -5 == +121
+  Warding failed!
+Your left leg twists painfully but does not break.
+You are stunned 1 round!
+
+# corrupt essence
+A stunted halfling bloodspeaker points a blunt, swollen finger at you!
+  CS: +473 - TD: +393 + CvA: +5 + d80: +16 - -5 == +106
+  Warding failed!
+You feel weakened as a blood red haze forms around you.
+
+The veins of a stunted halfling bloodspeaker's blood shield shrivel and dry, darkening brown and flaking away into windblown dust.
+
+=end

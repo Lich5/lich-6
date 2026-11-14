@@ -1,0 +1,1581 @@
+# frozen_string_literal: true
+
+require 'timeout'
+require_relative '../../../spec_helper'
+
+# Load production code
+require File.join(LIB_DIR, 'dragonrealms', 'commons', 'common.rb')
+require File.join(LIB_DIR, 'dragonrealms', 'commons', 'common-healing-data.rb')
+require File.join(LIB_DIR, 'dragonrealms', 'commons', 'common-healing.rb')
+require File.join(LIB_DIR, 'util', 'util.rb')
+
+RSpec.describe Lich::DragonRealms::DRCH do
+  # --- Wound class ------------------------------------------------------
+
+  describe described_class::Wound do
+    describe '#initialize' do
+      it 'downcases body_part and bleeding_rate' do
+        wound = described_class.new(body_part: 'LEFT ARM', bleeding_rate: 'SLIGHT')
+        expect(wound.body_part).to eq('left arm')
+        expect(wound.bleeding_rate).to eq('slight')
+      end
+
+      it 'handles nil body_part and bleeding_rate' do
+        wound = described_class.new
+        expect(wound.body_part).to be_nil
+        expect(wound.severity).to be_nil
+        expect(wound.bleeding_rate).to be_nil
+      end
+
+      it 'coerces boolean flags' do
+        wound = described_class.new(is_internal: 'truthy', is_scar: nil)
+        expect(wound.internal?).to be true
+        expect(wound.scar?).to be false
+      end
+
+      it 'defaults all boolean flags to false' do
+        wound = described_class.new
+        expect(wound.internal?).to be false
+        expect(wound.scar?).to be false
+        expect(wound.parasite?).to be false
+        expect(wound.lodged?).to be false
+      end
+    end
+
+    describe '#bleeding?' do
+      it 'returns true for active bleed rates' do
+        wound = described_class.new(bleeding_rate: 'slight')
+        expect(wound.bleeding?).to be true
+      end
+
+      it 'returns false for (tended)' do
+        wound = described_class.new(bleeding_rate: '(tended)')
+        expect(wound.bleeding?).to be false
+      end
+
+      it 'returns false for nil bleeding_rate' do
+        wound = described_class.new
+        expect(wound.bleeding?).to be false
+      end
+
+      it 'returns false for empty bleeding_rate' do
+        wound = described_class.new(bleeding_rate: '')
+        expect(wound.bleeding?).to be false
+      end
+    end
+
+    describe '#tendable?' do
+      it 'returns true for parasites' do
+        wound = described_class.new(is_parasite: true)
+        expect(wound.tendable?).to be true
+      end
+
+      it 'returns true for lodged items' do
+        wound = described_class.new(is_lodged_item: true)
+        expect(wound.tendable?).to be true
+      end
+
+      it 'returns false for skin wounds' do
+        wound = described_class.new(body_part: 'skin', bleeding_rate: 'slight')
+        expect(wound.tendable?).to be false
+      end
+
+      it 'returns false for tended wounds' do
+        wound = described_class.new(body_part: 'right arm', bleeding_rate: '(tended)')
+        expect(wound.tendable?).to be false
+      end
+
+      it 'returns false for clotted wounds' do
+        wound = described_class.new(body_part: 'right arm', bleeding_rate: 'clotted')
+        expect(wound.tendable?).to be false
+      end
+
+      it 'returns false for non-bleeding wounds' do
+        wound = described_class.new(body_part: 'right arm', severity: 3)
+        expect(wound.tendable?).to be false
+      end
+
+      it 'returns true for bleeding wound when skilled' do
+        allow(DRSkill).to receive(:getrank).with('First Aid').and_return(100)
+        wound = described_class.new(body_part: 'right arm', bleeding_rate: 'slight')
+        expect(wound.tendable?).to be true
+      end
+
+      it 'returns false when unskilled' do
+        allow(DRSkill).to receive(:getrank).with('First Aid').and_return(0)
+        wound = described_class.new(body_part: 'right arm', bleeding_rate: 'slight')
+        expect(wound.tendable?).to be false
+      end
+    end
+
+    describe '#location' do
+      it 'returns external for non-internal wounds' do
+        expect(described_class.new.location).to eq('external')
+      end
+
+      it 'returns internal for internal wounds' do
+        expect(described_class.new(is_internal: true).location).to eq('internal')
+      end
+    end
+
+    describe '#type' do
+      it 'returns wound for fresh wounds' do
+        expect(described_class.new.type).to eq('wound')
+      end
+
+      it 'returns scar for scars' do
+        expect(described_class.new(is_scar: true).type).to eq('scar')
+      end
+    end
+
+    describe '#to_h' do
+      it 'returns a hash of all fields' do
+        wound = described_class.new(body_part: 'chest', severity: 5, is_internal: true)
+        h = wound.to_h
+        expect(h[:body_part]).to eq('chest')
+        expect(h[:severity]).to eq(5)
+        expect(h[:internal]).to be true
+        expect(h[:scar]).to be false
+        expect(h[:parasite]).to be false
+        expect(h[:lodged_item]).to be false
+      end
+    end
+
+    describe '#to_s' do
+      it 'includes body part and severity' do
+        wound = described_class.new(body_part: 'chest', severity: 5)
+        str = wound.to_s
+        expect(str).to include('chest')
+        expect(str).to include('severity:5')
+      end
+
+      it 'includes bleeding rate when present' do
+        wound = described_class.new(body_part: 'arm', bleeding_rate: 'slight')
+        expect(wound.to_s).to include('bleeding:slight')
+      end
+
+      it 'includes parasite flag when parasite' do
+        wound = described_class.new(is_parasite: true)
+        expect(wound.to_s).to include('parasite')
+      end
+
+      it 'includes lodged flag when lodged' do
+        wound = described_class.new(is_lodged_item: true)
+        expect(wound.to_s).to include('lodged')
+      end
+
+      it 'uses unknown when body_part is nil' do
+        wound = described_class.new
+        expect(wound.to_s).to include('unknown')
+      end
+    end
+  end
+
+  # --- HealthResult class -----------------------------------------------
+
+  describe described_class::HealthResult do
+    describe '#initialize' do
+      it 'has sensible defaults' do
+        result = described_class.new
+        expect(result.wounds).to eq({})
+        expect(result.bleeders).to eq({})
+        expect(result.parasites).to eq({})
+        expect(result.lodged).to eq({})
+        expect(result.poisoned).to be false
+        expect(result.diseased).to be false
+        expect(result.score).to eq(0)
+        expect(result.dead).to be false
+        expect(result.vitality).to eq(100)
+        expect(result.captured).to be true
+        expect(result.captured?).to be true
+      end
+
+      it 'accepts captured false without changing the other defaults' do
+        result = described_class.new(captured: false)
+        expect(result.captured?).to be false
+        expect(result['captured']).to be false
+        expect(result.injured?).to be false
+        expect(result.wounds).to eq({})
+      end
+    end
+
+    describe '#vitality' do
+      it 'stores remaining vitality percentage' do
+        result = described_class.new(vitality: 1)
+        expect(result.vitality).to eq(1)
+      end
+
+      it 'is accessible via backward-compatible string key' do
+        result = described_class.new(vitality: 55)
+        expect(result['vitality']).to eq(55)
+      end
+    end
+
+    describe '#[]' do
+      it 'provides backward-compatible string key access' do
+        result = described_class.new(poisoned: true, score: 42)
+        expect(result['poisoned']).to be true
+        expect(result['score']).to eq(42)
+        expect(result['wounds']).to eq({})
+      end
+
+      it 'provides symbol key access' do
+        result = described_class.new(diseased: true)
+        expect(result[:diseased]).to be true
+      end
+    end
+
+    describe '#injured?' do
+      it 'returns false for score 0' do
+        expect(described_class.new.injured?).to be false
+      end
+
+      it 'returns true for positive score' do
+        expect(described_class.new(score: 5).injured?).to be true
+      end
+    end
+
+    describe '#bleeding?' do
+      it 'returns false with no bleeders' do
+        expect(described_class.new.bleeding?).to be false
+      end
+
+      it 'returns true with active bleeders' do
+        wound_class = Lich::DragonRealms::DRCH::Wound
+        bleeders = { 3 => [wound_class.new(body_part: 'arm', bleeding_rate: 'slight')] }
+        result = described_class.new(bleeders: bleeders)
+        expect(result.bleeding?).to be true
+      end
+
+      it 'returns false with only tended bleeders' do
+        wound_class = Lich::DragonRealms::DRCH::Wound
+        bleeders = { 1 => [wound_class.new(body_part: 'arm', bleeding_rate: '(tended)')] }
+        result = described_class.new(bleeders: bleeders)
+        expect(result.bleeding?).to be false
+      end
+    end
+
+    describe '#has_tendable_bleeders?' do
+      it 'returns false with no bleeders' do
+        expect(described_class.new.has_tendable_bleeders?).to be false
+      end
+
+      it 'returns true with tendable bleeders' do
+        allow(DRSkill).to receive(:getrank).with('First Aid').and_return(100)
+        wound_class = Lich::DragonRealms::DRCH::Wound
+        bleeders = { 3 => [wound_class.new(body_part: 'arm', bleeding_rate: 'slight')] }
+        result = described_class.new(bleeders: bleeders)
+        expect(result.has_tendable_bleeders?).to be true
+      end
+    end
+  end
+
+  # --- strip_xml --------------------------------------------------------
+
+  describe '.strip_xml' do
+    it 'strips XML pushStream and other tags from health output lines' do
+      lines = ['<pushStream id="familiar">Some text</pushStream>']
+      expect(described_class.strip_xml(lines)).to eq(['Some text'])
+    end
+
+    it 'decodes HTML entities' do
+      lines = ['You say &gt; hello &lt; world']
+      expect(described_class.strip_xml(lines)).to eq(['You say > hello < world'])
+    end
+
+    it 'strips whitespace and rejects empty lines' do
+      lines = ['  hello  ', '', '   ', 'world']
+      expect(described_class.strip_xml(lines)).to eq(%w[hello world])
+    end
+
+    it 'removes inline XML tags' do
+      lines = ['<output class=""/>Your body feels at full strength.']
+      expect(described_class.strip_xml(lines)).to eq(['Your body feels at full strength.'])
+    end
+
+    it 'handles roundtime XML tags' do
+      lines = ["<roundTime value='1234'/>You feel at full strength."]
+      expect(described_class.strip_xml(lines)).to eq(['You feel at full strength.'])
+    end
+  end
+
+  # --- calculate_score --------------------------------------------------
+
+  describe '.calculate_score' do
+    it 'returns 0 for no wounds' do
+      expect(described_class.calculate_score({})).to eq(0)
+    end
+
+    it 'returns 0 for empty wound lists' do
+      expect(described_class.calculate_score({ 1 => [], 2 => [] })).to eq(0)
+    end
+
+    it 'calculates quadratic score' do
+      wound_class = described_class::Wound
+      wounds = {
+        1 => [wound_class.new],
+        3 => [wound_class.new, wound_class.new]
+      }
+      # 1^2 * 1 + 3^2 * 2 = 1 + 18 = 19
+      expect(described_class.calculate_score(wounds)).to eq(19)
+    end
+
+    it 'weights higher severity wounds more' do
+      wound_class = described_class::Wound
+      low = { 1 => [wound_class.new] }
+      high = { 8 => [wound_class.new] }
+      expect(described_class.calculate_score(high)).to be > described_class.calculate_score(low)
+    end
+  end
+
+  # --- parse_health_lines ----------------------------------------------
+
+  describe '.parse_health_lines' do
+    it 'parses a healthy person' do
+      lines = [
+        'Your body feels at full strength.',
+        'Your spirit feels full of life.',
+        'You have no significant injuries.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result).to be_a(described_class::HealthResult)
+      expect(result.wounds).to be_empty
+      expect(result.bleeders).to be_empty
+      expect(result.poisoned).to be false
+      expect(result.diseased).to be false
+      expect(result.score).to eq(0)
+    end
+
+    it 'detects external and compounded wounds from health output text' do
+      lines = [
+        'Your body feels at full strength.',
+        'Your spirit feels full of life.',
+        'You have some tiny scratches to the neck, minor swelling and bruising around the left arm compounded by cuts and bruises about the left arm.',
+        'You have no significant injuries.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.wounds).not_to be_empty
+      expect(result['wounds']).not_to be_empty # backward compat
+    end
+
+    it 'detects poison status from mildly poisoned body part in health output' do
+      lines = [
+        'Your body feels at full strength.',
+        'Your spirit feels full of life.',
+        'You have some tiny scratches to the neck.',
+        'You have a mildly poisoned right leg.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.poisoned).to be true
+    end
+
+    it 'detects breathing-related poison' do
+      lines = [
+        'Your body feels at full strength.',
+        'You feel somewhat tired and seem to be having trouble breathing.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.poisoned).to be true
+    end
+
+    it 'detects disease from infected wounds' do
+      lines = [
+        'Your body feels beat up.',
+        'Your wounds are infected.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.diseased).to be true
+    end
+
+    it 'detects disease from dormant infection' do
+      lines = [
+        'Your body feels at full strength.',
+        'You have a dormant infection.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.diseased).to be true
+    end
+
+    it 'detects disease from oozing sores' do
+      lines = [
+        'Your body feels beat up.',
+        'Your body is covered in open oozing sores.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.diseased).to be true
+    end
+
+    it 'ignores fatigue lines' do
+      lines = [
+        'Your body feels at full strength.',
+        'You are slightly fatigued.',
+        'Your spirit feels full of life.',
+        'You have no significant injuries.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.wounds).to be_empty
+      expect(result.poisoned).to be false
+    end
+
+    it 'ignores rested lines' do
+      lines = [
+        'Your body feels at full strength.',
+        'You feel fully rested.',
+        'You have no significant injuries.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.wounds).to be_empty
+    end
+
+    it 'detects bleeding wounds with body part and rate from the Bleeding section' do
+      lines = [
+        'Your body feels slightly battered.',
+        'Your spirit feels full of life.',
+        'You have deep cuts across the tail.',
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'tail       slight'
+      ]
+      result = described_class.parse_health_lines(lines)
+      expect(result.bleeders).not_to be_empty
+      bleeders = result.bleeders.values.flatten
+      expect(bleeders.length).to eq(1)
+      expect(bleeders.first.body_part).to eq('tail')
+      expect(bleeders.first.bleeding_rate).to eq('slight')
+    end
+
+    it 'detects both internal and external bleeders' do
+      lines = [
+        'Your body feels in bad shape.',
+        'You have a severely swollen and deeply bruised right leg compounded by deep cuts across the right leg.',
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'right leg       slight',
+        'inside r. leg       slight'
+      ]
+      result = described_class.parse_health_lines(lines)
+      bleeders = result.bleeders.values.flatten
+      expect(bleeders.length).to eq(2)
+      external = bleeders.find { |w| !w.internal? }
+      internal = bleeders.find(&:internal?)
+      expect(external.body_part).to eq('right leg')
+      expect(internal.body_part).to eq('right leg')
+    end
+
+    it 'detects lodged items' do
+      lines = [
+        'Your body feels at full strength.',
+        'You have cuts and bruises about the chest area.',
+        'You have a retch maggot lodged firmly into your chest.',
+        'You feel fully rested.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      lodged = result.lodged.values.flatten
+      expect(lodged.length).to eq(1)
+      expect(lodged.first.body_part).to eq('chest')
+      expect(lodged.first.lodged?).to be true
+    end
+
+    it 'detects parasites as Wound objects with body part and parasite flag from health output' do
+      lines = [
+        'Your body feels at full strength.',
+        'You have a retch maggot on your chest.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      parasites = result.parasites.values.flatten
+      expect(parasites.length).to eq(1)
+      expect(parasites.first.body_part).to eq('chest')
+      expect(parasites.first.parasite?).to be true
+    end
+
+    it 'calculates wound score' do
+      lines = [
+        'Your body feels at full strength.',
+        'You have some tiny scratches to the neck.'
+      ]
+      result = described_class.parse_health_lines(lines)
+      # severity 2 (negligible), 1 wound: 2^2 * 1 = 4
+      expect(result.score).to eq(4)
+    end
+  end
+
+  # --- parse_bleeders --------------------------------------------------
+
+  describe '.parse_bleeders' do
+    it 'returns empty hash when no bleeding section' do
+      lines = [
+        'Your body feels at full strength.',
+        'You have no significant injuries.'
+      ]
+      expect(described_class.parse_bleeders(lines)).to be_empty
+    end
+
+    it 'parses external bleeders' do
+      lines = [
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'tail       slight'
+      ]
+      bleeders = described_class.parse_bleeders(lines)
+      wound = bleeders.values.flatten.first
+      expect(wound.body_part).to eq('tail')
+      expect(wound.bleeding_rate).to eq('slight')
+      expect(wound.internal?).to be false
+    end
+
+    it 'parses internal bleeders with abbreviated sides' do
+      lines = [
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'inside r. arm       slight'
+      ]
+      bleeders = described_class.parse_bleeders(lines)
+      wound = bleeders.values.flatten.first
+      expect(wound.body_part).to eq('right arm')
+      expect(wound.internal?).to be true
+    end
+
+    it 'parses left-side internal bleeders' do
+      lines = [
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'inside l. leg       moderate'
+      ]
+      bleeders = described_class.parse_bleeders(lines)
+      wound = bleeders.values.flatten.first
+      expect(wound.body_part).to eq('left leg')
+      expect(wound.internal?).to be true
+      expect(wound.bleeding_rate).to eq('moderate')
+    end
+
+    it 'parses tended bleeders' do
+      lines = [
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'right arm       (tended)'
+      ]
+      bleeders = described_class.parse_bleeders(lines)
+      wound = bleeders.values.flatten.first
+      expect(wound.bleeding_rate).to eq('(tended)')
+      expect(wound.bleeding?).to be false
+    end
+
+    it 'parses multiple bleeders' do
+      lines = [
+        'Bleeding',
+        'Area       Rate',
+        '-----------------------------------------',
+        'right leg       slight',
+        'left leg       light',
+        'skin       slight',
+        'inside r. leg       slight',
+        'inside l. leg       light'
+      ]
+      bleeders = described_class.parse_bleeders(lines)
+      all_bleeders = bleeders.values.flatten
+      expect(all_bleeders.length).to eq(5)
+    end
+  end
+
+  # --- parse_wounds ----------------------------------------------------
+
+  describe '.parse_wounds' do
+    it 'returns empty hash for nil' do
+      expect(described_class.parse_wounds(nil)).to be_empty
+    end
+
+    it 'parses simple wound' do
+      line = 'You have some tiny scratches to the neck.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds.length).to eq(1)
+      expect(all_wounds.first.body_part).to eq('neck')
+      expect(all_wounds.first.severity).to eq(2) # negligible
+    end
+
+    it 'parses multiple wounds in comma-separated line' do
+      line = 'You have some tiny scratches to the neck, some minor abrasions to the left hand, some tiny scratches to the chest.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds.length).to eq(3)
+      body_parts = all_wounds.map(&:body_part)
+      expect(body_parts).to include('neck', 'left hand', 'chest')
+    end
+
+    it 'parses compounded wounds correctly (comma within wound text)' do
+      line = 'You have minor swelling and bruising around the left arm compounded by cuts and bruises about the left arm.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds.length).to eq(2)
+      expect(all_wounds.any?(&:internal?)).to be true
+      expect(all_wounds.any? { |w| !w.internal? }).to be true
+    end
+
+    it 'parses skin wounds' do
+      line = 'You have a small skin rash.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds.length).to eq(1)
+    end
+
+    it 'parses internal twitching wounds' do
+      line = 'You have an occasional twitching in the left leg.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds).not_to be_empty
+      expect(all_wounds.any? { |w| w.internal? && w.scar? }).to be true
+    end
+
+    it 'parses severe head wounds' do
+      line = 'You have a cracked skull with deep slashes.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds).not_to be_empty
+      expect(all_wounds.first.severity).to eq(6)
+    end
+
+    it 'parses useless body part wounds' do
+      line = 'You have an ugly stump for a right arm.'
+      wounds = described_class.parse_wounds(line)
+      all_wounds = wounds.values.flatten
+      expect(all_wounds).not_to be_empty
+      expect(all_wounds.first.severity).to eq(8)
+    end
+  end
+
+  # --- parse_parasites -------------------------------------------------
+
+  describe '.parse_parasites' do
+    it 'returns empty hash for nil' do
+      expect(described_class.parse_parasites(nil)).to be_empty
+    end
+
+    it 'parses a parasite on a body part' do
+      line = 'You have a retch maggot on your chest.'
+      parasites = described_class.parse_parasites(line)
+      all_parasites = parasites.values.flatten
+      expect(all_parasites.length).to eq(1)
+      expect(all_parasites.first.body_part).to eq('chest')
+      expect(all_parasites.first.parasite?).to be true
+      expect(all_parasites.first.severity).to eq(1)
+    end
+
+    it 'parses blood mite parasites' do
+      line = 'You have a small black blood mite on your left arm.'
+      parasites = described_class.parse_parasites(line)
+      all_parasites = parasites.values.flatten
+      expect(all_parasites.length).to eq(1)
+      expect(all_parasites.first.body_part).to eq('left arm')
+    end
+  end
+
+  # --- parse_lodged_items ----------------------------------------------
+
+  describe '.parse_lodged_items' do
+    it 'returns empty hash for nil' do
+      expect(described_class.parse_lodged_items(nil)).to be_empty
+    end
+
+    it 'parses a firmly lodged item' do
+      line = 'You have a retch maggot lodged firmly into your chest.'
+      lodged = described_class.parse_lodged_items(line)
+      all_lodged = lodged.values.flatten
+      expect(all_lodged.length).to eq(1)
+      expect(all_lodged.first.body_part).to eq('chest')
+      expect(all_lodged.first.lodged?).to be true
+      expect(all_lodged.first.severity).to eq(3) # firmly = 3
+    end
+
+    it 'parses a shallowly lodged item' do
+      line = 'You have an arrow lodged shallowly into your right leg.'
+      lodged = described_class.parse_lodged_items(line)
+      all_lodged = lodged.values.flatten
+      expect(all_lodged.first.severity).to eq(2) # shallowly = 2
+    end
+
+    it 'parses a deeply lodged item' do
+      line = 'You have a bolt lodged deeply into your abdomen.'
+      lodged = described_class.parse_lodged_items(line)
+      all_lodged = lodged.values.flatten
+      expect(all_lodged.first.severity).to eq(4) # deeply = 4
+    end
+  end
+
+  # --- parse_perceived_health_lines ------------------------------------
+
+  describe '.parse_perceived_health_lines' do
+    it 'parses wound details from perceive output' do
+      lines = [
+        'Your injuries include...',
+        'Wounds to the HEAD:',
+        'Fresh External:  light scratches -- negligible',
+        'Wounds to the LEFT ARM:',
+        'Fresh External:  cuts and bruises -- minor',
+        'Fresh Internal:  minor swelling and bruising -- minor',
+        'Roundtime: 5 sec.'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result).to be_a(described_class::HealthResult)
+      all_wounds = result.wounds.values.flatten
+      expect(all_wounds.length).to eq(3)
+
+      head_wound = all_wounds.find { |w| w.body_part == 'head' }
+      expect(head_wound).not_to be_nil
+      expect(head_wound.severity).to eq(2) # negligible
+      expect(head_wound.internal?).to be false
+      expect(head_wound.scar?).to be false
+
+      arm_wounds = all_wounds.select { |w| w.body_part == 'left arm' }
+      expect(arm_wounds.length).to eq(2)
+      expect(arm_wounds.any?(&:internal?)).to be true
+    end
+
+    it 'parses scar wounds from perceive health output and sets scar flag to true' do
+      lines = [
+        'Your injuries include...',
+        'Wounds to the RIGHT LEG:',
+        'Scars External:  minor scarring -- minor'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      wound = result.wounds.values.flatten.first
+      expect(wound.scar?).to be true
+    end
+
+    it 'detects dead target' do
+      lines = ['She is dead.']
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.dead).to be true
+    end
+
+    it 'detects He is dead' do
+      lines = ['He is dead.']
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.dead).to be true
+    end
+
+    it 'detects poisoned target' do
+      lines = ['Muleoak has a mildly poisoned right leg.']
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.poisoned).to be true
+    end
+
+    it 'detects diseased target' do
+      lines = ['Muleoak wounds are infected.']
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.diseased).to be true
+    end
+
+    it 'detects badly infected diseases' do
+      lines = ['Muleoak wounds are badly infected.']
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.diseased).to be true
+    end
+
+    it 'calculates score from perceived wounds' do
+      lines = [
+        'Your injuries include...',
+        'Wounds to the HEAD:',
+        'Fresh External:  light scratches -- negligible'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      # severity 2 (negligible), 1 wound: 2^2 * 1 = 4
+      expect(result.score).to eq(4)
+    end
+
+    it 'detects vitality damage with remaining percentage' do
+      lines = [
+        'You sense a successful empathic link has been forged between you and Tenuk.',
+        'He is dead.',
+        'Wounds to the RIGHT LEG:',
+        'Fresh External:  cuts and bruises about the right leg -- more than minor',
+        'Tenuk is suffering from a life threatening loss of vitality (99%).',
+        '(Tenuk has 1% vitality remaining.)',
+        'He is completely exhausted.'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.vitality).to eq(1)
+      expect(result.dead).to be true
+    end
+
+    it 'detects moderate vitality damage' do
+      lines = [
+        'You sense a successful empathic link has been forged between you and Navesi.',
+        '(Navesi has 55% vitality remaining.)'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.vitality).to eq(55)
+    end
+
+    it 'defaults to 100% vitality when no vitality damage' do
+      lines = [
+        'You sense a successful empathic link has been forged between you and Navesi.',
+        'Navesi has no injuries to speak of.'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      expect(result.vitality).to eq(100)
+    end
+
+    it 'handles multiple severity levels' do
+      lines = [
+        'Your injuries include...',
+        'Wounds to the HEAD:',
+        'Fresh External:  light scratches -- negligible',
+        'Fresh Internal:  a bruised head -- minor',
+        'Wounds to the LEFT ARM:',
+        'Scars External:  minor scarring -- minor'
+      ]
+      result = described_class.parse_perceived_health_lines(lines)
+      all_wounds = result.wounds.values.flatten
+      expect(all_wounds.length).to eq(3)
+    end
+  end
+
+  # --- skilled_to_tend_wound? ------------------------------------------
+
+  describe '.skilled_to_tend_wound?' do
+    it 'returns true when skilled enough for external' do
+      allow(DRSkill).to receive(:getrank).with('First Aid').and_return(100)
+      expect(described_class.skilled_to_tend_wound?('slight')).to be true
+    end
+
+    it 'returns false when unskilled' do
+      allow(DRSkill).to receive(:getrank).with('First Aid').and_return(0)
+      expect(described_class.skilled_to_tend_wound?('slight')).to be false
+    end
+
+    it 'returns false for unknown bleed rate' do
+      expect(described_class.skilled_to_tend_wound?('nonexistent')).to be false
+    end
+
+    it 'returns false for tended wounds' do
+      allow(DRSkill).to receive(:getrank).with('First Aid').and_return(100)
+      expect(described_class.skilled_to_tend_wound?('(tended)')).to be false
+    end
+
+    it 'requires higher skill for internal wounds' do
+      allow(DRSkill).to receive(:getrank).with('First Aid').and_return(100)
+      expect(described_class.skilled_to_tend_wound?('slight', false)).to be true  # external: 30
+      expect(described_class.skilled_to_tend_wound?('slight', true)).to be false  # internal: 600
+    end
+
+    it 'returns true when exactly at minimum skill' do
+      allow(DRSkill).to receive(:getrank).with('First Aid').and_return(30)
+      expect(described_class.skilled_to_tend_wound?('slight', false)).to be true
+    end
+
+    it 'returns false when one below minimum skill' do
+      allow(DRSkill).to receive(:getrank).with('First Aid').and_return(29)
+      expect(described_class.skilled_to_tend_wound?('slight', false)).to be false
+    end
+  end
+
+  # --- Game I/O methods ------------------------------------------------
+
+  describe '.check_health' do
+    let(:prompt) { '<prompt time="1787075465">&gt;</prompt>' }
+
+    before { allow(Lich::Messaging).to receive(:msg) }
+
+    # Lich::Util.issue_command returns [] on a timeout before the start line;
+    # it never returns nil.
+    context 'when issue_command times out before the start line ([])' do
+      before { allow(Lich::Util).to receive(:issue_command).and_return([]) }
+
+      it 'prints the timeout message' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture HEALTH output (timeout).')
+        described_class.check_health
+      end
+
+      it 'returns a HealthResult with captured false' do
+        result = described_class.check_health
+        expect(result).to be_a(described_class::HealthResult)
+        expect(result.captured?).to be false
+        expect(result['captured']).to be false
+      end
+
+      it 'keeps empty collections so legacy callers do not crash' do
+        result = described_class.check_health
+        expect(result['wounds']).to eq({})
+        expect(result['score']).to eq(0)
+      end
+    end
+
+    it 'treats nil from issue_command the same as a timeout' do
+      allow(Lich::Util).to receive(:issue_command).and_return(nil)
+      expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH: Failed to capture HEALTH output/)
+      expect(described_class.check_health.captured?).to be false
+    end
+
+    context 'when the prompt never arrives (cut-off reply)' do
+      let(:partial) do
+        [
+          'Your body feels at full strength.',
+          'Your spirit feels full of life.',
+          'You have a mildly poisoned right leg.'
+        ]
+      end
+
+      before { allow(Lich::Util).to receive(:issue_command).and_return(partial) }
+
+      it 'prints the cut-off message' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH: HEALTH output was cut off/)
+        described_class.check_health
+      end
+
+      it 'returns captured false but keeps what was parsed' do
+        result = described_class.check_health
+        expect(result.captured?).to be false
+        expect(result.poisoned).to be true
+      end
+    end
+
+    context 'when the full reply arrives' do
+      let(:raw_lines) do
+        [
+          '<output class=""/>Your body feels at full strength.',
+          'Your spirit feels full of life.',
+          'You have some tiny scratches to the neck.',
+          prompt
+        ]
+      end
+
+      before { allow(Lich::Util).to receive(:issue_command).and_return(raw_lines) }
+
+      it 'parses the wounds and reports captured true' do
+        result = described_class.check_health
+        expect(result.captured?).to be true
+        expect(result.wounds).not_to be_empty
+      end
+
+      it 'prints no message' do
+        expect(Lich::Messaging).not_to receive(:msg)
+        described_class.check_health
+      end
+    end
+
+    it 'treats a lone prompt line as cut off, not complete' do
+      # A reply needs its start line before the prompt; one line can never be both.
+      allow(Lich::Util).to receive(:issue_command).and_return([prompt])
+      expect(described_class.check_health.captured?).to be false
+    end
+
+    it 'asks issue_command for the prompt line so it can tell complete from cut off' do
+      expect(Lich::Util).to receive(:issue_command).with(
+        'health',
+        /^Your body feels\b/,
+        /<prompt/,
+        hash_including(usexml: true, quiet: true, include_end: true, timeout: 5)
+      ).and_return([])
+      described_class.check_health
+    end
+  end
+
+  describe '.perceive_health' do
+    let(:prompt) { '<prompt time="1787075465">&gt;</prompt>' }
+    let(:perceived) do
+      [
+        'Your injuries include...',
+        'Wounds to the HEAD:',
+        'Fresh External:  light scratches -- negligible'
+      ]
+    end
+
+    before do
+      allow(Lich::Messaging).to receive(:msg)
+      allow(described_class).to receive(:waitrt?)
+    end
+
+    it 'returns nil when not an empath' do
+      allow(DRStats).to receive(:empath?).and_return(false)
+      expect(described_class.perceive_health).to be_nil
+    end
+
+    it 'logs messaging when not an empath' do
+      allow(DRStats).to receive(:empath?).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH:.*empath/)
+      described_class.perceive_health
+    end
+
+    context 'when issue_command times out before the start line ([])' do
+      before do
+        allow(DRStats).to receive(:empath?).and_return(true)
+        allow(Lich::Util).to receive(:issue_command).and_return([])
+      end
+
+      it 'logs the timeout message' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture PERCEIVE HEALTH output (timeout).')
+        described_class.perceive_health
+      end
+
+      it 'returns a HealthResult with captured false, not nil' do
+        result = described_class.perceive_health
+        expect(result).to be_a(described_class::HealthResult)
+        expect(result.captured?).to be false
+        expect(result['wounds']).to eq({})
+      end
+
+      it 'still sends HEALTH and returns its diagnostics with captured false' do
+        health_reply = [
+          'Your body feels in bad shape.',
+          'You have a dormant infection.',
+          'You have a mildly poisoned right leg.',
+          'Bleeding',
+          'Area       Rate',
+          '-----------------------------------------',
+          'tail       slight',
+          prompt
+        ]
+        allow(Lich::Util).to receive(:issue_command).and_return([], health_reply)
+        result = described_class.perceive_health
+        expect(Lich::Util).to have_received(:issue_command).with('health', any_args)
+        expect(result.captured?).to be false
+        expect(result.wounds).to eq({})
+        expect(result.bleeders.values.flatten.length).to eq(1)
+        expect(result.poisoned).to be true
+        expect(result.diseased).to be true
+      end
+
+      it 'reports captured false even when the HEALTH reply is complete' do
+        allow(Lich::Util).to receive(:issue_command).and_return([], ['Your body feels at full strength.', prompt])
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture PERCEIVE HEALTH output (timeout).')
+        expect(Lich::Messaging).not_to receive(:msg).with('bold', /HEALTH output was cut off|Failed to capture HEALTH/)
+        expect(described_class.perceive_health.captured?).to be false
+      end
+    end
+
+    it 'returns captured true when both replies are complete' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(perceived + [prompt])
+      allow(described_class).to receive(:check_health).and_return(described_class::HealthResult.new(poisoned: true))
+      result = described_class.perceive_health
+      expect(result.captured?).to be true
+      expect(result.poisoned).to be true
+      expect(result.wounds.values.flatten.length).to eq(1)
+    end
+
+    it 'returns captured false with a message when the PERCEIVE reply is cut off' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(perceived)
+      allow(described_class).to receive(:check_health).and_return(described_class::HealthResult.new)
+      expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH: PERCEIVE HEALTH output was cut off/)
+      result = described_class.perceive_health
+      expect(result.captured?).to be false
+      expect(result.wounds.values.flatten.length).to eq(1)
+    end
+
+    it 'propagates captured false from the inner HEALTH check' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(perceived + [prompt])
+      allow(described_class).to receive(:check_health).and_return(described_class::HealthResult.new(captured: false))
+      result = described_class.perceive_health
+      expect(result.captured?).to be false
+      expect(result.wounds.values.flatten.length).to eq(1)
+    end
+
+    it 'falls back to check_health when permashocked' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      permashock_lines = ['You feel only an aching emptiness where your sense of empathy should be.', prompt]
+      allow(Lich::Util).to receive(:issue_command).and_return(permashock_lines)
+      # check_health will be called as fallback
+      health_result = described_class::HealthResult.new(score: 5)
+      allow(described_class).to receive(:check_health).and_return(health_result)
+      result = described_class.perceive_health
+      expect(result.score).to eq(5)
+    end
+  end
+
+  describe '.perceive_health_other' do
+    let(:prompt) { '<prompt time="1787075465">&gt;</prompt>' }
+    let(:touch_lines) do
+      [
+        'You sense a successful empathic link has been forged between you and Muleoak.',
+        'Wounds to the HEAD:',
+        'Fresh External:  light scratches -- negligible'
+      ]
+    end
+
+    before do
+      allow(Lich::Messaging).to receive(:msg)
+    end
+
+    it 'returns nil when not an empath' do
+      allow(DRStats).to receive(:empath?).and_return(false)
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'returns nil and logs the timeout message when issue_command returns []' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return([])
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture TOUCH output for Muleoak (timeout).')
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'returns nil on a nil from issue_command' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(nil)
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'returns nil with a message when the TOUCH reply is cut off' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(touch_lines)
+      expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH: TOUCH output for Muleoak was cut off/)
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'returns nil when touch fails' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(['Touch what?', prompt])
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'reports a failed touch as unable even when the prompt is missing' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(['Touch what?'])
+      expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH:.*Unable.*Muleoak/)
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'returns nil when target avoids touch' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(['Muleoak avoids your touch.', prompt])
+      expect(described_class.perceive_health_other('Muleoak')).to be_nil
+    end
+
+    it 'logs unable message on touch failure' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(['Touch what?', prompt])
+      expect(Lich::Messaging).to receive(:msg).with('bold', /DRCH:.*Unable.*Muleoak/)
+      described_class.perceive_health_other('Muleoak')
+    end
+
+    it 'extracts character name from empathic link message' do
+      allow(DRStats).to receive(:empath?).and_return(true)
+      allow(Lich::Util).to receive(:issue_command).and_return(touch_lines + [prompt])
+      result = described_class.perceive_health_other('mule')
+      expect(result).to be_a(described_class::HealthResult)
+      expect(result.captured?).to be true
+      expect(result.wounds.values.flatten.length).to eq(1)
+    end
+  end
+
+  # Drives the REAL Lich::Util.issue_command (not a stub), so these examples
+  # pin the actual timeout contract: [] or the lines so far, never nil.
+  describe 'timeouts through the real Lich::Util.issue_command' do
+    let(:prompt) { '<prompt time="1787075465">&gt;</prompt>' }
+    let(:replies) { [] }
+    let(:health_reply) { ['Your body feels at full strength.', 'You have a mildly poisoned right leg.'] }
+    let(:perceive_reply) do
+      ['Your injuries include...', 'Wounds to the HEAD:', 'Fresh External:  light scratches -- negligible']
+    end
+    let(:touch_reply) do
+      [
+        'You sense a successful empathic link has been forged between you and Muleoak.',
+        'Wounds to the HEAD:',
+        'Fresh External:  light scratches -- negligible'
+      ]
+    end
+
+    before do
+      allow(Lich::Messaging).to receive(:msg)
+      allow(described_class).to receive(:waitrt?)
+      allow(DRStats).to receive(:empath?).and_return(true)
+      stub_const('DownstreamHook', Class.new do
+        def self.add(*_args, **_kwargs); end
+
+        def self.remove(*_args); end
+      end)
+      allow(Script).to receive(:current).and_return(
+        OpenStruct.new(name: 'spec', silent: false, want_downstream: true, want_downstream_xml: true)
+      )
+      allow(Lich::Util).to receive(:fput)
+      queue = replies.dup
+      # Hand out the scripted lines, then block like a quiet game would.
+      allow(Lich::Util).to receive(:get) { queue.empty? ? sleep(5) : queue.shift }
+      # Keep the real method but shorten its timeout so the examples run fast.
+      allow(Lich::Util).to receive(:issue_command).and_wrap_original do |original, *args, **kwargs|
+        original.call(*args, **kwargs, timeout: 0.2)
+      end
+    end
+
+    context 'when no reply arrives' do
+      it 'check_health prints the timeout message and reports captured false' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture HEALTH output (timeout).')
+        expect(described_class.check_health.captured?).to be false
+      end
+
+      it 'perceive_health prints the timeout message and reports captured false' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture PERCEIVE HEALTH output (timeout).')
+        expect(described_class.perceive_health.captured?).to be false
+      end
+
+      it 'perceive_health_other prints the timeout message and returns nil' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture TOUCH output for Muleoak (timeout).')
+        expect(described_class.perceive_health_other('Muleoak')).to be_nil
+      end
+    end
+
+    context 'when PERCEIVE HEALTH gets no reply and HEALTH replies in full' do
+      let(:sent) { [] }
+
+      before do
+        per_command = {
+          'health' => [
+            'Your body feels in bad shape.',
+            'You have a dormant infection.',
+            'You have a mildly poisoned right leg.',
+            'Bleeding',
+            'Area       Rate',
+            '-----------------------------------------',
+            'tail       slight',
+            prompt
+          ]
+        }
+        reply_queue = []
+        allow(Lich::Util).to receive(:fput) do |command|
+          sent << command
+          reply_queue.concat(per_command.fetch(command, []))
+        end
+        allow(Lich::Util).to receive(:get) { reply_queue.empty? ? sleep(5) : reply_queue.shift }
+      end
+
+      it 'perceive_health sends HEALTH and keeps its bleeders, poison and disease with captured false' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: Failed to capture PERCEIVE HEALTH output (timeout).')
+        result = described_class.perceive_health
+        expect(sent).to eq(['perceive health self', 'health'])
+        expect(result.captured?).to be false
+        expect(result.wounds).to eq({})
+        expect(result.bleeders.values.flatten.length).to eq(1)
+        expect(result.poisoned).to be true
+        expect(result.diseased).to be true
+      end
+    end
+
+    context 'when the start line arrives but the prompt does not' do
+      let(:replies) { ['Your body feels at full strength.', 'You have a mildly poisoned right leg.'] }
+
+      it 'check_health reports captured false and keeps the parsed data' do
+        result = described_class.check_health
+        expect(result.captured?).to be false
+        expect(result.poisoned).to be true
+      end
+    end
+
+    context 'when the PERCEIVE reply arrives without its prompt' do
+      let(:replies) { perceive_reply }
+
+      it 'perceive_health prints the cut-off message, reports captured false and keeps the wounds' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: PERCEIVE HEALTH output was cut off (timeout); the result is incomplete.')
+        result = described_class.perceive_health
+        expect(result.captured?).to be false
+        expect(result.wounds.values.flatten.length).to eq(1)
+      end
+    end
+
+    context 'when the PERCEIVE reply is complete but the HEALTH reply is cut off' do
+      let(:replies) { perceive_reply + [prompt] + health_reply }
+
+      it 'perceive_health reports captured false and keeps both parses' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: HEALTH output was cut off (timeout); the result is incomplete.')
+        result = described_class.perceive_health
+        expect(result.captured?).to be false
+        expect(result.poisoned).to be true
+        expect(result.wounds.values.flatten.length).to eq(1)
+      end
+    end
+
+    context 'when the TOUCH reply arrives without its prompt' do
+      let(:replies) { touch_reply }
+
+      it 'perceive_health_other prints the cut-off message and returns nil' do
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'DRCH: TOUCH output for Muleoak was cut off (timeout).')
+        expect(described_class.perceive_health_other('Muleoak')).to be_nil
+      end
+    end
+
+    context 'when the full reply arrives' do
+      let(:replies) { ['Your body feels at full strength.', 'You have a mildly poisoned right leg.', prompt] }
+
+      it 'check_health reports captured true and prints nothing' do
+        expect(Lich::Messaging).not_to receive(:msg)
+        result = described_class.check_health
+        expect(result.captured?).to be true
+        expect(result.poisoned).to be true
+      end
+    end
+
+    context 'when the full PERCEIVE and HEALTH replies arrive' do
+      let(:replies) { perceive_reply + [prompt] + health_reply + [prompt] }
+
+      it 'perceive_health reports captured true and prints nothing' do
+        expect(Lich::Messaging).not_to receive(:msg)
+        result = described_class.perceive_health
+        expect(result.captured?).to be true
+        expect(result.poisoned).to be true
+        expect(result.wounds.values.flatten.length).to eq(1)
+      end
+    end
+
+    context 'when the full TOUCH reply arrives' do
+      let(:replies) { touch_reply + [prompt] }
+
+      it 'perceive_health_other returns a captured result and prints nothing' do
+        expect(Lich::Messaging).not_to receive(:msg)
+        result = described_class.perceive_health_other('Muleoak')
+        expect(result.captured?).to be true
+        expect(result.wounds.values.flatten.length).to eq(1)
+      end
+    end
+  end
+
+  describe '.bind_wound' do
+    before do
+      allow(described_class).to receive(:waitrt?)
+    end
+
+    it 'returns true on successful tend' do
+      allow(DRC).to receive(:bput).and_return('You work carefully at tending your wound.')
+      expect(described_class.bind_wound('right arm')).to be true
+    end
+
+    it 'returns true when already tended' do
+      allow(DRC).to receive(:bput).and_return('That area has already been tended to.')
+      expect(described_class.bind_wound('right arm')).to be true
+    end
+
+    it 'returns false on fumble' do
+      allow(DRC).to receive(:bput).and_return('You fumble around with the bandages.')
+      expect(described_class.bind_wound('right arm')).to be false
+    end
+
+    it 'returns false when too injured' do
+      allow(DRC).to receive(:bput).and_return('You are too injured for you to do that.')
+      expect(described_class.bind_wound('right arm')).to be false
+    end
+
+    it 'returns false when no free hand' do
+      allow(DRC).to receive(:bput).and_return('You must have a hand free to tend a wound.')
+      expect(described_class.bind_wound('right arm')).to be false
+    end
+
+    it 'returns true when parasite slips free' do
+      allow(DRC).to receive(:bput).and_return('The blood mite slips free and quickly slithers away, vanishing from sight within moments.')
+      expect(described_class.bind_wound('right eye')).to be true
+    end
+
+    it 'returns false on careless attempt' do
+      allow(DRC).to receive(:bput).and_return('You carelessly attempt to remove the blood mite from your neck leaving the wound more severe than before.')
+      expect(described_class.bind_wound('neck')).to be false
+    end
+
+    it 'returns false on foolish attempt' do
+      allow(DRC).to receive(:bput).and_return('You foolishly attempt to remove the blood mite from your right eye tearing the flesh and horribly aggravating the wound!')
+      expect(described_class.bind_wound('right eye')).to be false
+    end
+
+    it 'passes person parameter to bput' do
+      expect(DRC).to receive(:bput).with('tend Muleoak right arm', any_args).and_return('You work carefully at tending')
+      described_class.bind_wound('right arm', 'Muleoak')
+    end
+
+    # -- Dislodged lodged items (crossbow bolts, arrows, ...) -----------------
+    #
+    # Tending out a lodged item drops it into a free hand; bind_wound disposes
+    # that item and re-tends. The disposal must target ONLY the item just
+    # removed, and only while it is actually in hand -- otherwise a blind
+    # dispose_trash would GET a same-named item from a worn container (the
+    # character's own ammunition) if the removed item has vanished (e.g. the
+    # Droughtman's Maze yanks you out and clears your hands the instant the bolt
+    # drops). in_hands? / dispose_trash come from the shared spec_helper DRCI.
+    context 'when a tend dislodges a lodged item' do
+      let(:removed_abdomen) do
+        'You skillfully remove the crossbow bolt from your abdomen leaving the wound no worse than it was before.'
+      end
+      let(:tended) { 'That area is not bleeding.' }
+
+      it 'disposes the removed item when it is in hand, then re-tends to a terminal' do
+        allow(DRC).to receive(:bput).and_return(removed_abdomen, tended)
+        allow(DRCI).to receive(:in_hands?).with('crossbow bolt').and_return(true)
+        expect(DRCI).to receive(:dispose_trash).with('crossbow bolt', anything, anything)
+
+        expect(described_class.bind_wound('abdomen')).to be true
+      end
+
+      it 'does NOT dispose (never grabs a like-named item) when the dislodged item is gone from hand' do
+        # The regression: hand cleared by the maze eject before disposal runs.
+        allow(DRC).to receive(:bput).and_return(removed_abdomen, tended)
+        allow(DRCI).to receive(:in_hands?).with('crossbow bolt').and_return(false)
+        expect(DRCI).not_to receive(:dispose_trash)
+
+        described_class.bind_wound('abdomen')
+      end
+
+      it 'treats a nil in-hands result as not-in-hand and skips disposal' do
+        allow(DRC).to receive(:bput).and_return(removed_abdomen, tended)
+        allow(DRCI).to receive(:in_hands?).and_return(nil)
+        expect(DRCI).not_to receive(:dispose_trash)
+
+        described_class.bind_wound('abdomen')
+      end
+
+      it 'checks in-hands against the exact removed item, not the whole message' do
+        allow(DRC).to receive(:bput).and_return(removed_abdomen, tended)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+
+        described_class.bind_wound('abdomen')
+
+        expect(DRCI).to have_received(:in_hands?).with('crossbow bolt')
+      end
+
+      it 'captures a "some"-quantified dislodged item' do
+        removed_plural = 'You deftly remove some crossbow bolts from your abdomen leaving the wound no worse than it was before.'
+        allow(DRC).to receive(:bput).and_return(removed_plural, tended)
+        allow(DRCI).to receive(:in_hands?).with('crossbow bolts').and_return(true)
+        expect(DRCI).to receive(:dispose_trash).with('crossbow bolts', anything, anything)
+
+        described_class.bind_wound('abdomen')
+      end
+
+      it 'keeps dislodging and disposing each removed item until the area yields a terminal' do
+        removed_bolt = 'You deftly remove a crossbow bolt from your chest leaving the wound no worse than it was before.'
+        removed_arrow = 'You skillfully remove the arrow from your chest leaving the wound no worse than it was before.'
+        allow(DRC).to receive(:bput).and_return(removed_bolt, removed_arrow, 'You work carefully at tending your wound.')
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        expect(DRCI).to receive(:dispose_trash).with('crossbow bolt', anything, anything).ordered
+        expect(DRCI).to receive(:dispose_trash).with('arrow', anything, anything).ordered
+
+        expect(described_class.bind_wound('chest')).to be true
+      end
+
+      it 'does not attempt disposal (or an in-hands check) for a dislodge line with no removable item' do
+        # The clay-fragment dislodge line matches TEND_DISLODGE_PATTERNS but has
+        # no "remove <item> from" capture, so dislodge_match is nil.
+        allow(DRC).to receive(:bput).and_return('As you reach for the clay fragment it crumbles to dust.', tended)
+        expect(DRCI).not_to receive(:in_hands?)
+        expect(DRCI).not_to receive(:dispose_trash)
+
+        described_class.bind_wound('chest')
+      end
+
+      it 'preserves the person argument across dislodge recursion' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        allow(DRC).to receive(:bput).and_return(
+          'You skillfully remove the crossbow bolt from your chest leaving the wound no worse than it was before.',
+          tended
+        )
+
+        described_class.bind_wound('chest', 'Muleoak')
+
+        expect(DRC).to have_received(:bput).with('tend Muleoak chest', any_args).twice
+      end
+    end
+  end
+
+  describe '.unwrap_wound' do
+    before do
+      allow(described_class).to receive(:waitrt?)
+    end
+
+    it 'calls bput with unwrap command' do
+      expect(DRC).to receive(:bput).with('unwrap my right arm', any_args)
+      described_class.unwrap_wound('right arm')
+    end
+
+    it 'passes person parameter' do
+      expect(DRC).to receive(:bput).with('unwrap Muleoak chest', any_args)
+      described_class.unwrap_wound('chest', 'Muleoak')
+    end
+  end
+
+  describe '.has_tendable_bleeders?' do
+    it 'delegates to check_health result' do
+      health_result = described_class::HealthResult.new
+      allow(described_class).to receive(:check_health).and_return(health_result)
+      expect(described_class.has_tendable_bleeders?).to be false
+    end
+  end
+
+  # --- Data constants --------------------------------------------------
+
+  describe 'data constants' do
+    it 'freezes BLEED_RATE_TO_SEVERITY' do
+      expect(described_class::BLEED_RATE_TO_SEVERITY).to be_frozen
+    end
+
+    it 'freezes inner hashes of BLEED_RATE_TO_SEVERITY' do
+      described_class::BLEED_RATE_TO_SEVERITY.each_value do |info|
+        expect(info).to be_frozen
+      end
+    end
+
+    it 'freezes WOUND_SEVERITY_REGEX_MAP' do
+      expect(described_class::WOUND_SEVERITY_REGEX_MAP).to be_frozen
+    end
+
+    it 'freezes inner hashes of WOUND_SEVERITY_REGEX_MAP' do
+      described_class::WOUND_SEVERITY_REGEX_MAP.each_value do |template|
+        expect(template).to be_frozen
+      end
+    end
+
+    it 'freezes PARASITES_REGEX' do
+      expect(described_class::PARASITES_REGEX).to be_frozen
+    end
+
+    it 'freezes LODGED_SEVERITY' do
+      expect(described_class::LODGED_SEVERITY).to be_frozen
+    end
+
+    it 'freezes WOUND_SEVERITY' do
+      expect(described_class::WOUND_SEVERITY).to be_frozen
+    end
+
+    it 'freezes TEND_SUCCESS_PATTERNS' do
+      expect(described_class::TEND_SUCCESS_PATTERNS).to be_frozen
+    end
+
+    it 'freezes TEND_FAILURE_PATTERNS' do
+      expect(described_class::TEND_FAILURE_PATTERNS).to be_frozen
+    end
+
+    it 'freezes TEND_DISLODGE_PATTERNS' do
+      expect(described_class::TEND_DISLODGE_PATTERNS).to be_frozen
+    end
+
+    it 'has backward-compat global aliases' do
+      expect($DRCH_BLEED_RATE_TO_SEVERITY_MAP).to equal(described_class::BLEED_RATE_TO_SEVERITY)
+      expect($DRCH_WOUND_TO_SEVERITY_MAP).to equal(described_class::WOUND_SEVERITY)
+      expect($DRCH_PARASITES_REGEX_LIST).to equal(described_class::PARASITES_REGEX)
+      expect($DRCH_PERCEIVE_HEALTH_SEVERITY_REGEX).to eq(described_class::PERCEIVE_HEALTH_SEVERITY_REGEX)
+      expect($DRCH_WOUND_BODY_PART_REGEX).to eq(described_class::WOUND_BODY_PART_REGEX)
+      expect($DRCH_LODGED_BODY_PART_REGEX).to eq(described_class::LODGED_BODY_PART_REGEX)
+      expect($DRCH_PARASITE_BODY_PART_REGEX).to eq(described_class::PARASITE_BODY_PART_REGEX)
+      expect($DRCH_WOUND_SEVERITY_REGEX_MAP).to equal(described_class::WOUND_SEVERITY_REGEX_MAP)
+      expect($DRCH_WOUND_COMMA_SEPARATOR).to eq(described_class::WOUND_COMMA_SEPARATOR)
+    end
+
+    it 'has all bleed rate entries' do
+      # Verify representative entries
+      expect(described_class::BLEED_RATE_TO_SEVERITY['slight'][:severity]).to eq(3)
+      expect(described_class::BLEED_RATE_TO_SEVERITY['death awaits'][:severity]).to eq(22)
+      expect(described_class::BLEED_RATE_TO_SEVERITY['tended'][:bleeding]).to be false
+      expect(described_class::BLEED_RATE_TO_SEVERITY['moderate'][:bleeding]).to be true
+    end
+
+    it 'has all lodged severity entries' do
+      expect(described_class::LODGED_SEVERITY['loosely hanging']).to eq(1)
+      expect(described_class::LODGED_SEVERITY['savagely']).to eq(5)
+    end
+
+    it 'has all wound severity entries' do
+      expect(described_class::WOUND_SEVERITY['insignificant']).to eq(1)
+      expect(described_class::WOUND_SEVERITY['useless']).to eq(13)
+    end
+  end
+end

@@ -1,0 +1,382 @@
+# frozen_string_literal: true
+
+require_relative 'update_spec_helper'
+
+RSpec.describe Lich::Util::Update::FileUpdater do
+  let(:tmpdir) { Dir.mktmpdir('fu-test') }
+  let(:client) { instance_double(Lich::Util::Update::GitHubClient) }
+  let(:resolver) { instance_double(Lich::Util::Update::ChannelResolver) }
+  let(:snapshot_manager) { instance_double(Lich::Util::Update::SnapshotManager) }
+  let(:updater) { described_class.new(client, resolver, snapshot_manager) }
+
+  before do
+    stub_const('SCRIPT_DIR', tmpdir)
+    allow(Lich::Util::Update::StatusReporter).to receive(:respond_mono)
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  describe '#update_file_from_repo finds data files via subdir pattern' do
+    it 'resolves effect-list.xml through the gs-scripts pattern' do
+      tree = {
+        'tree' => [
+          { 'path' => 'scripts/effect-list.xml', 'type' => 'blob', 'sha' => 'abc123' },
+          { 'path' => 'scripts/gameobj-data.xml', 'type' => 'blob', 'sha' => 'def456' },
+        ]
+      }
+      allow(client).to receive(:fetch_github_json).and_return(tree)
+      allow(client).to receive(:http_get).and_return('<xml>effect data</xml>')
+      allow(Lich::Util::Update::FileWriter).to receive(:safe_write)
+
+      updater.update_file_from_repo('data', 'gs-scripts', 'effect-list.xml')
+
+      expect(client).to have_received(:http_get).with(
+        'https://raw.githubusercontent.com/elanthia-online/scripts/master/scripts/effect-list.xml',
+        auth: false
+      )
+    end
+  end
+
+  describe '#update_file_from_repo when file is not in repo tree' do
+    it 'reports not found without attempting download' do
+      tree = {
+        'tree' => [
+          { 'path' => 'scripts/other-file.xml', 'type' => 'blob', 'sha' => 'xxx' },
+        ]
+      }
+      allow(client).to receive(:fetch_github_json).and_return(tree)
+
+      updater.update_file_from_repo('data', 'gs-scripts', 'nonexistent.xml')
+
+      expect(Lich::Util::Update::StatusReporter).to have_received(:respond_mono).with(
+        /nonexistent\.xml not found/
+      )
+    end
+  end
+
+  describe '#update_file_from_repo when GitHub tree API fails' do
+    it 'bails early with an error message and does not attempt download' do
+      allow(client).to receive(:fetch_github_json).and_return(nil)
+      allow(client).to receive(:last_error).and_return(Lich::Util::Update::FetchError.new(kind: :unavailable, status: 502))
+
+      updater.update_file_from_repo('data', 'gs-scripts', 'effect-list.xml')
+
+      expect(Lich::Util::Update::StatusReporter).to have_received(:respond_mono).with(
+        /GitHub check failed\. effect-list\.xml was not updated\. This is a temporary error/
+      )
+    end
+  end
+
+  describe '#update_file_from_repo skips download when local SHA matches remote' do
+    it 'reports already up to date' do
+      content = '<xml>current content</xml>'
+      local_path = File.join(DATA_DIR, 'gameobj-data.xml')
+      FileUtils.mkdir_p(DATA_DIR)
+      File.binwrite(local_path, content)
+      sha = git_blob_sha(content)
+
+      tree = {
+        'tree' => [
+          { 'path' => 'scripts/gameobj-data.xml', 'type' => 'blob', 'sha' => sha },
+        ]
+      }
+      allow(client).to receive(:fetch_github_json).and_return(tree)
+
+      updater.update_file_from_repo('data', 'gs-scripts', 'gameobj-data.xml')
+
+      expect(Lich::Util::Update::StatusReporter).to have_received(:respond_mono).with(
+        /already up to date/
+      )
+    end
+  end
+
+  describe '#update_file_from_repo with unsupported type' do
+    it 'rejects library type with repo syntax' do
+      expect { updater.update_file_from_repo('library', 'scripts', 'foo.rb') }.not_to raise_error
+    end
+  end
+
+  describe '#update_file_from_repo with unknown repo key' do
+    it 'reports unknown repository' do
+      expect { updater.update_file_from_repo('script', 'fake-repo', 'foo.lic') }.not_to raise_error
+    end
+  end
+
+  describe '#update_core_data_and_scripts' do
+    let(:effect_list_path) { File.join(DATA_DIR, 'effect-list.xml') }
+
+    before do
+      XMLData.game = 'GS'
+      FileUtils.mkdir_p(DATA_DIR)
+      File.write(effect_list_path, '<xml>old effect data</xml>')
+      allow(updater).to receive(:update_file)
+      allow(Lich).to receive(:core_updated_with_lich_version=)
+    end
+
+    after do
+      XMLData.game = 'DR'
+      File.delete(effect_list_path) if File.exist?(effect_list_path)
+    end
+
+    # The GS login sync fetches effect-list.xml again, so a failure here can
+    # say the next login fixes it.
+    it 'updates effect-list.xml with the login wording for failures' do
+      allow(snapshot_manager).to receive(:new_data_backup_dir).and_return(Dir.mktmpdir('databackup-test'))
+
+      updater.update_core_data_and_scripts('5.16.0')
+
+      expect(updater).to have_received(:update_file).with('data', 'effect-list.xml', retried_by: :login)
+    end
+
+    context 'given an explicit snapshot_dir from an active full update' do
+      it "backs the prior effect-list.xml up under that snapshot's data directory" do
+        snapshot_dir = Dir.mktmpdir('snap-test')
+
+        updater.update_core_data_and_scripts('5.16.0', snapshot_dir)
+
+        expect(File.read(File.join(snapshot_dir, 'data', 'effect-list.xml'))).to eq('<xml>old effect data</xml>')
+        FileUtils.remove_entry(snapshot_dir)
+      end
+    end
+
+    context 'given no snapshot_dir (a standalone call, e.g. login autostart)' do
+      it 'asks SnapshotManager for a data-only backup directory rather than a real snapshot directory' do
+        data_backup_dir = Dir.mktmpdir('databackup-test')
+        allow(snapshot_manager).to receive(:new_data_backup_dir).and_return(data_backup_dir)
+
+        updater.update_core_data_and_scripts('5.16.0')
+
+        expect(snapshot_manager).to have_received(:new_data_backup_dir)
+        expect(File.read(File.join(data_backup_dir, 'data', 'effect-list.xml'))).to eq('<xml>old effect data</xml>')
+        FileUtils.remove_entry(data_backup_dir)
+      end
+    end
+
+    context 'called twice with no snapshot_dir within the same second (e.g. two multiboxed logins)' do
+      it 'never resolves both standalone calls to the same data-only backup directory' do
+        # update_core_data_and_scripts is a public entry point with no guard
+        # of its own against concurrent callers -- the @@autostarted check
+        # lives in games.rb, not here. Use a real SnapshotManager (rather
+        # than the instance_double above) so this exercises the actual
+        # directory-naming collision risk instead of a stubbed return value.
+        real_snapshot_manager = Lich::Util::Update::SnapshotManager.new
+        concurrent_updater = described_class.new(client, resolver, real_snapshot_manager)
+        allow(concurrent_updater).to receive(:update_file)
+
+        before_dirs = Dir.glob(File.join(BACKUP_DIR, 'L5-databackup-*'))
+        concurrent_updater.update_core_data_and_scripts('5.16.0')
+        concurrent_updater.update_core_data_and_scripts('5.16.0')
+        created_dirs = Dir.glob(File.join(BACKUP_DIR, 'L5-databackup-*')).sort - before_dirs
+
+        expect(created_dirs.length).to eq(2)
+        expect(created_dirs[0]).not_to eq(created_dirs[1])
+
+        created_dirs.each { |dir| FileUtils.remove_entry(dir) }
+      end
+    end
+  end
+
+  describe '#update_file_from_repo when the raw download fails after the tree listed the file' do
+    it 'does not tell the user to check that the repository exists' do
+      printed = []
+      allow(Lich::Util::Update::StatusReporter).to receive(:respond_mono) { |msg| printed << msg }
+      tree = { 'tree' => [{ 'path' => 'scripts/foo.lic', 'type' => 'blob', 'sha' => 'abc' }] }
+      allow(client).to receive(:fetch_github_json).and_return(tree)
+      allow(client).to receive(:http_get).and_return(nil)
+      allow(client).to receive(:last_error).and_return(Lich::Util::Update::FetchError.new(kind: :not_found, status: 404))
+
+      updater.update_file_from_repo('script', 'scripts', 'foo.lic')
+
+      expect(printed.last).to include('foo.lic was not updated.', 'temporary error')
+      expect(printed.last).not_to include('not found')
+    end
+  end
+
+  describe '#update_file beta library when no beta ref resolves' do
+    let(:printed) { [] }
+
+    before do
+      allow(updater).to receive(:respond) { |msg = ''| printed << msg }
+      allow(Lich::Util::Update::StatusReporter).to receive(:respond_mono) { |msg| printed << msg }
+      allow(resolver).to receive(:resolve_channel_ref).with(:beta).and_return(nil)
+    end
+
+    it 'reports a GitHub failure instead of claiming no beta exists' do
+      allow(resolver).to receive(:last_error).and_return(Lich::Util::Update::FetchError.new(kind: :network))
+
+      updater.update_file('library', 'foo.rb', 'beta')
+
+      expect(printed).to eq(['[lich5-update: GitHub check failed. No beta update was installed. This is usually temporary; run the command again in a few minutes.]'])
+    end
+
+    it 'still says no viable beta when GitHub answered' do
+      allow(resolver).to receive(:last_error).and_return(nil)
+
+      updater.update_file('library', 'foo.rb', 'beta')
+
+      expect(printed).to eq(['No viable beta found. Aborting beta update.'])
+    end
+  end
+
+  describe '#update_file legacy download' do
+    let(:printed) { [] }
+    let(:live_path) { File.join(tmpdir, 'foo.lic') }
+    let(:url) { 'https://raw.githubusercontent.com/elanthia-online/scripts/master/scripts/foo.lic' }
+    let(:mono) { [] }
+
+    before do
+      allow(updater).to receive(:respond) { |msg = ''| printed << msg }
+      allow(Lich::Util::Update::StatusReporter).to receive(:respond_mono) { |msg| mono << msg }
+      File.binwrite(live_path, "# foo v1\n")
+    end
+
+    def fail_download(kind, status = nil)
+      allow(client).to receive(:http_get).with(url, auth: false).and_return(nil)
+      allow(client).to receive(:last_error).and_return(Lich::Util::Update::FetchError.new(kind: kind, status: status))
+    end
+
+    it 'downloads through the GitHub client, without the token' do
+      allow(client).to receive(:http_get).and_return("# foo v2\n")
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(client).to have_received(:http_get).with(url, auth: false).once
+    end
+
+    it 'keeps the live file in place for the whole download' do
+      seen_during_download = nil
+      allow(client).to receive(:http_get).with(url, auth: false) do
+        seen_during_download = File.exist?(live_path) ? File.binread(live_path) : :missing
+        "# foo v2\n"
+      end
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(seen_during_download).to eq("# foo v1\n")
+      expect(File.binread(live_path)).to eq("# foo v2\n")
+      expect(Dir.children(tmpdir)).to eq(['foo.lic'])
+      expect(printed).to include('foo.lic has been updated.')
+    end
+
+    it 'reports a network failure as a GitHub failure and leaves the existing file untouched' do
+      fail_download(:network)
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(File.binread(live_path)).to eq("# foo v1\n")
+      expect(Dir.children(tmpdir)).to eq(['foo.lic'])
+      expect(mono).to eq(['[lich5-update: GitHub check failed. foo.lic was not updated. This is usually temporary; run the command again in a few minutes.]'])
+      expect(printed.grep(/not available via lich5-update|has been updated/)).to be_empty
+    end
+
+    it 'reports a rate limit as a rate limit, not as a missing file' do
+      fail_download(:rate_limited, 429)
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(mono.grep(/rate limit reached.*foo\.lic was not updated/).size).to eq(1)
+      expect(printed.grep(/not available via lich5-update/)).to be_empty
+    end
+
+    it 'tells the user a file the repository does not have is not available' do
+      fail_download(:not_found, 404)
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(File.binread(live_path)).to eq("# foo v1\n")
+      expect(mono).to be_empty
+      expect(printed).to include('The existing foo.lic was left unchanged.')
+      expect(printed).to include('The filename foo.lic is not available via lich5-update.')
+    end
+
+    it 'does not claim a file was left unchanged when there was none' do
+      File.delete(live_path)
+      fail_download(:not_found, 404)
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(Dir.children(tmpdir)).to be_empty
+      expect(printed.grep(/left unchanged/)).to be_empty
+      expect(printed).to include('The filename foo.lic is not available via lich5-update.')
+    end
+
+    it 'reports a name that cannot form a URL as not available, without a request' do
+      allow(client).to receive(:http_get)
+
+      updater.update_file('script', 'f oo.lic')
+
+      expect(client).not_to have_received(:http_get)
+      expect(mono).to be_empty
+      expect(printed).to include('The filename f oo.lic is not available via lich5-update.')
+    end
+
+    it 'says the next login fixes a failure only when the login sync fetches the file again' do
+      allow(client).to receive(:http_get).and_return(nil)
+      allow(client).to receive(:last_error).and_return(Lich::Util::Update::FetchError.new(kind: :network))
+
+      updater.update_file('data', 'effect-list.xml', retried_by: :login)
+
+      expect(mono).to eq(['[lich5-update: GitHub check failed. effect-list.xml was not updated. This is a temporary error that should resolve itself by your next login.]'])
+    end
+
+    ['./foo.lic', '../scripts/foo.lic', 'sub//foo.lic', '/foo.lic', '..\\foo.lic'].each do |name|
+      it "refuses #{name.inspect} as not available, without a request or a write outside the directory" do
+        allow(client).to receive(:http_get)
+
+        updater.update_file('script', name)
+
+        expect(client).not_to have_received(:http_get)
+        expect(mono).to be_empty
+        expect(printed).to include("The filename #{name} is not available via lich5-update.")
+        expect(Dir.children(tmpdir)).to eq(['foo.lic'])
+      end
+    end
+
+    it 'still downloads a library file from a subdirectory of lib' do
+      stub_const('LIB_DIR', tmpdir)
+      FileUtils.mkdir_p(File.join(tmpdir, 'common'))
+      allow(resolver).to receive(:resolve_channel_ref).with(:stable).and_return('main')
+      allow(client).to receive(:http_get).and_return("# spell v2\n")
+
+      updater.update_file('library', 'common/spell.rb')
+
+      expect(client).to have_received(:http_get)
+        .with("https://raw.githubusercontent.com/#{Lich::Util::Update::GITHUB_REPO}/main/lib/common/spell.rb", auth: false)
+      expect(File.binread(File.join(tmpdir, 'common', 'spell.rb'))).to eq("# spell v2\n")
+    end
+
+    it 'reports a library channel with no remote as not available instead of raising' do
+      stub_const('LIB_DIR', tmpdir)
+      allow(client).to receive(:http_get)
+
+      expect { updater.update_file('library', 'foo.rb', 'nightly') }.not_to raise_error
+
+      expect(client).not_to have_received(:http_get)
+      expect(printed).to include('The filename foo.rb is not available via lich5-update.')
+    end
+
+    it 'leaves the existing file untouched when the write fails, without blaming the name' do
+      allow(client).to receive(:http_get).and_return("# foo v2\n")
+      allow(File).to receive(:rename).and_raise(Errno::EACCES.new('Permission denied'))
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(File.binread(live_path)).to eq("# foo v1\n")
+      expect(Dir.children(tmpdir)).to eq(['foo.lic'])
+      expect(printed.grep(/\AError updating foo\.lic: Errno::EACCES/).size).to eq(1)
+      expect(printed).to include('The existing foo.lic was left unchanged.')
+      expect(printed.grep(/not available via lich5-update/)).to be_empty
+    end
+
+    it 'removes a .old file left by an interrupted older update' do
+      File.delete(live_path)
+      File.binwrite("#{live_path}.old", "# foo v1\n")
+      allow(client).to receive(:http_get).and_return("# foo v2\n")
+
+      updater.update_file('script', 'foo.lic')
+
+      expect(File.binread(live_path)).to eq("# foo v2\n")
+      expect(Dir.children(tmpdir)).to eq(['foo.lic'])
+    end
+  end
+end

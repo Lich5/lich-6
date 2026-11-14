@@ -1,0 +1,1694 @@
+=begin
+xmlparser.rb: Core lich file that defines the data extracted from SIMU's XML.
+=end
+
+require File.join(LIB_DIR, 'common', 'xml_entities.rb')
+require File.join(LIB_DIR, 'common', 'xmlparser', 'game_delta.rb')
+
+module Lich
+  module Common
+    class XMLParser
+      attr_reader :mana, :max_mana, :health, :max_health, :spirit, :max_spirit, :last_spirit,
+                  :stamina, :max_stamina, :stance_text, :stance_value, :mind_text, :mind_value,
+                  :prepared_spell, :encumbrance_text, :encumbrance_full_text, :encumbrance_value,
+                  :indicator, :injuries, :injury_mode, :room_count, :room_name, :room_title, :room_description,
+                  :room_exits, :room_exits_string, :familiar_room_title, :familiar_room_description,
+                  :familiar_room_exits, :bounty_task, :server_time, :server_time_offset,
+                  :dr_active_spells, :dr_active_spells_stellar_percentage, :dr_active_spells_slivers,
+                  :roundtime_end, :cast_roundtime_end, :last_pulse, :level, :next_level_value,
+                  :next_level_text, :society_task, :stow_container_id, :name, :game, :in_stream,
+                  :player_id, :prompt, :current_target_ids, :current_target_id, :room_window_disabled,
+                  :dialogs, :dialog_names, :room_id, :previous_nav_rm, :nav_count, :show_room_id, :concentration, :max_concentration,
+                  :arrival_pcs, :room_player_hidden, :field_exp, :max_field_exp,
+                  :ascension_exp, :exp, :until_next, :fashlonae, :lumnis, :rpa,
+                  :room_climate, :room_terrain, :room_weather, :room_bonfire,
+                  :room_inside, :room_water, :room_sanctuary, :room_realm, :assess
+      attr_accessor :send_fake_tags
+
+      @@warned_deprecated_spellfront = 0
+
+      # server_time_offset noise model (see accept_server_time_offset_candidate?,
+      # called from the <prompt> handler in tag_start):
+      #
+      # <prompt time="..."> is whole-second precision, so every sample of
+      # (now - server_time) equals offset_true + latency + frac, where latency
+      # (network/queue delay) and frac (the 0..1s truncation remainder) are
+      # both >= 0 - the raw sample is never smaller than the truth. Because
+      # the error only ever inflates the sample, the minimum sample seen
+      # recently is the best available estimate (the classic NTP min-delay
+      # filter): a bigger latency term can only push a candidate up, so a
+      # queue-delayed prompt (the login burst, a script holding the parser
+      # thread busy - see prompt_ingress_clocks, which already removes most of
+      # this) can lose the minimum but never win it.
+      #
+      # Do NOT key acceptance on how close together two prompts were *parsed*
+      # instead of on the candidate's own value: a backlog drains back-to-back
+      # with a near-zero gap between samples regardless of how delayed each
+      # one was, so a parse-time gap measures queue scheduling, not latency,
+      # and can pin exactly the worst sample - see the "queue-drained batch"
+      # regression spec below for the concrete failure this approach produced
+      # when it was tried.
+      #
+      # `now` still isn't RTT-compensated: `latency` above is one-way
+      # (server-to-client) transmission delay, not round-trip time, and
+      # nothing here sends anything to measure it - that would need
+      # round-trip probe commands from core, a separate tradeoff from this
+      # fix. The remaining one-way latency only ever makes the estimate more
+      # conservative (a longer wait), never early.
+      #
+      # How long a held estimate is trusted before a fresh sample is accepted
+      # unconditionally, win or lose. Not derived from any measurement - a
+      # round number chosen to bound how long a stale estimate (e.g. from a
+      # since-resolved network condition, or a *server*-side clock jump, which
+      # nothing here detects) can linger.
+      SERVER_TIME_OFFSET_STALE_SECONDS = 120
+      # If the wall clock (Time.now) and a monotonic clock disagree about how
+      # much time passed since the held estimate was set by more than this,
+      # the wall clock moved discontinuously (NTP step, VM resume, user
+      # changed the clock) and the held estimate is discarded outright rather
+      # than waited out over SERVER_TIME_OFFSET_STALE_SECONDS - which matters
+      # because a *forward* wall-clock step raises offset_true, and the min
+      # filter cannot recover from that on its own (every subsequent candidate
+      # rises by the same step, so it always loses to the stale, now-too-low
+      # held value) until this guard or the staleness window fires.
+      #
+      # `now - mono_now` in prompt_ingress_clocks reduces to Time.now.to_f
+      # minus a CLOCK_MONOTONIC read taken microseconds earlier either way
+      # (the ingress_mono term cancels out algebraically in the ingress
+      # branch), so wall-vs-monotonic drift is measurable here to microsecond
+      # precision, and the only legitimate non-zero source of it is clock
+      # slewing (NTP/chrony correcting drift gradually instead of stepping).
+      # This is deliberately tuned tight rather than to some slew-rate bound:
+      # the two failure directions aren't symmetric. Firing on ordinary slew
+      # just means one prompt is accepted unconditionally - the same thing
+      # every prompt did before this filter existed - so a false positive is
+      # nearly free. Missing a real step is the early-firing bug this guard
+      # exists to close. That asymmetry is why this stays tight even though
+      # some slew daemons (chrony's default max slew rate, for one) can
+      # legitimately exceed it.
+      SERVER_TIME_OFFSET_CLOCK_STEP_SECONDS = 0.25
+
+      # A bold run that is only an article: in the Saga-identity DR stream it
+      # precedes a linked creature (<pushBold/>a <a ...>jeol moradu</a>). Legacy
+      # DR bold runs are whole names and never match.
+      DR_LINKED_CREATURE_ARTICLE = /\A(?:an?|some|the) \z/i.freeze
+      # A complete legacy-dialect room players list: one tag-free text run. The
+      # Saga dialect's first fragment ("Also here: " or "Also here: Monster ")
+      # always ends in whitespace because a player link follows it.
+      DR_LEGACY_PLAYERS_RUN = /\AAlso here: .*\S\z/m.freeze
+      # Text before the container link on a stow container's header line.
+      STOW_HEADER = /\A(?:In|On|Under|Behind) the\z/.freeze
+      # The room number after a room title, in the legacy roomName style or a
+      # Saga <room><name>: " (230008)", or " (**)" for a room without one.
+      ROOM_NUMBER_SUFFIX = /\s*\((?:\d+|\*\*)\)\s*\z/.freeze
+
+      def initialize
+        @buffer = String.new
+        # @unescape = { 'lt' => '<', 'gt' => '>', 'quot' => '"', 'apos' => "'", 'amp' => '&' }
+        @bold = false
+        @active_tags = Array.new
+        @active_ids = Array.new
+        @last_tag = String.new
+        @last_id = String.new
+        @current_stream = String.new
+        @current_style = String.new
+        @stow_container_id = nil
+        # A stow clearContainer seen this burst (see the stow header learning in
+        # tag_start); cleared at the prompt that ends the burst.
+        @stow_clear_pending = false
+        # The container the current stow feed's header named, when that is not
+        # the stow container (see #learn_stow_container); cleared when the next
+        # feed starts (clearContainer).
+        @stow_feed_id = nil
+        # Whether the parser itself opened the worn-inventory staging for the
+        # current pushStream id='inv' (so it commits only its own refresh).
+        @inv_stream_staging = false
+        # A DR worn list opened before the stream's first link was seen: its
+        # refresh opens at the list's first link instead (see
+        # #open_pending_inv_refresh). Only read while that list's stream is open.
+        @inv_stream_pending = false
+        @obj_location = nil
+        @obj_exist = nil
+        @obj_noun = nil
+        @obj_before_name = nil
+        @obj_name = nil
+        @obj_after_name = nil
+        @pc = nil
+        @pc_status = nil
+        @last_obj = nil
+        @last_npc = nil
+        @in_stream = false
+        @player_status = nil
+        @fam_mode = String.new
+        @room_window_disabled = false
+        @wound_gsl = String.new
+        @scar_gsl = String.new
+        @send_fake_tags = false
+        @prompt = String.new
+        @nerve_tracker_num = 0
+        @nerve_tracker_active = 'no'
+        @server_time = Time.now.to_i
+        @server_time_offset = 0.0
+        @server_time_offset_at = nil
+        @server_time_offset_monotonic_at = nil
+        @roundtime_end = 0
+        @cast_roundtime_end = 0
+        @last_pulse = Time.now.to_i
+        @level = 0
+        @next_level_value = 0
+        @next_level_text = String.new
+        @current_target_ids = Array.new
+        @pending_crtr_status = Hash.new
+        # GemStone mount inference: the last room-objs creature registered, and
+        # (once "who is riding" follows a rider="1" creature) the rider whose
+        # mount is the next bold creature link. See the room-objs text branch.
+        @last_room_creature = nil
+        @mount_rider = nil
+        # DragonRealms stream-order name backfill: bold room-objs names and the
+        # <crtrStatus> batch ids are both captured in order, then paired at the
+        # following <prompt> - but only when their counts match exactly (an
+        # all-or-nothing gate; see the prompt handler). DR-only; unused by
+        # GemStone, which carries the name inline on the bold <a> tag.
+        @dr_room_npc_names = []
+        @dr_crtr_ids = []
+        @dr_link_article = nil
+
+        @room_count = 0
+        @room_title = String.new
+        @room_name = String.new
+        @room_description = String.new
+        @room_exits = Array.new
+        @room_exits_string = String.new
+        @room_climate = 0
+        @room_terrain = 0
+        @room_weather = 0
+        @room_bonfire = 0
+        @room_inside = 0
+        @room_water = 0
+        @room_sanctuary = 0
+        @room_realm = 0
+
+        @familiar_room_title = String.new
+        @familiar_room_description = String.new
+        @familiar_room_exits = Array.new
+
+        @bounty_task = String.new
+        @society_task = String.new
+
+        @dr_active_spells = Hash.new
+        @dr_active_spells_clear = false
+        @dr_active_spells_tmp = Hash.new
+        @dr_active_spell_tracking = false
+        @dr_active_spells_stellar_percentage = 0
+        @dr_active_spells_slivers = false
+        @name = String.new
+        @game = String.new
+        @player_id = String.new
+        @mana = 0
+        @max_mana = 0
+        @health = 0
+        @max_health = 0
+        @spirit = 0
+        @max_spirit = 0
+        @last_spirit = nil
+        @stamina = 0
+        @max_stamina = 0
+        @concentration = 0
+        @max_concentration = 0
+        @stance_text = String.new
+        @stance_value = 0
+        @mind_text = String.new
+        @mind_value = 0
+        @field_exp = 0
+        @max_field_exp = 0
+        @ascension_exp = 0
+        @exp = 0
+        @until_next = 0
+        @fashlonae = nil
+        @lumnis = nil
+        @rpa = nil
+        @prepared_spell = 'None'
+        @encumbrance_text = String.new
+        @encumbrance_full_text = String.new
+        @encumbrance_value = 0
+        @indicator = Hash.new
+        @injuries = { 'back' => { 'scar' => 0, 'wound' => 0 }, 'leftHand' => { 'scar' => 0, 'wound' => 0 }, 'rightHand' => { 'scar' => 0, 'wound' => 0 }, 'head' => { 'scar' => 0, 'wound' => 0 }, 'rightArm' => { 'scar' => 0, 'wound' => 0 }, 'abdomen' => { 'scar' => 0, 'wound' => 0 }, 'leftEye' => { 'scar' => 0, 'wound' => 0 }, 'leftArm' => { 'scar' => 0, 'wound' => 0 }, 'chest' => { 'scar' => 0, 'wound' => 0 }, 'leftFoot' => { 'scar' => 0, 'wound' => 0 }, 'rightFoot' => { 'scar' => 0, 'wound' => 0 }, 'rightLeg' => { 'scar' => 0, 'wound' => 0 }, 'neck' => { 'scar' => 0, 'wound' => 0 }, 'leftLeg' => { 'scar' => 0, 'wound' => 0 }, 'nsys' => { 'scar' => 0, 'wound' => 0 }, 'rightEye' => { 'scar' => 0, 'wound' => 0 } }
+        @injury_mode = 0
+
+        # psm 3.0 dialogdata updates
+        @dialogs = {}
+        # each dialog's progress bar id => its text, kept beside @dialogs so a
+        # name shared by two bars (two Sword Hymns) is not lost to one Hash key
+        @dialog_names = {}
+
+        # real id updates
+        # Default 0 (not nil) so a read before the first <nav> tag is a valid "no UID" value
+        # rather than a NoMethodError on room_id.zero? (DR) or room_id > N (GS) in the map layer.
+        @room_id = 0
+        @previous_nav_rm = nil
+        # How many <nav> tags (arrivals) have been seen. The map uses it to tell
+        # whether a room it resolved earlier is the room just left.
+        @nav_count = 0
+        # True once <nav> has supplied a real (non-zero) UID for the current
+        # arrival and the streamWindow subtitle has not yet consumed it. Keeps a
+        # ShowRoomID-on subtitle from overwriting an authoritative nav UID in the
+        # same arrival (see the streamWindow handler).
+        @nav_uid_pending = false
+        # True when the game itself embedded the RealID marker in the room title
+        # this arrival (i.e. the DragonRealms ShowRoomID flag is ON), e.g. the
+        # subtitle " - [Room] (230008)" or the no-UID " - [Room] (**)". Distinct
+        # from a UID merely known via <nav>: it records whether the *game* chose
+        # to display it, so Lich's room-name/subtitle rewrite can preserve that
+        # choice instead of second-guessing the flag (see the DR streamWindow
+        # branch and Lich::DragonRealms::GameInstance#modify_room_display).
+        @show_room_id = false
+
+        # Lich::Claim update
+        @arrival_pcs = []
+        @check_obvious_hiding = false
+        @room_player_hidden = false
+
+        # assess (combat situation) stream tracking
+        @assess = []
+        @assess_buffer = nil
+        @assess_ids = []
+        @assess_link_nouns = {}
+
+        # Stream dialect capabilities observed this session (see #stream_feature?).
+        @stream_features = Set.new
+
+        # Ox SAX bridge state (see start_element/attr/attrs_done/error below):
+        # the element/attributes being accumulated and parse errors for the
+        # fragment currently being parsed.
+        @sax_element = nil
+        @sax_attributes = {}
+        @sax_parse_errors = []
+      end
+
+      # for backwards compatibility
+      def active_spells
+        z = {}
+        XMLData.dialogs.sort.each do |a, b|
+          # b is the live Hash the parser writes; iterate a copy so a new
+          # effect arriving mid-scan cannot raise in the parser thread
+          b.dup.each do |k, v|
+            case a
+            when /Active Spells|Buffs/
+              z.merge!(k => v) if k.instance_of?(String)
+            when /Cooldowns/
+              if k.to_s =~ /Recovery/
+                z.merge!(k => v) if k.instance_of?(String)
+              else
+                z.merge!("#{k} Cooldown" => v) if k.instance_of?(String)
+              end
+            when /Debuffs/
+
+              # need to deal with that pesky 'Silenced' versus 'Silence' from XML
+              if k == "Silenced"
+                k = 'Silence'
+              end
+              z.merge!(k => v) if k.instance_of?(String)
+            end
+          end
+        end
+        z
+      end
+
+      def reset
+        @active_tags = Array.new
+        @active_ids = Array.new
+        @current_stream = String.new
+        @current_style = String.new
+        @sax_parse_errors = []
+        # Any staged GameObj refresh still open here is incomplete. Left in
+        # place, an interrupted container fill would be published as
+        # authoritative by the next <prompt>, so drop the in-flight buffers and
+        # keep the previously published snapshot visible instead.
+        GameObj.discard_staged_refreshes
+        # Those buffers included any worn-list or stow refresh this parser had
+        # opened, so it no longer owns one.
+        @inv_stream_staging = false
+        @stow_clear_pending = false
+        @stow_feed_id = nil
+        # A <crtrStatus> tag can be fully parsed and cached here while the
+        # matching bold <a> text is still in an as-yet-unparsed remainder of
+        # the fragment. If a malformed/truncated fragment forces a reset in
+        # that window, an uncleared entry would sit here indefinitely and
+        # could misapply to an unrelated creature that later reuses the same
+        # exist id (ids are recycled - see Creature.targets' notes).
+        @pending_crtr_status.clear
+        @last_room_creature = @mount_rider = nil
+        # A reset mid-fragment invalidates the room-objs<->crtrStatus pairing, so
+        # drop any captured names and collected ids.
+        @dr_room_npc_names = []
+        @dr_crtr_ids = []
+        @dr_link_article = nil
+      end
+
+      def safe_to_respond?
+        if @game =~ /^DR/
+          !in_stream && !@bold && (!@current_style || @current_style.empty?)
+        else
+          return true
+        end
+      end
+
+      def make_wound_gsl
+        @wound_gsl = sprintf("0b0%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b", @injuries['nsys']['wound'], @injuries['leftEye']['wound'], @injuries['rightEye']['wound'], @injuries['back']['wound'], @injuries['abdomen']['wound'], @injuries['chest']['wound'], @injuries['leftHand']['wound'], @injuries['rightHand']['wound'], @injuries['leftLeg']['wound'], @injuries['rightLeg']['wound'], @injuries['leftArm']['wound'], @injuries['rightArm']['wound'], @injuries['neck']['wound'], @injuries['head']['wound'])
+      end
+
+      def make_scar_gsl
+        @scar_gsl = sprintf("0b0%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b%02b", @injuries['nsys']['scar'], @injuries['leftEye']['scar'], @injuries['rightEye']['scar'], @injuries['back']['scar'], @injuries['abdomen']['scar'], @injuries['chest']['scar'], @injuries['leftHand']['scar'], @injuries['rightHand']['scar'], @injuries['leftLeg']['scar'], @injuries['rightLeg']['scar'], @injuries['leftArm']['scar'], @injuries['rightArm']['scar'], @injuries['neck']['scar'], @injuries['head']['scar'])
+      end
+
+      # def parse(line)
+      #   @buffer.concat(line)
+      #   loop {
+      #     if (str = @buffer.slice!(/^[^<]+/))
+      #       text(str.gsub(/&(lt|gt|quot|apos|amp)/) { @unescape[$1] })
+      #     elsif (str = @buffer.slice!(/^<\/[^<]+>/))
+      #       element = /^<\/([^\s>\/]+)/.match(str).captures.first
+      #       tag_end(element)
+      #     elsif (str = @buffer.slice!(/^<[^<]+>/))
+      #       element = /^<([^\s>\/]+)/.match(str).captures.first
+      #       attributes = Hash.new
+      #       str.scan(/([A-z][A-z0-9_\-]*)=(["'])(.*?)\2/).each { |attr| attributes[attr[0]] = attr[2] }
+      #       tag_start(element, attributes)
+      #       tag_end(element) if str =~ /\/>$/
+      #     else
+      #       break
+      #     end
+      #   }
+      # end
+
+      DECADE = 10 * 31_536_000
+
+      def parse_psm3_progressbar(kind, attributes)
+        @dialogs[kind] ||= {}
+        id = attributes["id"].to_i
+        name = attributes["text"]
+        value = attributes["time"]
+        return unless name && value
+        (@dialog_names[kind] ||= {})[id] = name
+        # set the expiry for a decade for infinite duration effects
+        return @dialogs[kind][name] = @dialogs[kind][id] = Time.now + DECADE if value.downcase.eql?("indefinite")
+
+        # in psm 3.0 progress bars now have second precision!
+        hour, minute, second = value.split(':')
+        @dialogs[kind][name] = @dialogs[kind][id] = Time.now + (hour.to_i * 3600) + (minute.to_i * 60) + second.to_i
+      end
+
+      PSM_3_DIALOG_IDS = ["Buffs", "Active Spells", "Debuffs", "Cooldowns"]
+
+      # assess stream parsing
+      ASSESS_RANGES = { 'melee' => :melee, 'pole weapon' => :pole, 'missile' => :missile }.freeze
+      ASSESS_RELATION = /^(?<relation>moving to flank|flanking|facing|behind|in front of|beside|advancing on|next to|to (?:the )?(?:left|right) of)\s+(?<target>.+)$/.freeze
+
+      # Parse a single reconstructed line from the 'assess' (combat situation) stream
+      # into a structured entry. `ids` is the ordered list of look-target ids pulled
+      # from the line's <d cmd='look #id'> tags (subject first, then target).
+      # `link_nouns` maps each `<a exist>` id on the line to its `noun=`: the
+      # Saga-identity stream links every look target inside its <d> tag
+      # (`<d cmd='look #ID'><pushBold/>A <a exist="ID" noun="moradu">jeol
+      # moradu</a><popBold/></d>`), while the legacy stream has no links. The
+      # entry's `:noun` is the server noun of the link whose exist is the
+      # subject id (trimmed; the stream sometimes pads it), or nil when the
+      # subject has no link (legacy lines, self lines).
+      # Returns a Hash, or nil for the header / unparseable lines.
+      def parse_assess_line(text, ids, link_nouns = {})
+        text = text.to_s.strip
+        return nil if text.empty?
+        return nil if text =~ /assess your combat situation/i
+
+        # drop the trailing "  | F" face-hint (the F lives in a <d cmd='face #id'> tag);
+        # anchored to the pipe + trailing token so a stray '|' mid-line can't eat text
+        text = text.sub(/\s+\|\s+\S+\s*$/, '').strip
+
+        m = text.match(/^(?<name>.+?)\s+\((?:(?<number>\d+):\s*)?(?<status>[^)]*)\)\s+(?:is|are)\s+(?<rest>.+?)\s+at\s+(?<range>melee|pole weapon|missile)\s+range\b/i)
+        return nil unless m
+
+        name   = m[:name].strip
+        number = m[:number] && m[:number].to_i
+        status = m[:status].strip
+        range  = ASSESS_RANGES[m[:range].downcase]
+        rest   = m[:rest].strip
+
+        # the target may carry its own assess number, e.g. "facing a jeol moradu (2)"
+        target_number = nil
+        if rest =~ /\((\d+)\)\s*$/
+          target_number = $1.to_i
+          rest = rest.sub(/\s*\(\d+\)\s*$/, '').strip
+        end
+
+        if (rm = rest.match(ASSESS_RELATION))
+          relation = rm[:relation]
+          target   = rm[:target].strip
+        else
+          relation = rest
+          target   = nil
+        end
+        relation = 'flanking' if relation == 'moving to flank'
+
+        is_self = name.casecmp?('you')
+        if is_self
+          subject_id = nil
+          target_id  = ids[0]
+        else
+          subject_id = ids[0]
+          target_id  = (target && target =~ /^you$/i) ? nil : ids[1]
+        end
+        is_pc = subject_id.to_s.start_with?('-')
+        noun = subject_id && link_nouns[subject_id]&.strip
+        noun = nil if noun && noun.empty?
+
+        {
+          name: name, id: subject_id, noun: noun, number: number, status: status,
+          relation: relation, target: target, target_id: target_id,
+          target_number: target_number, range: range, self: is_self, pc: is_pc
+        }
+      end
+
+      # convenience: just the creatures (positive ids; excludes self and PCs)
+      def assess_creatures
+        @assess.reject { |e| e[:self] || e[:pc] }
+      end
+
+      # Ox::Sax interface: Ox parses the server stream directly into XMLData (see
+      # Game.process_xml_data). Ox fires start_element, then attr per attribute,
+      # then attrs_done, then text/children, then end_element. Attributes are
+      # accumulated and flushed to tag_start (matching the old REXML-style single
+      # tag_start(name, hash) call). The game stream is Windows-1252, so byte
+      # content is tagged with that encoding; names are ASCII.
+      def start_element(name)
+        @sax_element = name
+        @sax_attributes = {}
+      end
+
+      # Values are left in Ox's native encoding rather than retagged: REXML handed
+      # these callbacks UTF-8 (effectively ASCII for the scrubbed game stream), so
+      # force-tagging Windows-1252 was both a divergence from the pre-Ox behavior
+      # and the source of the entity corruption. Ox runs with convert_special:
+      # false, so XmlEntities.decode restores the standard entities here.
+      def attr(name, value)
+        @sax_attributes[name] = XmlEntities.decode(value)
+      end
+
+      def attrs_done
+        tag_start(@sax_element, @sax_attributes)
+      end
+
+      def end_element(name)
+        tag_end(name)
+      end
+
+      # REXML routed CDATA through text handling; do the same.
+      def cdata(value)
+        text(value)
+      end
+
+      # Ox reports parse problems here instead of raising, then keeps parsing,
+      # auto-balancing whatever was malformed. Collect the messages so
+      # Game.process_xml_data can tell Simu's routine almost-XML from a
+      # genuinely truncated (desynced) fragment once the parse completes.
+      # The caller clears this between fragments.
+      attr_reader :sax_parse_errors
+
+      # Stream dialect capabilities, observed per session.
+      #
+      # DragonRealms sends two dialects at once depending on the client identity
+      # Lich presents: the Saga identity (Frontend::CLIENT_STRING since #1700)
+      # gets object links and the <room> block, while front ends that send their
+      # own Wrayth handshake get the legacy stream, which has neither. GemStone's
+      # stream (the rich stream it has always sent) also has object links, but
+      # no <room> block, so a feature says what this session's stream contains,
+      # not which game or identity it is: :links alone does not mean Saga.
+      # Parser paths that depend on stream shape, not game semantics, branch on
+      # these instead of on the game:
+      #
+      # - :links              an <a exist=...> object link has been seen
+      # - :room_element       a <room> block has been seen. Not every room
+      #                       arrives as one: a Saga session also gets some
+      #                       moves as the legacy room components.
+      # - :stow_container_tag a <container id='stow' target=...> has been seen.
+      #                       GemStone and the DR Saga stream send it at login.
+      #                       Not the same as {#stow_container_id} being set:
+      #                       without the tag, #learn_stow_container takes
+      #                       that id from a stow feed's header, and this
+      #                       flag tells a tag-sourced id (kept) from a
+      #                       header-learned one (follows the next header).
+      #
+      # Cleared at login (<settingsInfo>); a mid-stream {#reset} keeps them,
+      # since a desync does not change the dialect.
+      #
+      # @param feature [Symbol]
+      # @return [Boolean]
+      def stream_feature?(feature)
+        @stream_features.include?(feature)
+      end
+
+      # @return [Array<Symbol>] the observed capabilities, sorted. A fresh copy:
+      #   mutating it does not change the parser.
+      def stream_features
+        @stream_features.to_a.sort
+      end
+
+      # Records the dialect capabilities an element reveals (see #stream_feature?).
+      # Called for every element, so it only compares the name first.
+      def observe_stream_feature(name, attributes)
+        case name
+        when 'a'
+          @stream_features << :links if attributes['exist']
+        when 'room'
+          @stream_features << :room_element
+        when 'container'
+          @stream_features << :stow_container_tag if attributes['id'] == 'stow'
+        when 'settingsInfo'
+          @stream_features.clear # a new login: the dialect is re-learned
+        end
+      end
+      private :observe_stream_feature
+
+      # The stow feed's header line names the container it lists:
+      # <inv id='stow'>In the <a exist="195648378" noun="pack">pack</a>:</inv>.
+      # GemStone and the DragonRealms Saga-identity stream send <container
+      # id='stow' target=...> at login, and that tag stays the authoritative
+      # stow container id. When none has been seen (a parser that missed the
+      # login, such as a replay with a synthetic login), the stow container id
+      # is taken from the header instead. (The DR legacy feed is plain text and
+      # names no container.)
+      #
+      # Either way the header is skipped as the container itself and the items
+      # after it land in its contents rather than in worn inventory. On
+      # DragonRealms the feed can also list a container that is not the stow
+      # container (a pack handed over by another character), so there the
+      # items go under the container the header names even when the tag is
+      # known, and the stow container keeps its published contents. GemStone
+      # files them under the tag's container, as before.
+      #
+      # A stow clearContainer seen this burst opens its refresh here when the
+      # id was not yet known; a refresh it opened under another container is
+      # abandoned (that container keeps its published contents) and reopened
+      # under the named one.
+      def learn_stow_container(exist)
+        return if exist.nil?
+        return unless @active_tags.include?('inv') && @active_ids.include?('stow')
+        return unless @obj_before_name.to_s.match?(STOW_HEADER)
+
+        tagged = stream_feature?(:stow_container_tag)
+        return if tagged && XMLData.game !~ /^DR/
+
+        previous = @stow_container_id
+        @stow_container_id = exist unless tagged
+        @stow_feed_id = exist == @stow_container_id ? nil : exist
+        @obj_location = exist
+        return unless @stow_clear_pending && previous != exist
+
+        GameObj.abort_container(previous) if previous
+        GameObj.begin_container(exist)
+      end
+      private :learn_stow_container
+
+      # Opens the worn refresh a DR worn list deferred at its pushStream (see
+      # @inv_stream_pending), at the list's first linked item. Every item of the
+      # list follows, so the refresh is still complete.
+      def open_pending_inv_refresh
+        return unless @inv_stream_pending && @current_stream == 'inv'
+
+        @inv_stream_pending = false
+        return if GameObj.inv_refresh_open?
+
+        GameObj.begin_inv
+        @inv_stream_staging = true
+      end
+      private :open_pending_inv_refresh
+
+      def error(message, line, column)
+        @sax_parse_errors << "#{message} (line #{line}, column #{column})"
+      end
+
+      # [wall_time, monotonic_time] for the <prompt> handler's clock-sync math.
+      # Prefers Game.current_ingress_time - a monotonic reading the socket
+      # reader thread captured immediately after this string came off the
+      # wire, before it ever waited in the parser queue - over parse-time
+      # Time.now. Queue wait and parser-thread scheduling delay (a busy
+      # script, GC, the synchronous GameLoader.load! on login) are not real
+      # server-to-client latency; folding them in would inflate every
+      # candidate by however long the parser thread happened to be busy.
+      # Falls back to parse time when unavailable: Game may not be loaded at
+      # all (a spec exercising this class in isolation), or this call may not
+      # be happening on Game's own parser thread (current_ingress_time
+      # returns nil for any other caller, by design - see games.rb).
+      def prompt_ingress_clocks
+        ingress_mono = defined?(Game) && Game.respond_to?(:current_ingress_time) ? Game.current_ingress_time : nil
+        return [Time.now.to_f, Process.clock_gettime(Process::CLOCK_MONOTONIC)] unless ingress_mono
+
+        parse_mono = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        [Time.now.to_f - (parse_mono - ingress_mono), ingress_mono]
+      end
+
+      # Whether a new server_time_offset candidate should replace the held
+      # estimate - see the noise-model comment on the constants above for the
+      # reasoning (min-delay filter, staleness expiry, clock-step guard).
+      def accept_server_time_offset_candidate?(candidate, now, mono_now)
+        return true if @server_time_offset_at.nil?
+
+        wall_elapsed = now - @server_time_offset_at
+        return true if wall_elapsed > SERVER_TIME_OFFSET_STALE_SECONDS
+
+        mono_elapsed = mono_now - @server_time_offset_monotonic_at
+        return true if (wall_elapsed - mono_elapsed).abs > SERVER_TIME_OFFSET_CLOCK_STEP_SECONDS
+
+        candidate <= @server_time_offset
+      end
+
+      def tag_start(name, attributes)
+        # This is called once per element by REXML in games.rb
+        # https://ruby-doc.org/stdlib-2.6.1/libdoc/rexml/rdoc/REXML/StreamListener.html
+        begin
+          @active_tags.push(name)
+          @active_ids.push(attributes['id'].to_s)
+          observe_stream_feature(name, attributes)
+
+          if name == 'nav'
+            Lich::Claim.lock if defined?(Lich::Claim)
+            Lich::Gemstone::Overwatch.room_with_hiders_reset if defined?(Lich::Gemstone::Overwatch)
+            GameObj.clear_loot
+            GameObj.clear_npcs
+            GameObj.clear_pcs
+            GameObj.clear_room_desc
+            # Creature tracks its own room roster independently of GameObj
+            # (see lib/gemstone/creature.rb / lib/dragonrealms/creature.rb).
+            # Only one game's Creature is ever loaded per session.
+            Lich::Gemstone::Creature.clear_room if defined?(Lich::Gemstone::Creature)
+            Lich::DragonRealms::Creature.clear_room if defined?(Lich::DragonRealms::Creature)
+            # Any <crtrStatus> cached for the room being left is scoped to
+            # that room - don't let it survive to misapply if the id gets
+            # reused elsewhere.
+            @pending_crtr_status.clear
+            @last_room_creature = @mount_rider = nil
+            @check_obvious_hiding = true
+            # The <nav rm='NNNN'/> tag is the authoritative room UID for every game, including
+            # DragonRealms, which now emits it on every arrival (a plain <nav/> with no rm
+            # attribute for a room that has no UID, which yields 0 here). Capturing it on nav
+            # gives early room knowledge before the room text streams, and keeps
+            # @previous_nav_rm accurate for Map.previous_uid.
+            @previous_nav_rm = @room_id
+            @nav_count += 1
+            @room_id = attributes['rm'].to_i
+            # A real nav UID this arrival is authoritative; flag it so the
+            # streamWindow subtitle below treats its own UID marker as a fallback
+            # and does not overwrite this value. A bare <nav/> (no UID, room_id 0)
+            # leaves the subtitle free to supply one.
+            @nav_uid_pending = @room_id.positive?
+            @arrival_pcs = []
+            $nav_seen = true
+          end
+
+          if name == 'compass'
+            if defined?(Lich::Claim) && Lich::Claim::Lock.owned?
+              if @room_id == 0
+                @room_id = Digest::MD5.hexdigest([@room_title, @room_description, @room_exits_string].to_s).to_i(16)
+              end
+              if @room_player_hidden
+                @arrival_pcs.push(:hidden)
+                @room_player_hidden = false
+              end
+              @check_obvious_hiding = false
+              Lich::Claim.parser_handle(@room_id, @arrival_pcs)
+              Lich::Claim.unlock
+            end
+            if @current_stream == 'familiar'
+              @fam_mode = String.new
+            elsif @room_window_disabled
+              @room_exits = Array.new
+            end
+          end
+
+          if (name == 'compDef') or (name == 'component')
+            if attributes['id'] == 'room objs'
+              GameObj.begin_room_objs
+              Lich::Gemstone::Creature.clear_room if defined?(Lich::Gemstone::Creature)
+              # DR rebuilds the roster from the <crtrStatus> batch that follows
+              # this component; clearing here gives that batch a clean snapshot.
+              Lich::DragonRealms::Creature.clear_room if defined?(Lich::DragonRealms::Creature)
+              @pending_crtr_status.clear
+              @last_room_creature = @mount_rider = nil
+              # Start a fresh room-objs<->crtrStatus pairing for this refresh: the
+              # bold names captured below and the crtrStatus ids that follow are
+              # zipped at the next <prompt>, gated on equal counts.
+              @dr_room_npc_names = []
+              @dr_crtr_ids = []
+              @dr_link_article = nil
+            elsif attributes['id'] == 'room players'
+              GameObj.begin_room_players
+            elsif attributes['id'] == 'room exits'
+              @room_exits = Array.new
+              @room_exits_string = String.new
+            elsif attributes['id'] == 'room desc'
+              @room_description = String.new
+              GameObj.begin_room_desc
+            end
+          end
+
+          if name =~ /^(?:a|right|left)$/
+            @obj_exist = attributes['exist']
+            @obj_noun = attributes['noun']
+            if name == 'a'
+              learn_stow_container(@obj_exist)
+              open_pending_inv_refresh if @obj_exist
+            end
+          end
+          if name == 'crtrStatus'
+            # Self-closing and self-contained (carries its own id), so it needs
+            # no surrounding-tag context, unlike the bolded <a> name path below.
+            # Inside room objs, always stash rather than applying directly even
+            # when the creature is already known: Creature.register (and the
+            # room-in marking it does) only ever runs from the <a> text path
+            # below, so syncing here and skipping that path would update the
+            # instance's flags correctly while silently leaving it out of the
+            # room roster after the next clear_room - it would sync but never
+            # reappear in Creature.targets/.in_room. Deferring to the text()
+            # handler keeps registration/room-marking and flag application on
+            # the same path for both new and already-known creatures.
+            #
+            # A game whose delta can apply the tag at once (DragonRealms: id-first
+            # Creature.sync, see Lich::DragonRealms::XMLDelta.apply_crtr_status)
+            # does so; the id is then collected in arrival order so the prompt
+            # handler can pair it to a legacy-stream bold name when the counts
+            # match for this refresh.
+            # GemStone applies a standalone tag (outside room objs) for a
+            # creature already in the current room roster at once and stashes
+            # nothing (:applied, see Lich::Gemstone::XMLDelta.apply_crtr_status).
+            crtr_id = attributes['exist']
+            if crtr_id
+              crtr_flags = attributes.reject { |k, _| k == 'exist' }
+              case XMLParserDelta.for(XMLData.game).apply_crtr_status(crtr_id, crtr_flags, in_room_objs: @active_ids.include?('room objs'))
+              when true then @dr_crtr_ids << crtr_id
+              when :applied then nil
+              else @pending_crtr_status[crtr_id] = crtr_flags
+              end
+            end
+          end
+          if name == 'inv'
+            if attributes['id'] == 'stow'
+              @obj_location = @stow_feed_id || @stow_container_id
+            else
+              @obj_location = attributes['id']
+            end
+            @obj_exist = nil
+            @obj_noun = nil
+            @obj_name = nil
+            @obj_before_name = nil
+            @obj_after_name = nil
+          end
+          if name == 'dialogData' and attributes['clear'] == 't' and PSM_3_DIALOG_IDS.include?(attributes["id"])
+            @dialogs[attributes["id"]] ||= {}
+            @dialogs[attributes["id"]].clear
+            (@dialog_names[attributes["id"]] ||= {}).clear
+            # detect a clear board request for effects, and send to activespell
+            # (GemStone-only module; the shared parser must not raise without it)
+            ActiveSpell.request_update if defined?(ActiveSpell)
+          end
+          if name == 'resource'
+            nil
+          end
+          if name == 'roommeta'
+            @room_weather = attributes['weather'].to_i if attributes['weather']
+            @room_bonfire = attributes['bonfire'].to_i if attributes['bonfire']
+            @room_inside = attributes['inside'].to_i if attributes['inside']
+            @room_water = attributes['water'].to_i if attributes['water']
+            @room_sanctuary = attributes['sanctuary'].to_i if attributes['sanctuary']
+            @room_realm = attributes['realm'].to_i if attributes['realm']
+            @room_climate = attributes['climate'].to_i if attributes['climate']
+            @room_terrain = attributes['terrain'].to_i if attributes['terrain']
+          end
+          if name == 'pushStream'
+            @in_stream = true
+            @current_stream = attributes['id'].to_s
+            if attributes['id'].to_s == 'assess'
+              @assess_buffer = String.new
+              @assess_ids = []
+              @assess_link_nouns = {}
+            end
+            if XMLData.game =~ /^GS/
+              if attributes['id'].to_s == 'inv'
+                GameObj.begin_inv
+                @inv_stream_staging = true
+              end
+              GameObj.begin_reserve if attributes['id'].to_s == 'reserve'
+            elsif attributes['id'].to_s == 'inv'
+              # The linked worn-items list is a complete refresh, as on GemStone.
+              # DRParser's INV LIST and INV SEARCH scrapes leave the worn list to
+              # it (they write container contents only); the inventoryManager
+              # feed (Lich::Common::Inventory#register_with_gameobj) also writes
+              # the worn list, with its own begin_inv/commit_inv. If another
+              # writer holds the worn staging, none opens here. The legacy list
+              # is plain text (no GameObj entries). Until the stream's first link
+              # has been seen (a login's first list arrives before it) the
+              # dialect is unknown, so the refresh waits for the list's first
+              # link; a legacy list has none.
+              @inv_stream_pending = false
+              unless GameObj.inv_refresh_open?
+                if stream_feature?(:links)
+                  GameObj.begin_inv
+                  @inv_stream_staging = true
+                else
+                  @inv_stream_pending = true
+                end
+              end
+            end
+          end
+
+          if name == 'd' && @current_stream == 'assess'
+            @assess_ids << $1 if attributes['cmd'].to_s =~ /look #(-?\d+)/
+          end
+          # Saga-identity assess lines link each look target; keep each link's
+          # server noun by its exist id so the subject keeps it (see
+          # #parse_assess_line).
+          if name == 'a' && @current_stream == 'assess' && attributes['exist']
+            @assess_link_nouns[attributes['exist']] = attributes['noun']
+          end
+          if name == 'popStream'
+            if @current_stream == 'assess' && @assess_buffer
+              entry = parse_assess_line(@assess_buffer, @assess_ids, @assess_link_nouns)
+              if entry
+                @assess << entry
+                # The assess stream is DragonRealms' only tie between an exist id
+                # and a creature name/position, so it backfills the id-first
+                # instances created from <crtrStatus>. Self and PCs are skipped.
+                if XMLData.game =~ /^DR/ && !entry[:self] && !entry[:pc] && defined?(Lich::DragonRealms::Creature)
+                  Lich::DragonRealms::Creature.feed_assess(entry)
+                end
+              end
+              @assess_buffer = nil
+            end
+            if attributes['id'] == 'room'
+              unless @room_window_disabled
+                @room_count += 1
+                $room_count += 1
+              end
+            end
+            @in_stream = false
+            # @current_stream still names the closing stream here; commit_* is a
+            # no-op when the matching refresh was never opened. The worn list
+            # commits only a refresh this parser opened, never another writer's
+            # (an INV LIST scrape in flight).
+            if @current_stream == 'inv' && @inv_stream_staging
+              GameObj.commit_inv
+              @inv_stream_staging = false
+            end
+            GameObj.commit_reserve  if @current_stream == 'reserve'
+            GameObj.commit_familiar if @current_stream == 'familiar'
+            if attributes['id'] == 'bounty'
+              @bounty_task.strip!
+            end
+            @current_stream = String.new
+          end
+          if name == 'pushBold'
+            @bold = true
+          end
+          if name == 'popBold'
+            @bold = false
+          end
+          if (name == 'streamWindow')
+            if (attributes['id'] == 'main') and attributes['subtitle']
+              unless attributes['subtitle'].empty? || attributes['subtitle'].nil?
+                # Game-specific grammar (GS " - Room - 1234", DR " - [Room] (230008)"):
+                # see Lich::Common::XMLParserDelta::Base#main_subtitle.
+                update = XMLParserDelta.for(XMLData.game).main_subtitle(attributes['subtitle'], nav_uid_pending: @nav_uid_pending)
+                @room_title = update[:room_title] if update.key?(:room_title)
+                @room_id = update[:room_id] if update.key?(:room_id)
+                @nav_uid_pending = update[:nav_uid_pending] if update.key?(:nav_uid_pending)
+                @show_room_id = update[:show_room_id] if update.key?(:show_room_id)
+              end
+            end
+          end
+          if name == 'style'
+            @current_style = attributes['id']
+          end
+          if (name == 'clearStream' && attributes['id'] == 'percWindow')
+            @dr_active_spells_clear = true
+          end
+
+          if (name == 'pushStream' && attributes['id'] == 'percWindow')
+            @dr_active_spell_tracking = true
+            @dr_active_spells_clear = false
+          end
+
+          if name == 'prompt'
+            now, mono_now = prompt_ingress_clocks
+            new_server_time = attributes['time'].to_i
+
+            # server_time_offset is a converging min-delay estimate of the
+            # true client/server clock offset - see the noise-model comment
+            # on the constants above (SERVER_TIME_OFFSET_STALE_SECONDS et al)
+            # for why a smaller candidate always wins and what can override
+            # a held estimate that isn't smaller.
+            candidate = now - new_server_time
+            if accept_server_time_offset_candidate?(candidate, now, mono_now)
+              @server_time_offset = candidate
+              @server_time_offset_at = now
+              @server_time_offset_monotonic_at = mono_now
+            end
+            @server_time = new_server_time
+            $_CLIENT_.puts "\034GSq#{sprintf('%010d', @server_time)}\r\n" if @send_fake_tags
+
+            # A prompt terminates the command burst and is the reliable close
+            # signal for clearContainer/inv container fills, which have no
+            # closing tag of their own. No-op when no container refresh is open.
+            GameObj.commit_all_containers
+            @stow_clear_pending = false
+
+            if @dr_active_spell_tracking
+              @dr_active_spell_tracking = false
+              @dr_active_spells_slivers = false
+              @dr_active_spells = @dr_active_spells_tmp
+              @dr_active_spells_tmp = {}
+            elsif @dr_active_spells_clear
+              @dr_active_spells = {}
+            end
+
+            # DragonRealms stream-order name backfill, applied as an
+            # all-or-nothing batch at the end of the room-objs + crtrStatus
+            # sequence. Only when the captured bold-name count exactly matches
+            # this batch's crtrStatus id count do we pair them by position; on any
+            # mismatch (e.g. a bold room entity that emits no crtrStatus) we skip
+            # naming rather than risk a shifted mis-pair - assess still backfills
+            # names by id. Reset after every prompt so a later lone crtrStatus
+            # batch can't reuse a previous refresh's names.
+            if XMLData.game =~ /^DR/ && defined?(Lich::DragonRealms::Creature)
+              if !@dr_crtr_ids.empty? && @dr_crtr_ids.length == @dr_room_npc_names.length
+                @dr_crtr_ids.each_with_index do |id, i|
+                  Lich::DragonRealms::Creature[id]&.apply_room_name(@dr_room_npc_names[i])
+                end
+              end
+              @dr_room_npc_names = []
+              @dr_crtr_ids = []
+            end
+          end
+
+          if name == 'clearContainer'
+            if attributes['id'] == 'stow'
+              # Until the stow container's id is known (no <container
+              # id='stow'> seen yet), the refresh opens when its header line
+              # names the container; see #learn_stow_container.
+              @stow_clear_pending = true
+              @stow_feed_id = nil
+              GameObj.begin_container(@stow_container_id) if @stow_container_id
+            else
+              GameObj.begin_container(attributes['id'])
+            end
+          end
+          if name == 'deleteContainer'
+            GameObj.delete_container(attributes['id'])
+          end
+          if name == 'progressBar'
+            if attributes['id'] == 'pbarStance'
+              @stance_text = attributes['text'].split.first
+              @stance_value = attributes['value'].to_i
+              $_CLIENT_.puts "\034GSg#{sprintf('%010d', @stance_value)}\r\n" if @send_fake_tags
+            elsif attributes['id'] == 'mana'
+              last_mana = @mana
+              @mana, @max_mana = attributes['text'].scan(/-?\d+/).collect { |num| num.to_i }
+              difference = @mana - last_mana
+              # fixme: enhancives screw this up
+              unless XMLData.name.empty?
+                if (difference == noded_pulse) or (difference == unnoded_pulse) or ((@mana == @max_mana) and (last_mana + noded_pulse > @max_mana))
+                  @last_pulse = Time.now.to_i
+                  if @send_fake_tags
+                    $_CLIENT_.puts "\034GSZ#{sprintf('%010d', (@mana + 1))}\n"
+                    $_CLIENT_.puts "\034GSZ#{sprintf('%010d', @mana)}\n"
+                  end
+                end
+              end
+              if @send_fake_tags
+                $_CLIENT_.puts "\034GSV#{sprintf('%010d%010d%010d%010d%010d%010d%010d%010d', @max_health.to_i, @health.to_i, @max_spirit.to_i, @spirit.to_i, @max_mana.to_i, @mana.to_i, @wound_gsl, @scar_gsl)}\r\n"
+              end
+            elsif attributes['id'] == 'stamina'
+              @stamina, @max_stamina = attributes['text'].scan(/-?\d+/).collect { |num| num.to_i }
+            elsif attributes['id'] == 'mindState'
+              @mind_text = attributes['text']
+              @mind_value = attributes['value'].to_i
+              @field_exp = attributes['field_exp'].to_i if attributes['field_exp']
+              @max_field_exp = attributes['max_field_exp'].to_i if attributes['max_field_exp']
+              @ascension_exp = attributes['ascension_exp'].to_i if attributes['ascension_exp']
+              @exp = attributes['exp'].to_i if attributes['exp']
+              @until_next = attributes['until_next'].to_i if attributes['until_next']
+              # lumnis and rpa are only sent while active; fashlonae is sent
+              # whenever an orb is redeemed (1 = redeemed/inactive, 2 = active).
+              # All three are cleared back to nil whenever a fresh mindState
+              # progressBar omits them. rpa can be fractional (e.g. 1.5), so it
+              # is parsed as a float.
+              @fashlonae = attributes['fashlonae'] ? attributes['fashlonae'].to_i : nil
+              @lumnis = attributes['lumnis'] ? attributes['lumnis'].to_i : nil
+              @rpa = attributes['rpa'] ? attributes['rpa'].to_f : nil
+              $_CLIENT_.puts "\034GSr#{MINDMAP[@mind_text]}\r\n" if @send_fake_tags
+            elsif attributes['id'] == 'health'
+              @health, @max_health = attributes['text'].scan(/-?\d+/).collect { |num| num.to_i }
+              $_CLIENT_.puts "\034GSV#{sprintf('%010d%010d%010d%010d%010d%010d%010d%010d', @max_health.to_i, @health.to_i, @max_spirit.to_i, @spirit.to_i, @max_mana.to_i, @mana.to_i, @wound_gsl, @scar_gsl)}\r\n" if @send_fake_tags
+            elsif attributes['id'] == 'spirit'
+              @last_spirit = @spirit if @last_spirit
+              @spirit, @max_spirit = attributes['text'].scan(/-?\d+/).collect { |num| num.to_i }
+              @last_spirit = @spirit unless @last_spirit
+              $_CLIENT_.puts "\034GSV#{sprintf('%010d%010d%010d%010d%010d%010d%010d%010d', @max_health.to_i, @health.to_i, @max_spirit.to_i, @spirit.to_i, @max_mana.to_i, @mana.to_i, @wound_gsl, @scar_gsl)}\r\n" if @send_fake_tags
+            elsif attributes['id'] == 'nextLvlPB'
+              Gift.pulse if defined?(Gift) && @next_level_text != attributes['text'] # GemStone-only module
+              @next_level_value = attributes['value'].to_i
+              @next_level_text = attributes['text']
+            elsif attributes['id'] == 'encumlevel'
+              @encumbrance_value = attributes['value'].to_i
+              @encumbrance_text = attributes['text']
+            elsif attributes['id'] == 'concentration'
+              @concentration, @max_concentration = attributes['text'].scan(/-?\d+/).collect { |num| num.to_i }
+            elsif PSM_3_DIALOG_IDS.include?(@active_ids[-2])
+              # puts "kind=(%s) name=%s attributes=%s" % [@active_ids[-2], name, attributes]
+              self.parse_psm3_progressbar(@active_ids[-2], attributes)
+              # since we received an updated spell duration, let's signal infomon to update
+              ActiveSpell.request_update if defined?(ActiveSpell)
+            end
+          end
+          if name == 'roundTime'
+            @roundtime_end = attributes['value'].to_i
+            $_CLIENT_.puts "\034GSQ#{sprintf('%010d', @roundtime_end)}\r\n" if @send_fake_tags
+          end
+          if name == 'castTime'
+            @cast_roundtime_end = attributes['value'].to_i
+          end
+          if name == 'dropDownBox'
+            if attributes['id'] == 'dDBTarget'
+              @current_target_ids.clear
+              attributes['content_value'].split(',').each { |t|
+                if t =~ /^\#(\-?\d+)(?:,|$)/
+                  @current_target_ids.push($1)
+                end
+              }
+              if attributes['content_value'] =~ /^\#(\-?\d+)(?:,|$)/
+                @current_target_id = $1
+              else
+                @current_target_id = nil
+              end
+            end
+          end
+          if name == 'indicator'
+            @indicator[attributes['id']] = attributes['visible']
+            if @send_fake_tags
+              if attributes['id'] == 'IconPOISONED'
+                if attributes['visible'] == 'y'
+                  $_CLIENT_.puts "\034GSJ0000000000000000000100000000001\r\n"
+                else
+                  $_CLIENT_.puts "\034GSJ0000000000000000000000000000000\r\n"
+                end
+              elsif attributes['id'] == 'IconDISEASED'
+                if attributes['visible'] == 'y'
+                  $_CLIENT_.puts "\034GSK0000000000000000000100000000001\r\n"
+                else
+                  $_CLIENT_.puts "\034GSK0000000000000000000000000000000\r\n"
+                end
+              else
+                gsl_prompt = String.new; ICONMAP.keys.each { |icon| gsl_prompt += ICONMAP[icon] if @indicator[icon] == 'y' }
+                $_CLIENT_.puts "\034GSP#{sprintf('%-30s', gsl_prompt)}\r\n"
+              end
+            end
+          end
+          if (name == 'image') and @active_ids.include?('injuries')
+            if @injuries.keys.include?(attributes['id'])
+              if attributes['name'] =~ /Injury/i
+                @injuries[attributes['id']]['wound'] = attributes['name'].slice(/\d/).to_i
+              elsif attributes['name'] =~ /Scar/i
+                @injuries[attributes['id']]['wound'] = 0
+                @injuries[attributes['id']]['scar'] = attributes['name'].slice(/\d/).to_i
+              elsif attributes['name'] =~ /Nsys/i
+                rank = attributes['name'].slice(/\d/).to_i
+                if rank == 0
+                  @injuries['nsys']['wound'] = 0
+                  @injuries['nsys']['scar'] = 0
+                else
+                  Thread.new {
+                    wait_while { dead? }
+                    action = proc { |server_string|
+                      if (@nerve_tracker_active == 'maybe')
+                        if @nerve_tracker_active == 'maybe'
+                          if server_string =~ /^You/
+                            @nerve_tracker_active = 'yes'
+                            @injuries['nsys']['wound'] = 0
+                            @injuries['nsys']['scar'] = 0
+                          else
+                            @nerve_tracker_active = 'no'
+                          end
+                        end
+                      end
+                      if @nerve_tracker_active == 'yes'
+                        if server_string =~ /<output class=['"]['"]\/>/
+                          @nerve_tracker_active = 'no'
+                          @nerve_tracker_num -= 1
+                          DownstreamHook.remove('nerve_tracker') if @nerve_tracker_num < 1
+                          $_CLIENT_.puts "\034GSV#{sprintf('%010d%010d%010d%010d%010d%010d%010d%010d', @max_health.to_i, @health.to_i, @max_spirit.to_i, @spirit.to_i, @max_mana.to_i, @mana.to_i, make_wound_gsl, make_scar_gsl)}\r\n" if @send_fake_tags
+                          server_string
+                        elsif server_string =~ /a case of uncontrollable convulsions/
+                          @injuries['nsys']['wound'] = 3
+                          nil
+                        elsif server_string =~ /a case of sporadic convulsions/
+                          @injuries['nsys']['wound'] = 2
+                          nil
+                        elsif server_string =~ /a strange case of muscle twitching/
+                          @injuries['nsys']['wound'] = 1
+                          nil
+                        elsif server_string =~ /a very difficult time with muscle control/
+                          @injuries['nsys']['scar'] = 3
+                          nil
+                        elsif server_string =~ /constant muscle spasms/
+                          @injuries['nsys']['scar'] = 2
+                          nil
+                        elsif server_string =~ /developed slurred speech/
+                          @injuries['nsys']['scar'] = 1
+                          nil
+                        end
+                      else
+                        if server_string =~ /<output class=['"]mono['"]\/>/
+                          @nerve_tracker_active = 'maybe'
+                        end
+                        server_string
+                      end
+                    }
+                    @nerve_tracker_num += 1
+                    DownstreamHook.add('nerve_tracker', action, persist: true) # engine-managed, toggled by the parser
+                    Game._puts "#{$cmd_prefix}health"
+                  }
+                end
+              else
+                @injuries[attributes['id']]['wound'] = 0
+                @injuries[attributes['id']]['scar'] = 0
+              end
+            end
+            $_CLIENT_.puts "\034GSV#{sprintf('%010d%010d%010d%010d%010d%010d%010d%010d', @max_health.to_i, @health.to_i, @max_spirit.to_i, @spirit.to_i, @max_mana.to_i, @mana.to_i, make_wound_gsl, make_scar_gsl)}\r\n" if @send_fake_tags
+          end
+          if @room_window_disabled and (name == 'dir') and @active_tags.include?('compass')
+            @room_exits.push(LONGDIR[attributes['value']])
+          end
+          if name == 'radio'
+            if attributes['id'] == 'injrRad'
+              @injury_mode = 0 if attributes['value'] == '1'
+            elsif attributes['id'] == 'scarRad'
+              @injury_mode = 1 if attributes['value'] == '1'
+            elsif attributes['id'] == 'bothRad'
+              @injury_mode = 2 if attributes['value'] == '1'
+            end
+          end
+          if name == 'label'
+            if attributes['id'] == 'yourLvl'
+              @level = attributes['value'].slice(/\d+/).to_i
+            elsif attributes['id'] == 'encumblurb'
+              @encumbrance_full_text = attributes['value']
+            end
+          end
+          if (name == 'container') and (attributes['id'] == 'stow')
+            @stow_container_id = attributes['target'].sub('#', '')
+          end
+          if (name == 'clearStream')
+            if attributes['id'] == 'bounty'
+              @bounty_task = String.new
+            elsif attributes['id'] == 'assess'
+              @assess = []
+            end
+          end
+          if (name == 'playerID')
+            @player_id = attributes['id']
+            unless Frontend.supports_gsl?
+              if Lich.inventory_boxes(@player_id)
+                DownstreamHook.remove('inventory_boxes_off')
+              end
+            end
+          end
+          if name == 'settingsInfo'
+            if (game = attributes['instance'])
+              if game == 'GS4'
+                @game = 'GSIV'
+              elsif (game == 'GSX') or (game == 'GS4X')
+                @game = 'GSPlat'
+              else
+                @game = game # covers DR, DRT, DRF, GST, GSF
+              end
+            end
+          end
+          if (name == 'app') and (@name = attributes['char'])
+            if @game.nil? or @game.empty?
+              @game = 'unknown'
+            end
+            unless File.exist?("#{DATA_DIR}/#{@game}")
+              Dir.mkdir("#{DATA_DIR}/#{@game}")
+            end
+            unless File.exist?("#{DATA_DIR}/#{@game}/#{@name}")
+              Dir.mkdir("#{DATA_DIR}/#{@game}/#{@name}")
+            end
+            if Frontend.supports_gsl?
+              Game._puts "#{$cmd_prefix}_flag Display Dialog Boxes 0"
+              sleep 0.05
+              Game._puts "#{$cmd_prefix}_injury 2"
+              sleep 0.05
+              # fixme: game name hardcoded as Gemstone IV; maybe doesn't make any difference to the client
+              $_CLIENT_.puts "\034GSB0000000000#{attributes['char']}\r\n\034GSA#{Time.now.to_i}GemStone IV\034GSD\r\n"
+              # Sending fake GSL tags to the Wizard FE is disabled until now, because it doesn't accept the tags and just gives errors until initialized with the above line
+              @send_fake_tags = true
+              # Send all the tags we missed out on
+              $_CLIENT_.puts "\034GSV#{sprintf('%010d%010d%010d%010d%010d%010d%010d%010d', @max_health.to_i, @health.to_i, @max_spirit.to_i, @spirit.to_i, @max_mana.to_i, @mana.to_i, make_wound_gsl, make_scar_gsl)}\r\n"
+              $_CLIENT_.puts "\034GSg#{sprintf('%010d', @stance_value)}\r\n"
+              $_CLIENT_.puts "\034GSr#{MINDMAP[@mind_text]}\r\n"
+              gsl_prompt = String.new
+              @indicator.keys.each { |icon| gsl_prompt += ICONMAP[icon] if @indicator[icon] == 'y' }
+              $_CLIENT_.puts "\034GSP#{sprintf('%-30s', gsl_prompt)}\r\n"
+              gsl_prompt = nil
+              gsl_exits = String.new
+              @room_exits.each { |exit| gsl_exits.concat(DIRMAP[SHORTDIR[exit]].to_s) }
+              $_CLIENT_.puts "\034GSj#{sprintf('%-20s', gsl_exits)}\r\n"
+              gsl_exits = nil
+              $_CLIENT_.puts "\034GSn#{sprintf('%-14s', @prepared_spell)}\r\n"
+              $_CLIENT_.puts "\034GSm#{sprintf('%-45s', GameObj.right_hand.name)}\r\n"
+              $_CLIENT_.puts "\034GSl#{sprintf('%-45s', GameObj.left_hand.name)}\r\n"
+              $_CLIENT_.puts "\034GSq#{sprintf('%010d', @server_time)}\r\n"
+              $_CLIENT_.puts "\034GSQ#{sprintf('%010d', @roundtime_end)}\r\n" if @roundtime_end > 0
+            end
+            Game._puts("#{$cmd_prefix}_flag Display Inventory Boxes 1")
+          end
+        rescue
+          Lich.log "error: XMLParser.tag_start: #{$!}\n\t#{$!.backtrace.join("\n\t")}"
+          sleep 0.1
+          reset
+        end
+      end
+
+      def text(text_string)
+        # Called by Ox once per text node. Decode the standard XML entities (Ox
+        # runs with convert_special: false; see Lich::Common::XmlEntities).
+        text_string = XmlEntities.decode(text_string)
+        begin
+          # fixme: /<stream id="Spells">.*?<\/stream>/m
+          # $_CLIENT_.write(text_string) unless ($frontend != 'suks') or (@current_stream =~ /^(?:spellfront|inv|bounty|society)$/) or @active_tags.any? { |tag| tag =~ /^(?:compDef|inv|component|right|left|spell)$/ } or (@active_tags.include?('stream') and @active_ids.include?('Spells')) or (text_string == "\n" and (@last_tag =~ /^(?:popStream|prompt|compDef|dialogData|openDialog|switchQuickBar|component)$/))
+
+          # DR Active Spell tracking and handling
+          if @dr_active_spell_tracking
+            spell = nil
+            duration = nil
+            case text_string
+            when /(?<spell>^[^\(]+)\((?<duration>\d+|Indefinite|OM|Fading)\s*(?:%|roisae?n)?\)/i
+              # Spell with known duration remaining
+              # XML looks like:
+              # Hydra Hex  (Indefinite)
+              # Persistence of Mana  (OM)
+              # Cure Disease  (Fading)
+              # Osrel Meraud  (94%)
+              # Landslide (4 roisaen)
+              # Khri Sagacity  (1 roisan)
+              spell = Regexp.last_match[:spell]
+              duration = Regexp.last_match[:duration]
+
+              if duration.match?(/Indefinite|OM/)
+                duration = 1000
+              elsif duration.match?(/Fading/)
+                duration = 0
+              else
+                duration = duration.to_i
+              end
+            when /(?<spell>Stellar Collector)\s+\((?<percentage>\d+)%,\s*(?<duration>\d+)?\s*(?<unit>(?:roisae?n|anlaen|fading))/
+              # Stellar collector special case
+              # XML looks like:
+              # Stellar Collector  (0%, 4 anlaen)
+              # Stellar Collector  (0%, fading)
+              spell = Regexp.last_match[:spell]
+              duration = Regexp.last_match[:duration].to_i
+              @dr_active_spells_stellar_percentage = Regexp.last_match[:percentage].to_i
+              unit = Regexp.last_match[:unit]
+              duration = unit == 'anlaen' ? duration * 30 : duration
+            when /(?<spell>^[^\(]+)\(.+\)/i
+              # Spells with inexact duration verbiage, such as with
+              # Barbarians without knowledge of Power Monger mastery
+              spell = Regexp.last_match[:spell]
+              duration = 1000
+            when /.*orbiting sliver.*/i
+              # Moon Mage slivers
+              @dr_active_spells_slivers = true
+            end
+            spell.strip!
+            if spell
+              @dr_active_spells_tmp[spell] = duration
+            end
+          end
+
+          if @current_style == 'roomName' || (@active_tags[-1] == 'name' && @active_tags[-2] == 'room')
+            # Legacy roomName style, or the Saga-identity <room><name> child.
+            # A name without a bracketed title keeps the text as sent, minus
+            # the room-number suffix, rather than going nil.
+            @room_name = text_string[/\[.*?\]/] || text_string.sub(ROOM_NUMBER_SUFFIX, '').strip
+          end
+
+          if @active_tags.include?('inv')
+            if @active_tags[-1] == 'a'
+              @obj_name = text_string
+            elsif @obj_name.nil?
+              @obj_before_name = text_string.strip
+            else
+              @obj_after_name = text_string.strip
+            end
+          elsif @active_tags.last == 'prompt'
+            @prompt = text_string
+          elsif @active_tags.include?('right')
+            GameObj.new_right_hand(@obj_exist, @obj_noun, text_string)
+            # DR only: an item now held in hand is no longer worn or in a
+            # container, so drop any stale placement of it. DR has no passive
+            # container stream to self-correct this, and its containers are
+            # rebuilt only on an explicit INV LIST/SEARCH. Gated so GemStone
+            # (which relies on its own inv stream) is unaffected. Empty hands
+            # carry no exist id (@obj_exist nil), making this a safe no-op.
+            GameObj.remove_inv_item(@obj_exist) if XMLData.game =~ /^DR/
+            $_CLIENT_.puts "\034GSm#{sprintf('%-45s', text_string)}\r\n" if @send_fake_tags
+          elsif @active_tags.include?('left')
+            GameObj.new_left_hand(@obj_exist, @obj_noun, text_string)
+            GameObj.remove_inv_item(@obj_exist) if XMLData.game =~ /^DR/ # see 'right' above
+            $_CLIENT_.puts "\034GSl#{sprintf('%-45s', text_string)}\r\n" if @send_fake_tags
+          elsif @active_tags.include?('spell')
+            @prepared_spell = text_string
+            $_CLIENT_.puts "\034GSn#{sprintf('%-14s', text_string)}\r\n" if @send_fake_tags
+          elsif @active_tags.include?('compDef') or @active_tags.include?('component')
+            if @active_ids.include?('room objs')
+              if @active_tags.include?('a')
+                if @bold
+                  @last_npc = GameObj.new_npc(@obj_exist, @obj_noun, text_string)
+                  if XMLData.game =~ /^DR/
+                    # The Saga-identity DR stream links creatures GemStone-style
+                    # (<pushBold/>a <a exist noun>jeol moradu</a><popBold/>, the
+                    # bold currently sent doubled; @bold is a flag, so either works).
+                    # Register id-first with the inline noun via DR's own Creature
+                    # (never the unqualified Gemstone Creature below, which is not
+                    # loaded in DR). The name keeps the article that precedes the
+                    # link ("a jeol moradu"), the form the legacy stream and the
+                    # assess backfill both produce. With links present the
+                    # stream-order name capture below is skipped, so this is the
+                    # sole name source.
+                    # The link's noun= is the server's noun and wins over the
+                    # name's last word ("a sleek golden panther with enigmatic
+                    # violet eyes" is a panther); it is occasionally sent padded
+                    # (noun=" moth"), hence the strip.
+                    if @obj_exist && defined?(Lich::DragonRealms::Creature)
+                      dr_name = "#{@dr_link_article}#{text_string}"
+                      dr_noun = @obj_noun&.strip
+                      dr_creature = Lich::DragonRealms::Creature.register(dr_name, @obj_exist, dr_noun)
+                      dr_creature&.apply_room_name(dr_name, dr_noun)
+                    end
+                    @dr_link_article = nil
+                  else
+                    creature = nil
+                    # GemStone's Creature is loaded by GameLoader (via the combat
+                    # tracker) only once the game is known; before that, skip it
+                    # rather than raise and reset the parser mid-fragment.
+                    if defined?(Lich::Gemstone::Creature) &&
+                       (XMLData.current_target_ids.include?(@obj_exist) || @pending_crtr_status.key?(@obj_exist) || @mount_rider)
+                      creature = Lich::Gemstone::Creature.register(text_string, @obj_exist, @obj_noun)
+                      if creature && (pending_flags = @pending_crtr_status.delete(@obj_exist))
+                        creature.sync_crtr_status(pending_flags)
+                      end
+                    end
+                    # A ridden mount sends no <crtrStatus> until first harmed,
+                    # so stand in its flags from the rider's tag until it does.
+                    # Hostility is left to the target dropdown (see
+                    # Creature.targets). Re-inferred on every refresh, so a
+                    # mount whose rider has left loses the flag.
+                    creature&.infer_crtr_flags(@mount_rider ? { mount: true } : {})
+                    @mount_rider = nil
+                    @last_room_creature = creature
+                  end
+                else
+                  GameObj.new_loot(@obj_exist, @obj_noun, text_string)
+                  # The mount link always directly follows "who is riding";
+                  # a non-bold one must not arm the next bold creature.
+                  @mount_rider = nil
+                end
+              elsif @bold && XMLData.game =~ /^DR/
+                if text_string.match?(DR_LINKED_CREATURE_ARTICLE)
+                  # Saga dialect: the bold text outside a link is the article
+                  # before a linked creature; keep it for that creature's name.
+                  # Decided by shape, not the session flag, so the very first
+                  # linked line of a session is handled too (legacy bold runs are
+                  # whole names, never a bare article).
+                  @dr_link_article = text_string
+                elsif !stream_feature?(:links)
+                  # Legacy dialect: bold NPC names carry no <a> tag. Capture
+                  # them in stream order so the <crtrStatus> batch that follows
+                  # can pair the Nth name to the Nth id (see the crtrStatus
+                  # handler). Only bold runs are names; the non-bold
+                  # "(dead)"/"(immobile)" status runs fall through to the
+                  # annotation branch below.
+                  @dr_room_npc_names << text_string
+                end
+              elsif (text_string =~ /(?:that|which) (?:is|appears) ([\w\s]+?)(?:,| and|\.)/) or (text_string =~ / \(([^\(]+)\)/)
+                # @last_npc is nil in a legacy-dialect DR session (bold names
+                # carry no <a> tag, so the new_npc branch above never runs), so
+                # the &. keeps this a no-op there while annotating the last
+                # GemStone or Saga-dialect DR npc. GemStone words it "that
+                # is/appears ..."; DragonRealms uses "(dead)" and "which appears
+                # dead". The lazy capture stops at the first separator, so DR's
+                # one-run tail " which appears dead and some junk." gives "dead".
+                @last_npc&.status = $1
+              end
+              # GemStone: "<rider> who is riding <mount>". Its own check, not a
+              # link in the chain above, so a rider's "(dead)"/"(stunned)"
+              # annotation in the same text run still reaches @last_npc. Only
+              # trusted when the game itself flagged the rider rider="1".
+              if !@active_tags.include?('a') && text_string =~ /\bwho is riding\b/ && @last_room_creature&.crtr_flag?(:rider)
+                @mount_rider = @last_room_creature
+              end
+            elsif @active_ids.include?('room players')
+              if @active_tags.include?('a')
+                if @obj_exist.to_s.start_with?('-')
+                  @pc = GameObj.new_pc(@obj_exist, @obj_noun, "#{@player_title}#{text_string}", @player_status)
+                  # Track the status we just staged for this pc. The annotation
+                  # branch below appends to this instead of reading it back
+                  # through GameObj#status, which cannot see the in-flight value.
+                  @pc_status = @player_status
+                  @arrival_pcs.push(@pc.noun) if (defined?(Lich::Claim) && Lich::Claim::Lock.owned?)
+                else
+                  @pc = nil
+                  @pc_status = nil
+                end
+                @player_status = nil
+                @player_title = nil
+              else
+                if @game =~ /^DR/ && text_string.match?(DR_LEGACY_PLAYERS_RUN)
+                  # Legacy dialect: players carry no <a> tag and arrive as one
+                  # complete text run, so split the plain text. The Saga dialect
+                  # links every player, so its runs are fragments between links
+                  # ("Also here: Monster ", ", Druid ", ".") and take the shared
+                  # title/status path below; splitting them would commit junk
+                  # entries and wipe the linked players. Decided by the run's
+                  # shape alone: no fragment of a linked list can match, and the
+                  # session-long :links flag would let one stray link anywhere
+                  # stop every later link-free list from splitting.
+                  GameObj.begin_room_players
+                  text_string.sub(/^Also here\: /, '').sub(/ and ([^,]+)\./) { ", #{$1}" }.split(', ').each { |player|
+                    if player =~ / who is (.+)/
+                      status = $1
+                      player.sub!(/ who is .+/, '')
+                    elsif player =~ / \((.+)\)/
+                      status = $1
+                      player.sub!(/ \(.+\)/, '')
+                    else
+                      status = nil
+                    end
+                    noun = player.slice(/\b[A-Z][a-z]+$/)
+                    if player =~ /the body of /
+                      player.sub!('the body of ', '')
+                      if status
+                        status.concat ' dead'
+                      else
+                        status = 'dead'
+                      end
+                    end
+                    if player =~ /a stunned /
+                      player.sub!('a stunned ', '')
+                      if status
+                        status.concat ' stunned'
+                      else
+                        status = 'stunned'
+                      end
+                    end
+                    GameObj.new_pc(nil, noun, player, status)
+                  }
+                  GameObj.commit_room_players
+                else
+                  if @pc && ((text_string =~ /^ who (?:is|appears) ([\w\s]+)(?:,| and|\.|$)/) || (text_string =~ / \(([\w\s]+)\)(?: \(([\w\s]+)\))?/))
+                    @pc_status = @pc_status ? "#{@pc_status} #{$1}" : $1
+                    @pc_status = "#{@pc_status} #{$2}" if $2
+                    @pc.status = @pc_status
+                  end
+                  if text_string =~ /(?:^Also here: |, )(?:a )?([a-z\s]+)?([\w\s\-!\?',]+)?$/
+                    @player_status = ($1.strip.gsub('the body of', 'dead')) if $1
+                    @player_title = $2
+                  end
+                end
+              end
+            elsif @active_ids.include?('room desc')
+              if text_string == '[Room window disabled at this location.]'
+                @room_window_disabled = true
+              else
+                @room_window_disabled = false
+                @room_description.concat(text_string)
+                if @active_tags.include?('a')
+                  GameObj.new_room_desc(@obj_exist, @obj_noun, text_string)
+                end
+              end
+            elsif @active_ids.include?('room exits')
+              @room_exits_string.concat(text_string)
+              @room_exits.push(text_string) if @active_tags.include?('d')
+            end
+          elsif @current_stream == 'bounty'
+            @bounty_task += text_string
+          elsif @current_stream == 'society'
+            @society_task = text_string
+          elsif @current_stream == 'assess'
+            @assess_buffer.concat(text_string) if @assess_buffer
+          elsif (@current_stream == 'inv') and @active_tags.include?('a')
+            GameObj.new_inv(@obj_exist, @obj_noun, text_string, nil)
+          elsif (@current_stream == 'reserve') and @active_tags.include?('a')
+            GameObj.new_reserve(@obj_exist, @obj_noun, text_string)
+          elsif @check_obvious_hiding && text_string =~ /obvious signs of someone hiding/
+            @room_player_hidden = true
+          elsif @current_stream == 'familiar'
+            # fixme: familiar room tracking does not (can not?) auto update, status of pcs and npcs isn't tracked at all, titles of pcs aren't tracked
+            if @current_style == 'roomName'
+              @familiar_room_title = text_string
+              @familiar_room_description = String.new
+              @familiar_room_exits = Array.new
+              GameObj.begin_familiar
+              @fam_mode = String.new
+            elsif @current_style == 'roomDesc'
+              @familiar_room_description.concat(text_string)
+              if @active_tags.include?('a')
+                GameObj.new_fam_room_desc(@obj_exist, @obj_noun, text_string)
+              end
+            elsif text_string =~ /^You also see/
+              @fam_mode = 'things'
+            elsif text_string =~ /^Also here/
+              @fam_mode = 'people'
+            elsif text_string =~ /Obvious (?:paths|exits)/
+              @fam_mode = 'paths'
+            elsif @fam_mode == 'things'
+              if @active_tags.include?('a')
+                if @bold
+                  GameObj.new_fam_npc(@obj_exist, @obj_noun, text_string)
+                else
+                  GameObj.new_fam_loot(@obj_exist, @obj_noun, text_string)
+                end
+              end
+              # puts 'things: ' + text_string
+            elsif @fam_mode == 'people' and @active_tags.include?('a')
+              GameObj.new_fam_pc(@obj_exist, @obj_noun, text_string)
+              # puts 'people: ' + text_string
+            elsif (@fam_mode == 'paths') and @active_tags.include?('a')
+              @familiar_room_exits.push(text_string)
+            end
+          elsif @room_window_disabled
+            if @current_style == 'roomDesc'
+              @room_description.concat(text_string)
+              if @active_tags.include?('a')
+                GameObj.new_room_desc(@obj_exist, @obj_noun, text_string)
+              end
+            elsif text_string =~ /^Obvious (?:paths|exits): (?:none)?$/
+              @room_exits_string = text_string.strip
+            end
+          end
+        rescue
+          Lich.log "error: XMLParser.text: #{$!}\n\t#{$!.backtrace.join("\n\t")}"
+          sleep 0.1
+          reset
+        end
+      end
+
+      def tag_end(name)
+        # Called once per element close. Ox synthesizes an end for a stray closing
+        # tag -- a close with no matching open (e.g. a desynced </prompt> whose
+        # <prompt> was in a prior, truncated read). tag_start never pushed it (Ox
+        # fires no attrs_done for a synthetic start), so popping here would remove
+        # the wrong element and the inv/compass end-handlers would fire spuriously.
+        # Ignore any close that does not match the currently-open tag.
+        return unless @active_tags.last == name
+
+        begin
+          if @game =~ /^DR/
+            if name == 'compass' and $nav_seen
+              $nav_seen = false
+              @second_compass = true
+            end
+            if name == 'compass' and @second_compass
+              @second_compass = false
+              @room_count += 1
+              $room_count += 1
+            end
+          end
+
+          if name == 'inv'
+            if @obj_exist == @obj_location
+              if @obj_after_name == 'is closed.'
+                GameObj.delete_container(@stow_container_id)
+              end
+            elsif @obj_exist
+              GameObj.new_inv(@obj_exist, @obj_noun, @obj_name, @obj_location, @obj_before_name, @obj_after_name)
+            end
+          elsif @send_fake_tags and (@active_ids.last == 'room exits')
+            gsl_exits = String.new
+            @room_exits.each { |exit| gsl_exits.concat(DIRMAP[SHORTDIR[exit]].to_s) }
+            $_CLIENT_.puts "\034GSj#{sprintf('%-20s', gsl_exits)}\r\n"
+            gsl_exits = nil
+          elsif @room_window_disabled and (name == 'compass')
+            if defined?(Lich::Claim) && Lich::Claim::Lock.owned?
+              if @room_id == 0
+                @room_id = Digest::MD5.hexdigest([@room_title, @room_description, @room_exits_string].to_s).to_i(16)
+              end
+              if @room_player_hidden
+                @arrival_pcs.push(:hidden)
+                @room_player_hidden = false
+              end
+              @check_obvious_hiding = false
+              Lich::Claim.parser_handle(@room_id, @arrival_pcs)
+              Lich::Claim.unlock
+            end
+            @room_description = @room_description.strip
+            @room_exits_string.concat " #{@room_exits.join(', ')}" unless @room_exits.empty?
+            if @send_fake_tags
+              gsl_exits = String.new
+              @room_exits.each { |exit| gsl_exits.concat(DIRMAP[SHORTDIR[exit]].to_s) }
+              $_CLIENT_.puts "\034GSj#{sprintf('%-20s', gsl_exits)}\r\n"
+              gsl_exits = nil
+            end
+            @room_count += 1
+            $room_count += 1
+          end
+          # Commit a staged room component when it closes. @active_ids.last is
+          # the component's own id at this point (inner <a> ids already popped).
+          if (name == 'component') or (name == 'compDef')
+            case @active_ids.last
+            when 'room objs'    then GameObj.commit_room_objs
+            when 'room players' then GameObj.commit_room_players
+            when 'room desc'    then GameObj.commit_room_desc
+            end
+          end
+          @last_tag = @active_tags.pop
+          @last_id = @active_ids.pop
+        rescue
+          Lich.log "error: XMLParser.tag_end: #{$!}\n\t#{$!.backtrace.join("\n\t")}"
+          sleep 0.1
+          reset
+        end
+      end
+
+      # here for backwards compatibility, but spellfront xml isn't sent by the game anymore
+      def spellfront
+        if (Time.now.to_i - @@warned_deprecated_spellfront) > 300
+          @@warned_deprecated_spellfront = Time.now.to_i
+          unless (script_name = Script.current.name)
+            script_name = 'unknown script'
+          end
+          respond "--- warning: #{script_name} is using deprecated method XMLData.spellfront; this method will be removed in a future version of Lich"
+        end
+        @active_spells.keys
+      end
+    end
+  end
+end

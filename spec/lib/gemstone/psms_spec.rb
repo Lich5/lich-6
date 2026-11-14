@@ -1,0 +1,179 @@
+# frozen_string_literal: true
+
+require_relative '../../spec_helper'
+
+# Load spell data for realistic testing
+load_spell_data
+
+# Load production code
+require 'util/util'
+require 'gemstone/psms'
+require "gemstone/overwatch"
+require 'gemstone/infomon'
+require 'attributes/skills'
+
+# Alias Skills at top level for psms.rb max_forcert_count which uses unqualified Skills
+Skills = Lich::Gemstone::Skills unless defined?(Skills)
+
+# =============================================================================
+# Shared PSM test data setup
+# =============================================================================
+# Helper to set up Infomon PSM data. Must be called in `before` blocks because
+# other specs (infomon_spec.rb) call `Infomon.reset!` which wipes the database.
+# With random test ordering, we can't rely on file load order.
+
+def setup_psm_test_data
+  Lich::Gemstone::Infomon.setup!
+  Lich::Gemstone::Infomon.set("cman.acrobatsleap", 0)
+  Lich::Gemstone::Infomon.set("cman.bearhug", 0)
+  Lich::Gemstone::Infomon.set("cman.berserk", 0)
+  Lich::Gemstone::Infomon.set("weapon.reactiveshot", 0)
+  Lich::Gemstone::Infomon.set("weapon.reversestrike", 0)
+  Lich::Gemstone::Infomon.set("weapon.spinkick", 0)
+  Lich::Gemstone::Infomon.set("weapon.thrash", 0)
+  Lich::Gemstone::Infomon.set("weapon.twinhammer", 1)
+  Lich::Gemstone::Infomon.set("weapon.volley", 0)
+  Lich::Gemstone::Infomon.set("weapon.wblade", 0)
+  Lich::Gemstone::Infomon.set("weapon.whirlwind", 0)
+  Lich::Gemstone::Infomon.set("armor.blessing", 0)
+  Lich::Gemstone::Infomon.set("armor.reinforcement", 0)
+  Lich::Gemstone::Infomon.set("armor.support", 0)
+  Lich::Gemstone::Infomon.set("shield.tfocus", 0)
+  Lich::Gemstone::Infomon.set("cman.krynch", 1)
+  Lich::Gemstone::Infomon.set("cman.mongoose", 1)
+  Lich::Gemstone::Infomon.set("cman.vaultkick", 1)
+  Lich::Gemstone::Infomon.set("feat.martialmastery", 1)
+  Lich::Gemstone::Infomon.set("feat.tattoo", 1)
+  Lich::Gemstone::Infomon.flush
+end
+
+RSpec.describe Lich::Gemstone::Infomon, ".setup!" do
+  before { setup_psm_test_data }
+
+  context "can set itself up" do
+    it "creates a db" do
+      File.exist?(Lich::Gemstone::Infomon.file) or fail("infomon sqlite db was not created")
+    end
+  end
+
+  context "can manipulate data" do
+    it "creates key/value pair" do
+      expect(Lich::Gemstone::Infomon.get("cman.krynch")).to eq(1)
+      expect(Lich::Gemstone::Infomon.get("weapon.twinhammer")).to eq(1)
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::PSMS, ".name_normal(name)" do
+  context "it normalizes PSM name requests" do
+    it "normalizes text full name PSM requests" do
+      expect(Lich::Gemstone::PSMS.name_normal("Rolling Krynch Stance")).to eq("rolling_krynch_stance")
+    end
+    it "normalizes symbol full name PSM requests" do
+      expect(Lich::Gemstone::PSMS.name_normal(:vault_kick)).to eq("vault_kick")
+    end
+    it "normalizes text with underscore name PSM requests" do
+      expect(Lich::Gemstone::PSMS.name_normal("sunder_shield")).to eq("sunder_shield")
+    end
+    it "normalizes simple symbol name PSM requests" do
+      expect(Lich::Gemstone::PSMS.name_normal(:blessings)).to eq("blessings")
+    end
+    it "does not attempt to compare validity, just normalize requests" do
+      expect(Lich::Gemstone::PSMS.name_normal("this is my request")).to eq("this_is_my_request")
+    end
+    it "has intake of all case character types and will perform the function" do
+      expect(Lich::Gemstone::PSMS.name_normal("THIS simply CANNOT be")).to eq("this_simply_cannot_be")
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::PSMS, "assess(name, type)" do
+  before do
+    setup_psm_test_data
+    # Stub Script.current for error handling in PSMS.assess
+    script_double = double('Script', name: 'test_script')
+    allow(Script).to receive(:current).and_return(script_double)
+  end
+
+  context "<psm>.name should return rank known" do
+    it "parses request and determines response" do
+      expect(Lich::Gemstone::CMan[:vaultkick]).to eq(1)
+      expect(Lich::Gemstone::Weapon["Twin Hammerfists"]).to eq(1)
+      expect(Lich::Gemstone::Armor["reinforcement"]).to eq(0)
+      expect(Lich::Gemstone::Feat[:mystic_tattoo]).to eq(1)
+    end
+    it "checks if PSM known (rank > 0) and returns true / false" do
+      expect(Lich::Gemstone::CMan.known?(:bearhug)).to be(false)
+      expect(Lich::Gemstone::Weapon.known?(:twin_hammerfists)).to be(true)
+      expect(Lich::Gemstone::Armor.known?("blessing")).to be(false)
+      expect(Lich::Gemstone::Feat.known?("Martial MASTERY")).to be(true)
+    end
+    it "or determines if an unknown PSM (error) is requested" do
+      expect { Lich::Gemstone::CMan["Doug Spell"] }.to raise_error(StandardError, "Aborting script - The referenced CMan skill doug_spell is invalid.\r\nCheck your PSM category (Armor, CMan, Feat, Shield, Warcry, Weapon) and your spelling of doug_spell.")
+      expect { Lich::Gemstone::Armor.known?(:favorite_dessert) }.to raise_error(StandardError, "Aborting script - The referenced Armor skill favorite_dessert is invalid.\r\nCheck your PSM category (Armor, CMan, Feat, Shield, Warcry, Weapon) and your spelling of favorite_dessert.")
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::PSMS, ".affordable?(name)" do
+  # Set stamina before each test - some PSMs require 30+ stamina
+  # so stamina=20 allows testing both affordable and unaffordable cases
+  before do
+    XMLData.stamina = 20
+    # Stub Script.current for error handling in PSMS.assess
+    script_double = double('Script', name: 'test_script')
+    allow(Script).to receive(:current).and_return(script_double)
+  end
+
+  context "<psm>, name should determine available (cost < stamina)" do
+    it "checks to see if the PSM cost < current stamina" do
+      # it does not distinguish at this phase if PSM is known or not known
+      expect(Lich::Gemstone::Armor.affordable?(:support)).to be(true)
+      expect(Lich::Gemstone::CMan.affordable?("rolling_krynch_stance")).to be(false)
+    end
+    it "or returns erroneous requests as above" do
+      expect { Lich::Gemstone::Feat.affordable?("Touch this!") }.to raise_error(StandardError, "Aborting script - The referenced Feat skill touch_this! is invalid.\r\nCheck your PSM category (Armor, CMan, Feat, Shield, Warcry, Weapon) and your spelling of touch_this!.")
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::PSMS, ".can_forcert?(times)" do
+  before do
+    setup_psm_test_data
+    # Ensure clean state for MOC skill - previous tests may have set different values
+    Lich::Gemstone::Infomon.set("skill.multi_opponent_combat", 0)
+    Lich::Gemstone::Infomon.flush
+  end
+
+  context "<psm>, times should determine if forced roundtime (forcert) rounds can be performed" do
+    it "checks to see if the character can perform the given number of forcert rounds" do
+      Lich::Gemstone::Infomon.set("skill.multi_opponent_combat", 10)
+      Lich::Gemstone::Infomon.flush
+      expect(Lich::Gemstone::PSMS.can_forcert?(1)).to be(true)
+      expect(Lich::Gemstone::PSMS.can_forcert?(4)).to be(false)
+      Lich::Gemstone::Infomon.set("skill.multi_opponent_combat", 200)
+      Lich::Gemstone::Infomon.flush
+      expect(Lich::Gemstone::PSMS.can_forcert?(4)).to be(true)
+    end
+  end
+end
+
+RSpec.describe Lich::Gemstone::PSMS, ".max_forcert_count" do
+  before do
+    setup_psm_test_data
+    # Ensure clean state for MOC skill - previous tests may have set different values
+    Lich::Gemstone::Infomon.set("skill.multi_opponent_combat", 0)
+    Lich::Gemstone::Infomon.flush
+  end
+
+  context "<psm>, times should determine the maximum number of forced roundtime (forcert) rounds" do
+    it "checks to see if the character can perform the given number of forcert rounds" do
+      Lich::Gemstone::Infomon.set("skill.multi_opponent_combat", 10)
+      Lich::Gemstone::Infomon.flush
+      expect(Lich::Gemstone::PSMS.max_forcert_count).to eq(1)
+      Lich::Gemstone::Infomon.set("skill.multi_opponent_combat", 200)
+      Lich::Gemstone::Infomon.flush
+      expect(Lich::Gemstone::PSMS.max_forcert_count).to eq(4)
+    end
+  end
+end

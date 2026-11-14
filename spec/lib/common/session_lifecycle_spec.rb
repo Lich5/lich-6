@@ -1,0 +1,426 @@
+# frozen_string_literal: true
+
+require 'rspec'
+
+require_relative '../../../lib/common/session_lifecycle'
+
+RSpec.describe Lich::Common::SessionLifecycle do
+  # Resets module-level state between examples because lifecycle behavior is
+  # implemented as module singleton state, not per-instance objects.
+  before(:each) do
+    stub_const('Lich::Common::SessionsSettings', Module.new)
+    allow(Lich::Common::SessionsSettings).to receive(:enabled?).and_return(true)
+    allow(Lich::Common::SessionsSettings).to receive(:register_session_admitted)
+    allow(Lich::Common::SessionsSettings).to receive(:heartbeat_admitted)
+    allow(Lich::Common::SessionsSettings).to receive(:unregister_session_admitted)
+    allow(Lich::Common::SessionsSettings).to receive(:HEARTBEAT_INTERVAL_SECONDS).and_return(90)
+    stub_const('Lich', Lich) unless defined?(Lich)
+    allow(Lich).to receive(:log) if Lich.respond_to?(:log)
+
+    described_class.instance_variable_set(:@running, false)
+    described_class.instance_variable_set(:@started, false)
+    described_class.instance_variable_set(:@feature_enabled, false)
+    described_class.instance_variable_set(:@heartbeat_thread, nil)
+    described_class.instance_variable_set(:@mutex, Mutex.new)
+  end
+
+  describe '.resolve_session_name' do
+    # Validates deterministic fallback order for session naming.
+    it 'uses --login character when present' do
+      result = described_class.resolve_session_name(argv: ['--login', 'tsetem'], account_character: nil)
+      expect(result).to eq('Tsetem')
+    end
+
+    it 'falls back to account_character when login arg is absent' do
+      result = described_class.resolve_session_name(argv: [], account_character: 'Abyran')
+      expect(result).to eq('Abyran')
+    end
+
+    it 'falls back to XMLData.name when argv and account character are absent' do
+      stub_const('XMLData', double('XMLData', name: 'FromXmlData'))
+
+      result = described_class.resolve_session_name(argv: [], account_character: nil)
+      expect(result).to eq('FromXmlData')
+    end
+
+    it 'falls back to pid format when XMLData.name is unavailable' do
+      stub_const('XMLData', double('XMLData', name: nil))
+      allow(Process).to receive(:pid).and_return(1234)
+
+      result = described_class.resolve_session_name(argv: [], account_character: nil)
+      expect(result).to eq('pid-1234')
+    end
+
+    it 'falls back to pid format when XMLData.name is empty' do
+      stub_const('XMLData', double('XMLData', name: ''))
+      allow(Process).to receive(:pid).and_return(5678)
+
+      result = described_class.resolve_session_name(argv: [], account_character: nil)
+      expect(result).to eq('pid-5678')
+    end
+  end
+
+  describe '.resolve_role' do
+    # Ensures role classification reflects launch mode and detachable behavior.
+    it 'returns headless for --without-frontend' do
+      expect(described_class.resolve_role(argv: ['--without-frontend'], detachable_client_port: nil)).to eq('headless')
+    end
+
+    it 'returns detachable when detachable client is enabled' do
+      expect(described_class.resolve_role(argv: [], detachable_client_port: 7000)).to eq('detachable')
+    end
+
+    it 'prefers detachable when headless mode also exposes a detachable client' do
+      expect(described_class.resolve_role(argv: ['--without-frontend'], detachable_client_port: 7000)).to eq('detachable')
+    end
+
+    it 'returns session otherwise' do
+      expect(described_class.resolve_role(argv: [], detachable_client_port: nil)).to eq('session')
+    end
+  end
+
+  describe 'registration delay' do
+    it 'defaults to 5 seconds for faster startup registration' do
+      expect(described_class::REGISTRATION_DELAY_SECONDS).to eq(5)
+    end
+  end
+
+  describe '.start / .stop' do
+    # Verifies idempotent lifecycle transitions and clean unregister semantics.
+    it 'does not start or stop lifecycle tracking while the feature flag is disabled' do
+      allow(Lich::Common::SessionsSettings).to receive(:enabled?).and_return(false)
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)).to be(false)
+      expect(described_class.stop).to be(false)
+      expect(Lich::Common::SessionsSettings).not_to have_received(:register_session_admitted)
+      expect(Lich::Common::SessionsSettings).not_to have_received(:heartbeat_admitted)
+      expect(Lich::Common::SessionsSettings).not_to have_received(:unregister_session_admitted)
+    end
+
+    it 'starts once and unregisters on stop (registration is deferred)' do
+      fake_thread = instance_double(Thread, kill: true)
+      allow(Thread).to receive(:new).and_return(fake_thread)
+      allow(fake_thread).to receive(:join).with(0.5)
+      allow(fake_thread).to receive(:alive?).and_return(true)
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('DR')
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)).to be true
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)).to be false
+      expect(Lich::Common::SessionsSettings).not_to have_received(:register_session_admitted)
+
+      expect(described_class.stop).to be true
+      expect(described_class.stop).to be false
+      expect(Lich::Common::SessionsSettings).to have_received(:unregister_session_admitted).with(pid: Process.pid).once
+    end
+
+    it 'prefers cooperative heartbeat shutdown before hard kill' do
+      heartbeat_thread = instance_double(Thread)
+      allow(heartbeat_thread).to receive(:join).with(0.5)
+      allow(heartbeat_thread).to receive(:alive?).and_return(false)
+      allow(heartbeat_thread).to receive(:kill)
+
+      allow(Thread).to receive(:new).and_return(heartbeat_thread)
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('DR')
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)).to be(true)
+      expect(described_class.stop).to be(true)
+
+      expect(heartbeat_thread).to have_received(:join).with(0.5)
+      expect(heartbeat_thread).not_to have_received(:kill)
+    end
+
+    it 'uses hard kill when cooperative join times out' do
+      heartbeat_thread = instance_double(Thread)
+      allow(heartbeat_thread).to receive(:join).with(0.5)
+      allow(heartbeat_thread).to receive(:alive?).and_return(true)
+      allow(heartbeat_thread).to receive(:kill)
+
+      allow(Thread).to receive(:new).and_return(heartbeat_thread)
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('DR')
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)).to be(true)
+      expect(described_class.stop).to be(true)
+
+      expect(heartbeat_thread).to have_received(:join).with(0.5)
+      expect(heartbeat_thread).to have_received(:kill)
+    end
+
+    it 'executes deferred register and one heartbeat iteration from captured thread block' do
+      heartbeat_thread = instance_double(Thread)
+      allow(heartbeat_thread).to receive(:join).with(0.5)
+      allow(heartbeat_thread).to receive(:alive?).and_return(false)
+      allow(heartbeat_thread).to receive(:kill)
+
+      captured_block = nil
+      allow(Thread).to receive(:new) do |&blk|
+        captured_block = blk
+        heartbeat_thread
+      end
+
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('DR')
+      allow(described_class).to receive(:attempt_register).and_return(true)
+
+      sleep_calls = 0
+      allow(described_class).to receive(:sleep) do |_seconds|
+        sleep_calls += 1
+        described_class.instance_variable_set(:@running, false) if sleep_calls >= 3
+      end
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 1, registration_delay: 0)).to be(true)
+      expect(captured_block).not_to be_nil
+
+      captured_block.call
+
+      expect(described_class).to have_received(:attempt_register).at_least(:once)
+      expect(Lich::Common::SessionsSettings).to have_received(:heartbeat_admitted).with(
+        hash_including(
+          pid: Process.pid,
+          state: 'running',
+          session_name: 'Tsetem',
+          role: 'session',
+          frontend: 'stormfront',
+          game_code: 'DR'
+        )
+      ).at_least(:once)
+
+      expect(described_class.stop).to be(true)
+    end
+
+    it 'does not emit debug log on heartbeat ticks' do
+      heartbeat_thread = instance_double(Thread)
+      allow(heartbeat_thread).to receive(:join).with(0.5)
+      allow(heartbeat_thread).to receive(:alive?).and_return(false)
+      allow(heartbeat_thread).to receive(:kill)
+
+      captured_block = nil
+      allow(Thread).to receive(:new) do |&blk|
+        captured_block = blk
+        heartbeat_thread
+      end
+
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('DR')
+      allow(described_class).to receive(:attempt_register).and_return(true)
+
+      lich_mod = Module.new do
+        def self.log(_msg); end
+
+        def self.respond_to?(method, *args)
+          return true if method == :log
+
+          super
+        end
+      end
+      stub_const('Lich', lich_mod)
+      allow(lich_mod).to receive(:log).and_call_original
+
+      sleep_calls = 0
+      allow(described_class).to receive(:sleep) do |_seconds|
+        sleep_calls += 1
+        described_class.instance_variable_set(:@running, false) if sleep_calls >= 3
+      end
+
+      described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 1, registration_delay: 0)
+      captured_block.call
+
+      expect(lich_mod).not_to have_received(:log).with(a_string_matching(/debug: SessionLifecycle heartbeat tick/))
+
+      described_class.stop
+    end
+
+    it 'resets lifecycle state when thread creation raises' do
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(Thread).to receive(:new).and_raise(StandardError, 'thread create failed')
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)).to be(false)
+      expect(described_class.instance_variable_get(:@running)).to be(false)
+      expect(described_class.instance_variable_get(:@started)).to be(false)
+      expect(described_class.instance_variable_get(:@feature_enabled)).to be(false)
+      expect(described_class.instance_variable_get(:@heartbeat_thread)).to be_nil
+    end
+  end
+
+  describe 'heartbeat recovery' do
+    let(:heartbeat_thread) { instance_double(Thread, join: nil, alive?: false, kill: nil) }
+    let(:heartbeat_blocks) { [] }
+
+    before(:each) do
+      allow(Lich).to receive(:log)
+      allow(Thread).to receive(:new) do |&block|
+        heartbeat_blocks << block
+        heartbeat_thread
+      end
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('GS3')
+    end
+
+    it 'retries a failed heartbeat write on the next paced iteration and recovers' do
+      events = []
+      writes = 0
+      allow(described_class).to receive(:sleep) do |seconds|
+        events << [:sleep, seconds]
+        described_class.instance_variable_set(:@running, false) if writes == 2
+      end
+      allow(Lich::Common::SessionsSettings).to receive(:heartbeat_admitted) do
+        writes += 1
+        if writes == 1
+          events << :failed_write
+          raise IOError, 'summary store temporarily unavailable',
+                %w[summary_store.rb:10 sessions_settings.rb:20 session_lifecycle.rb:30 thread.rb:40]
+        end
+
+        events << :successful_write
+      end
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 2, registration_delay: 0)).to be(true)
+      heartbeat_blocks.last.call
+
+      expect(events).to eq([[:sleep, 0], [:sleep, 2], :failed_write, [:sleep, 2], :successful_write, [:sleep, 2]])
+      expect(Lich::Common::SessionsSettings).to have_received(:heartbeat_admitted).twice
+      expect(Lich::Common::SessionsSettings).to have_received(:register_session_admitted).once
+      expect(Lich).to have_received(:log).with(
+        'warning: SessionLifecycle heartbeat tick failed (continuing): IOError: summary store temporarily unavailable' \
+        "\n\tsummary_store.rb:10\n\tsessions_settings.rb:20\n\tsession_lifecycle.rb:30"
+      ).once
+      expect(Lich).not_to have_received(:log).with(a_string_matching(/heartbeat thread stopped/))
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 2, registration_delay: 0)).to be(false)
+      expect(described_class.stop).to be(true)
+      expect(Lich::Common::SessionsSettings).to have_received(:unregister_session_admitted).with(pid: Process.pid).once
+      expect(heartbeat_thread).not_to have_received(:kill)
+    end
+
+    it 'logs a stopped heartbeat thread when its wait raises outside the tick rescue' do
+      allow(described_class).to receive(:sleep).with(0)
+      allow(described_class).to receive(:sleep).with(2).and_raise(IOError, 'heartbeat wait interrupted')
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 2, registration_delay: 0)).to be(true)
+      heartbeat_blocks.last.call
+
+      expect(Lich).to have_received(:log).with('warning: SessionLifecycle heartbeat thread stopped: IOError: heartbeat wait interrupted').once
+      expect(Lich).not_to have_received(:log).with(a_string_matching(/heartbeat tick failed \(continuing\)/))
+      expect(Lich::Common::SessionsSettings).not_to have_received(:heartbeat_admitted)
+      expect(described_class.stop).to be(true)
+    end
+
+    it 'stops before retrying a failed write and allows a fresh start' do
+      sleep_calls = 0
+      writes = 0
+      allow(described_class).to receive(:sleep) do |_seconds|
+        sleep_calls += 1
+        expect(described_class.stop).to be(true) if [3, 6].include?(sleep_calls)
+      end
+      allow(Lich::Common::SessionsSettings).to receive(:heartbeat_admitted) do
+        writes += 1
+        raise IOError, 'summary store temporarily unavailable' if writes == 1
+      end
+
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 2, registration_delay: 0)).to be(true)
+      heartbeat_blocks.last.call
+
+      expect(sleep_calls).to eq(3)
+      expect(writes).to eq(1)
+      expect(described_class.stop).to be(false)
+      expect(described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 2, registration_delay: 0)).to be(true)
+      heartbeat_blocks.last.call
+
+      expect(sleep_calls).to eq(6)
+      expect(writes).to eq(2)
+      expect(heartbeat_blocks.size).to eq(2)
+      expect(Lich::Common::SessionsSettings).to have_received(:register_session_admitted).twice
+      expect(Lich::Common::SessionsSettings).to have_received(:unregister_session_admitted).with(pid: Process.pid).twice
+      expect(described_class.stop).to be(false)
+      expect(heartbeat_thread).not_to have_received(:kill)
+    end
+  end
+
+  describe 'feature-flag latching' do
+    let(:heartbeat_thread) do
+      t = instance_double(Thread)
+      allow(t).to receive(:join).with(0.5)
+      allow(t).to receive(:alive?).and_return(true)
+      allow(t).to receive(:kill)
+      t
+    end
+
+    before(:each) do
+      allow(Thread).to receive(:new).and_return(heartbeat_thread)
+      allow(described_class).to receive(:resolve_frontend).and_return('stormfront')
+      allow(described_class).to receive(:resolve_game_code).and_return('DR')
+    end
+
+    def start_lifecycle
+      described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 999)
+    end
+
+    it 'stop succeeds when the feature flag flips off after start' do
+      start_lifecycle
+      allow(Lich::Common::SessionsSettings).to receive(:enabled?).and_return(false)
+
+      expect(described_class.stop).to be(true)
+      expect(Lich::Common::SessionsSettings).to have_received(:unregister_session_admitted).with(pid: Process.pid)
+    end
+
+    it 'stop succeeds when enabled? would raise after startup' do
+      start_lifecycle
+      allow(Lich::Common::SessionsSettings).to receive(:enabled?).and_raise(RuntimeError, 'prepare called on a closed database')
+
+      expect(described_class.stop).to be(true)
+      expect(Lich::Common::SessionsSettings).to have_received(:unregister_session_admitted).with(pid: Process.pid)
+    end
+
+    it 'clears @feature_enabled after stop completes' do
+      start_lifecycle
+      expect(described_class.instance_variable_get(:@feature_enabled)).to be(true)
+
+      described_class.stop
+      expect(described_class.instance_variable_get(:@feature_enabled)).to be(false)
+    end
+
+    it 'returns false when stop is called without a prior start' do
+      expect(described_class.stop).to be(false)
+      expect(Lich::Common::SessionsSettings).not_to have_received(:unregister_session_admitted)
+    end
+
+    it 'calls unregister_session_admitted only once on double stop' do
+      start_lifecycle
+
+      expect(described_class.stop).to be(true)
+      expect(described_class.stop).to be(false)
+      expect(Lich::Common::SessionsSettings).to have_received(:unregister_session_admitted).with(pid: Process.pid).once
+    end
+
+    it 'attempt_register uses register_session_admitted instead of public register_session' do
+      allow(Lich::Common::SessionsSettings).to receive(:register_session)
+
+      captured_block = nil
+      allow(Thread).to receive(:new) do |&blk|
+        captured_block = blk
+        heartbeat_thread
+      end
+
+      sleep_calls = 0
+      allow(described_class).to receive(:sleep) do |_seconds|
+        sleep_calls += 1
+        described_class.instance_variable_set(:@running, false) if sleep_calls >= 2
+      end
+
+      described_class.start(session_name: 'Tsetem', role: 'session', heartbeat_interval: 1, registration_delay: 0)
+      captured_block.call
+
+      expect(Lich::Common::SessionsSettings).to have_received(:register_session_admitted).at_least(:once)
+      expect(Lich::Common::SessionsSettings).not_to have_received(:register_session)
+    end
+  end
+
+  describe '.resolve_game_code' do
+    it 'returns nil when XMLData.game is an empty string' do
+      stub_const('XMLData', double('XMLData', game: ''))
+
+      expect(described_class.resolve_game_code).to be_nil
+    end
+  end
+end

@@ -1,0 +1,1000 @@
+# frozen_string_literal: true
+
+# Spec for Lich::Common::XMLParser assess (combat situation) stream parsing.
+#
+# Two layers of coverage:
+#   * #parse_assess_line  -- pure, global-free parsing of a single reconstructed
+#                            assess line plus its ordered look-target ids.
+#   * stream integration  -- drives the real REXML::StreamListener pipeline with
+#                            the raw XML exactly as the game emits it (the same
+#                            corpus a player sees from ASSESS), confirming the
+#                            tag_start / text / popStream / clearStream wiring
+#                            reassembles each line and the d-tag ids correctly.
+#
+# The assess_corpus below is verbatim game output: each combat line arrives in
+# its own pushStream/popStream, ids live in <d cmd='look #id'> attributes
+# (subject first, then target), and the trailing "  | F" is a <d cmd='face #id'>
+# face hint that must be discarded.
+
+require_relative '../../spec_helper'
+require 'rexml/document'
+require 'rexml/streamlistener'
+require_relative '../../../lib/common/gameobj'
+require_relative '../../../lib/common/xmlparser'
+# GameLoader requires the current game's parser delta in production (alongside
+# its map delta); these examples stub XMLData.game, so load both here.
+require 'gemstone/xml_delta'
+require 'dragonrealms/xml_delta'
+
+RSpec.describe Lich::Common::XMLParser do
+  subject(:parser) { described_class.new }
+
+  # Raw assess stream, wrapped per-line in pushStream/popStream as the game sends it.
+  let(:assess_corpus) { <<~'__ASSESS__' }
+  <pushStream id="assess"/><clearStream id="assess"/>You assess your combat situation...
+  <popStream/><pushStream id="assess"/>You (adeptly balanced) are facing <d cmd='look #89513914'>a jeol moradu</d> (4) at melee range.
+  <popStream/><pushStream id="assess"/><d cmd='look #89511379'>A jeol moradu</d> (1: cursed and nimbly balanced) is behind <d cmd='look #-10592168'>Tenuk</d> at melee range.  | <d cmd='face #89511379'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #89511387'>A jeol moradu</d> (2: cursed and nimbly balanced) is facing <d cmd='look #-10592168'>Tenuk</d> at melee range.  | <d cmd='face #89511387'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #89511391'>A jeol moradu</d> (3: cursed and nimbly balanced) is behind <d cmd='look #-10592168'>Tenuk</d> at melee range.  | <d cmd='face #89511391'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #89513914'>A jeol moradu</d> (4: nimbly balanced) is facing you at melee range.  | <d cmd='face #89513914'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #89513926'>A jeol moradu</d> (5: slightly off balance) is behind you at melee range.  | <d cmd='face #89513926'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #89513942'>A jeol moradu</d> (6: solidly balanced) is behind you at melee range.  | <d cmd='face #89513942'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #89511371'>A jeol moradu</d> (7: cursed and off balance) is moving to flank <d cmd='look #-10592168'>Tenuk</d> at pole weapon range.  | <d cmd='face #89511371'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #-10592168'>Tenuk</d> (incredibly balanced) is facing <d cmd='look #89511387'>a jeol moradu</d> (2) at melee range.  | <d cmd='face #89511387'>F</d>
+  <popStream/><pushStream id="assess"/><d cmd='look #-10581503'>Byd</d> (hidden and incredibly balanced) is moving to flank <d cmd='look #89511379'>a jeol moradu</d> (1) at missile range.  | <d cmd='face #89511379'>F</d>
+  <popStream/><prompt time="1782253647">R&gt;</prompt>
+  __ASSESS__
+
+  describe '#parse_assess_line' do
+    it 'returns nil for the header line' do
+      expect(parser.parse_assess_line('You assess your combat situation...', [])).to be_nil
+    end
+
+    it 'returns nil for blank input' do
+      expect(parser.parse_assess_line('   ', [])).to be_nil
+    end
+
+    it 'parses the self line, using the lone look id as the target' do
+      entry = parser.parse_assess_line(
+        'You (adeptly balanced) are facing a jeol moradu (4) at melee range.', ['89513914']
+      )
+      expect(entry).to include(
+        name: 'You', id: nil, number: nil, self: true, pc: false,
+        status: 'adeptly balanced', relation: 'facing',
+        target: 'a jeol moradu', target_id: '89513914', target_number: 4,
+        range: :melee
+      )
+    end
+
+    it 'parses a creature line, subject id first then target id, and strips the face hint' do
+      entry = parser.parse_assess_line(
+        'A jeol moradu (1: cursed and nimbly balanced) is behind Tenuk at melee range.  | F',
+        ['89511379', '-10592168']
+      )
+      expect(entry).to include(
+        name: 'A jeol moradu', id: '89511379', number: 1,
+        status: 'cursed and nimbly balanced', relation: 'behind',
+        target: 'Tenuk', target_id: '-10592168',
+        range: :melee, self: false, pc: false
+      )
+    end
+
+    it 'treats a "you" target as nil target_id' do
+      entry = parser.parse_assess_line(
+        'A jeol moradu (4: nimbly balanced) is facing you at melee range.  | F', ['89513914']
+      )
+      expect(entry).to include(target: 'you', target_id: nil, number: 4)
+    end
+
+    it 'normalizes "moving to flank" to "flanking" and maps pole weapon range' do
+      entry = parser.parse_assess_line(
+        'A jeol moradu (7: cursed and off balance) is moving to flank Tenuk at pole weapon range.  | F',
+        ['89511371', '-10592168']
+      )
+      expect(entry).to include(relation: 'flanking', target: 'Tenuk', range: :pole)
+    end
+
+    it 'flags a PC subject (negative id) and captures the targeted creature number' do
+      entry = parser.parse_assess_line(
+        'Tenuk (incredibly balanced) is facing a jeol moradu (2) at melee range.  | F',
+        ['-10592168', '89511387']
+      )
+      expect(entry).to include(
+        name: 'Tenuk', id: '-10592168', pc: true, number: nil,
+        relation: 'facing', target: 'a jeol moradu', target_id: '89511387',
+        target_number: 2, range: :melee
+      )
+    end
+
+    it 'has no noun for a link-less (legacy) line' do
+      entry = parser.parse_assess_line(
+        'A jeol moradu (4: nimbly balanced) is facing you at melee range.  | F', ['89513914']
+      )
+      expect(entry).to include(noun: nil)
+    end
+
+    it 'takes the subject noun from the link whose exist is the subject id' do
+      nouns = { '-10592168' => 'Tenuk', '89511387' => 'moradu' }
+      pc = parser.parse_assess_line(
+        'Tenuk (incredibly balanced) is facing a jeol moradu (2) at melee range.  | F',
+        ['-10592168', '89511387'], nouns
+      )
+      me = parser.parse_assess_line(
+        'You (adeptly balanced) are facing a jeol moradu (2) at melee range.', ['89511387'], nouns
+      )
+      expect(pc).to include(noun: 'Tenuk')
+      expect(me).to include(noun: nil)
+    end
+
+    it 'trims the link noun and treats a blank one as absent' do
+      line = 'A void-black umbral moth (1: solidly balanced) is facing you at melee range.  | F'
+      expect(parser.parse_assess_line(line, ['7'], { '7' => ' moth' })).to include(noun: 'moth')
+      expect(parser.parse_assess_line(line, ['7'], { '7' => '  ' })).to include(noun: nil)
+    end
+
+    it 'maps missile range' do
+      entry = parser.parse_assess_line(
+        'Byd (hidden and incredibly balanced) is moving to flank a jeol moradu (1) at missile range.  | F',
+        ['-10581503', '89511379']
+      )
+      expect(entry).to include(pc: true, relation: 'flanking', range: :missile, target_number: 1)
+    end
+  end
+
+  describe 'assess stream integration (full REXML feed)' do
+    before { REXML::Document.parse_stream("<root>#{assess_corpus}</root>", parser) }
+
+    it 'captures every assessed entity except the header' do
+      expect(parser.assess.length).to eq(10)
+    end
+
+    it 'records the self line with no subject id' do
+      me = parser.assess.find { |e| e[:self] }
+      expect(me).to include(name: 'You', id: nil, target_id: '89513914', range: :melee)
+    end
+
+    it 'reassembles creature lines with correct ids from the <d> tags' do
+      creatures = parser.assess_creatures
+      expect(creatures.length).to eq(7)
+      expect(creatures.map { |c| c[:number] }).to eq([1, 2, 3, 4, 5, 6, 7])
+      expect(creatures.map { |c| c[:id] }).to eq(
+        %w[89511379 89511387 89511391 89513914 89513926 89513942 89511371]
+      )
+    end
+
+    it 'classifies PCs by negative id and excludes them from assess_creatures' do
+      pcs = parser.assess.select { |e| e[:pc] }
+      expect(pcs.map { |e| e[:name] }).to eq(%w[Tenuk Byd])
+      expect(parser.assess_creatures.map { |c| c[:name] }.uniq).to eq(['A jeol moradu'])
+    end
+
+    it 'captures the three distinct ranges present in the corpus' do
+      expect(parser.assess.map { |e| e[:range] }.uniq).to contain_exactly(:melee, :pole, :missile)
+    end
+
+    it 'discards the trailing face hint (no stray "| F" in any field)' do
+      expect(parser.assess.none? { |e| e.values.grep(String).any? { |v| v.include?('|') } }).to be(true)
+    end
+
+    it 'resets the list on a fresh clearStream' do
+      expect(parser.assess.length).to eq(10)
+      REXML::Document.parse_stream(
+        %(<root><pushStream id="assess"/><clearStream id="assess"/>You assess your combat situation...<popStream/></root>),
+        parser
+      )
+      expect(parser.assess).to be_empty
+    end
+  end
+
+  # The mindState progressBar carries the experience fields shown in the game's
+  # exp bar. field_exp/max_field_exp/ascension_exp/exp/until_next are always
+  # present; fashlonae/lumnis/rpa are only emitted while those bonuses are
+  # active and must fall back to nil when a fresh bar omits them.
+  describe 'mindState progressBar experience fields' do
+    # Verbatim bar as emitted while the ascension bonuses are active.
+    let(:active_bar) do
+      "<progressBar id='mindState' value='100' text='must rest' top='45' left='3' field_exp='1077' max_field_exp='1077' ascension_exp='5438' fashlonae='1' lumnis='3' rpa='2' exp='53915957' until_next='1543' align='n' width='160' height='15'/>"
+    end
+
+    # Same bar with the active-only bonuses dropped (the game omits them when
+    # they are not active).
+    let(:inactive_bar) do
+      "<progressBar id='mindState' value='34' text='clear as a bell' top='45' left='3' field_exp='500' max_field_exp='1010' ascension_exp='6000' exp='53920000' until_next='999' align='n' width='160' height='15'/>"
+    end
+
+    def feed(parser, fragment)
+      REXML::Document.parse_stream("<root>#{fragment}</root>", parser)
+    end
+
+    it 'absorbs every always-present experience field' do
+      feed(parser, active_bar)
+      expect(parser.mind_text).to eq('must rest')
+      expect(parser.mind_value).to eq(100)
+      expect(parser.field_exp).to eq(1077)
+      expect(parser.max_field_exp).to eq(1077)
+      expect(parser.ascension_exp).to eq(5438)
+      expect(parser.exp).to eq(53_915_957)
+      expect(parser.until_next).to eq(1543)
+    end
+
+    it 'absorbs the active-only bonus fields when present' do
+      feed(parser, active_bar)
+      expect(parser.fashlonae).to eq(1)
+      expect(parser.lumnis).to eq(3)
+      expect(parser.rpa).to eq(2.0)
+      expect(parser.rpa).to be_a(Float)
+    end
+
+    it 'preserves a fractional rpa value without truncating it' do
+      feed(parser, "<progressBar id='mindState' value='100' text='must rest' field_exp='1077' max_field_exp='1077' ascension_exp='5438' lumnis='3' rpa='1.5' exp='53915957' until_next='1543'/>")
+      expect(parser.rpa).to eq(1.5)
+      expect(parser.rpa).to be_a(Float)
+    end
+
+    it 'leaves active-only bonus fields nil when the bar omits them' do
+      feed(parser, inactive_bar)
+      expect(parser.fashlonae).to be_nil
+      expect(parser.lumnis).to be_nil
+      expect(parser.rpa).to be_nil
+      # always-present fields still populate from the omitting bar
+      expect(parser.ascension_exp).to eq(6000)
+      expect(parser.until_next).to eq(999)
+    end
+
+    it 'clears previously-set bonus fields back to nil on a fresh bar without them' do
+      feed(parser, active_bar)
+      expect([parser.fashlonae, parser.lumnis, parser.rpa]).to eq([1, 3, 2.0])
+
+      feed(parser, inactive_bar)
+      expect(parser.fashlonae).to be_nil
+      expect(parser.lumnis).to be_nil
+      expect(parser.rpa).to be_nil
+      # and the always-present fields reflect the newer bar
+      expect(parser.field_exp).to eq(500)
+      expect(parser.max_field_exp).to eq(1010)
+      expect(parser.exp).to eq(53_920_000)
+    end
+  end
+
+  # The roommeta tag carries integer room-metadata fields. climate/terrain were
+  # already ingested; weather/bonfire/inside/water/sanctuary/realm mirror them.
+  describe 'roommeta room-metadata fields' do
+    def feed(parser, fragment)
+      REXML::Document.parse_stream("<root>#{fragment}</root>", parser)
+    end
+
+    it 'defaults every field to 0 before any roommeta is seen' do
+      expect(parser.room_climate).to eq(0)
+      expect(parser.room_terrain).to eq(0)
+      expect(parser.room_weather).to eq(0)
+      expect(parser.room_bonfire).to eq(0)
+      expect(parser.room_inside).to eq(0)
+      expect(parser.room_water).to eq(0)
+      expect(parser.room_sanctuary).to eq(0)
+      expect(parser.room_realm).to eq(0)
+    end
+
+    it 'absorbs every field from the roommeta tag' do
+      feed(parser, %(<roommeta weather="0" bonfire="0" inside="1" water="0" sanctuary="0" realm="57" climate="12" terrain="1"/>))
+      expect(parser.room_climate).to eq(12)
+      expect(parser.room_terrain).to eq(1)
+      expect(parser.room_weather).to eq(0)
+      expect(parser.room_bonfire).to eq(0)
+      expect(parser.room_inside).to eq(1)
+      expect(parser.room_water).to eq(0)
+      expect(parser.room_sanctuary).to eq(0)
+      expect(parser.room_realm).to eq(57)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Staged registry refresh (atomic mid-stream reads)
+  #
+  # Drives tag_start / text / tag_end - the interface Ox's SAX bridge feeds in
+  # production - to assert a GameObj registry never appears empty or half-filled
+  # mid-stream: readers see the previous complete snapshot until the
+  # stream/component commits, then the new one.
+  # ---------------------------------------------------------------------------
+  describe 'staged registry refresh (atomic mid-stream reads)' do
+    let(:gameobj) { Lich::Common::GameObj }
+
+    before do
+      # Staged inv/reserve paths gate on a GS game; spec_helper resets game to
+      # 'rspec'. GameObj registry/staging resets also come from spec_helper.
+      XMLData.game = 'GSIV'
+    end
+
+    def feed_bold_a(exist, noun, name)
+      parser.tag_start('pushBold', {})
+      parser.tag_end('pushBold')
+      parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+      parser.text(name)
+      parser.tag_end('a')
+      parser.tag_start('popBold', {})
+      parser.tag_end('popBold')
+    end
+
+    # A non-bold <a> as the game sends ground loot in 'room objs'.
+    def feed_loot_a(exist, noun, name)
+      parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+      parser.text(name)
+      parser.tag_end('a')
+    end
+
+    describe "'room objs' component refresh" do
+      it 'keeps the previous npc list visible until the component closes' do
+        gameobj.new_npc('1', 'orc', 'an orc', 'standing') # previously published
+
+        parser.tag_start('component', { 'id' => 'room objs' }) # begin_room_objs
+        feed_bold_a('2', 'kobold', 'a kobold')
+
+        # Mid-stream: reader still sees the prior room, not the half-built buffer.
+        expect(gameobj.npcs.map(&:id)).to eq(['1'])
+
+        parser.tag_end('component') # commit_room_objs
+        expect(gameobj.npcs.map(&:id)).to eq(['2'])
+      end
+
+      it 'commits loot and npcs together and applies the deferred status line' do
+        parser.tag_start('component', { 'id' => 'room objs' })
+        feed_bold_a('2', 'kobold', 'a kobold')
+        feed_loot_a('3', 'gem', 'a ruby')
+        # Status arrives as text outside the <a>, in a later callback.
+        parser.text(' that is dead.')
+        parser.tag_end('component')
+
+        expect(gameobj.npcs.map(&:id)).to eq(['2'])
+        expect(gameobj.loot.map(&:id)).to eq(['3'])
+        expect(gameobj['2'].status).to eq('dead')
+      end
+
+      it 'clears a stale room when the new component carries no objects' do
+        gameobj.new_npc('1', 'orc', 'an orc', 'standing')
+        gameobj.new_loot('9', 'gem', 'a ruby')
+
+        parser.tag_start('component', { 'id' => 'room objs' })
+        parser.tag_end('component') # empty component -> commit empty
+
+        expect(gameobj.npcs).to be_nil
+        expect(gameobj.loot).to be_nil
+      end
+    end
+
+    describe "'room players' component refresh (GS)" do
+      it 'swaps the pc list atomically on close' do
+        gameobj.new_pc('-1', 'elf', 'an elf', 'standing')
+
+        parser.tag_start('component', { 'id' => 'room players' }) # begin_room_players
+        parser.tag_start('a', { 'exist' => '-2', 'noun' => 'dwarf' })
+        parser.text('a dwarf')
+        parser.tag_end('a')
+
+        expect(gameobj.pcs.map(&:id)).to eq(['-1'])
+
+        parser.tag_end('component') # commit_room_players
+        expect(gameobj.pcs.map(&:id)).to eq(['-2'])
+      end
+
+      # The annotation arrives in a later text callback, after </a>, while the
+      # refresh is still open. The staged pc has no published status entry, so
+      # reading it back through GameObj#status used to yield the frozen 'gone'
+      # sentinel and raise FrozenError on the in-place append.
+      def feed_pc(exist, noun, name)
+        parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+        parser.text(name)
+        parser.tag_end('a')
+      end
+
+      it 'annotates a newly staged pc without mutating the gone sentinel' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('-2', 'dwarf', 'a dwarf')
+
+        expect { parser.text(' who is sitting.') }.not_to raise_error
+
+        parser.tag_end('component')
+        expect(gameobj['-2'].status).to eq('sitting')
+      end
+
+      it 'replaces rather than appends to the previously published status' do
+        gameobj.new_pc('-2', 'dwarf', 'a dwarf', 'standing')
+
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('-2', 'dwarf', 'a dwarf')
+        parser.text(' who is sitting.')
+        parser.tag_end('component')
+
+        expect(gameobj['-2'].status).to eq('sitting')
+      end
+
+      it 'accepts the parenthetical form and combines both captures' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('-2', 'dwarf', 'a dwarf')
+        parser.text(' (kneeling) (hidden)')
+        parser.tag_end('component')
+
+        expect(gameobj['-2'].status).to eq('kneeling hidden')
+      end
+
+      it 'appends the annotation onto a status carried in from the name prefix' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        parser.instance_variable_set(:@player_status, 'dead')
+        feed_pc('-2', 'dwarf', 'a dwarf')
+        parser.text(' who is sitting.')
+        parser.tag_end('component')
+
+        expect(gameobj['-2'].status).to eq('dead sitting')
+      end
+
+      it 'does not annotate once the pc reference has been cleared' do
+        parser.tag_start('component', { 'id' => 'room players' })
+        feed_pc('99', 'dwarf', 'a dwarf') # non-negative exist -> @pc = nil
+        parser.text(' who is sitting.')
+        parser.tag_end('component')
+
+        expect(gameobj.pcs).to be_nil
+      end
+    end
+
+    describe "'room players' DR 'Also here' rebuild" do
+      it 'swaps the pc list atomically within the single text callback' do
+        gameobj.new_pc('-1', 'elf', 'an elf', 'standing') # previously published
+        parser.instance_variable_set(:@game, 'DR')
+
+        parser.tag_start('component', { 'id' => 'room players' })
+        # Component open staged an (empty) refresh; published list still visible.
+        expect(gameobj.pcs.map(&:name)).to eq(['an elf'])
+
+        # The whole "Also here" line arrives in one callback: begin + fill + commit.
+        parser.text('Also here: Bob, Alice')
+        expect(gameobj.pcs.map(&:name)).to contain_exactly('Bob', 'Alice')
+
+        parser.tag_end('component') # trailing commit is a no-op
+        expect(gameobj.pcs.map(&:name)).to contain_exactly('Bob', 'Alice')
+      end
+    end
+
+    describe "'inv' stream refresh" do
+      def feed_inv_item(exist, noun, name)
+        parser.tag_start('a', { 'exist' => exist, 'noun' => noun })
+        parser.text(name)
+        parser.tag_end('a')
+      end
+
+      it 'keeps the previous inventory visible until the stream pops' do
+        gameobj.new_inv('1', 'cloak', 'a wool cloak') # previously published
+
+        parser.tag_start('pushStream', { 'id' => 'inv' }) # begin_inv
+        parser.tag_end('pushStream')
+        feed_inv_item('2', 'tunic', 'a linen tunic')
+
+        expect(gameobj.inv.map(&:id)).to eq(['1'])
+
+        parser.tag_start('popStream', { 'id' => 'inv' }) # commit_inv
+        expect(gameobj.inv.map(&:id)).to eq(['2'])
+      end
+    end
+
+    describe 'container refresh (clearContainer ... inv ... prompt)' do
+      # Replays one <inv id='CID'> ... </inv> container element with a single
+      # item <a>, matching the live stream shape.
+      def feed_container_item(cid, item_exist, item_noun, item_name)
+        parser.tag_start('inv', { 'id' => cid })
+        parser.tag_start('a', { 'exist' => item_exist, 'noun' => item_noun })
+        parser.text(item_name)
+        parser.tag_end('a')
+        parser.tag_end('inv')
+      end
+
+      it 'keeps prior contents visible until the prompt commits the refresh' do
+        cid = '2136851'
+        gameobj.new_inv('900', 'codex', 'an old codex', cid) # previously published
+
+        parser.tag_start('clearContainer', { 'id' => cid }) # begin_container
+        parser.tag_end('clearContainer')
+        feed_container_item(cid, '901', 'codex', 'a runic codex')
+
+        # Mid-refresh: reader still sees the previous container contents.
+        expect(gameobj.containers[cid].map(&:id)).to eq(['900'])
+
+        parser.tag_start('prompt', { 'time' => '1' }) # commit_all_containers
+        parser.tag_end('prompt')
+
+        expect(gameobj.containers[cid].map(&:id)).to eq(['901'])
+      end
+
+      it 'commits multiple containers refreshed before the same prompt' do
+        parser.tag_start('clearContainer', { 'id' => 'A' })
+        parser.tag_end('clearContainer')
+        feed_container_item('A', 'a1', 'gem', 'a ruby')
+        parser.tag_start('clearContainer', { 'id' => 'B' })
+        parser.tag_end('clearContainer')
+        feed_container_item('B', 'b1', 'gem', 'an emerald')
+
+        parser.tag_start('prompt', { 'time' => '1' })
+        parser.tag_end('prompt')
+
+        expect(gameobj.containers['A'].map(&:id)).to eq(['a1'])
+        expect(gameobj.containers['B'].map(&:id)).to eq(['b1'])
+      end
+
+      it 'does not publish a truncated fill when a reset intervenes' do
+        cid = '2136851'
+        gameobj.new_inv('900', 'codex', 'an old codex', cid) # previously published
+
+        parser.tag_start('clearContainer', { 'id' => cid })
+        parser.tag_end('clearContainer')
+        feed_container_item(cid, '901', 'codex', 'a runic codex')
+
+        # A malformed/truncated fragment forces the parser to resynchronize
+        # while the fill is still open.
+        parser.reset
+
+        parser.tag_start('prompt', { 'time' => '1' })
+        parser.tag_end('prompt')
+
+        # The incomplete listing is discarded, not published; the previous
+        # snapshot stays visible.
+        expect(gameobj.containers[cid].map(&:id)).to eq(['900'])
+      end
+    end
+  end
+
+  describe 'server_time_offset (prompt-driven clock sync)' do
+    # <prompt time="..."> is whole-second precision, so a single sample of
+    # (now - server_time) equals offset_true + latency + frac, with latency
+    # (network/queue delay) and frac (the 0..1s truncation remainder) both
+    # >= 0 - the raw sample is never smaller than the truth. These specs
+    # drive the parser's clocks via scripted Time.now / CLOCK_MONOTONIC so
+    # the min-filter, staleness-expiry, and clock-step-guard logic are all
+    # exercised deterministically.
+    #
+    # `parser` is a memoized `subject`, built lazily on first reference. It's
+    # forced here, before any example stubs Time.now, so construction always
+    # sees the real clock - otherwise the first `feed_prompt` in each example
+    # would construct it under the *stubbed* clock, silently changing what
+    # `@server_time` (and the offset math relative to it) starts from.
+    before { parser }
+
+    def feed_prompt(local_time, server_time, monotonic_time: local_time)
+      allow(Time).to receive(:now).and_return(Time.at(local_time))
+      allow(Process).to receive(:clock_gettime).and_return(monotonic_time)
+      parser.tag_start('prompt', { 'time' => server_time.to_s })
+      parser.tag_end('prompt')
+    end
+
+    it 'does not update the offset on repeated prompts within the same server second' do
+      feed_prompt(100.0, 1000) # bootstrap, offset = 100.0 - 1000 = -900.0
+      first_offset = parser.server_time_offset
+
+      feed_prompt(100.4, 1000) # same second: candidate -899.6 is worse, rejected
+
+      expect(parser.server_time_offset).to eq(first_offset)
+    end
+
+    it 'adopts a rollover sample when it improves on the current estimate' do
+      feed_prompt(100.0, 1000) # bootstrap, offset = -900.0
+      feed_prompt(100.9, 1001) # candidate = 100.9 - 1001 = -900.1, better, accepted
+
+      expect(parser.server_time_offset).to eq(-900.1)
+    end
+
+    it 'rejects a worse rollover sample even though it is a legitimate later reading' do
+      feed_prompt(100.0, 1000) # bootstrap, offset = -900.0
+      feed_prompt(100.1, 1001) # candidate -900.9, better, accepted
+      best_offset = parser.server_time_offset
+
+      # A genuine rollover (server_time advances) whose own candidate is
+      # worse - because more wall time passed than server time did - is
+      # still rejected outright, well within the staleness window.
+      feed_prompt(103.0, 1002) # candidate = 103.0 - 1002 = -899.0, worse
+
+      expect(parser.server_time_offset).to eq(best_offset)
+    end
+
+    it 'regression: a queue-drained batch (near-zero parse gap) cannot out-rank a later, marginally-better sample from a normal gap' do
+      # The bug this guards against: an earlier version of this filter kept
+      # whichever sample was *parsed* closest in time to the previous one
+      # (an inter-prompt "bound"), on the theory that a tight gap meant low
+      # latency. It doesn't - a backlog drains back-to-back with a near-zero
+      # gap between samples regardless of how long each one waited in queue,
+      # so that heuristic could lock in the worst sample in the batch and
+      # then reject every better, normally-paced sample for up to
+      # SERVER_TIME_OFFSET_STALE_SECONDS purely because its gap was larger.
+      # The current filter has no notion of "gap" at all, so it can't
+      # regress this way: only the candidate's own value decides.
+      feed_prompt(100.0, 1000)    # bootstrap
+      feed_prompt(100.0001, 1001) # batch sample: 0.1ms parse gap
+      batch_offset = parser.server_time_offset
+
+      feed_prompt(102.0, 1003) # ordinary ~2s gap, only marginally better
+
+      expect(parser.server_time_offset).to be < batch_offset
+      expect(parser.server_time_offset).to eq(102.0 - 1003)
+    end
+
+    it 'holds a worse candidate just under the staleness window, but accepts it just over' do
+      stale_seconds = described_class::SERVER_TIME_OFFSET_STALE_SECONDS
+
+      feed_prompt(100.0, 1000) # bootstrap, offset = -900.0
+      feed_prompt(100.1, 1001) # candidate -900.9, better, accepted
+      good_offset = parser.server_time_offset
+
+      # Same server second throughout (candidate only ever gets worse as wall
+      # time passes with no rollover), clocks in sync (no step): held right up
+      # to, but not past, the staleness window.
+      feed_prompt(100.1 + stale_seconds - 1, 1001)
+      expect(parser.server_time_offset).to eq(good_offset)
+
+      # One second past the window since the held estimate was set (100.1):
+      # this candidate is accepted even though it is worse in absolute terms,
+      # because the held estimate can no longer be trusted.
+      feed_prompt(100.1 + stale_seconds + 1, 1002)
+      expect(parser.server_time_offset).to eq((100.1 + stale_seconds + 1) - 1002)
+    end
+
+    it 'ignores wall/monotonic drift just under the clock-step threshold' do
+      step_seconds = described_class::SERVER_TIME_OFFSET_CLOCK_STEP_SECONDS
+
+      feed_prompt(100.0, 1000, monotonic_time: 100.0) # bootstrap, offset = -900.0
+      feed_prompt(100.1, 1001, monotonic_time: 100.1) # candidate -900.9, better, accepted
+      good_offset = parser.server_time_offset
+
+      # Wall and monotonic drift apart by just under the threshold, computed
+      # from the actual wall_elapsed since the held estimate was set (100.1)
+      # rather than a hand-picked literal - not a clock step, so this (worse)
+      # candidate is judged on its own merits and rejected.
+      wall_time = 103.0
+      wall_elapsed = wall_time - 100.1
+      mono_time = 100.1 + (wall_elapsed - (step_seconds - 0.01))
+      feed_prompt(wall_time, 1002, monotonic_time: mono_time)
+
+      expect(parser.server_time_offset).to eq(good_offset)
+    end
+
+    it 'treats a forward wall/monotonic drift just over the clock-step threshold as a step' do
+      step_seconds = described_class::SERVER_TIME_OFFSET_CLOCK_STEP_SECONDS
+
+      feed_prompt(100.0, 1000, monotonic_time: 100.0) # bootstrap, offset = -900.0
+      feed_prompt(100.1, 1001, monotonic_time: 100.1) # candidate -900.9, better, accepted
+      good_offset = parser.server_time_offset
+
+      # Wall races ahead of monotonic by just over the threshold - the guard
+      # fires and this (worse) candidate is accepted anyway, rather than
+      # being judged (and rejected) on its own merits.
+      wall_time = 103.0
+      wall_elapsed = wall_time - 100.1
+      mono_time = 100.1 + (wall_elapsed - (step_seconds + 0.01))
+      feed_prompt(wall_time, 1002, monotonic_time: mono_time)
+
+      expect(parser.server_time_offset).not_to eq(good_offset)
+      expect(parser.server_time_offset).to eq(wall_time - 1002)
+    end
+
+    it 'treats a backward wall/monotonic drift just over the clock-step threshold as a step too (.abs, not just forward)' do
+      step_seconds = described_class::SERVER_TIME_OFFSET_CLOCK_STEP_SECONDS
+
+      feed_prompt(200.0, 1003, monotonic_time: 200.0) # bootstrap
+      feed_prompt(200.1, 1004, monotonic_time: 200.1) # candidate accepted
+      baseline = parser.server_time_offset
+
+      # Monotonic races ahead of wall instead (the drift is negative) - the
+      # guard takes .abs, so this direction must trip it exactly the same as
+      # the forward case. server_time stays at 1004 (no rollover) so this
+      # candidate (200.2 - 1004 = -803.8) is genuinely worse than the held
+      # -803.9: acceptance depends entirely on the guard firing, not on the
+      # candidate winning the min filter on its own merits.
+      wall_time = 200.2
+      wall_elapsed = wall_time - 200.1
+      mono_time = 200.1 + (wall_elapsed + (step_seconds + 0.01))
+      feed_prompt(wall_time, 1004, monotonic_time: mono_time)
+
+      expect(parser.server_time_offset).not_to eq(baseline)
+      expect(parser.server_time_offset).to eq(wall_time - 1004)
+    end
+  end
+
+  describe '#prompt_ingress_clocks (socket-read-thread timestamp integration)' do
+    # This spec file never requires games.rb, but another spec file run
+    # earlier in the same process might have (Ruby constants are
+    # process-global and `require` doesn't undo that) - hide_const forces the
+    # "Game not loaded" branch deterministically either way. It's a no-op
+    # when the constant genuinely isn't defined. What's under test here is
+    # xmlparser's own fallback logic, not games.rb's threading, so these
+    # examples stub Game directly rather than pull in the real socket/thread
+    # machinery.
+    it 'falls back to parse-time clocks when Game is not loaded' do
+      hide_const('Game')
+
+      now, mono_now = parser.prompt_ingress_clocks
+
+      expect(now).to be_within(1).of(Time.now.to_f)
+      expect(mono_now).to be_within(1).of(Process.clock_gettime(Process::CLOCK_MONOTONIC))
+    end
+
+    it 'derives wall-clock ingress time from Game.current_ingress_time when available' do
+      ingress_mono = Process.clock_gettime(Process::CLOCK_MONOTONIC) - 5.0 # captured "5s ago"
+      stub_const('Game', Class.new { define_singleton_method(:current_ingress_time) { ingress_mono } })
+
+      now, mono_now = parser.prompt_ingress_clocks
+
+      expect(mono_now).to eq(ingress_mono)
+      expect(now).to be_within(0.05).of(Time.now.to_f - 5.0)
+    end
+
+    it 'falls back to parse-time clocks when Game.current_ingress_time returns nil' do
+      # e.g. called from a thread other than Game's own parser thread - see
+      # the guard in Game.current_ingress_time (games.rb).
+      stub_const('Game', Class.new { define_singleton_method(:current_ingress_time) { nil } })
+
+      now, mono_now = parser.prompt_ingress_clocks
+
+      expect(now).to be_within(1).of(Time.now.to_f)
+      expect(mono_now).to be_within(1).of(Process.clock_gettime(Process::CLOCK_MONOTONIC))
+    end
+  end
+
+  # DragonRealms only: an item taken into a hand is no longer worn or in a
+  # container, so the <right>/<left> handler drops any stale placement of it.
+  # GemStone is unaffected (its own inv stream is authoritative), which these
+  # cover via the game gate.
+  describe 'DragonRealms hand-pickup container reconciliation' do
+    let(:gameobj) { Lich::Common::GameObj }
+
+    def feed_hand(side, exist:, noun: 'pouch', name: 'a soft gem pouch')
+      attrs = exist.nil? ? {} : { 'exist' => exist, 'noun' => noun }
+      parser.tag_start(side, attrs)
+      parser.text(name)
+      parser.tag_end(side)
+    end
+
+    context 'when the game is DragonRealms' do
+      before { XMLData.game = 'DR' }
+
+      it 'removes a picked-up item from its container when it appears in the right hand' do
+        gameobj.new_inv('123', 'pouch', 'a soft gem pouch', 'cid')
+        gameobj.new_inv('999', 'gem', 'a ruby', 'cid') # bystander stays
+
+        feed_hand('right', exist: '123')
+
+        expect(gameobj.containers['cid'].map(&:id)).to eq(['999'])
+        expect(gameobj.right_hand.id).to eq('123')
+      end
+
+      it 'reconciles the left hand the same way' do
+        gameobj.new_inv('123', 'pouch', 'a soft gem pouch', 'cid')
+
+        feed_hand('left', exist: '123')
+
+        expect(gameobj.containers['cid'].map(&:id)).to eq([])
+        expect(gameobj.left_hand.id).to eq('123')
+      end
+
+      it 'is a safe no-op for an empty hand (no exist id)' do
+        gameobj.new_inv('999', 'gem', 'a ruby', 'cid')
+
+        expect { feed_hand('right', exist: nil, noun: nil, name: 'Empty') }.not_to raise_error
+        expect(gameobj.containers['cid'].map(&:id)).to eq(['999'])
+      end
+    end
+
+    context 'when the game is GemStone (gated off)' do
+      before { XMLData.game = 'GSIV' }
+
+      it 'leaves the container untouched on a hand update' do
+        gameobj.new_inv('123', 'pouch', 'a soft gem pouch', 'cid')
+
+        feed_hand('right', exist: '123')
+
+        expect(gameobj.containers['cid'].map(&:id)).to eq(['123'])
+      end
+    end
+  end
+
+  # DragonRealms now emits <nav rm='NNNN'/> on every arrival (a plain <nav/> with no rm for
+  # a room that has no UID). The parser takes room_id from that tag as the primary source, and
+  # falls back to the streamWindow subtitle's "(NNNNN)" only when nav did not supply a UID this
+  # arrival (never writing 0), so the UID is captured whether nav leads, lags, or is absent.
+  # These drive the real StreamListener pipeline the way REXML feeds it in production.
+  describe 'DragonRealms room id capture from the <nav> tag' do
+    def feed(parser, fragment)
+      REXML::Document.parse_stream("<root>#{fragment}</root>", parser)
+    end
+
+    before { XMLData.game = 'DR' }
+
+    it 'sets room_id from the rm attribute on arrival' do
+      feed(parser, "<nav rm='230008'/>")
+      expect(parser.room_id).to eq(230008)
+    end
+
+    it 'records the room being left in previous_nav_rm on the next arrival' do
+      feed(parser, "<nav rm='230007'/>")
+      feed(parser, "<nav rm='230008'/>")
+      expect(parser.previous_nav_rm).to eq(230007)
+    end
+
+    it 'counts every arrival in nav_count, with or without a UID' do
+      expect(parser.nav_count).to eq(0)
+      feed(parser, "<nav rm='230007'/>")
+      feed(parser, "<nav/>")
+      expect(parser.nav_count).to eq(2)
+    end
+
+    it 'sets room_id to 0 for a no-uid room (a bare <nav/> with no rm attribute)' do
+      feed(parser, "<nav rm='230008'/>")
+      feed(parser, "<nav/>")
+      expect(parser.room_id).to eq(0)
+    end
+
+    it 'parses the DR streamWindow subtitle into room_title (double-bracketed, no uid suffix)' do
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks]"/>))
+      expect(parser.room_title).to eq("[[Bosque Deriel, Hermit's Shacks]]")
+    end
+
+    it 'keeps the nav room_id when a ShowRoomID-off subtitle (no uid) arrives afterward' do
+      feed(parser, "<nav rm='230008'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks]"/>))
+      expect(parser.room_id).to eq(230008)
+    end
+
+    it 'keeps the nav room_id even when a ShowRoomID-on subtitle carries a uid suffix' do
+      feed(parser, "<nav rm='230008'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks] (230008)"/>))
+      expect(parser.room_id).to eq(230008)
+      expect(parser.room_title).to eq("[[Bosque Deriel, Hermit's Shacks]]")
+    end
+
+    # <nav> is authoritative within an arrival: a same-arrival subtitle marker must
+    # never overwrite a real nav UID, even when the two disagree (CodeRabbit #1491).
+    it 'keeps the nav uid when the same arrival subtitle marker carries a different uid' do
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54209)"/>))
+      expect(parser.room_id).to eq(54202)
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    # The <nav> tag is primary, but it can arrive late or not at all on some arrivals. When it
+    # does, a ShowRoomID-on subtitle is the only place the UID appears, so the subtitle acts as
+    # a fallback UID source (adopted only when it carries a real number; never writes 0).
+    it 'falls back to the subtitle uid when this arrival had no <nav> tag' do
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54202)"/>))
+      expect(parser.room_id).to eq(54202)
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    it 'corrects a stale room_id from the subtitle when the new arrival had no <nav>' do
+      # previous arrival: nav plus its own subtitle (which consumes the nav-uid flag)
+      feed(parser, "<nav rm='54200'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Old Room] (54200)"/>))
+      # new arrival streams no <nav>, but the subtitle carries the real uid
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54201)"/>))
+      expect(parser.room_id).to eq(54201)
+    end
+
+    it 'never clobbers a good nav uid with 0 from a ShowRoomID-off subtitle' do
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth]"/>))
+      expect(parser.room_id).to eq(54202)
+    end
+
+    it 'clears a stale uid when a no-uid room shows the "(**)" marker (nav delayed/absent)' do
+      # previous arrival: nav plus its own subtitle (which consumes the nav-uid flag)
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Lit Room] (54202)"/>))
+      # new arrival has no <nav>; a no-uid room shows "(**)" and must clear the stale uid
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave] (**)"/>))
+      expect(parser.room_id).to eq(0)
+      expect(parser.room_title).to eq('[[Dark Cave]]')
+    end
+
+    it 'ShowRoomID-off (no marker): the subtitle never touches room_id; nav stays authoritative' do
+      # no prior nav, no marker -> room_id left at its no-uid default, nothing written
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth]"/>))
+      expect(parser.room_id).to eq(0)
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    it 'a bare <nav/> clears the last uid and a following no-uid subtitle does not restore it' do
+      feed(parser, "<nav rm='54202'/>")
+      feed(parser, '<nav/>') # arrival at a no-uid room clears the id
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave]"/>))
+      expect(parser.room_id).to eq(0)
+    end
+
+    it 'leaves the prior title untouched and does not crash on a blank/identity-less subtitle' do
+      feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Catacombs, Labyrinth] (54202)"/>))
+      expect { feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - "/>)) }.not_to raise_error
+      expect(parser.room_title).to eq('[[Catacombs, Labyrinth]]')
+    end
+
+    # show_room_id records whether the game itself displayed the RealID this arrival (a subtitle
+    # "(uid)"/"(**)" marker == ShowRoomID ON). It is what lets the outbound room-name/subtitle
+    # rewrite preserve the game's choice GS-style rather than second-guessing the flag.
+    describe 'show_room_id (did the game display the RealID this arrival?)' do
+      it 'defaults false before any room subtitle is seen' do
+        expect(parser.show_room_id).to be false
+      end
+
+      it 'is true when a ShowRoomID-on subtitle carries a numeric uid marker' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks] (230008)"/>))
+        expect(parser.show_room_id).to be true
+      end
+
+      it 'is true for a ShowRoomID-on no-uid room showing the "(**)" marker' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave] (**)"/>))
+        expect(parser.show_room_id).to be true
+      end
+
+      it 'is false when a ShowRoomID-off subtitle has no marker' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Bosque Deriel, Hermit's Shacks]"/>))
+        expect(parser.show_room_id).to be false
+      end
+
+      it 'clears a stale true when the next arrival turns ShowRoomID off' do
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Lit Room] (230008)"/>))
+        feed(parser, %(<streamWindow id='main' title='Story' subtitle=" - [Dark Cave]"/>))
+        expect(parser.show_room_id).to be false
+      end
+    end
+  end
+
+  # active_spells iterates the effect dialogs the parser writes. Adding a key to
+  # a Hash while another thread iterates it raises in the thread doing the
+  # adding, so a scan over the live Hash would make the parser raise when a new
+  # effect arrives; tag_start rescues that, logs it and resets, and the effect is
+  # lost. ActiveSpell's watcher thread calls active_spells when the parser
+  # signals an effects update, which is when new effects are arriving.
+  describe '#active_spells while the parser adds an effect' do
+    def feed(parser, fragment)
+      REXML::Document.parse_stream("<root>#{fragment}</root>", parser)
+    end
+
+    def feed_cooldown(parser, id, text)
+      feed(parser, %(<dialogData id='Cooldowns'><progressBar id='#{id}' text='#{text}' time='0:01:00'/></dialogData>))
+    end
+
+    before do
+      # at runtime XMLData is the parser instance, so active_spells reads the
+      # same Hashes the parser writes
+      stub_const('XMLData', parser)
+      stub_const('ActiveSpell', double('ActiveSpell', request_update: nil))
+      feed_cooldown(parser, '1', 'Surge')
+    end
+
+    it 'keeps an effect that arrives while the scan is paused mid-iteration' do
+      inside = Queue.new
+      resume = Queue.new
+      paused = false
+      # a Cooldowns key whose to_s pauses the scan (active_spells calls
+      # k.to_s on every Cooldowns key)
+      key = Object.new
+      key.define_singleton_method(:to_s) do
+        unless paused
+          paused = true
+          inside << true
+          resume.pop
+        end
+        'pausing key'
+      end
+      parser.dialogs['Cooldowns'][key] = Time.now + 60
+
+      reader = Thread.new { parser.active_spells }
+      unless inside.pop(timeout: 5)
+        reader.kill
+        raise 'active_spells never reached its pause point'
+      end
+      begin
+        feed_cooldown(parser, '2', 'Berserk')
+      ensure
+        resume << true
+        reader.join
+      end
+
+      expect(parser.dialogs['Cooldowns']).to include('Berserk')
+    end
+
+    it 'reports the effects it saw' do
+      expect(parser.active_spells).to include('Surge Cooldown')
+    end
+  end
+end

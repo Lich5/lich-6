@@ -1,0 +1,531 @@
+# frozen_string_literal: true
+
+require_relative '../../../spec_helper'
+
+# Add methods needed by this spec (not in base spec_helper mocks)
+DRC.define_singleton_method(:right_hand_noun) { nil } unless DRC.respond_to?(:right_hand_noun)
+DRCMM.define_singleton_method(:hold_moon_weapon?) { false } unless DRCMM.respond_to?(:hold_moon_weapon?)
+DRCMM.define_singleton_method(:is_moon_weapon?) { |*_args| false } unless DRCMM.respond_to?(:is_moon_weapon?)
+DRCI.define_singleton_method(:tap) { |*_args| nil } unless DRCI.respond_to?(:tap)
+
+# Load production code
+require File.join(LIB_DIR, 'dragonrealms', 'commons', 'common-summoning.rb')
+
+DRCS = Lich::DragonRealms::DRCS unless defined?(DRCS)
+
+RSpec.describe Lich::DragonRealms::DRCS do
+  before(:each) do
+    Lich::Messaging.clear_messages!
+    # Rebuild memoized custom-adjective lists between examples.
+    Lich::DragonRealms::CustomSubstitutions.reset!
+  end
+
+  # --- custom_summoned_weapon_adjectives ------------------------------
+
+  describe '.custom_summoned_weapon_adjectives' do
+    def stub_adjective_settings(value)
+      allow(Lich::DragonRealms::CustomSubstitutions).to receive(:get_settings)
+        .and_return(OpenStruct.new(custom_summoned_weapons_adjectives: value))
+    end
+
+    it 'returns an empty list when nothing is configured' do
+      expect(described_class.custom_summoned_weapon_adjectives).to eq([])
+    end
+
+    it 'includes the plural custom list from settings' do
+      stub_adjective_settings(%w[flamewreathed frostbound])
+      expect(described_class.custom_summoned_weapon_adjectives).to eq(%w[flamewreathed frostbound])
+    end
+
+    it 'includes the legacy singular summoned_weapons_adjective setting' do
+      expect(described_class.custom_summoned_weapon_adjectives(OpenStruct.new(summoned_weapons_adjective: 'stormforged')))
+        .to include('stormforged')
+    end
+
+    it 'does not duplicate the legacy value when it is also in the plural list' do
+      stub_adjective_settings(['stormforged'])
+      expect(described_class.custom_summoned_weapon_adjectives(OpenStruct.new(summoned_weapons_adjective: 'stormforged')))
+        .to eq(['stormforged'])
+    end
+
+    it 'skips a malformed plural entry and warns' do
+      stub_adjective_settings([42])
+      expect(described_class.custom_summoned_weapon_adjectives).to eq([])
+      expect(Lich::Messaging.messages.map { |m| m[:message] }.join)
+        .to include('custom_summoned_weapons_adjectives[0] skipped')
+    end
+  end
+
+  # --- base_summoned_weapon (adjective stripping) ---------------------
+
+  describe '.base_summoned_weapon' do
+    def stub_adjectives(value)
+      allow(Lich::DragonRealms::CustomSubstitutions).to receive(:get_settings)
+        .and_return(OpenStruct.new(custom_summoned_weapons_adjectives: value))
+    end
+
+    it 'strips a single custom adjective' do
+      stub_adjectives(['flamewreathed'])
+      expect(described_class.base_summoned_weapon('flamewreathed sword')).to eq(' sword')
+    end
+
+    it 'strips the longest adjective when one is a substring of another' do
+      # ['flame','flamewreathed'] must strip 'flamewreathed', not 'flame' (which
+      # would leave a bogus "wreathed sword").
+      [%w[flame flamewreathed], %w[flamewreathed flame]].each do |ordering|
+        Lich::DragonRealms::CustomSubstitutions.reset!
+        stub_adjectives(ordering)
+        expect(described_class.base_summoned_weapon('flamewreathed sword')).to eq(' sword')
+      end
+    end
+
+    it 'returns the weapon unchanged when no custom adjective matches' do
+      stub_adjectives(['frostbound'])
+      expect(described_class.base_summoned_weapon('electric sword')).to eq('electric sword')
+    end
+  end
+
+  # --- Constants ------------------------------------------------------
+
+  describe 'constants' do
+    it 'freezes all array/hash constants' do
+      expect(described_class::SUMMON_WEAPON_RESPONSES).to be_frozen
+      expect(described_class::BREAK_WEAPON_RESPONSES).to be_frozen
+      expect(described_class::MOON_SKILL_TO_SHAPE).to be_frozen
+      expect(described_class::MOON_SHAPE_RESPONSES).to be_frozen
+      expect(described_class::WM_SHAPE_FAILURES).to be_frozen
+      expect(described_class::TURN_WEAPON_RESPONSES).to be_frozen
+      expect(described_class::PUSH_WEAPON_RESPONSES).to be_frozen
+      expect(described_class::PULL_WEAPON_RESPONSES).to be_frozen
+      expect(described_class::SUMMON_ADMITTANCE_RESPONSES).to be_frozen
+      expect(described_class::WM_ELEMENT_ADJECTIVES).to be_frozen
+    end
+
+    it 'maps moon mage skills to shapes' do
+      expect(described_class::MOON_SKILL_TO_SHAPE['Staves']).to eq('blunt')
+      expect(described_class::MOON_SKILL_TO_SHAPE['Twohanded Edged']).to eq('huge')
+      expect(described_class::MOON_SKILL_TO_SHAPE['Large Edged']).to eq('heavy')
+      expect(described_class::MOON_SKILL_TO_SHAPE['Small Edged']).to eq('normal')
+    end
+  end
+
+  # --- get_ingot ------------------------------------------------------
+
+  describe '.get_ingot' do
+    it 'returns true and does nothing when ingot is nil' do
+      expect(DRCI).not_to receive(:get_item?)
+      expect(described_class.get_ingot(nil, true)).to be true
+    end
+
+    it 'calls DRCI.get_item? and returns true on success' do
+      expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(true)
+      expect(described_class.get_ingot('animite', false)).to be true
+    end
+
+    it 'calls swap after getting ingot when swap is true' do
+      expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(true)
+      expect(DRC).to receive(:bput).with('swap', 'You move')
+      described_class.get_ingot('animite', true)
+    end
+
+    it 'does not swap when swap is false' do
+      expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(true)
+      expect(DRC).not_to receive(:bput).with('swap', anything)
+      described_class.get_ingot('animite', false)
+    end
+
+    it 'returns false and logs message when get_item? fails' do
+      expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(false)
+      expect(described_class.get_ingot('animite', true)).to be false
+      expect(Lich::Messaging.messages.last[:message]).to include('Could not get animite ingot')
+    end
+  end
+
+  # --- stow_ingot ----------------------------------------------------
+
+  describe '.stow_ingot' do
+    it 'returns true and does nothing when ingot is nil' do
+      expect(DRCI).not_to receive(:put_away_item?)
+      expect(described_class.stow_ingot(nil)).to be true
+    end
+
+    it 'calls DRCI.put_away_item? and returns true on success' do
+      expect(DRCI).to receive(:put_away_item?).with('animite ingot').and_return(true)
+      expect(described_class.stow_ingot('animite')).to be true
+    end
+
+    it 'returns false and logs message when put_away_item? fails' do
+      expect(DRCI).to receive(:put_away_item?).with('animite ingot').and_return(false)
+      expect(described_class.stow_ingot('animite')).to be false
+      expect(Lich::Messaging.messages.last[:message]).to include('Could not stow animite ingot')
+    end
+  end
+
+  # --- break_summoned_weapon -----------------------------------------
+
+  describe '.break_summoned_weapon' do
+    it 'returns early when item is nil' do
+      expect(DRC).not_to receive(:bput)
+      described_class.break_summoned_weapon(nil)
+    end
+
+    it 'sends break command with expected responses' do
+      expect(DRC).to receive(:bput).with('break my electric sword', *described_class::BREAK_WEAPON_RESPONSES)
+      described_class.break_summoned_weapon('electric sword')
+    end
+  end
+
+  # --- summon_admittance ---------------------------------------------
+
+  describe '.summon_admittance' do
+    it 'sends summon admittance and waits' do
+      expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You align yourself to it')
+      expect(DRC).to receive(:fix_standing)
+      described_class.summon_admittance
+    end
+
+    it 'retreats and retries when too distracted' do
+      expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You are a bit too distracted', 'You align yourself to it')
+      expect(DRC).to receive(:retreat).once
+      expect(DRC).to receive(:fix_standing)
+      described_class.summon_admittance
+    end
+
+    it 'handles fatal proximity response' do
+      expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('Going any further while in this plane would be fatal')
+      expect(DRC).to receive(:fix_standing)
+      described_class.summon_admittance
+    end
+  end
+
+  # --- summon_weapon -------------------------------------------------
+
+  describe '.summon_weapon' do
+    context 'as a Moon Mage' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(true)
+      end
+
+      it 'delegates to DRCMM.hold_moon_weapon?' do
+        expect(DRCMM).to receive(:hold_moon_weapon?)
+        expect(DRC).to receive(:fix_standing)
+        described_class.summon_weapon
+      end
+    end
+
+    context 'as a Warrior Mage' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        allow(DRStats).to receive(:warrior_mage?).and_return(true)
+      end
+
+      it 'gets ingot, summons, and stows ingot on success' do
+        expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(true)
+        expect(DRC).to receive(:bput).with('swap', 'You move')
+        expect(DRC).to receive(:bput).with('summon weapon fire Large Edged', *described_class::SUMMON_WEAPON_RESPONSES).and_return('you draw out')
+        expect(DRCI).to receive(:put_away_item?).with('animite ingot').and_return(true)
+        expect(DRC).to receive(:fix_standing)
+        described_class.summon_weapon(nil, 'fire', 'animite', 'Large Edged')
+      end
+
+      it 'retries after summon admittance on charge failure' do
+        expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(true)
+        expect(DRC).to receive(:bput).with('swap', 'You move')
+        expect(DRC).to receive(:bput).with('summon weapon fire Large Edged', *described_class::SUMMON_WEAPON_RESPONSES).and_return(described_class::LACK_CHARGE, 'you draw out')
+        expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You align yourself to it')
+        expect(DRC).to receive(:fix_standing).twice
+        expect(DRCI).to receive(:put_away_item?).with('animite ingot').and_return(true)
+        described_class.summon_weapon(nil, 'fire', 'animite', 'Large Edged')
+      end
+
+      it 'skips summon when ingot retrieval fails' do
+        expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(false)
+        expect(DRC).not_to receive(:bput).with(/summon weapon/, any_args)
+        described_class.summon_weapon(nil, 'fire', 'animite', 'Large Edged')
+      end
+
+      it 'works without an ingot' do
+        expect(DRCI).not_to receive(:get_item?)
+        expect(DRC).to receive(:bput).with('summon weapon fire Large Edged', *described_class::SUMMON_WEAPON_RESPONSES).and_return('you draw out')
+        expect(DRCI).not_to receive(:put_away_item?)
+        expect(DRC).to receive(:fix_standing)
+        described_class.summon_weapon(nil, 'fire', nil, 'Large Edged')
+      end
+    end
+
+    context 'as unsupported guild' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        allow(DRStats).to receive(:warrior_mage?).and_return(false)
+        allow(DRStats).to receive(:guild).and_return('Bard')
+      end
+
+      it 'logs unable to summon message' do
+        expect(DRC).to receive(:fix_standing)
+        described_class.summon_weapon
+        expect(Lich::Messaging.messages.last[:message]).to include('Unable to summon weapons as a Bard')
+      end
+    end
+  end
+
+  # --- identify_summoned_weapon --------------------------------------
+
+  describe '.identify_summoned_weapon' do
+    context 'as a Moon Mage' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(true)
+      end
+
+      it 'returns right hand when holding a moon weapon' do
+        allow(DRC).to receive(:right_hand).and_return('red-hot moonblade')
+        allow(DRCMM).to receive(:is_moon_weapon?).with('red-hot moonblade').and_return(true)
+        expect(described_class.identify_summoned_weapon).to eq('red-hot moonblade')
+      end
+
+      it 'returns left hand when moon weapon is in left hand' do
+        allow(DRC).to receive(:right_hand).and_return('shield')
+        allow(DRC).to receive(:left_hand).and_return('blue-white moonstaff')
+        allow(DRCMM).to receive(:is_moon_weapon?).with('shield').and_return(false)
+        allow(DRCMM).to receive(:is_moon_weapon?).with('blue-white moonstaff').and_return(true)
+        expect(described_class.identify_summoned_weapon).to eq('blue-white moonstaff')
+      end
+
+      it 'returns nil when no moon weapon in either hand' do
+        allow(DRC).to receive(:right_hand).and_return('shield')
+        allow(DRC).to receive(:left_hand).and_return(nil)
+        allow(DRCMM).to receive(:is_moon_weapon?).and_return(false)
+        expect(described_class.identify_summoned_weapon).to be_nil
+      end
+    end
+
+    context 'as a Warrior Mage' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        allow(DRStats).to receive(:warrior_mage?).and_return(true)
+      end
+
+      it 'identifies summoned weapon in right hand via tap' do
+        allow(DRC).to receive(:right_hand).and_return('electric sword')
+        allow(DRCI).to receive(:tap).with('electric sword').and_return('You tap an electric sword that you are holding.')
+        expect(described_class.identify_summoned_weapon).to eq('electric sword')
+      end
+
+      it 'identifies summoned weapon in left hand via tap' do
+        allow(DRC).to receive(:right_hand).and_return('shield')
+        allow(DRC).to receive(:left_hand).and_return('fiery short sword')
+        allow(DRCI).to receive(:tap).with('shield').and_return('You tap a shield that you are holding.')
+        allow(DRCI).to receive(:tap).with('fiery short sword').and_return('You tap a fiery short sword that you are holding.')
+        expect(described_class.identify_summoned_weapon).to eq('fiery short sword')
+      end
+
+      it 'returns nil when no summoned weapon found' do
+        allow(DRC).to receive(:right_hand).and_return('broadsword')
+        allow(DRC).to receive(:left_hand).and_return(nil)
+        allow(DRCI).to receive(:tap).with('broadsword').and_return('You tap a broadsword that you are holding.')
+        allow(DRCI).to receive(:tap).with(nil).and_return(nil)
+        expect(described_class.identify_summoned_weapon).to be_nil
+      end
+
+      it 'handles stone element adjective' do
+        allow(DRC).to receive(:right_hand).and_return('stone mace')
+        allow(DRCI).to receive(:tap).with('stone mace').and_return('You tap a stone mace that you are holding.')
+        expect(described_class.identify_summoned_weapon).to eq('stone mace')
+      end
+
+      it 'handles icy element adjective' do
+        allow(DRC).to receive(:right_hand).and_return('icy halberd')
+        allow(DRCI).to receive(:tap).with('icy halberd').and_return('You tap an icy halberd that you are holding.')
+        expect(described_class.identify_summoned_weapon).to eq('icy halberd')
+      end
+
+      it 'identifies a weapon with a player-added custom adjective (plural setting)' do
+        allow(Lich::DragonRealms::CustomSubstitutions).to receive(:get_settings)
+          .and_return(OpenStruct.new(custom_summoned_weapons_adjectives: ['flamewreathed']))
+        allow(DRC).to receive(:right_hand).and_return('flamewreathed sword')
+        allow(DRCI).to receive(:tap).with('flamewreathed sword').and_return('You tap a flamewreathed sword that you are holding.')
+        expect(described_class.identify_summoned_weapon).to eq('flamewreathed sword')
+      end
+
+      it 'still recognizes the legacy singular summoned_weapons_adjective setting' do
+        allow(DRC).to receive(:right_hand).and_return('frostbound sword')
+        allow(DRCI).to receive(:tap).with('frostbound sword').and_return('You tap a frostbound sword that you are holding.')
+        settings = OpenStruct.new(summoned_weapons_adjective: 'frostbound')
+        expect(described_class.identify_summoned_weapon(settings)).to eq('frostbound sword')
+      end
+
+      it 'handles custom adjective from settings' do
+        settings = double('settings', summoned_weapons_adjective: 'blazing')
+        allow(DRC).to receive(:right_hand).and_return('blazing sword')
+        allow(DRCI).to receive(:tap).with('blazing sword').and_return('You tap a blazing sword that you are holding.')
+        expect(described_class.identify_summoned_weapon(settings)).to eq('blazing sword')
+      end
+    end
+
+    context 'as unsupported guild' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        allow(DRStats).to receive(:warrior_mage?).and_return(false)
+        allow(DRStats).to receive(:guild).and_return('Trader')
+      end
+
+      it 'logs unable to identify message' do
+        described_class.identify_summoned_weapon
+        expect(Lich::Messaging.messages.last[:message]).to include('Unable to identify summoned weapons as a Trader')
+      end
+    end
+  end
+
+  # --- shape_summoned_weapon -----------------------------------------
+
+  describe '.shape_summoned_weapon' do
+    context 'as a Moon Mage' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(true)
+        allow(DRC).to receive(:right_hand).and_return('red-hot moonblade')
+        allow(DRCMM).to receive(:is_moon_weapon?).with('red-hot moonblade').and_return(true)
+      end
+
+      it 'shapes moon weapon with skill lookup' do
+        allow(DRCMM).to receive(:hold_moon_weapon?).and_return(true)
+        expect(DRC).to receive(:bput).with('shape red-hot moonblade to heavy', *described_class::MOON_SHAPE_RESPONSES)
+        described_class.shape_summoned_weapon('Large Edged')
+      end
+
+      it 'skips shape when hold_moon_weapon? fails' do
+        allow(DRCMM).to receive(:hold_moon_weapon?).and_return(false)
+        expect(DRC).not_to receive(:bput).with(/shape/, any_args)
+        described_class.shape_summoned_weapon('Large Edged')
+      end
+    end
+
+    context 'as a Warrior Mage' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        allow(DRStats).to receive(:warrior_mage?).and_return(true)
+        allow(DRC).to receive(:right_hand).and_return('electric sword')
+        allow(DRCI).to receive(:tap).with('electric sword').and_return('You tap an electric sword that you are holding.')
+        allow(DRCI).to receive(:tap).with(nil).and_return(nil)
+        allow(DRC).to receive(:left_hand).and_return(nil)
+      end
+
+      it 'shapes weapon successfully' do
+        expect(DRC).to receive(:bput).with('shape my electric sword to Large Edged', *(described_class::WM_SHAPE_FAILURES + ['What type of weapon were you trying'])).and_return('You reach out')
+        described_class.shape_summoned_weapon('Large Edged')
+      end
+
+      it 'retries after summon admittance on charge failure' do
+        expect(DRC).to receive(:bput).with('shape my electric sword to Large Edged', *(described_class::WM_SHAPE_FAILURES + ['What type of weapon were you trying'])).and_return(described_class::LACK_CHARGE)
+        expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You align yourself to it')
+        expect(DRC).to receive(:fix_standing)
+        expect(DRC).to receive(:bput).with('shape my electric sword to Large Edged', *described_class::WM_SHAPE_FAILURES).and_return('You reach out')
+        described_class.shape_summoned_weapon('Large Edged')
+      end
+
+      it 'retries without custom adjective on "What type of weapon" error' do
+        settings = double('settings', summoned_weapons_adjective: 'blazing')
+        allow(DRC).to receive(:right_hand).and_return('blazing sword')
+        allow(DRCI).to receive(:tap).with('blazing sword').and_return('You tap a blazing sword that you are holding.')
+
+        expect(DRC).to receive(:bput).with('shape my blazing sword to Large Edged', *(described_class::WM_SHAPE_FAILURES + ['What type of weapon were you trying'])).and_return('What type of weapon were you trying')
+        expect(DRC).to receive(:bput).with('shape my  sword to Large Edged', *described_class::WM_SHAPE_FAILURES).and_return('You reach out')
+        described_class.shape_summoned_weapon('Large Edged', nil, settings)
+      end
+
+      it 'skips shape when ingot retrieval fails' do
+        expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(false)
+        expect(DRC).not_to receive(:bput).with(/shape/, any_args)
+        described_class.shape_summoned_weapon('Large Edged', 'animite')
+      end
+
+      it 'gets and stows ingot around shape command' do
+        expect(DRCI).to receive(:get_item?).with('animite ingot').and_return(true)
+        expect(DRC).to receive(:bput).with('shape my electric sword to Large Edged', *(described_class::WM_SHAPE_FAILURES + ['What type of weapon were you trying'])).and_return('You reach out')
+        expect(DRCI).to receive(:put_away_item?).with('animite ingot').and_return(true)
+        described_class.shape_summoned_weapon('Large Edged', 'animite')
+      end
+    end
+
+    context 'as unsupported guild' do
+      before do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        allow(DRStats).to receive(:warrior_mage?).and_return(false)
+        allow(DRStats).to receive(:guild).and_return('Empath')
+      end
+
+      it 'logs unable to shape message' do
+        described_class.shape_summoned_weapon('Large Edged')
+        expect(Lich::Messaging.messages.last[:message]).to include('Unable to shape weapons as a Empath')
+      end
+    end
+  end
+
+  # --- turn_summoned_weapon ------------------------------------------
+
+  describe '.turn_summoned_weapon' do
+    before do
+      allow(DRC).to receive(:right_hand_noun).and_return('sword')
+    end
+
+    it 'turns weapon successfully' do
+      expect(DRC).to receive(:bput).with('turn my sword', *described_class::TURN_WEAPON_RESPONSES).and_return('You reach out')
+      described_class.turn_summoned_weapon
+    end
+
+    it 'retries after summon admittance on charge failure' do
+      expect(DRC).to receive(:bput).with('turn my sword', *described_class::TURN_WEAPON_RESPONSES).and_return(described_class::LACK_CHARGE, 'You reach out')
+      expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You align yourself to it')
+      expect(DRC).to receive(:fix_standing)
+      described_class.turn_summoned_weapon
+    end
+  end
+
+  # --- push_summoned_weapon ------------------------------------------
+
+  describe '.push_summoned_weapon' do
+    before do
+      allow(DRC).to receive(:right_hand_noun).and_return('sword')
+    end
+
+    it 'pushes weapon successfully' do
+      expect(DRC).to receive(:bput).with('push my sword', *described_class::PUSH_WEAPON_RESPONSES).and_return('Closing your eyes')
+      described_class.push_summoned_weapon
+    end
+
+    it 'retries after summon admittance on charge failure' do
+      expect(DRC).to receive(:bput).with('push my sword', *described_class::PUSH_WEAPON_RESPONSES).and_return(described_class::LACK_CHARGE, 'Closing your eyes')
+      expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You align yourself to it')
+      expect(DRC).to receive(:fix_standing)
+      described_class.push_summoned_weapon
+    end
+
+    it 'handles already-at-max response' do
+      expect(DRC).to receive(:bput).with('push my sword', *described_class::PUSH_WEAPON_RESPONSES).and_return("That's as")
+      described_class.push_summoned_weapon
+    end
+  end
+
+  # --- pull_summoned_weapon ------------------------------------------
+
+  describe '.pull_summoned_weapon' do
+    before do
+      allow(DRC).to receive(:right_hand_noun).and_return('sword')
+    end
+
+    it 'pulls weapon successfully' do
+      expect(DRC).to receive(:bput).with('pull my sword', *described_class::PULL_WEAPON_RESPONSES).and_return('Closing your eyes')
+      described_class.pull_summoned_weapon
+    end
+
+    it 'retries after summon admittance on charge failure' do
+      expect(DRC).to receive(:bput).with('pull my sword', *described_class::PULL_WEAPON_RESPONSES).and_return(described_class::LACK_CHARGE, 'Closing your eyes')
+      expect(DRC).to receive(:bput).with('summon admittance', *described_class::SUMMON_ADMITTANCE_RESPONSES).and_return('You align yourself to it')
+      expect(DRC).to receive(:fix_standing)
+      described_class.pull_summoned_weapon
+    end
+
+    it 'handles already-at-max response' do
+      expect(DRC).to receive(:bput).with('pull my sword', *described_class::PULL_WEAPON_RESPONSES).and_return("That's as")
+      described_class.pull_summoned_weapon
+    end
+  end
+end

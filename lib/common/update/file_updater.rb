@@ -1,0 +1,266 @@
+# frozen_string_literal: true
+
+=begin
+  Updates individual scripts, libraries, and data files.
+
+  Handles both repo-specific file updates (e.g. dr-scripts:foo.lic) and
+  legacy auto-detected updates. Supports SHA-based skip-if-current checks
+  for script repository files.
+=end
+
+module Lich
+  module Util
+    module Update
+      class FileUpdater
+        # @param client [GitHubClient] GitHub API client instance
+        # @param resolver [ChannelResolver] channel resolver instance
+        # @param snapshot_manager [SnapshotManager] snapshot manager instance,
+        #   used to place data-file backups under a shared L5-snapshot-<DATE-TIME>
+        #   directory instead of accumulating them in DATA_DIR
+        def initialize(client, resolver, snapshot_manager)
+          @client = client
+          @resolver = resolver
+          @snapshot_manager = snapshot_manager
+        end
+
+        # Updates a file from a specific repository.
+        #
+        # @param type [String] 'script' or 'data'
+        # @param repo_key [String] repository key from SCRIPT_REPOS
+        # @param filename [String] file name to update
+        # @return [void]
+        def update_file_from_repo(type, repo_key, filename)
+          config = SCRIPT_REPOS[repo_key]
+          unless config
+            custom_reg = CustomRepos.all[repo_key]
+            config = CustomRepos.build_config(repo_key, custom_reg) if custom_reg
+          end
+          unless config
+            all_keys = (SCRIPT_REPOS.keys + CustomRepos.all.keys).join(', ')
+            respond "[lich5-update: Unknown repository '#{repo_key}'. Known: #{all_keys}]"
+            return
+          end
+
+          if config[:custom] && type == "data"
+            respond "[lich5-update: Data file downloads are not supported for custom repos. Only --script= is available.]"
+            return
+          end
+
+          case type
+          when "script"
+            location = config[:dest_dir] || SCRIPT_DIR
+            FileUtils.mkdir_p(location) if config[:dest_dir]
+          when "data"
+            data_subdir = (config[:subdirs] || {})['data']
+            location = data_subdir ? data_subdir[:dest] : File.join(SCRIPT_DIR, 'data')
+            FileUtils.mkdir_p(location)
+          else
+            respond "[lich5-update: repo:filename syntax is only supported for --script= and --data=.]"
+            return
+          end
+
+          prefix = config[:script_prefix]
+          tree_data = @client.fetch_github_json(config[:api_url])
+          unless tree_data && tree_data['tree']
+            name = config[:display_name] || repo_key
+            StatusReporter.respond_github_failure(@client.last_error, "#{filename} was not updated.", subject: name)
+            return
+          end
+
+          raw_path = if type == "data"
+                       data_subdir = (config[:subdirs] || {})['data']
+                       if data_subdir && data_subdir[:pattern]
+                         match = tree_data['tree'].find { |e| e['path'] =~ data_subdir[:pattern] && File.basename(e['path']) == filename }
+                         match ? match['path'] : nil
+                       else
+                         prefix ? "#{prefix}/#{filename}" : filename
+                       end
+                     elsif prefix
+                       "#{prefix}/#{filename}"
+                     else
+                       filename
+                     end
+          remote_entry = raw_path ? tree_data['tree'].find { |e| e['path'] == raw_path } : nil
+          if remote_entry
+            local_path = File.join(location, filename)
+            if File.exist?(local_path)
+              local_sha = Digest::SHA1.hexdigest("blob #{File.binread(local_path).bytesize}\0#{File.binread(local_path)}")
+              if local_sha == remote_entry['sha']
+                StatusReporter.respond_mono("[lich5-update: #{filename} is already up to date.]")
+                return
+              end
+            end
+          else
+            name = config[:display_name] || repo_key
+            StatusReporter.respond_mono("[lich5-update: #{filename} not found in #{name} repository.]")
+            return
+          end
+
+          name = config[:display_name] || repo_key
+          url = "#{config[:raw_base_url]}/#{raw_path}"
+          content = @client.http_get(url, auth: false)
+          if content
+            FileWriter.safe_write(File.join(location, filename), content)
+            StatusReporter.respond_mono("[lich5-update: #{filename} has been updated from #{name}.]")
+          else
+            # The tree just listed this file, so a repo-specific error here is
+            # transient (e.g. raw CDN lag), not a missing repository.
+            error = @client.last_error
+            StatusReporter.respond_github_failure(error&.global? ? error : nil, "#{filename} was not updated.")
+          end
+        end
+
+        # Updates a file using legacy auto-detection logic.
+        #
+        # @param type [String] 'script', 'library', or 'data'
+        # @param rf [String] requested filename
+        # @param version [String] channel ('production' or 'beta')
+        # @param retried_by [Symbol] :user when the user typed the command, so
+        #   a failure tells them to run it again; :login when the login sync
+        #   fetches the file again anyway
+        # @return [void]
+        def update_file(type, rf, version = 'production', retried_by: :user)
+          if version =~ /^(?:staging|master)$/i
+            respond 'Requested channel %s mapped to main (stable).' % [version]
+            version = 'production'
+          end
+          requested_file = rf
+          case type
+          when "script"
+            location = SCRIPT_DIR
+            if requested_file.downcase == 'dependency.lic'
+              remote_repo = "https://raw.githubusercontent.com/elanthia-online/dr-scripts/main"
+            else
+              remote_repo = "https://raw.githubusercontent.com/elanthia-online/scripts/master/scripts"
+            end
+            requested_file_ext = requested_file =~ /\.lic$/ ? ".lic" : "bad extension"
+          when "library"
+            location = LIB_DIR
+            case version
+            when "production"
+              remote_repo = "https://raw.githubusercontent.com/#{GITHUB_REPO}/#{@resolver.resolve_channel_ref(:stable)}/lib"
+            when "beta"
+              ref = @resolver.resolve_channel_ref(:beta)
+              if ref.nil?
+                if @resolver.last_error
+                  StatusReporter.respond_github_failure(@resolver.last_error, 'No beta update was installed.', retried_by: retried_by)
+                else
+                  respond 'No viable beta found. Aborting beta update.'
+                end
+                return
+              end
+              remote_repo = "https://raw.githubusercontent.com/#{GITHUB_REPO}/#{ref}/lib"
+            end
+            requested_file_ext = requested_file =~ /\.rb$/ ? ".rb" : "bad extension"
+          when "data"
+            location = DATA_DIR
+            remote_repo = "https://raw.githubusercontent.com/elanthia-online/scripts/master/scripts"
+            requested_file_ext = requested_file =~ /(\.(?:xml|ui))$/ ? $1&.dup : "bad extension"
+          end
+
+          unless requested_file_ext == "bad extension"
+            file_path = File.join(location, requested_file)
+
+            # An empty, "." or ".." segment would put the file outside its
+            # directory, and raw.githubusercontent.com answers such a path
+            # with a redirect that http_get does not follow.
+            if requested_file.split(%r{[/\\]}, -1).any? { |segment| ['', '.', '..'].include?(segment) }
+              respond_file_unavailable(requested_file, file_path)
+              return
+            end
+
+            begin
+              # http_get reports a malformed URL as a network failure, so a
+              # name that cannot form a URL is caught here and reported as
+              # unavailable instead. TypeError is a channel with no remote_repo.
+              url = File.join(remote_repo, requested_file)
+              URI.parse(url)
+            rescue URI::InvalidURIError, TypeError
+              respond_file_unavailable(requested_file, file_path)
+              return
+            end
+
+            # Download fully before touching the file, then replace it
+            # atomically: the live file stays in place for the whole
+            # network read and is untouched if anything fails.
+            content = @client.http_get(url, auth: false)
+            unless content
+              error = @client.last_error
+              if error&.kind == :not_found
+                respond_file_unavailable(requested_file, file_path)
+              else
+                StatusReporter.respond_github_failure(error, "#{requested_file} was not updated.", retried_by: retried_by)
+              end
+              return
+            end
+
+            begin
+              FileWriter.safe_write(file_path, content)
+
+              respond
+              respond "#{requested_file} has been updated."
+            rescue StandardError => e
+              respond
+              respond "Error updating #{requested_file}: #{e.class} - #{e.message}"
+              respond "Backtrace: #{e.backtrace.first(3).join(' | ')}" if $debug
+              respond "The existing #{requested_file} was left unchanged." if File.exist?(file_path)
+            end
+          else
+            respond
+            respond "The requested file #{requested_file} has an incorrect extension."
+            respond "Valid extensions are '.lic' for scripts, '.rb' for library files,"
+            respond "and '.xml' or '.ui' for data files. Please correct and try again."
+          end
+        end
+
+        # Updates core data files (effect-list.xml) after version upgrade.
+        #
+        # @param version [String] version string (default: LICH_VERSION)
+        # @param snapshot_dir [String, nil] snapshot directory to back data files
+        #   up into, e.g. one just created by the active update flow's
+        #   SnapshotManager#snapshot call. When nil (a standalone call not part
+        #   of a full update, such as the login autostart path), a fresh
+        #   data-only backup directory is created (SnapshotManager#new_data_backup_dir)
+        #   -- never an L5-snapshot-* directory -- so it can't be mistaken by
+        #   SnapshotManager#revert for a real, restorable ecosystem snapshot.
+        # @return [void]
+        def update_core_data_and_scripts(version = LICH_VERSION, snapshot_dir = nil)
+          if XMLData.game !~ /^GS|^DR/
+            respond "invalid game type, unsure what scripts to update via Update.update_core_scripts"
+            return
+          end
+
+          if XMLData.game =~ /^GS/
+            ["effect-list.xml"].each do |file|
+              if File.exist?(File.join(DATA_DIR, file))
+                data_backup_dir = File.join(snapshot_dir || @snapshot_manager.new_data_backup_dir, "data")
+                FileUtils.mkdir_p(data_backup_dir)
+                newfilename = File.join(data_backup_dir, file)
+                File.open(File.join(DATA_DIR, file), 'rb') { |r| File.open(newfilename, 'wb') { |w| w.write(r.read) } }
+                respond "The prior version of #{file} was backed up to #{newfilename}."
+              end
+              update_file('data', file, retried_by: :login)
+            end
+          end
+
+          Lich.core_updated_with_lich_version = version
+        end
+
+        private
+
+        # Tells the user the default repository has no file by this name.
+        #
+        # @param requested_file [String] the name the user asked for
+        # @param file_path [String] where the file would have been written
+        # @return [void]
+        def respond_file_unavailable(requested_file, file_path)
+          respond
+          respond "The existing #{requested_file} was left unchanged." if File.exist?(file_path)
+          respond "The filename #{requested_file} is not available via lich5-update."
+          respond "Check the spelling of your requested file, or use '#{$clean_lich_char}jinx' to"
+          respond "download #{requested_file} from another repository."
+        end
+      end
+    end
+  end
+end

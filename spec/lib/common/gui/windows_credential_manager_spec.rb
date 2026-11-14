@@ -1,0 +1,439 @@
+# frozen_string_literal: true
+
+require_relative '../../../spec_helper'
+require 'os'
+require 'ffi'
+
+require 'common/gui/windows_credential_manager'
+
+RSpec.describe Lich::Common::GUI::WindowsCredentialManager do
+  let(:target_name) { 'test.service' }
+  let(:username) { 'testuser' }
+  let(:password) { 'testpassword123' }
+  let(:comment) { 'Test credential' }
+
+  describe '.available?' do
+    context 'on Windows platform' do
+      before do
+        allow(OS).to receive(:windows?).and_return(true)
+      end
+
+      # CredentialStruct and the attach_function-defined API calls are only defined
+      # when the real OS.windows? is true at file-load time (see windows_credential_manager.rb)
+      # so this platform can only be exercised on an actual Windows runtime, not by
+      # stubbing OS.windows? after the fact on this (Linux) CI runner.
+      it 'returns true if FFI library loads successfully', if: OS.windows? do
+        expect(described_class.available?).to be true
+      end
+    end
+
+    context 'on non-Windows platform' do
+      before do
+        allow(OS).to receive(:windows?).and_return(false)
+      end
+
+      it 'returns false when not on Windows' do
+        expect(described_class.available?).to be false
+      end
+    end
+  end
+
+  describe 'module load (regression for #1542)' do
+    # The bug this guards against: this file used to call
+    # Lich::Util.install_gem_requirements and extend FFI::Library unconditionally
+    # at load time on every platform. That made loading it depend on some other
+    # file having already loaded ffi/install_gem_requirements first, so a spec-stub
+    # race elsewhere in the suite could make it raise on non-Windows CI. Now the
+    # whole FFI-dependent block is gated behind OS.windows?, so this file must
+    # never touch Lich::Util.install_gem_requirements off Windows, regardless of
+    # whether a real or stubbed version of that method exists.
+    it 'never calls Lich::Util.install_gem_requirements off Windows' do
+      # Reload into a disposable module rather than the real WindowsCredentialManager
+      # constant, so this doesn't leave load-time state (or, in the Windows test below,
+      # fake singleton bindings) on the module every other example in this file shares.
+      stub_const('Lich::Common::GUI::WindowsCredentialManager', Module.new)
+      allow(OS).to receive(:windows?).and_return(false)
+      # This file's own `require 'ffi'` above already defines FFI, which would mask
+      # a regression where extend FFI::Library/CredentialStruct escaped the guard
+      # without calling install_gem_requirements. Hide it so a reload only succeeds
+      # if the guard keeps every FFI reference out of the non-Windows load path.
+      hide_const('FFI')
+      expect(Lich::Util).not_to receive(:install_gem_requirements)
+
+      load File.join(LIB_DIR, 'common', 'gui', 'windows_credential_manager.rb')
+    end
+  end
+
+  describe 'module load on Windows' do
+    # Real ffi_lib/attach_function calls try to dlopen advapi32/kernel32, which only
+    # exist on an actual Windows machine. Double them so this exercises the Windows
+    # branch's call sequence - installer, DLL names, function bindings - without
+    # needing real Windows, instead of skipping this branch on CI entirely.
+    it 'installs ffi, loads the Windows DLLs, and binds the expected Credential Manager functions' do
+      # Reload into a disposable module instead of the real WindowsCredentialManager
+      # constant, and pre-define ffi_lib/attach_function directly as its own singleton
+      # methods before the reload. A module's own singleton methods take priority over
+      # ones gained via `extend`, so these doubles shadow FFI::Library's real ffi_lib/
+      # attach_function for this module only, without touching FFI::Library itself -
+      # no global monkeypatch, and nothing to restore afterward.
+      dummy = Module.new
+      stub_const('Lich::Common::GUI::WindowsCredentialManager', dummy)
+
+      ffi_lib_calls = []
+      attach_function_calls = []
+      dummy.define_singleton_method(:ffi_lib) { |*libs| ffi_lib_calls << libs }
+      dummy.define_singleton_method(:attach_function) do |name, *_args|
+        attach_function_calls << name
+        dummy.define_singleton_method(name) { |*_a| nil }
+      end
+
+      allow(OS).to receive(:windows?).and_return(true)
+      # No .and_call_original: the real implementation would only be reached if some
+      # other spec file's install_gem_requirements definition lost the #1542 stub race,
+      # and this file already requires 'ffi' unconditionally above regardless of what
+      # this call does, so a bare mock is enough to verify the call happens.
+      expect(Lich::Util).to receive(:install_gem_requirements).with({ 'ffi' => true })
+
+      load File.join(LIB_DIR, 'common', 'gui', 'windows_credential_manager.rb')
+
+      expect(ffi_lib_calls).to eq([%w[advapi32 kernel32]])
+      expect(attach_function_calls).to eq(%i[CredReadW CredWriteW CredDeleteW CredFree GetLastError])
+    end
+  end
+
+  describe '.store_credential' do
+    context 'with valid parameters' do
+      it 'stores credential successfully' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        result = described_class.store_credential(
+          target_name,
+          username,
+          password,
+          comment
+        )
+
+        # Result depends on actual Windows API availability
+        # In test environment, this may return false if advapi32.dll not available
+        expect([true, false]).to include(result)
+      end
+    end
+
+    context 'when credential manager is unavailable' do
+      before do
+        allow(described_class).to receive(:available?).and_return(false)
+      end
+
+      it 'returns false' do
+        result = described_class.store_credential(
+          target_name,
+          username,
+          password
+        )
+        expect(result).to be false
+      end
+    end
+
+    context 'with various persistence levels' do
+      persistence_levels = {
+        'session'       => described_class::CRED_PERSIST_SESSION,
+        'local_machine' => described_class::CRED_PERSIST_LOCAL_MACHINE,
+        'enterprise'    => described_class::CRED_PERSIST_ENTERPRISE
+      }
+
+      persistence_levels.each do |name, level|
+        it "stores credential with #{name} persistence" do
+          allow(described_class).to receive(:available?).and_return(true)
+          allow(Lich).to receive(:log)
+
+          result = described_class.store_credential(
+            target_name,
+            username,
+            password,
+            nil,
+            level
+          )
+
+          expect([true, false]).to include(result)
+        end
+      end
+    end
+
+    context 'with special characters in password' do
+      special_passwords = [
+        'p@ssw0rd!',
+        # rubocop:disable Custom/AsciiOnlySource -- Preserve existing Unicode credential fixtures using ASCII source.
+        "p\u00e4ssw\u00f6rd",
+        "\u5bc6\u7801",
+        # rubocop:enable Custom/AsciiOnlySource
+        "p'ss\"w@rd",
+        'p\nw\t\r'
+      ]
+
+      special_passwords.each do |special_pass|
+        it "handles password with special characters: #{special_pass.inspect}" do
+          allow(described_class).to receive(:available?).and_return(true)
+          allow(Lich).to receive(:log)
+
+          result = described_class.store_credential(
+            target_name,
+            username,
+            special_pass
+          )
+
+          expect([true, false]).to include(result)
+        end
+      end
+    end
+
+    context 'error handling' do
+      it 'catches and logs exceptions' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(described_class).to receive(:store_credential).and_call_original
+        allow(Lich).to receive(:log)
+
+        # This will likely fail in test environment without real Windows API
+        result = described_class.store_credential(
+          target_name,
+          username,
+          password
+        )
+
+        expect([true, false]).to include(result)
+      end
+    end
+  end
+
+  describe '.retrieve_credential' do
+    context 'when credential exists' do
+      it 'returns the stored credential' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        # Store then retrieve (requires Windows platform)
+        described_class.store_credential(target_name, username, password)
+        result = described_class.retrieve_credential(target_name)
+
+        expect(result).to be_a(String).or be_nil
+      end
+    end
+
+    context 'when credential does not exist' do
+      it 'returns nil' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        result = described_class.retrieve_credential('nonexistent.service')
+
+        expect(result).to be_nil
+      end
+    end
+
+    context 'when credential manager is unavailable' do
+      before do
+        allow(described_class).to receive(:available?).and_return(false)
+      end
+
+      it 'returns nil' do
+        result = described_class.retrieve_credential(target_name)
+        expect(result).to be_nil
+      end
+    end
+
+    context 'error handling' do
+      it 'catches exceptions and logs errors' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        # Attempt to retrieve non-existent credential
+        result = described_class.retrieve_credential('invalid.target')
+
+        expect(result).to be_nil
+      end
+    end
+  end
+
+  describe 'credential operations with simulated Win32 results' do
+    let(:saved_error) { double('FFI saved WinAPI error', winapi_error: 5) }
+
+    before do
+      # Exercise the production native adapter without loading DLLs or accessing
+      # any real credential store, even when this spec runs on Windows.
+      dummy = Module.new
+      stub_const('Lich::Common::GUI::WindowsCredentialManager', dummy)
+      dummy.define_singleton_method(:ffi_lib) { |*_args| nil }
+      dummy.define_singleton_method(:attach_function) do |name, *_args|
+        dummy.define_singleton_method(name) { |*_values| nil }
+      end
+      allow(OS).to receive(:windows?).and_return(true)
+      allow(Lich::Util).to receive(:install_gem_requirements)
+      load File.join(LIB_DIR, 'common', 'gui', 'windows_credential_manager.rb')
+      @reader = dummy
+      # winapi_error exists only on Windows; model its saved value without
+      # depending on the host platform or reading the live WinAPI error again.
+      stub_const('FFI::LastError', saved_error)
+      expect(@reader).not_to receive(:GetLastError)
+      allow(Lich).to receive(:log)
+      allow(@reader).to receive(:CredReadW).and_return(false)
+    end
+
+    it 'returns nil only for ERROR_NOT_FOUND' do
+      allow(saved_error).to receive(:winapi_error).and_return(1168)
+      expect(@reader.retrieve_credential(target_name, strict: true)).to be_nil
+    end
+
+    it 'raises for access denied instead of returning absence' do
+      expect { @reader.retrieve_credential(target_name, strict: true) }.to raise_error(IOError, /error code 5/)
+    end
+
+    it 'raises when the API is unavailable' do
+      allow(@reader).to receive(:available?).and_return(false)
+      expect { @reader.retrieve_credential(target_name, strict: true) }.to raise_error(IOError, /unavailable/)
+    end
+
+    it 'preserves the legacy nil-on-error behavior for other callers' do
+      expect(@reader.retrieve_credential(target_name)).to be_nil
+    end
+
+    it 'reports the saved error code when storing fails' do
+      expect(@reader).to receive(:CredWriteW).and_return(false)
+      expect(Lich).to receive(:log).with('error: CredWriteW failed with error code 5')
+
+      expect(@reader.store_credential(target_name, username, password)).to be false
+    end
+
+    it 'reports the saved error code when deleting fails' do
+      expect(@reader).to receive(:CredDeleteW).and_return(false)
+      expect(Lich).to receive(:log).with('error: CredDeleteW failed with error code 5')
+
+      expect(@reader.delete_credential(target_name)).to be false
+    end
+
+    it 'does not interpret a saved error after a successful store' do
+      expect(@reader).to receive(:CredWriteW).and_return(true)
+      expect(saved_error).not_to receive(:winapi_error)
+
+      expect(@reader.store_credential(target_name, username, password)).to be true
+    end
+
+    it 'does not interpret a saved error after a successful deletion' do
+      expect(@reader).to receive(:CredDeleteW).and_return(true)
+      expect(saved_error).not_to receive(:winapi_error)
+
+      expect(@reader.delete_credential(target_name)).to be true
+    end
+  end
+
+  describe '.delete_credential' do
+    context 'when credential exists' do
+      it 'deletes the credential' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        # Store, then delete
+        described_class.store_credential(target_name, username, password)
+        result = described_class.delete_credential(target_name)
+
+        expect([true, false]).to include(result)
+      end
+    end
+
+    context 'when credential does not exist' do
+      it 'returns false' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        result = described_class.delete_credential('nonexistent.service')
+
+        expect(result).to be false
+      end
+    end
+
+    context 'when credential manager is unavailable' do
+      before do
+        allow(described_class).to receive(:available?).and_return(false)
+      end
+
+      it 'returns false' do
+        result = described_class.delete_credential(target_name)
+        expect(result).to be false
+      end
+    end
+
+    context 'error handling' do
+      it 'catches exceptions and logs errors' do
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        result = described_class.delete_credential('invalid.target')
+
+        expect(result).to be false
+      end
+    end
+  end
+
+  describe 'private helper methods' do
+    describe '#string_to_wide' do
+      it 'converts Ruby string to UTF-16LE encoded pointer' do
+        # These are private methods, but we test their behavior through public interface
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        # Store credential with UTF-8 string to test encoding
+        # rubocop:disable Custom/AsciiOnlySource -- Intentional Unicode strings exercise UTF-16LE boundary conversion.
+        result = described_class.store_credential(
+          "\u0442\u0435\u0441\u0442.service",
+          "\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c",
+          "\u043f\u0430\u0440\u043e\u043b\u044c"
+        )
+        # rubocop:enable Custom/AsciiOnlySource
+
+        expect([true, false]).to include(result)
+      end
+    end
+
+    describe '#wide_to_string' do
+      it 'handles NULL pointers gracefully' do
+        # Tested through public API when credential is not found
+        allow(described_class).to receive(:available?).and_return(true)
+        allow(Lich).to receive(:log)
+
+        result = described_class.retrieve_credential('nonexistent.service')
+        expect(result).to be_nil
+      end
+    end
+  end
+
+  describe 'credential types' do
+    it 'defines CRED_TYPE_GENERIC constant' do
+      expect(described_class::CRED_TYPE_GENERIC).to eq(1)
+    end
+
+    it 'defines credential type constants for future use' do
+      expect(described_class::CRED_TYPE_DOMAIN_PASSWORD).to eq(2)
+      expect(described_class::CRED_TYPE_DOMAIN_CERTIFICATE).to eq(3)
+      expect(described_class::CRED_TYPE_GENERIC_CERTIFICATE).to eq(5)
+    end
+  end
+
+  describe 'persistence levels' do
+    it 'defines CRED_PERSIST_SESSION constant' do
+      expect(described_class::CRED_PERSIST_SESSION).to eq(1)
+    end
+
+    it 'defines CRED_PERSIST_LOCAL_MACHINE constant' do
+      expect(described_class::CRED_PERSIST_LOCAL_MACHINE).to eq(2)
+    end
+
+    it 'defines CRED_PERSIST_ENTERPRISE constant' do
+      expect(described_class::CRED_PERSIST_ENTERPRISE).to eq(3)
+    end
+  end
+
+  describe 'size limits' do
+    it 'defines max credential blob size' do
+      expect(described_class::CRED_MAX_CREDENTIAL_BLOB_SIZE).to eq(512 * 1024)
+    end
+  end
+end

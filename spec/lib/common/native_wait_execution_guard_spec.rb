@@ -1,0 +1,244 @@
+# frozen_string_literal: true
+
+require_relative '../../spec_helper'
+require_relative '../../../lib/common/limitedarray'
+require_relative '../../../lib/common/feature_flags'
+require_relative '../../../lib/common/downstreamhook'
+require_relative '../../../lib/common/upstreamhook'
+require_relative '../../../lib/common/wait_response'
+require_relative '../../support/global_defs_spec_source'
+
+# Load exact production definitions into an isolated receiver. Requiring all of
+# global_defs would replace shared helpers used by unrelated randomized specs.
+# Only Script's constant reference changes to its fully qualified native class.
+module NativeWaitExecutionGuardSpec
+  class Harness; end
+  METHODS = %w[fput dothis dothistimeout get get? clear pause waitrt? waitcastrt? wait_until wait_while].freeze
+  GlobalDefsSpecSource.define(Harness, *METHODS, qualify_script: true)
+end
+
+RSpec.describe 'Native command and roundtime execution guard checkpoints' do
+  let(:script_class) { Lich::Common::Script }
+  let(:owner) { script_class.allocate }
+  let(:buffer) { Lich::Common::LimitedArray.new }
+  let(:harness) { NativeWaitExecutionGuardSpec::Harness.new }
+  let(:writes) { [] }
+  let(:response) { '...wait 30 seconds.' }
+  let(:interrupted) { Lich::Common::ScriptExecutionGuard::Interrupted }
+
+  before(:context) do
+    require_relative '../../../lib/common/script'
+  end
+
+  after(:context) do
+    %i[SubScript ExecScript WizardScript Script Scripting TRUSTED_SCRIPT_BINDING].each do |name|
+      Lich::Common.send(:remove_const, name) if Lich::Common.const_defined?(name, false)
+    end
+    $LOADED_FEATURES.delete_if { |path| path.end_with?('/lib/common/script.rb') }
+  end
+
+  before do
+    owner.want_downstream = true
+    owner.instance_variable_set(:@downstream_buffer, buffer)
+    allow(script_class).to receive(:__resolve_current).and_return(owner)
+    allow(harness).to receive(:put) do |command|
+      owner.check_execution_guard!(command: command)
+      writes << command
+      buffer << response
+    end
+    allow(harness).to receive(:echo)
+    allow(harness).to receive(:respond)
+  end
+
+  # Main thread cancels only after the native helper enters its real long sleep.
+  # No polling guesses or 30-second waits: failed checkpoints leave a worker
+  # which this helper joins briefly, then tears down before reporting failure.
+  def cancel_during_native_sleep
+    guards, entered = Queue.new, Queue.new
+    result = {}
+    allow(owner).to receive(:execution_sleep).and_wrap_original do |method, duration|
+      entered << duration
+      method.call(duration)
+    end
+    worker = Thread.new do
+      owner.with_execution_guard(->(_command) { true }) do |guard|
+        guards << guard
+        result[:value] = yield
+      end
+    rescue StandardError => error
+      result[:error] = error
+    end
+    guard = guards.pop(timeout: 0.5)
+    expect(guard).not_to be_nil
+    expect(entered.pop(timeout: 0.5)).to be > 20
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    guard.cancel!(:cancelled)
+    expect(worker.join(0.5)).to eq(worker)
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.5
+    expect(result[:error]).to be_a(interrupted)
+    expect(owner.execution_guard_active?).to be(false)
+  ensure
+    worker&.kill if worker&.alive?
+    worker&.join(0.1)
+  end
+
+  it 'runs the methods defined in lib/global_defs.rb' do
+    NativeWaitExecutionGuardSpec::METHODS.each do |name|
+      expect(NativeWaitExecutionGuardSpec::Harness.instance_method(name).source_location)
+        .to eq([GlobalDefsSpecSource::PATH, GlobalDefsSpecSource.line_of(name)])
+    end
+  end
+
+  it 'unwinds fput during a wait-30 response without resending the command' do
+    cancel_during_native_sleep { harness.fput('attack #123') }
+    expect(writes).to eq(['attack #123'])
+  end
+
+  it 'unwinds dothistimeout during a wait-30 response without retrying the action' do
+    cancel_during_native_sleep { harness.dothistimeout('prepare 101', 60, /ready/) }
+    expect(writes).to eq(['prepare 101'])
+  end
+
+  it 'unwinds dothis during a wait-30 response without retrying the action' do
+    cancel_during_native_sleep { harness.dothis('prepare 101', /ready/) }
+    expect(writes).to eq(['prepare 101'])
+  end
+
+  it 'unwinds native waitrt? during a long roundtime' do
+    allow(harness).to receive(:checkrt).and_return(30.0)
+    cancel_during_native_sleep { harness.waitrt? }
+    expect(writes).to be_empty
+  end
+
+  it 'unwinds native waitcastrt? during a long cast roundtime' do
+    allow(harness).to receive(:checkcastrt).and_return(30.0)
+    cancel_during_native_sleep { harness.waitcastrt? }
+    expect(writes).to be_empty
+  end
+
+  it 'checks real Script.gets? even when a continuous stream never sleeps' do
+    # Isolate the gets? checkpoint from Script.current's additional pause gate.
+    allow(owner).to receive(:wait_while_paused!)
+    reads = 0
+    expect do
+      owner.with_execution_guard(->(_command) { true }) do |guard|
+        allow(buffer).to receive(:try_shift) do
+          reads += 1
+          raise 'missing hot-stream checkpoint' if reads > 20
+
+          guard.cancel!(:cancelled) if reads == 3
+          'unrelated room chatter'
+        end
+        expect do
+          harness.dothistimeout('look', 60, /never matches/)
+        end.to raise_error(interrupted)
+        # Guard remains latched until scope exit even if callers catch it.
+      end
+    end.to raise_error(interrupted)
+    expect(reads).to eq(3)
+    expect(writes).to eq(['look'])
+    expect(owner.execution_guard_active?).to be(false)
+  end
+
+  context 'without an installed guard' do
+    let(:response) { 'Your spell is ready.' }
+
+    it 'keeps native fput return and downstream pushback behavior' do
+      expect(harness.fput('prepare 101')).to eq(response)
+      expect(writes).to eq(['prepare 101'])
+      expect(buffer.to_a).to eq([response])
+    end
+
+    it 'keeps native dothistimeout success matching behavior' do
+      expect(harness.dothistimeout('prepare 101', 5, /ready/)).to eq(response)
+      expect(writes).to eq(['prepare 101'])
+      expect(buffer).to be_empty
+    end
+
+    it 'keeps native dothis success matching behavior' do
+      expect(harness.dothis('prepare 101', /ready/)).to eq(response)
+      expect(writes).to eq(['prepare 101'])
+      expect(buffer).to be_empty
+    end
+
+    it 'keeps native zero-roundtime return values' do
+      allow(harness).to receive(:checkrt).and_return(0)
+      allow(harness).to receive(:checkcastrt).and_return(0)
+      expect(harness.waitrt?).to be(false)
+      expect(harness.waitcastrt?).to be(false)
+    end
+  end
+
+  # Production fput, dothis and dothistimeout against the shared wait pattern:
+  # a refusal in any spelling, or appended to the line before it, waits and
+  # resends; player speech containing "Wait N" is not a refusal.
+  context 'with wait refusals and player speech' do
+    let(:success) { 'Your spell is ready.' }
+    let(:replies) { [] }
+    let(:sleeps) { [] }
+
+    before do
+      allow(owner).to receive(:execution_sleep) { |duration| sleeps << duration }
+      allow(harness).to receive(:put) do |command|
+        writes << command
+        Array(replies.shift || success).each { |line| buffer << line }
+      end
+    end
+
+    speech = ['Soandso says, "Wait 5 minutes before we go."', 'You whisper to Bob, "Wait 10 and then follow."']
+    waits = ['You slip....wait 1 seconds.', '... wait 2 seconds.']
+
+    it 'fput returns player speech as the reply without waiting or resending' do
+      speech.each do |line|
+        writes.clear
+        replies.replace([line])
+        expect(harness.fput('prepare 101')).to eq(line)
+        expect(writes).to eq(['prepare 101'])
+      end
+      expect(sleeps).to be_empty
+    end
+
+    it 'fput waits out an appended and a spaced wait, then resends' do
+      replies.replace(waits)
+      expect(harness.fput('prepare 101')).to eq(success)
+      expect(writes).to eq(['prepare 101'] * 3)
+      expect(sleeps).to eq([1, 2])
+    end
+
+    { dothis: [], dothistimeout: [5] }.each do |method, timeout|
+      call = ->(h) { h.public_send(method, 'prepare 101', *timeout, /ready/) }
+
+      it "#{method} reads past player speech without waiting or resending" do
+        replies.replace([speech + [success]])
+        expect(call.call(harness)).to eq(success)
+        expect(writes).to eq(['prepare 101'])
+        expect(sleeps).to be_empty
+      end
+
+      it "#{method} waits out an appended and a spaced wait, then retries" do
+        replies.replace(waits)
+        expect(call.call(harness)).to eq(success)
+        expect(writes).to eq(['prepare 101'] * 3)
+        expect(sleeps).to eq([0.3, 1.5])
+      end
+    end
+  end
+
+  %i[wait_until wait_while].each do |method|
+    it "restores thread priority when #{method} unwinds on cancellation" do
+      original_priority = Thread.current.priority
+      Thread.current.priority = 1
+      expect do
+        owner.with_execution_guard(->(_command) { true }) do |guard|
+          harness.public_send(method) do
+            guard.cancel!(:cancelled)
+            owner.check_execution_guard!
+          end
+        end
+      end.to raise_error(interrupted)
+      expect(Thread.current.priority).to eq(1)
+    ensure
+      Thread.current.priority = original_priority
+    end
+  end
+end

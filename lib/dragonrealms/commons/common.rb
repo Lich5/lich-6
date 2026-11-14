@@ -1,0 +1,1341 @@
+# frozen_string_literal: true
+
+require_relative '../custom_substitutions'
+require_relative '../../common/wait_response'
+
+module Lich
+  module DragonRealms
+    module DRC
+      $pause_all_lock ||= Mutex.new
+      $safe_pause_lock ||= Mutex.new
+
+      module_function
+
+      # -- Constants --------------------------------------------------------
+
+      # Pattern for XML tags
+      XML_TAG_PATTERN = /<[^>]+>/.freeze
+
+      # Pattern for game wait/roundtime responses in bput; shared with fput,
+      # see lib/common/wait_response.rb.
+      WAIT_RESPONSE_PATTERN = Lich::Common::WAIT_RESPONSE_PATTERN
+
+      # Most collect attempts per DRC.collect call while the room is too
+      # cluttered. Chosen to equal DRC.forage?'s default tries (5), which is
+      # its own literal and does not follow this constant.
+      COLLECT_CLUTTER_ATTEMPTS = 5
+
+      # Collect command response messages
+      COLLECT_MESSAGES = [
+        'As you rummage around',
+        'believe you would probably have better luck trying to find a dragon',
+        'if you had a bit more luck',
+        'The room is too cluttered',
+        'one hand free to properly collect',
+        'You are sure you knew',
+        'You begin to forage around,',
+        'You begin scanning the area before you',
+        'You begin exploring the area, searching for',
+        'You find something dead and lifeless',
+        'You cannot collect anything',
+        'you fail to find anything',
+        'You forage around but are unable to find anything',
+        'You manage to collect a pile',
+        'You survey the area and realize that any collecting efforts would be futile',
+        'You wander around and poke your fingers',
+        'You forage around for a while and manage to stir up a small mound of fire ants!'
+      ].freeze
+
+      # Retreat command response patterns
+      RETREAT_ESCAPE_MESSAGES = [
+        /You are already as far away as you can get/,
+        /You retreat from combat/,
+        /You sneak back out of combat/,
+        /Retreat to where/,
+        /There's no place to retreat to/
+      ].freeze
+
+      RETREAT_MESSAGES = [
+        /retreat/,
+        /sneak/,
+        /grip on you/,
+        /grip remains solid/,
+        /You try to back/,
+        /You must stand first/,
+        /You stop advancing/,
+        /You are already/
+      ].freeze
+
+      # Seconds bput waits for a matching reply when the caller passes no
+      # 'timeout'. retreat also uses it as its hold budget, so a hold costs
+      # about as long as one RETREAT that drew no recognised reply.
+      BPUT_DEFAULT_TIMEOUT = 15
+
+      # Assess teach parsing patterns
+      ASSESS_TEACH_TEACHER_PATTERN = /(?<teacher>.*) is teaching a class on (?<skill>.*) which is still open to new students/.freeze
+      ASSESS_TEACH_SKILL_FILTER_PATTERN = /.* \(compared to what you already know\) (?<filtered_skill>.*)/.freeze
+
+      # Common ranged weapon nouns
+      COMMON_RANGED_WEAPONS_PATTERN = /^(bow|shortbow|longbow|crossbow|stonebow|latchbow|slurbow|lockbow|pelletbow|arbalest|sling|slingshot|blowgun)$/i.freeze
+
+      # Gamgweth/racial ranged weapon nouns
+      # https://elanthipedia.play.net/Genie_racial_language_item_subs
+      # https://elanthipedia.play.net/Category:Language_Book
+      RACIAL_RANGED_WEAPONS_PATTERN = /^(jranoki|uku'uan|uku'uanstaho|chunenguti|hhr'ibu|guti|mahil|taisgwelduan|chyeb|sverfil|tangara|alaer|kari|wami|usus|srigos|href|vrope|falocisana|stof|dzelt)$/i.freeze
+
+      # Flavor text pattern for item descriptions
+      # https://regex101.com/r/4lGY6u/13
+      # Flavor also starts at "for a", "for an", "for some", "manifested as" and
+      # "carved/built/comprised/composed/crafted/made of" ("a deed for a
+      # mammoth-bone stack" is a deed). A bare "of" does not start it: the noun
+      # is often the word after it ("a pair of pliers", "a piece of amber").
+      FLAVOR_TEXT_PATTERN = /\s?\b(?:(?:colorfully and )?(?:artfully|artistically|attractively|beautifully|bl?ack-|cleverly|clumsily|crudely|deeply|delicately|edged|elaborately|faintly|flamboyantly|front-|fully|gracefully|heavily|held|intricately|lavishly|masterfully|plentifully|prominantly|roughly|securely|sewn|shabbily|shadow-|simply|somberly|skillfully|sloppily|starkly|stitched|tied and|tightly|well-)\s?)?(?:accented|accentuated|acid-etched|adorned|affixed|appliqued|assembled|attached|augmented|awash|backed|back-laced|balanced|banded|batiked|beaded|bearded|bearing|bedazzled|bedecked|bejeweled|beset|bestrewn|blazoned|bordered|bound|braided|branded|brocaded|bristling|brushed|buckled|burned|buttoned|caked|camouflaged|capped|carved|caught|centered|chased|chiseled|cinched|circled|clasped|cloaked|closed|coated|cobbled together|coiled|colored|composed|concealed|connected|constructed|countoured|covered|crafted|crested|crisscrossed|crowded|crowned|cuffed|cut|dangling|dappled|decked|decorated|deformed|depicting|designed|detailed|discolored|displaying|divided|done|dotted|draped|drawn|dressed|drizzled|dusted|edged|elaborately|embedded|embell?ished|emblazed|emblazoned|embossed|embroidered(?: all over| painstakingly)?|enameled(?: across)?|encircled|encrusted|engraved|engulfed|enhanced|entwined|equipped|etched|fashioned(?: so)?|fastened|feathered|featuring|festooned|fettered|filed|filled|firestained|fit|fitted|fixed|flecked|fletched|forged|formed|framed|fringed|frosted|full|gathered|gleaming|glimmering|glittering|goldworked|growing|gypsy-set|hafted|hand-tooled|hanging|heavily(?:-beaded| covered)?|held fast|hemmed|hewn|hideously|highlighted|hilted|honed|hung|impressed|incised|ingeniously repurposed|inscribed|inlaid|inset|interlaced|interspersed|interwoven|jeweled|joined|laced(?: up)?|lacquered|laden|layered|limned|lined|linked|looped|knotted|made|marbled|marked|marred|meshed|mosaicked|mottled|mounted|oiled|oozing|outlined|ornamented|overlai(?:d|n)|padded|painted|paired|patched|pattern-welded|patterned|pinned|plumed|polished|printed|reinforced|reminiscent|rendered|revealing|riddled|ridged|rimed|ringed|riveted|sashed|scarred|scattered|scorched|sculpted|sealed|seamed|secured|securely|set|sewn|shaped|shimmering|shod|shot|shrouded|side-laced|slashed|slung|smeared|smudged|spangled|speckled|spiraled|splatter-dyed|splattered|spotted|sprinkled|stacked|surmounted|surrounded|suspended|stained|stamped|starred|stenciled|stippled|stitched(?: together)?|strapped|streaked|strengthened|strewn|striated|striped|strung|studded|swathed|swirled|tailored|tangled|tapered|tethered|textured|threaded|tied|tightly|tinged|tinted|tipped|tooled|topped|traced|trimmed|twined|veined|vivified|washed|webbed|weighted|whorled|worked|worn|woven|wrapped|wreathed|wrought)?\b ["]?\b(?:a hand-tooled|across|along|an|around|atop|bearing|belted|bright streaks|dangling|designed|detailing|down (?:each leg|one side)|dyed (?:a|and|deep|of|in|night|rust|shimmering|the|to|with)|engravings|entitled|errant pieces|featuring|flaunting|frescoed|from|Gnomish Pride|(?:encased |quartered )?in(?: the)?|into|labeled|leading|like|lining|matching|(?<!stick|slice|chunk|flask|hunk|series|set|pair|piece) of|on|out|overlayed gleaming silver|resembling|shades of color|sporting|surrounding|that|the|through|tinged somber black|titled|to|upon|WAR MONGER|with|within|for (?:a|an|some) |manifested as|(?:carved|built|comprised|composed|crafted|made) of|\b(?:at|bearing|(?:accented |held |secured )?by|carrying|clutching|colored|cradling|dangling|depicting|(?:prominently )?displaying|embossed|etched|featuring|for(?:ming)?|holding|(?<!slice |chunk |flask |hunk |series |set |pair |piece )of|over|patterned|striped|suspending|textured|that)\b \b(?:a (?:band|beaded|brass|cascade|cluster|coral|crown|dead|.+ (?:ingot|boulder|stone|rock|nugget)|fierce|fanged|fringe|glowing|golden|grinning|howling|large|lotus|mosaic|pair|poorly|rainbow|roaring|row|silver(?:y|weave)?|small|snarling|spray|tailored|thick|tiny|trio|turquoise|yellowed)|(?:squared )?agonite (?:links|decorated)|alternating|an|(?:purple |blue )?and|ash|beaded fringe|blackened (?:steel(?: accents| bearing| with|$)|ironwood)|blue (?:gold|steel)|burnished golden|cascading layers|carved ivory|chain-lined|chitinous|(?:deep red|dull black|pale blue) cloth|cloudberry blossoms|colorful tightly|cotton candy|crimson steel|crisscrossed|curious design|curved|crystaline charm|dark (?:blue|green|grey|metals|windsteel) (?:and|exuding|glaes|hues|khor'vela|muracite|pennon|with)|dark supple|deepest|deeply blending|delicate|dusky (?:dreamweave|green-grey)|ebonwood$|emblazoned|enamel?led (?:steel|bronze)|etched|fine(?:-grained| black| crushed)|finely wrought|flame-kissed|forest|fused-together|fuzzy grey|gauze atop|gilded steel|glass eyeballs|glistening green|golden oak|grey fur|hammered|haralun|has|heavy (?:grey|pearl|silver)|horn|Ilithi cedar|inky black|interlocking silver|interwoven|iridescent|jagged interlocking plates|(?:soft dark|supple|thick|woven) (?:bolts|leather)|lightweight|long swaths|lustrous|kertig ravens|made|metal cogs|mirror-finished|mottled|multiple woods|naphtha|oak|oblong sanguine|one|onyx buttons|opposing images|overlapping|pale cerulean|pallid links|pastel-hued|pins|pitted (?:black iron|steel)|plush velvet|polished (?:bronze|hemlock|steel)|raccoon tails|ram's horns|rat pelts|raw|red and blue|rich (?:purple|golden)|riveted bindings|roughened|rowan|sanguine thornweave|scattered star|scorch marks|sculpted|shadows|shark cartilage|shifting (?:celadon|shades)|shipboard|(?:braided |cobalt |deep black |desert-tan |dusky red Taisidon |ebony |exquisite spider|fine leaf-green |flowing night|glimmering ebony |heavy |marigold |pale gold marquisette and virid |rich copper |spiral-braided |steel|unadorned black Musparan )?silk(?:cress)?|(?:coiled |shimmering )?silver(?:steel| and |y)?|sirese blue spun glitter|six crossed|slender|small bones|smoothly interlocking|snow leopard|soft brushed|somber black|sprawled|sun-bleached|steel links|stones|strips of|sunny yellow|teardrop plates|telothian|the|tiny (?:golden|indurium|scales|skull)|tightly braided|tomiek|torn|twists|two|undyed|vibrant multicolored|viscous|waves of|weighted|well-cured|white ironwood|windstorm gossamer|wintry faeweave|woven diamondwood))\b.*/.freeze
+
+      # The game's reply to a command while the character is held or rooted.
+      IMMOBILE_PATTERN = /^You don't seem to be able to move/.freeze
+
+      # Game responses to STAND that mean standing cannot currently succeed,
+      # so fix_standing must stop instead of looping forever (issue #3668).
+      # These are already in the STAND match list, but matching one does not
+      # change posture, so without this guard the loop spams STAND endlessly
+      # (e.g. while unconscious, plummeting, held, or overburdened).
+      CANNOT_STAND_PATTERN = Regexp.union(
+        /unconscious|plummeting to your death|prevents you from standing|overburdened and cannot|weight of all your possessions|no room to do much of anything/,
+        IMMOBILE_PATTERN
+      ).freeze
+
+      # -- Shared Utility Methods ------------------------------------------
+
+      # Strips XML tags and decodes common HTML entities from game output lines.
+      # @param lines [Array<String>] Array of raw game output lines
+      # @return [Array<String>] Array of non-empty, trimmed strings with XML removed
+      def strip_xml(lines)
+        lines.map { |line| line.gsub(XML_TAG_PATTERN, '').gsub('&gt;', '>').gsub('&lt;', '<').strip }
+             .reject(&:empty?)
+      end
+
+      # Sends a command with Lich::Util.issue_command and captures its reply up to
+      # and including the line that ends it.
+      #
+      # issue_command never returns nil. On a timeout it returns [] when the start
+      # line never arrived, or the lines collected so far when the end line never
+      # arrived. Asking for the end line (include_end: true) is the only way to
+      # tell a complete reply from a cut-off one, so it is requested here and then
+      # dropped from the lines handed back.
+      #
+      # The start line is never taken as the end line (issue_command only looks
+      # for the end on the lines after it), so a reply needs at least two lines
+      # to count as complete.
+      #
+      # Used for replies that end on a game line such as Roundtime (COMMUNE SENSE,
+      # ASSESS TEACH, PERC MANA); see capture_to_prompt for replies that end on
+      # the prompt. Each caller prints its own timeout message.
+      #
+      # @param command [String] the game command to send
+      # @param start_pattern [Regexp] the first line of the reply
+      # @param end_pattern [Regexp] the line that ends the reply
+      # @param usexml [Boolean] capture the XML stream (true) or plain text (false)
+      # @param timeout [Integer] seconds to wait for the whole reply
+      # @return [Array(Array<String>, Boolean)] the reply lines without the end
+      #   line, and true when the end line arrived (the reply is complete)
+      # @api private
+      def capture_reply(command, start_pattern, end_pattern, usexml:, timeout: 5)
+        lines = Array(
+          Lich::Util.issue_command(
+            command,
+            start_pattern,
+            end_pattern,
+            usexml: usexml,
+            quiet: true,
+            include_end: true,
+            timeout: timeout
+          )
+        )
+        complete = lines.length > 1 && lines.last.match?(end_pattern)
+        lines = lines[0...-1] if complete
+        [lines, complete]
+      end
+
+      # Sends a command with Lich::Util.issue_command and captures its XML reply
+      # up to the next prompt, using capture_reply. The prompt line is dropped
+      # from the lines handed back.
+      #
+      # Shared by the commons for replies that end on the prompt (HEALTH,
+      # PERCEIVE HEALTH, TOUCH, WEALTH); each caller prints its own timeout message.
+      #
+      # @param command [String] the game command to send
+      # @param start_pattern [Regexp] the first line of the reply
+      # @param timeout [Integer] seconds to wait for the whole reply
+      # @return [Array(Array<String>, Boolean)] the reply lines without the prompt
+      #   line, and true when the prompt arrived (the reply is complete)
+      # @api private
+      def capture_to_prompt(command, start_pattern, timeout: 5)
+        capture_reply(command, start_pattern, /<prompt/, usexml: true, timeout: timeout)
+      end
+
+      # Like `fput` but better because will wait for RT
+      # before performing command and do smart retries.
+      # Will wait for matching text up to BPUT_DEFAULT_TIMEOUT seconds then timeout.
+      # Also recovers from some limited failures wherein we want to
+      # simply fix the issue and retry the bput, like when we're prone
+      # and need to be standing. Complex handling should be done within
+      # the calling script.
+      def bput(message, *matches)
+        options = (matches.shift if matches.first.is_a?(Hash)) || {}
+        options['timeout'] ||= BPUT_DEFAULT_TIMEOUT
+        options['ignore_rt'] ||= false
+
+        timeout = options['timeout']
+        ignore_rt = options['ignore_rt']
+        suppress = options['suppress_no_match']
+
+        if options['debug']
+          echo "bput.message=#{message}"
+          echo "bput.options=#{options}"
+          echo "bput.matches=#{matches}"
+        end
+
+        waitrt? unless ignore_rt
+        log = []
+        matches.flatten!
+        matches.map! { |item| item.is_a?(Regexp) ? item : /#{item}/i }
+        clear
+        put message
+        timer = Time.now
+        held = []
+        while (response = (replayed = held.shift) || get?) || (Time.now - timer < timeout)
+
+          if response.nil?
+            pause 0.1
+            next
+          end
+
+          log += [response]
+          # Wait lines read during the hold were waited out before the resend.
+          next if replayed&.match?(WAIT_RESPONSE_PATTERN)
+
+          case response
+          when /^For some strange reason you are unable to do that\.  The world somehow seems frozen in place/
+            # Zadraes - 13:32 It's a "You're in an area actively being updated" message
+            pause 1
+            put message
+            timer = Time.now
+            next
+          when WAIT_RESPONSE_PATTERN
+            unless ignore_rt
+              held = wait_out_roundtime(response)
+              put message
+              timer = Time.now
+            end
+            next
+          when /Sorry, you may only type ahead/
+            pause 1
+            put message
+            timer = Time.now
+            next
+          when /^You can't do that while you are asleep./
+            put 'wake'
+            put message
+            timer = Time.now
+            next
+          when /^You are a bit too busy performing to do that/, /^You should stop playing before you do that/
+            put 'stop play'
+            put message
+            timer = Time.now
+            next
+          when /would give away your hiding place/
+            release_invisibility
+            put 'unhide'
+            put message
+            timer = Time.now
+            next
+          when /^You are still stunned/
+            pause 0.5 while stunned?
+            pause 0.5
+            put message
+            timer = Time.now
+            next
+          when /^You can't do that while entangled in a web/
+            pause 0.5 while webbed?
+            pause 0.5
+            put message
+            timer = Time.now
+            next
+          when /^You must be standing/, /^You should stand up first/, /^You'll need to stand up first/, /^You can't do that while (sitting|kneeling|lying)/, /^You should be sitting up/, /^You really should be standing to play/, /^After failing to draw a breath for what feels like forever/
+            # Stand, then resend. When standing can't succeed (unconscious,
+            # overburdened, or a hold that outlasts the timeout), resending
+            # would draw the same reply again at once, so keep reading until
+            # the timeout instead.
+            next unless stand_before?(timer + timeout)
+
+            waitrt?
+            put message
+            timer = Time.now
+            next
+          end
+
+          matches.each do |match|
+            if (result = response.match(match))
+              return result.to_a.first
+            end
+          end
+        end
+
+        unless suppress
+          Lich::Messaging.msg("bold", "DRC: No match was found after #{timeout} seconds for command '#{message}'")
+          Lich::Messaging.msg("bold", "DRC: Messages seen: #{log.length}")
+          log.reverse.each { |logged_response| Lich::Messaging.msg("bold", "DRC: > #{logged_response}") }
+          Lich::Messaging.msg("bold", "DRC: Checked against: #{matches}")
+        end
+
+        ''
+      end
+
+      # Waits out a "...wait N seconds." refusal before bput sends the command
+      # again, reading the lines that arrive meanwhile. bput reads them again
+      # after the resend, as it would have without the hold, but skips the wait
+      # lines among them: they arrived before the resend, so they answer an
+      # earlier command or another script's, and the command is resent once
+      # rather than once per wait line. A line that matches the caller's
+      # patterns can't mean the command was accepted: it is just as often
+      # unrelated text matching a broad pattern like 'You'.
+      #
+      # @param wait_line [String] the wait line that triggered the hold
+      # @return [Array<String>] the lines read during the hold, in order
+      def wait_out_roundtime(wait_line)
+        held = []
+        deadline = Time.now + wait_line.match(WAIT_RESPONSE_PATTERN)[:seconds].to_i - 0.5
+        loop do
+          read_held_lines(held)
+          break if Time.now >= deadline
+
+          pause 0.1
+        end
+        waitrt?
+        read_held_lines(held)
+      end
+
+      # Appends every line buffered so far to held.
+      #
+      # @param held [Array<String>]
+      # @return [Array<String>] held
+      def read_held_lines(held)
+        while (line = get?)
+          held << line
+        end
+        held
+      end
+
+      def verify_script(script_names)
+        script_names = [script_names] unless script_names.is_a?(Array)
+        state = true
+        script_names
+          .reject { |name| Script.exists?(name) }
+          .each do |name|
+            Lich::Messaging.msg("bold", "DRC: Failed to find a script named '#{name}'")
+            state = false
+          end
+        state
+      end
+
+      def wait_for_script_to_complete(name, args = [], flags = {})
+        verify_script(name)
+        script_handle = start_script(name, args.map { |arg| arg.to_s =~ /\s/ ? "\"#{arg}\"" : arg }, flags)
+        if script_handle
+          pause 2
+          pause 0.5 while Script.running.include?(script_handle)
+        end
+        script_handle
+      end
+
+      def can_see_sky?
+        # If you are indoors and not able to see the sky.
+        inside_no_sky = "That's a bit hard to do while inside."
+        # If you are indoors but able to see the sky (e.g. a window or skylight).
+        inside_yes_sky = "You glance outside"
+        # If you are outdoors.
+        outside = "You glance up at the sky"
+        # Can we see the sky?
+        bput("weather", inside_no_sky, inside_yes_sky, outside) != inside_no_sky
+      end
+
+      def forage?(item, tries = 5)
+        snapshot = "#{right_hand}#{left_hand}"
+        while snapshot == "#{right_hand}#{left_hand}"
+          tries > 0 ? tries -= 1 : (return false)
+          case bput("forage #{item}", 'Roundtime', 'The room is too cluttered to find anything here', 'You really need to have at least one hand free to forage properly', 'You survey the area and realize that any foraging efforts would be futile')
+          when 'The room is too cluttered to find anything here'
+            return false unless kick_pile?
+          when 'You survey the area and realize that any foraging efforts would be futile'
+            return false
+          when 'You really need to have at least one hand free to forage properly'
+            Lich::Messaging.msg("bold", "DRC: Hands not emptied properly. Stowing right hand...")
+            unless DRCI.stow_hand('right')
+              Lich::Messaging.msg("bold", "DRC: Failed to stow right hand, cannot forage.")
+              return false
+            end
+          end
+          waitrt?
+        end
+        true
+      end
+
+      # Each refused collect kicks one pile (KICK PILE destroys it) and tries
+      # again. Capped at COLLECT_CLUTTER_ATTEMPTS collects per call so a room
+      # that stays cluttered cannot loop forever.
+      # Returns nil when it gives up (no pile, missed kick, or still cluttered
+      # after the last attempt), otherwise the result of waitrt?.
+      def collect(item, practice = true)
+        command = practice ? "collect #{item} practice" : "collect #{item}"
+
+        attempts = 0
+        while bput(command, COLLECT_MESSAGES) == 'The room is too cluttered'
+          attempts += 1
+          if attempts >= COLLECT_CLUTTER_ATTEMPTS
+            Lich::Messaging.msg("bold", "DRC: Room still too cluttered to collect #{item} after #{attempts} tries, giving up.")
+            # Giving up still waits out any roundtime, e.g. from an earlier kick.
+            waitrt?
+            return
+          end
+          unless kick_pile?
+            waitrt?
+            return
+          end
+        end
+        waitrt?
+      end
+
+      def kick_pile?(item = 'pile')
+        fix_standing
+        return unless DRRoom.room_objs.any? { |room_obj| room_obj.match?(/pile/) }
+        bput("kick #{item}", 'I could not find', 'take a step back and run up to', 'Now what did the .* ever do to you', 'You lean back and kick your feet,') == 'take a step back and run up to'
+      end
+
+      def rummage(parameter, container)
+        result = DRC.bput("rummage /#{parameter} my #{container}", 'but there is nothing in there like that\.', 'looking for .* and see .*', 'While it\'s closed', 'I don\'t know what you are referring to', 'You feel about', 'That would accomplish nothing')
+
+        case result
+        when 'You feel about'
+          release_invisibility
+          return rummage(parameter, container)
+        when 'but there is nothing in there like that.', 'While it\'s closed', 'I don\'t know what you are referring to', 'That would accomplish nothing'
+          return []
+        end
+
+        text = result.match(/looking for .* and see (.*)\.$/).to_a[1]
+        unless text
+          reason = result.empty? ? 'No response' : 'Unrecognized response'
+          Lich::Messaging.msg("bold", "DRC: #{reason} to 'rummage /#{parameter} my #{container}', treating container as empty.")
+          return []
+        end
+
+        case parameter
+        when 'B'
+          box_list_to_adj_and_noun(text)
+        when 'SC'
+          scroll_list_to_adj_and_noun(text)
+        else
+          list_to_nouns(text)
+        end
+      end
+
+      def get_skins(container)
+        rummage('S', container)
+      end
+
+      def get_gems(container)
+        rummage('G', container)
+      end
+
+      def get_materials(container)
+        rummage('M', container)
+      end
+
+      # Take a game formatted list "an arrow, silver coins and a deobar strongbox"
+      # And return an array ["an arrow", "silver coins", "a deobar strongbox"]
+      # is this ever useful compared to the list_to_nouns?
+      def list_to_array(list)
+        list.strip.split(/(?:,|(?:, |\s)?and\s?)(?:\s?<pushBold\/>\s?)?(?=\s\ba\b|\s\ban\b|\s\bsome\b|\s\bthe\b)/i).reject(&:empty?)
+      end
+
+      # Post-match box name rewrites (applied via gsub after a box is matched).
+      # "ironwood" -> "iron" because the game parser wants the shortened noun.
+      # Players extend this via the +custom_box_substitutions+ setting; see
+      # {box_list_to_adj_and_noun}.
+      #
+      # @return [Array<Array(String, String)>] ordered [from, to] literal pairs
+      DEFAULT_BOX_SUBSTITUTIONS = [%w[ironwood iron]].freeze
+
+      # Take a game formatted list of boxes "a reinforced wooden strongbox and a
+      # plain ironwood crate" and return ["wooden strongbox", "iron crate"].
+      #
+      # The recognized wood and container words are {BOX_WOODS} and
+      # {BOX_CONTAINERS} merged with the player's +custom_box_woods+ /
+      # +custom_box_containers+ settings, so a player can teach Lich about a box
+      # material or container it does not yet know without a Lich release. The
+      # global +$box_regex+ (built from the same defaults) is left untouched for
+      # third-party scripts. Post-match rewrites come from
+      # {DEFAULT_BOX_SUBSTITUTIONS} merged with +custom_box_substitutions+.
+      #
+      # @param list [String] game-formatted box list (e.g. from rummage /B)
+      # @return [Array<String>] gettable box adjective+noun names
+      # @example
+      #   box_list_to_adj_and_noun('an ironwood crate') #=> ['iron crate']
+      # @see CustomSubstitutions.resolve
+      # @see #scroll_list_to_adj_and_noun
+      def box_list_to_adj_and_noun(list)
+        woods = CustomSubstitutions.resolve(:custom_box_woods, BOX_WOODS, type: :names)
+        containers = CustomSubstitutions.resolve(:custom_box_containers, BOX_CONTAINERS, type: :names)
+        substitutions = CustomSubstitutions.resolve(:custom_box_substitutions, DEFAULT_BOX_SUBSTITUTIONS, type: :pairs)
+        box_regex = /((?:#{woods.map { |wood| Regexp.escape(wood) }.join('|')}) (?:#{containers.map { |container| Regexp.escape(container) }.join('|')}))/
+        list.strip
+            .split(box_regex)
+            .reject(&:empty?)
+            .select { |item| item =~ box_regex }
+            .map { |box| substitutions.reduce(box) { |current, (from, to)| current.gsub(from, to) } }
+      end
+
+      # Item-specific scroll rewrites applied *before* {SCROLL_KEYWORD_COLLAPSE}.
+      # These full game descriptions contain keywords the collapse would
+      # otherwise mangle (e.g. "icy blue vellum scroll" -> "icy scroll", not
+      # "icy blue vellum"), or must be caught before the collapse can run.
+      # Order matters and is preserved. Players extend this list via the
+      # +custom_scroll_substitutions+ setting; see
+      # {scroll_list_to_adj_and_noun}.
+      #
+      # @return [Array<Array(String, String)>] ordered [from, to] literal pairs
+      DEFAULT_SCROLL_SUBSTITUTIONS_PRE = [
+        ['large midnight-blue scale torn with symbols', 'midnight-blue scale'],
+        ['icy blue vellum scroll', 'icy scroll'],
+        ['green vellum scroll', 'green scroll'],
+        ['fetid antelope vellum', 'antelope vellum'],
+        ['papyrus roll', 'papyrus.roll'],
+        ['pallid red scroll', 'pallid scroll']
+      ].freeze
+
+      # Adjective-pair scroll rewrites applied *after* {SCROLL_KEYWORD_COLLAPSE},
+      # reducing already-collapsed forms (e.g. "stormy grey" -> "stormy"). Order
+      # matters and is preserved. Not player-extensible (these operate on the
+      # collapsed noun, not the raw description).
+      #
+      # @return [Array<Array(String, String)>] ordered [from, to] literal pairs
+      DEFAULT_SCROLL_SUBSTITUTIONS_POST = [
+        ['crumpled paper', 'crumpled'],
+        ['pale ricepaper', 'pale'],
+        ['stormy grey', 'stormy'],
+        ['mossy green', 'mossy'],
+        ['dark purple', 'dark'],
+        ['vibrant red', 'vibrant'],
+        ['bright green', 'bright'],
+        ['icy blue', 'blue'],
+        ['pearl-white silk', 'silk'],
+        ['ghostly white', 'white'],
+        ['crinkled violet', 'crinkled'],
+        ['drawing paper', 'drawing']
+      ].freeze
+
+      # Structural collapse: reduce "<adj> <keyword> <flavor...>" to "<adj>
+      # <keyword>" by keeping the noun keyword and dropping trailing flavor.
+      # Sandwiched between the pre and post substitution passes.
+      #
+      # @return [Regexp]
+      SCROLL_KEYWORD_COLLAPSE = /\s(bark|leaf|ostracon|papyrus|parchment|roll|scroll|tablet|vellum|manuscript)\s.*/.freeze
+
+      # Converts a game rummage scroll list into gettable adjective+noun forms.
+      #
+      # Pipeline per entry: strip the leading article, strip "labeled with...",
+      # apply the pre-collapse literal substitutions ({DEFAULT_SCROLL_SUBSTITUTIONS_PRE}
+      # merged with the player's +custom_scroll_substitutions+), apply the
+      # {SCROLL_KEYWORD_COLLAPSE}, then apply the post-collapse substitutions
+      # ({DEFAULT_SCROLL_SUBSTITUTIONS_POST}).
+      #
+      # @param list [String] game-formatted scroll list (e.g. from rummage /SC)
+      # @return [Array<String>] gettable scroll names
+      # @example
+      #   scroll_list_to_adj_and_noun(' an icy blue parchment') #=> ['blue parchment']
+      # @see CustomSubstitutions.resolve
+      # @see #box_list_to_adj_and_noun
+      def scroll_list_to_adj_and_noun(list)
+        pre_substitutions = CustomSubstitutions.resolve(:custom_scroll_substitutions, DEFAULT_SCROLL_SUBSTITUTIONS_PRE, type: :pairs)
+        list_to_array(list).map do |entry|
+          without_article = entry
+                            .sub(/(an|some|a(?: piece of)?)\s/, '')
+                            .sub(/\slabeled with.*/, '')
+          with_pre = pre_substitutions.reduce(without_article) { |text, (from, to)| text.sub(from, to) }
+          collapsed = with_pre.sub(SCROLL_KEYWORD_COLLAPSE, ' \1')
+          DEFAULT_SCROLL_SUBSTITUTIONS_POST.reduce(collapsed) { |text, (from, to)| text.sub(from, to) }.strip
+        end
+      end
+
+      # Take a game formatted list "an arrow, silver coins and a deobar strongbox"
+      # And return an array of nouns ["arrow", "coins", "strongbox"]
+      def list_to_nouns(list)
+        list_to_array(list)
+          .map { |long_name| get_noun(long_name) }
+          .compact
+          .reject { |noun| noun == '' }
+      end
+
+      def get_noun(long_name)
+        remove_flavor_text(long_name).strip.scan(/[a-z\-']+$/i).first
+      end
+
+      # Strips descriptive flavor text ("... adorned with ...") from an item
+      # name, leaving the gettable noun phrase.
+      #
+      # Applies the built-in {FLAVOR_TEXT_PATTERN} first, then any player-defined
+      # +custom_flavor_text_patterns+ (regular expressions) for flavor the
+      # built-in pattern misses -- letting a player strip a new flavor phrasing
+      # without a Lich release. User patterns are compiled with a per-pattern
+      # timeout and validated/guarded by {CustomSubstitutions}; an invalid or
+      # runaway pattern is reported and skipped, never raising here.
+      #
+      # @param item [String] the item long name
+      # @return [String] the item name with flavor text removed
+      # @example
+      #   remove_flavor_text('a sword adorned with rubies of deep crimson') #=> 'a sword'
+      # @see CustomSubstitutions.resolve
+      # @see CustomSubstitutions.apply_regexes
+      def remove_flavor_text(item)
+        custom_patterns = CustomSubstitutions.resolve(:custom_flavor_text_patterns, [], type: :regexes)
+        CustomSubstitutions.apply_regexes(item.sub(FLAVOR_TEXT_PATTERN, ''), custom_patterns)
+      end
+
+      # Items class. Name is the noun of the object. Leather/metal boolean. Is the item worn (defaults to true). Does it hinder lockpicking? (false)
+      # Item.new(name:'gloves', leather:true, worn:true, hinders_locks:true, adjective:'ring', bound:true)
+      class Item
+        attr_reader :name, :leather, :worn, :hinders_lockpicking, :container, :swappable, :tie_to, :adjective, :bound, :wield, :transforms_to, :transform_verb, :transform_text, :lodges, :skip_repair, :ranged, :needs_unloading
+
+        def initialize(name: nil, leather: nil, worn: false, hinders_locks: nil, container: nil, swappable: false, tie_to: nil, adjective: nil, bound: false, wield: false, transforms_to: nil, transform_text: nil, transform_verb: nil, lodges: true, skip_repair: false, ranged: nil, needs_unloading: nil)
+          @name = name
+          @leather = leather
+          @worn = worn
+          @hinders_lockpicking = hinders_locks
+          @container = container
+          @swappable = swappable
+          @tie_to = tie_to
+          @adjective = adjective
+          @bound = bound
+          @wield = wield
+          @transforms_to = transforms_to
+          @transform_verb = transform_verb
+          @transform_text = transform_text
+          @lodges = lodges.nil? ? true : lodges
+          @skip_repair = skip_repair
+          @ranged = ranged.nil? ? ranged_weapon?(name) : ranged
+          @needs_unloading = needs_unloading.nil? ? @ranged : needs_unloading
+        end
+
+        def short_name
+          @adjective ? "#{@adjective}.#{@name}" : @name
+        end
+
+        def short_regex
+          @adjective ? /\b#{@adjective}.*\b#{@name}/i : /\b#{@name}/i
+        end
+
+        def ranged_weapon?(noun)
+          return false if noun.nil?
+
+          return true if COMMON_RANGED_WEAPONS_PATTERN.match?(noun)
+          return true if RACIAL_RANGED_WEAPONS_PATTERN.match?(noun)
+
+          false
+        end
+
+        # Convenience method to parse the text of an item as shown when in your hands, with or without an adjective,
+        # into an Item class instance. Originally designed to support DRCI and equipmanager methods.
+        def self.from_text(text)
+          return nil if text.nil? || text.to_s.strip.empty?
+
+          normalized = text
+                       .sub('.', ' ') # convert 'foo.bar' => 'foo bar' so more easily split into adjective and noun
+                       .squeeze(' ') # condense repeated runs of whitespace with a single space
+                       .strip # remove leading/trailing whitespace
+          parts = normalized.split
+          if parts.size > 1
+            DRC::Item.new(adjective: parts.first, name: parts.last)
+          else
+            DRC::Item.new(name: normalized)
+          end
+        end
+      end
+
+      # Looks up the canonical name of the town based on the given text.
+      # Utility to help identify the canonical town name based on arbitrary text.
+      # For example, "Theren" for "Therenborough" and "Haven" for "Riverhaven".
+      # It also handles missing apostrophes and the occasional space between names
+      # like "merkresh" or "Mer'Kresh" or "ainghazal" or "Ain Ghazal".
+      # Returns nil if unable to find a match.
+      def get_town_name(text)
+        towns = $HOMETOWN_REGEX_MAP.select { |_town, regex| regex =~ text }.keys
+        if towns.length > 1
+          Lich::Messaging.msg("bold", "DRC: Found multiple towns that match '#{text}': #{towns}")
+          Lich::Messaging.msg("bold", "DRC: Using first town that matched: #{towns.first}")
+          Lich::Messaging.msg("bold", "DRC: To avoid ambiguity, please use the town's full name: https://elanthipedia.play.net/Category:Cities")
+        end
+        towns.first
+      end
+
+      # windows only I believe.
+      def beep
+        echo("\a")
+      end
+
+      # Issues STAND until the character is standing, giving up when the game
+      # reports a state from which standing cannot currently succeed. Without
+      # the CANNOT_STAND_PATTERN guard these states loop forever spamming
+      # STAND, because matching the message never makes standing? true
+      # (issue #3668: safe-room spamming STAND while unconscious).
+      #
+      # On the immobile reply (held or rooted) this pauses 1 s before
+      # returning false, so a caller that loops on fix_standing with no delay
+      # of its own sends at most about one STAND a second while the hold
+      # lasts.
+      # @return [Boolean] true once standing, false when the game says
+      #   standing cannot succeed now
+      def fix_standing
+        case stand_result
+        when :standing
+          true
+        when :immobile
+          pause 1
+          false
+        else
+          false
+        end
+      end
+
+      # Stands for bput's posture recovery. Like {fix_standing}, but while the
+      # STAND draws the immobile reply (held or rooted) it tries again about
+      # once a second until the deadline, so a hold that ends in time still
+      # lets bput resend the command. The other states that prevent standing
+      # (unconscious, overburdened, ...) give up at once, as there is no reply
+      # that says they have ended.
+      #
+      # @param deadline [Time] when bput's own timeout runs out
+      # @return [Boolean] true once standing, false when standing can't
+      #   succeed or the hold outlasts the deadline
+      # @api private
+      def stand_before?(deadline)
+        loop do
+          case stand_result
+          when :standing
+            return true
+          when :immobile
+            # The last STAND goes out at the deadline at the latest, so a
+            # hold that ends just before it still lets bput resend. Waiting
+            # for that STAND's reply can take bput up to one round trip past
+            # its timeout. The clock is read once, so the pause can't be
+            # negative (pause raises on a negative interval).
+            remaining = deadline - Time.now
+            return false if remaining <= 0
+
+            pause [1, remaining].min
+          else
+            return false
+          end
+        end
+      end
+
+      # Sends STAND until standing or until the game says standing can't
+      # succeed now.
+      #
+      # @return [Symbol] :standing; :immobile on the held-or-rooted reply;
+      #   :cannot_stand for the other replies in CANNOT_STAND_PATTERN
+      # @api private
+      def stand_result
+        loop do
+          return :standing if standing?
+
+          result = bput('stand', 'You stand', 'You are so unbalanced', 'As you stand', 'You are already', 'weight of all your possessions', 'You are overburdened and cannot', 'You\'re unconscious', 'You swim back up into a vertical position', "You don't seem to be able to move to do that", 'prevents you from standing', 'You\'re plummeting to your death', 'There\'s no room to do much of anything here')
+          next unless result =~ CANNOT_STAND_PATTERN
+
+          return IMMOBILE_PATTERN.match?(result) ? :immobile : :cannot_stand
+        end
+      end
+
+      def listen?(teacher, observe_flag = false)
+        return false if teacher.nil?
+        return false if teacher.empty?
+
+        bad_classes = %w[Thievery Sorcery]
+        bad_classes += ['Life Magic', 'Holy Magic', 'Lunar Magic', 'Elemental Magic', 'Arcane Magic', 'Targeted Magic', 'Arcana', 'Attunement'] if DRStats.barbarian? || DRStats.thief?
+        bad_classes += ['Utility'] if DRStats.barbarian?
+
+        observe = observe_flag ? 'observe' : ''
+
+        result = bput("listen to #{teacher} #{observe}", 'begin to listen to \w+ teach the .* skill', 'already listening', 'could not find who', 'You have no idea', 'isn\'t teaching a class', 'don\'t have the appropriate training', 'Your teacher appears to have left', 'isn\'t teaching you anymore', 'experience differs too much from your own', 'but you don\'t see any harm in listening', 'invitation if you wish to join this class', 'You cannot concentrate to listen to .* while in combat')
+        if (skill_match = result.match(/begin to listen to \w+ teach the (?<skill>.*) skill/))
+          return true if bad_classes.grep(/#{skill_match[:skill]}/i).empty?
+
+          bput('stop listening', 'You stop listening')
+        elsif result == 'already listening'
+          return true
+        elsif result == "but you don't see any harm in listening"
+          bput('stop listening', 'You stop listening')
+        end
+
+        false
+      end
+
+      # Issues ASSESS TEACH and returns the classes being taught in the room.
+      #
+      # Lich::Util.issue_command returns [] (never nil) when the reply does not
+      # arrive in time; that prints a bold message and returns {} like "no classes".
+      # A reply cut off before its Roundtime line prints a "cut off" message and
+      # returns the classes that did arrive, which may not be all of them. A
+      # "no one is teaching" or "you are teaching" reply returns {} with no
+      # message, whether or not its Roundtime line arrived. A complete reply
+      # does not prove it was sent in answer to this call: a reply that arrives
+      # after an earlier call timed out can still be read by the next call.
+      #
+      # @return [Hash{String => String}] teacher name => skill
+      def assess_teach
+        lines, complete = capture_reply(
+          'assess teach',
+          /is teaching a class|No one seems to be teaching|You are teaching a class/,
+          /Roundtime/,
+          usexml: false
+        )
+        waitrt?
+        if lines.empty?
+          Lich::Messaging.msg("bold", "DRC: Failed to capture ASSESS TEACH output (timeout).")
+          return {}
+        end
+        return {} if lines.any? { |l| l.match?(/No one seems to be teaching|You are teaching a class/) }
+
+        Lich::Messaging.msg("bold", "DRC: ASSESS TEACH output was cut off (timeout); the result is incomplete.") unless complete
+
+        parse_assess_teach_lines(lines.map(&:strip).reject(&:empty?))
+      end
+
+      # Pure parsing method for assess teach output (unit-testable)
+      def parse_assess_teach_lines(lines)
+        lines.each_with_object({}) do |line, hash|
+          match = line.match(ASSESS_TEACH_TEACHER_PATTERN)
+          next unless match
+
+          teacher = match[:teacher]
+          skill = match[:skill]
+          skill_filter = skill.match(ASSESS_TEACH_SKILL_FILTER_PATTERN)
+          skill = skill_filter[:filtered_skill] if skill_filter
+          hash[teacher] = skill
+        end
+      end
+
+      def hide?(hide_type = 'hide')
+        unless hiding?
+          case bput(hide_type, 'Roundtime', 'too busy performing', 'can\'t see any place to hide yourself', 'Stalk what', 'You\'re already stalking', 'Stalking is an inherently stealthy', 'You haven\'t had enough time', 'You search but find no place to hide')
+          when 'too busy performing'
+            bput('stop play', 'You stop playing', 'In the name of')
+            return hide?(hide_type)
+          when "You're already stalking"
+            put 'stop stalk'
+            return hide?(hide_type)
+          when 'You haven\'t had enough time'
+            pause 1
+            return hide?(hide_type)
+          end
+          pause
+          waitrt?
+        end
+        hiding?
+      end
+
+      def fix_dr_bullshit(string)
+        return string if string.split.length <= 2
+
+        string = string.sub(' and chain', '') if string =~ /ball and chain/
+
+        match = string.match(/(?<first>\S+) .* (?<last>\S+)/)
+        return string unless match
+
+        "#{match[:first]} #{match[:last]}"
+      end
+
+      def left_hand
+        GameObj.left_hand.name == 'Empty' ? nil : fix_dr_bullshit(GameObj.left_hand.name)
+      end
+
+      def right_hand
+        GameObj.right_hand.name == 'Empty' ? nil : fix_dr_bullshit(GameObj.right_hand.name)
+      end
+
+      def left_hand_noun
+        GameObj.left_hand == 'Empty' ? nil : GameObj.left_hand.noun
+      end
+
+      def right_hand_noun
+        GameObj.right_hand == 'Empty' ? nil : GameObj.right_hand.noun
+      end
+
+      def release_invisibility
+        get_data('spells')
+          .spell_data
+          .select { |_name, properties| properties['invisibility'] }
+          .select { |name, _properties| DRSpells.active_spells.keys.include?(name) }
+          .map { |_name, properties| properties['abbrev'] }
+          .each { |abbrev| fput("release #{abbrev}") }
+
+        # handle khri silence as it's not part of base-spells data, and method of ending it differs from spells
+        bput('khri stop silence', 'You attempt to relax') if DRSpells.active_spells.keys.include?('Khri Silence')
+        bput('khri stop vanish', /^You would need to start Vanish/, /^Your control over the limited subversion of reality falters/, /^You are not trained in the Vanish meditation/) if (DRStats.guild == "Thief" && invisible?)
+      end
+
+      def check_encumbrance(refresh = true)
+        encumbrance = DRStats.encumbrance
+        if refresh
+          encumbrance_pattern = /(?:Encumbrance)\s:\s(?<encumbrance>.*)/
+          result = bput('encumbrance', encumbrance_pattern)
+          enc_match = result.match(encumbrance_pattern)
+          encumbrance = enc_match[:encumbrance] if enc_match
+        end
+        $ENC_MAP[encumbrance]
+      end
+
+      # Retreats until out of combat, standing first when the game asks.
+      #
+      # While held or rooted (the immobile reply, to RETREAT or to STAND) it
+      # pauses 1 s and tries again for BPUT_DEFAULT_TIMEOUT seconds from the
+      # first immobile reply, so entry roundtime and earlier steps don't use
+      # up that time. That one budget covers every hold in the call, so holds
+      # that alternate with steps back can't go on unbounded. The last try
+      # goes out up to 1 s after the deadline, so holds that end within
+      # BPUT_DEFAULT_TIMEOUT of the first immobile reply still end in a
+      # retreat; longer ones return false. When the character must stand but can't
+      # (overburdened, unconscious, no room), no reply says when that ends,
+      # so it returns false. It pauses 1 s before it gives up either way, so
+      # a caller that calls it again at once sends at most about one RETREAT
+      # a second.
+      #
+      # @param ignored_npcs [Array<String>] NPCs that don't need a retreat: nouns,
+      #   or full names / multi-word phrases (see DRRoom.unignored_npcs)
+      # @return [Boolean, nil] nil when no other NPC is in the room, true once
+      #   out of combat, false when retreating can't succeed now
+      def retreat(ignored_npcs = [])
+        return if DRRoom.unignored_npcs(ignored_npcs).empty?
+
+        deadline = nil
+        loop do
+          case DRC.bput("retreat", *RETREAT_ESCAPE_MESSAGES, IMMOBILE_PATTERN, *RETREAT_MESSAGES)
+          when *RETREAT_ESCAPE_MESSAGES
+            return true
+          when IMMOBILE_PATTERN
+            state = :immobile
+          else
+            state = DRC.stand_result
+          end
+          next if state == :standing
+
+          # The deadline is checked before the pause, so the last RETREAT goes
+          # out up to 1 s after it and every try stays 1 s apart.
+          deadline ||= Time.now + BPUT_DEFAULT_TIMEOUT if state == :immobile
+          try_again = state == :immobile && Time.now < deadline
+          pause 1
+          return false unless try_again
+        end
+      end
+
+      def text2num(text_num)
+        text_num = text_num.tr('-', ' ')
+        split_words = text_num.split(' ')
+        g = 0
+
+        split_words.each do |word|
+          x = $NUM_MAP.fetch(word, nil)
+          if word.eql?('hundred') && (g != 0)
+            g *= 100
+          elsif word.eql?('thousand') && (g != 0)
+            g *= 1000
+          elsif x.nil?
+            Lich::Messaging.msg("bold", "DRC: Unknown number word '#{word}' in '#{text_num}'")
+            return nil
+          else
+            g += x
+          end
+        end
+
+        g
+      end
+
+      def play_song?(settings, song_list, worn = true, skip_clean = false, climbing = false, skip_tuning = false)
+        instrument = worn ? settings.worn_instrument : settings.instrument
+
+        # The climbing caller re-picks its song when the climbing instrument
+        # changes; resetting it here would play the easiest song instead.
+        if climbing
+          UserVars.climbing_song = song_list.first.first unless UserVars.climbing_song
+        else
+          reset_song_for_instrument(instrument)
+          UserVars.song = song_list.first.first unless UserVars.song
+        end
+        song_to_play = climbing ? UserVars.climbing_song : UserVars.song
+        play_command = "play #{song_to_play}"
+        if instrument
+          play_command = play_command + " on my #{instrument}"
+        end
+        fput('release ecry') if DRSpells.active_spells["Eillie's Cry"].to_i > 0
+        result = bput(play_command, 'too damaged to play', 'dirtiness may affect your performance', 'slightest hint of difficulty', 'fumble slightly', /Your .+ is submerged in the water/, 'You begin a', 'You struggle to begin', 'You\'re already playing a song', 'You effortlessly begin', 'You begin some', 'You cannot play', 'Play on what instrument', 'Are you sure that\'s the right instrument', 'now isn\'t the best time to be playing', 'Perhaps you should find somewhere drier before trying to play', 'You should stop practicing', /^You really need to drain/, /Your .* tuning is off, and may hinder your performance/)
+        case result
+        when 'Play on what instrument', 'Are you sure that\'s the right instrument'
+          unless DRCI.get_item?(instrument)
+            Lich::Messaging.msg("bold", "DRC: Failed to get #{instrument}.")
+            return false
+          end
+          if worn && !DRCI.wear_item?(instrument)
+            Lich::Messaging.msg("bold", "DRC: Failed to wear #{instrument}.")
+            return false
+          end
+          play_song?(settings, song_list, worn, skip_clean, climbing, skip_tuning)
+        when 'now isn\'t the best time to be playing', 'Perhaps you should find somewhere drier before trying to play', 'You should stop practicing'
+          false
+        when 'You\'re already playing a song'
+          fput('stop play')
+          play_song?(settings, song_list, worn, skip_clean, climbing, skip_tuning)
+        when 'You cannot play'
+          wait_for_script_to_complete('safe-room')
+        when /Your .* tuning is off, and may hinder your performance/
+          Lich::Messaging.msg("bold", "DRC: Instrument out of tune. Attempting to tune it.")
+          return true if DRSkill.getrank('Performance') < 20
+          return true if skip_tuning
+          return true unless DRC.tune_instrument(settings)
+
+          play_song?(settings, song_list, worn, skip_clean, climbing, skip_tuning)
+        when 'dirtiness may affect your performance', /^You really need to drain/
+          return true if DRSkill.getrank('Performance') < 20
+          return true if skip_clean
+          return true unless clean_instrument(settings, worn)
+
+          play_song?(settings, song_list, worn, skip_clean, climbing, skip_tuning)
+        when 'slightest hint of difficulty', 'fumble slightly'
+          true
+        when 'You begin a', 'You effortlessly begin', 'You begin some'
+          return true if song_to_play == song_list.to_a.last.last
+          # Ignore difficulty messages if we have an offset
+          return true if climbing && UserVars.climbing_song_offset
+
+          stop_playing
+          UserVars.climbing_song = song_list[UserVars.climbing_song] || song_list.first.first if climbing
+          UserVars.song = song_list[UserVars.song] || song_list.first.first unless climbing
+          play_song?(settings, song_list, worn, skip_clean, climbing, skip_tuning)
+        when 'You struggle to begin'
+          return true if song_to_play == song_list.first.first
+          # Ignore difficulty messages if we have an offset
+          return true if climbing && UserVars.climbing_song_offset
+
+          stop_playing
+          UserVars.climbing_song = song_list.first.first if climbing
+          UserVars.song = song_list.first.first unless climbing
+          play_song?(settings, song_list, worn, skip_clean, climbing, skip_tuning)
+        else
+          false
+        end
+      end
+
+      def reset_song_for_instrument(instrument)
+        if UserVars.instrument.nil?
+          Lich::Messaging.msg("plain", "DRC: No previous instrument setting detected. Cleaning stored song data.")
+          UserVars.song = nil
+        elsif UserVars.instrument != instrument
+          Lich::Messaging.msg("plain", "DRC: New instrument #{instrument} detected; old instrument: #{UserVars.instrument}. Resetting stored song data.")
+          UserVars.song = nil
+        end
+        UserVars.instrument = instrument
+      end
+
+      def stop_playing
+        bput('stop play', 'You stop playing your song', 'In the name of', "But you're not performing")
+      end
+
+      def clean_instrument(settings, worn = true)
+        cloth = settings.cleaning_cloth
+        instrument = worn ? settings.worn_instrument : settings.instrument
+
+        unless DRCI.get_item?(cloth)
+          Lich::Messaging.msg("bold", "DRC: You have no chamois cloth -- this could cause problems with playing an instrument!")
+          DRC.beep
+          return false
+        end
+        DRC.stop_playing
+
+        if worn
+          unless DRCI.remove_item?(instrument)
+            Lich::Messaging.msg("bold", "DRC: Could not remove #{instrument}, putting away cloth, and not trying to clean.")
+            DRCI.stow_item?(cloth)
+            DRC.beep
+            return false
+          end
+        else
+          unless DRCI.get_item?(instrument)
+            Lich::Messaging.msg("bold", "DRC: Could not get #{instrument}, putting away cloth, and not trying to clean.")
+            DRCI.stow_item?(cloth)
+            DRC.beep
+            return false
+          end
+        end
+
+        loop do
+          case DRC.bput("wipe my #{instrument} with my #{cloth}", 'Roundtime', 'not in need of drying', 'You should be sitting up')
+          when 'not in need of drying'
+            break
+          when 'You should be sitting up'
+            DRC.fix_standing
+            next
+          end
+          pause 1
+          waitrt?
+
+          until /you wring a dry/i =~ DRC.bput("wring my #{cloth}", 'You wring a dry', 'You wring out')
+            pause 1
+            waitrt?
+          end
+        end
+
+        until /not in need of cleaning/i =~ DRC.bput("clean my #{instrument} with my #{cloth}", 'Roundtime', 'not in need of cleaning')
+          pause 1
+          waitrt?
+        end
+
+        DRCI.wear_item?(instrument) if worn
+        DRCI.stow_item?(cloth)
+        true
+      end
+
+      def tune_instrument(settings)
+        instrument = settings.worn_instrument || settings.instrument
+
+        unless instrument
+          Lich::Messaging.msg("bold", "DRC: Neither worn_instrument nor instrument set. Doing nothing.")
+          return false
+        end
+
+        DRC.stop_playing
+
+        unless (DRC.left_hand.nil? && DRC.right_hand.nil?) || DRCI.in_hands?(instrument)
+          Lich::Messaging.msg("bold", "DRC: Need two free hands. Not tuning now.")
+          return false
+        end
+
+        if settings.worn_instrument
+          unless DRCI.remove_item?(instrument) || DRCI.in_hands?(instrument)
+            Lich::Messaging.msg("bold", "DRC: Could not remove #{instrument}. Not trying to tune.")
+            DRC.beep
+            return false
+          end
+        else
+          unless DRCI.get_item?(instrument) || DRCI.in_hands?(instrument)
+            Lich::Messaging.msg("bold", "DRC: Could not get #{instrument}. Not trying to tune.")
+            DRC.beep
+            return false
+          end
+        end
+        DRC.do_tune(instrument)
+        waitrt?
+        pause 1
+        DRCI.wear_item?(instrument) if settings.worn_instrument
+        true
+      end
+
+      def do_tune(instrument, tuning = "")
+        unless instrument && DRCI.in_hands?(instrument)
+          Lich::Messaging.msg("bold", "DRC: No instrument found in hands. Not trying to tune.")
+          DRC.beep
+          return false
+        end
+
+        case DRC.bput("tune my #{instrument} #{tuning}",
+                      /^You should be sitting up/,
+                      /After a moment, you .* flat/,
+                      /After a moment, you .* sharp/,
+                      /After a moment, you .* tune/)
+        when /After a moment, you .* tune/
+          Lich::Messaging.msg("plain", "DRC: Instrument tuned.")
+          return true
+        when /After a moment, you .* flat/
+          DRC.do_tune(instrument, "sharp")
+        when /After a moment, you .* sharp/
+          DRC.do_tune(instrument, "flat")
+        when /^You should be sitting up/
+          DRC.fix_standing
+          DRC.do_tune(instrument)
+        end
+      end
+
+      def pause_all
+        return false unless $pause_all_lock.try_lock
+
+        @pause_all_no_unpause = []
+
+        Script.running.find_all(&:paused?).each do |script|
+          @pause_all_no_unpause << script
+        end
+
+        Script.running.find_all do |script|
+          !script.paused? &&
+            !script.no_pause_all &&
+            script != Script.current
+        end
+              .each(&:pause)
+
+        pause 1
+        true
+      end
+
+      def unpause_all
+        return false unless $pause_all_lock.owned?
+
+        Script.running.find_all do |script|
+          script.paused? &&
+            !@pause_all_no_unpause.include?(script)
+        end
+              .each(&:unpause)
+
+        @pause_all_no_unpause = []
+        $pause_all_lock.unlock
+
+        true
+      end
+
+      def smart_pause_all
+        paused_script_list = []
+        Script.running.find_all { |s| !s.paused? && !s.no_pause_all && s.name != Script.self.name }.each do |s|
+          s.pause
+          paused_script_list << s.name
+        end
+        Lich::Messaging.msg("plain", "DRC: Pausing #{paused_script_list} to run #{Script.self.name}")
+        return paused_script_list
+      end
+
+      def unpause_all_list(scripts_to_unpause)
+        if scripts_to_unpause.empty?
+          Lich::Messaging.msg("plain", "DRC: #{Script.self.name} has finished.")
+        else
+          Lich::Messaging.msg("plain", "DRC: Unpausing #{scripts_to_unpause}, #{Script.self.name} has finished.")
+          Script.running.find_all { |s| s.paused? && !s.no_pause_all && scripts_to_unpause.include?(s.name) }.each(&:unpause)
+        end
+      end
+
+      def safe_pause_list
+        return false unless $safe_pause_lock.try_lock
+
+        # Pausing is cooperative: a paused script is a live thread that keeps
+        # every mutex it holds (Ruby frees a mutex on thread death, not on
+        # pause). So a script that gets pause_script'd while holding
+        # $safe_pause_lock never releases it, and every peer spins forever on
+        # try_lock -> false. Make the lock-holder immune to pause for as long as
+        # it owns the lock, so this deadlock cannot form. Save the prior value
+        # (and the holder itself) so we restore exactly what was there for a
+        # caller that was already ignoring pauses, e.g. mid-travel.
+        @safe_pause_holder = Script.self
+        @safe_pause_prev_ignore_pause = @safe_pause_holder&.ignore_pause
+        @safe_pause_holder&.ignore_pause = true
+
+        # Capture the exact Script objects we pause -- not their names. The
+        # matching safe_unpause_list restores from this list directly instead of
+        # re-scanning Script.running by name. A name + live-rescan restore
+        # silently drops any script that has left Script.running between pause
+        # and unpause (gone hidden, or mid start/teardown) or whose pause flags
+        # changed, stranding it paused forever while the log still claims it was
+        # unpaused. Holding the objects makes the restore undo exactly what the
+        # pause did.
+        paused_scripts = []
+        Script.running.find_all { |s| !s.paused? && !s.no_pause_all && s.name != Script.self.name }.each do |s|
+          s.pause
+          paused_scripts << s
+        end
+        Lich::Messaging.msg("plain", "DRC: Pausing #{paused_scripts.map(&:name)} to run #{Script.self.name}")
+        return paused_scripts
+      end
+
+      def safe_unpause_list(paused_scripts)
+        return false unless $safe_pause_lock.owned?
+
+        if paused_scripts.empty?
+          Lich::Messaging.msg("plain", "DRC: #{Script.self.name} has finished.")
+        else
+          Lich::Messaging.msg("plain", "DRC: Unpausing #{paused_scripts.map(&:name)}, #{Script.self.name} has finished.")
+          # Unpause exactly the objects we paused, regardless of their current
+          # Script.running visibility or flags. Skip any a peer already unpaused
+          # so we neither emit spurious "is not paused" noise nor fight another
+          # coordinator that has since taken ownership of the pause.
+          paused_scripts.each { |s| s.unpause if s.paused? }
+        end
+        # Restore the holder's pre-lock pause immunity before releasing the lock,
+        # so we never leave a script permanently unpausable.
+        @safe_pause_holder&.ignore_pause = @safe_pause_prev_ignore_pause
+        @safe_pause_holder = nil
+        @safe_pause_prev_ignore_pause = nil
+        $safe_pause_lock.unlock
+      end
+
+      def set_stance(skill)
+        div = if DRStats.guild == 'Paladin'
+                50
+              elsif %w[Barbarian Ranger Trader Commoner].include?(DRStats.guild)
+                60
+              else
+                70
+              end
+
+        points = 80 + DRSkill.getrank('Defending') / div
+        secondary = points > 100 ? 100 : points
+        tertiary = points > 100 ? points - 100 : 0
+
+        stance = case skill.downcase
+                 when 'evasion'
+                   "100 #{secondary} #{tertiary}"
+                 when 'parry'
+                   "#{secondary} 100 #{tertiary}"
+                 when 'shield'
+                   "#{secondary} #{tertiary} 100"
+                 else
+                   "100 #{secondary} #{tertiary}"
+                 end
+
+        DRC.bput("stance set #{stance}", /Setting your/)
+      end
+
+      # Sends a message to the atmospherics window.
+      # By default the message is bold.
+      # DEPRECATED in favor of log_window
+      def atmo(text, make_bold = true)
+        log_window(text, "atmospherics", make_bold)
+      end
+
+      # Sends a message to the specified window. Replaces the deprecated atmo method.
+      # By default the message is bold. Creates window upon request. Pre-clears window upon request.
+      def log_window(text, window_name, make_bold = true, create_window = false, pre_clear_window = false)
+        if create_window
+          _respond("<streamWindow id=\"#{window_name}\" title=\"#{window_name}\" location=\"center\" save=\"true\" />")
+          _respond("<exposeStream id=\"#{window_name}\"/>")
+        end
+
+        if pre_clear_window
+          _respond("<clearStream id=\"#{window_name}\"/>\r\n")
+        end
+
+        _respond(
+          "<pushStream id=\"#{window_name}\"/>" + (make_bold ? bold(text) : text),
+          "<popStream id=\"#{window_name}\" /><prompt time=\"#{XMLData.server_time.to_i}\">&gt;</prompt>"
+        )
+      end
+
+      # Helper function to wrap text in the necessary markup
+      # to make it render as bold in a frontend client.
+      # Used by `atmo` and `log_window` methods.
+      def bold(text)
+        prefix = Frontend.supports_gsl? ? "\034GSL\r\n " : "<pushBold\/>"
+        suffix = Frontend.supports_gsl? ? "\034GSM\r\n " : "<popBold\/>"
+        "#{prefix}#{text}#{suffix}"
+      end
+
+      # Sends a message to the game window.
+      # By default the message is bold.
+      # Delegates to Lich::Messaging.msg for consistent multi-frontend support.
+      def message(text, make_bold = true)
+        Lich::Messaging.msg(make_bold ? "bold" : "plain", text, encode: false)
+      end
+    end
+  end
+end

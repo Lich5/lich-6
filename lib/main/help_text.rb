@@ -1,0 +1,300 @@
+# frozen_string_literal: true
+
+module Lich
+  module Main
+    # Renders user-facing CLI help text by topic.
+    module HelpText
+      HELP_TOPICS = %w[login accounts automation paths advanced].freeze
+
+      # Returns formatted help text for the requested topic.
+      #
+      # @param topic [String, nil] optional topic name
+      # @return [String] rendered help output
+      def self.render(topic = nil)
+        normalized_topic = normalize_topic(topic)
+
+        case normalized_topic
+        when 'login' then login_help
+        when 'accounts' then accounts_help
+        when 'automation' then automation_help
+        when 'paths' then paths_help
+        when 'advanced' then advanced_help
+        else
+          default_help
+        end
+      end
+
+      # Resolves the topic token following `--help`, if any.
+      #
+      # @param argv [Array<String>] command line arguments
+      # @param help_arg [String] the matched help flag
+      # @return [String, nil] requested topic name
+      def self.topic_from_argv(argv, help_arg)
+        return help_arg.split('=', 2).last if help_arg.start_with?('--help=')
+
+        help_index = argv.index(help_arg)
+        return nil if help_index.nil?
+
+        topic = argv[help_index + 1]
+        return nil if topic.nil? || topic.start_with?('--')
+
+        topic
+      end
+
+      # Normalizes user-facing aliases for help topic names.
+      #
+      # @param topic [String, nil]
+      # @return [String, nil]
+      def self.normalize_topic(topic)
+        case topic.to_s.downcase
+        when '', 'overview' then nil
+        when 'account', 'accounts' then 'accounts'
+        when 'automation', 'automations', 'sessions', 'diagnostics' then 'automation'
+        when 'login' then 'login'
+        when 'path', 'paths' then 'paths'
+        when 'advanced', 'compat', 'compatibility' then 'advanced'
+        else
+          nil
+        end
+      end
+
+      def self.default_help
+        <<~TEXT
+          Lich 5
+          Usage:
+            lich [command] [options]
+
+          Most common:
+            lich --login CHARACTER
+            lich --login CHARACTER --headless PORT
+            lich --login CHARACTER --headless auto
+            lich --add-account ACCOUNT
+
+          Help topics:
+            lich --help login
+            lich --help accounts
+            lich --help automation
+            lich --help paths
+            lich --help advanced
+
+          General:
+            --help                  Show help
+            --version               Show version
+        TEXT
+      end
+
+      def self.login_help
+        <<~TEXT
+          Lich Help: login
+
+          Usage:
+            lich --login CHARACTER [options]
+
+          Login options:
+            --login CHARACTER       Login using a saved entry
+            --headless PORT         Run without a frontend and expose a detachable client on PORT
+            --headless auto         Run without a frontend and let the OS assign a detachable port
+            --headless HOST:PORT    Bind the detachable client to HOST (tailscale, lan, any, IP, or hostname)
+            --start-scripts=LIST    Start scripts after login (comma-separated)
+            --save                  Save successful CLI login details to entry.yaml
+            --reconnect             Reconnect automatically if the session drops
+            --reconnect-delay=SPEC  Delay before reconnecting
+
+          Game selection:
+            --gemstone, --gs
+            --dragonrealms, --dr
+            --shattered
+            --fallen
+            --platinum
+            --test
+
+          Frontend selection:
+            --wizard
+            --stormfront
+            --avalon
+            --frostbite
+            --genie
+            --saga
+              Native saved Saga entries use Saga-managed Via Lich login and
+              require the matching account credentials to be saved in Saga.
+
+          Advanced launch:
+            --custom-launch=NAME
+            --detachable-client=PORT|auto|HOST:PORT
+            --dark-mode=true|false
+            --game=HOST:PORT
+
+          Examples:
+            lich --login Mychar
+            lich --login Mychar --gemstone --shattered
+            lich --login Mychar --frostbite
+            lich --login Mychar --headless 8001
+            lich --login Mychar --headless auto
+            lich --login Mychar --headless tailscale:8001
+            lich --login Mychar --start-scripts=repository,go2
+        TEXT
+      end
+
+      def self.accounts_help
+        <<~TEXT
+          Lich Help: accounts
+
+          Usage:
+            lich [account command] [options]
+
+          Commands:
+            --add-account ACCOUNT [--password-stdin] [--frontend FRONTEND]
+            --refresh-characters ACCOUNT [--frontend FRONTEND]
+            --add-character ACCOUNT CHAR_NAME --game-code CODE [--frontend FRONTEND]
+            --change-account-password ACCOUNT NEWPASSWORD
+            --change-master-password OLDPASSWORD [NEWPASSWORD]
+            --recover-master-password [NEWPASSWORD]
+            --convert-entries MODE
+            --change-encryption-mode MODE [--master-password PASSWORD]
+
+          Modes:
+            plaintext
+            standard
+            enhanced
+
+          Game codes (--game-code):
+            GS3  GemStone IV              DR   DragonRealms
+            GST  GemStone IV Prime Test   DRX  DragonRealms Platinum
+            GSF  GemStone IV Shattered    DRT  DragonRealms Prime Test
+                                          DRF  DragonRealms Fallen
+
+          Examples:
+            lich --add-account MYACCOUNT --frontend stormfront
+            printf '%s\\n' "$PASSWORD" | lich --add-account MYACCOUNT --password-stdin
+            lich --refresh-characters MYACCOUNT
+            lich --add-character MYACCOUNT NewCharName --game-code DR
+            lich --change-account-password MYACCOUNT NEWPASSWORD
+            lich --convert-entries enhanced
+            lich --change-encryption-mode enhanced --master-password SECRET
+        TEXT
+      end
+
+      def self.automation_help
+        <<~TEXT
+          Lich Help: automation
+
+          Usage:
+            lich [automation command]
+
+          Commands:
+            --active-sessions       List live sessions
+            --session-info NAME     Show live session details for NAME
+
+          Examples:
+            lich --active-sessions
+            lich --session-info Mychar
+
+          Notes:
+            Active session discovery coordinates through TEMP_DIR by default. If
+            each character uses a separate --temp-dir, pass a shared
+            --active-session-dir=PATH so all characters coordinate through one
+            directory instead of isolated per-character ones.
+
+            Passing --active-session-dir=PATH also enables the active sessions
+            service for that launch, even if it isn't persistently enabled.
+            This is a per-launch opt-in only -- it persists no setting, so
+            omitting the flag on a later launch reverts to the persisted
+            setting (disabled by default). The service itself still writes
+            coordination files (a lock and a discovery record) into the
+            directory while it runs.
+        TEXT
+      end
+
+      def self.paths_help
+        <<~TEXT
+          Lich Help: paths
+
+          Usage:
+            lich [options]
+
+          Path options:
+            --home=PATH
+            --script-dir=PATH
+            --data-dir=PATH
+            --temp-dir=PATH
+            --map-dir=PATH
+            --log-dir=PATH
+            --backup-dir=PATH
+            --lib-dir=PATH
+            --hosts-dir=PATH
+            --hosts-file=PATH
+            --active-session-dir=PATH
+
+          Examples:
+            lich --script-dir=/my/scripts
+            lich --data-dir=/my/data --temp-dir=/tmp/lich
+            lich --temp-dir=/tmp/lich-Mychar --active-session-dir=/tmp/lich-sessions
+        TEXT
+      end
+
+      def self.advanced_help
+        <<~TEXT
+          Lich Help: advanced
+
+          Compatibility / advanced options:
+            --gui
+            --no-gui, --no-gtk  Run without the GTK GUI (aliases)
+            --without-frontend
+            --detachable-client=PORT|auto|HOST:PORT
+            --pipe
+            --sentinel
+            --frontend-caps=LIST
+            --frontend=NAME
+            --frontend-command=CMD
+            --fe-version=VALUE
+            --keep-fe-string
+            --game=HOST:PORT
+            --bind-address=HOST
+
+          Notes:
+            The GTK GUI starts by default. To suppress it, pass --no-gui or --no-gtk,
+            including when using --headless.
+            Prefer --headless PORT or --headless auto for new headless launches.
+            --fe-version=VALUE reports the frontend version (e.g. 1.0.1.28) in the
+            /VERSION: field of the game handshake Lich builds: --without-frontend, and
+            the handshake that replaces a proxied frontend's own (below). Wizard, Avalon
+            and Frostbite always send the default. VALUE: 1-32 of A-Z a-z 0-9 . _ + -
+            DragonRealms currently needs the default /VERSION:1.0.1.28 for its full XML
+            stream; another value may lose it.
+            A frontend that connects through Lich and sends its own /FE: ... /XML
+            handshake (Genie, Warlock, Wrayth, Frostbite without --frostbite) has it
+            replaced with Lich's, so every session gets the same game stream; Lich
+            reshapes that stream for the frontend. Saga's own /P:SAGA handshake is
+            replaced too.
+            --keep-fe-string forwards the frontend's own handshake instead, for that
+            launch. To keep it for every launch: ;e Lich.keep_fe_string = true
+            (;e Lich.keep_fe_string = false undoes it).
+            --pipe uses stdin/stdout as the client transport instead of a front-end socket.
+            With -g HOST:PORT, name the client reading it with a frontend flag (--frontend=NAME, --stormfront);
+            without one the frontend is unknown and script output is not XML-escaped.
+            --sentinel prefixes each line forwarded from the game with the origin marker
+            (0x1F) for a client that strips it, whichever frontend it identifies as.
+            --frontend-caps=LIST names the DragonRealms rich-stream features every attached
+            client renders itself (room_element, game_links, double_bold; comma-separated),
+            in place of the frontend's defaults. Lich rewrites the rest to the legacy
+            stream. script_list may be listed too: every client then gets the running
+            scripts as data (docs/frontends/script-list-feed.md); the Lich-drawn
+            scripts window is the separate ;display scriptwindow setting. A client's
+            own SET_FRONTEND_CAPS line takes precedence.
+            --bind-address=HOST sets the local address Lich binds its listen sockets to
+            (the frontend, --game proxy, and detachable-client listeners).
+            Defaults to 127.0.0.1.
+            HOST -- in --bind-address, --headless, and --detachable-client alike -- may
+            be an IP, a hostname, a keyword, or (with a port) a bracketed IPv6 literal
+            such as [::1]:PORT. Keywords: tailscale (this machine's Tailscale address),
+            lan (its private LAN address), or any (0.0.0.0). Lich's listen sockets are
+            unauthenticated - anyone who can reach one controls the session - so
+            prefer tailscale over lan or any.
+            Multiple frontends may attach to one detachable port. Each receives game
+            output, and commands from all attached frontends are processed serially.
+            Compatibility flags remain supported but are intentionally omitted from the default help screen.
+        TEXT
+      end
+    end
+  end
+end

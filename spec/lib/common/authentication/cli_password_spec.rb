@@ -1,0 +1,1624 @@
+# frozen_string_literal: true
+
+require 'rspec'
+require 'stringio'
+require 'tempfile'
+require 'tmpdir'
+require 'yaml'
+require 'fileutils'
+
+# Define DATA_DIR before requiring source files
+require_relative '../../../support/data_dir'
+
+# Load login_spec_helper FIRST - it sets up Lich::Util and other mocks
+# before any source files are required
+require_relative '../../../login_spec_helper'
+
+# Now require the source file (after mocks are in place)
+require_relative '../../../../lib/common/authentication/cli_password'
+
+# Add any additional mock methods needed for these tests
+module Lich
+  class << self
+    attr_accessor :datadir
+
+    def msgbox(message); end
+  end
+end
+
+# Extend GUI mocks with additional methods needed for CLI password tests
+module Lich
+  module Common
+    module GUI
+      module PasswordCipher
+        def self.encrypt(*_args, **_kwargs); end
+        def self.decrypt(*_args, **_kwargs); end
+      end unless defined?(Lich::Common::GUI::PasswordCipher)
+
+      module MasterPasswordManager
+        class << self
+          def keychain_available?
+            true
+          end
+
+          def retrieve_master_password
+            nil
+          end
+
+          def store_master_password(_password)
+            true
+          end
+
+          def validate_master_password(_password, _validation_test)
+            true
+          end
+
+          def create_validation_test(_password)
+            {}
+          end
+        end
+      end unless defined?(Lich::Common::GUI::MasterPasswordManager)
+
+      module AccountManager
+        def self.convert_auth_data_to_characters(*_args)
+          []
+        end
+
+        def self.add_or_update_account(*_args)
+          true
+        end
+      end unless defined?(Lich::Common::GUI::AccountManager)
+    end
+  end
+end
+
+RSpec.describe Lich::Common::Authentication::CLIPassword do
+  let(:temp_dir) { Dir.mktmpdir }
+  let(:yaml_file) { File.join(temp_dir, 'entry.yaml') }
+
+  before do
+    # Mock Lich.datadir to use temp directory
+    allow(Lich).to receive(:datadir).and_return(temp_dir)
+    # Mock YamlState.yaml_file_path
+    allow(Lich::Common::Authentication::EntryStore).to receive(:yaml_file_path).and_return(yaml_file)
+    # All credential-store access is synthetic, including rollback snapshots.
+    allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password).and_return(nil)
+    allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password).and_return(false)
+    allow(Lich::Common::GUI::MasterPasswordManager).to receive(:delete_master_password).and_return(false)
+    # Mock keychain availability
+    allow(Lich::Common::GUI::MasterPasswordManager).to receive(:keychain_available?).and_return(true)
+  end
+
+  after do
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  describe 'atomic CLI credential updates' do
+    let(:manager) { Lich::Common::GUI::MasterPasswordManager }
+    let(:cipher) { Lich::Common::GUI::PasswordCipher }
+    let(:old_master) { 'SyntheticOldMaster123!' }
+    let(:new_master) { 'SyntheticNewMaster456!' }
+    let(:keychain) { { password: old_master } }
+    let(:passwords) { { 'ALPHA' => 'SyntheticAlpha123!', 'BETA' => 'SyntheticBeta456!' } }
+    let(:original_bytes) { File.binread(yaml_file) }
+
+    before do
+      allow(manager).to receive(:retrieve_master_password) { keychain[:password] }
+      allow(manager).to receive(:store_master_password) { |value| keychain[:password] = value; true }
+      allow(manager).to receive(:delete_master_password) { keychain[:password] = nil; true }
+      accounts = passwords.to_h do |name, password|
+        [name, { 'password' => cipher.encrypt(password, mode: :enhanced, master_password: old_master) }]
+      end
+      File.write(yaml_file, YAML.dump({
+        'encryption_mode' => 'enhanced', 'accounts' => accounts,
+        'master_password_validation_test' => manager.create_validation_test(old_master)
+      }))
+      File.chmod(0o600, yaml_file)
+      original_bytes
+    end
+
+    # Assert both accounts remain readable, using the production cipher.
+    # @param master [String] synthetic decryption password
+    # @return [void]
+    def expect_cli_passwords(master)
+      data = YAML.safe_load_file(yaml_file)
+      actual = data['accounts'].to_h do |name, account|
+        [name, cipher.decrypt(account['password'], mode: :enhanced, master_password: master)]
+      end
+      expect(actual).to eq(passwords)
+      expect(manager.validate_master_password(master, data['master_password_validation_test'])).to be(true)
+    end
+
+    it 'publishes both accounts and the matching keychain value on success' do
+      expect(described_class.change_master_password(old_master, new_master)).to eq(0)
+      expect(keychain[:password]).to eq(new_master)
+      expect_cli_passwords(new_master)
+      expect(File.stat(yaml_file).mode & 0o777).to eq(0o600)
+    end
+
+    it 'refuses a master-password update when the prior keychain state is unknown' do
+      allow(manager).to receive(:retrieve_master_password).with(strict: true).and_raise(IOError, 'synthetic read failure')
+
+      expect(described_class.change_master_password(old_master, new_master)).to eq(1)
+
+      expect(manager).not_to have_received(:store_master_password)
+      expect(manager).not_to have_received(:delete_master_password)
+      expect(keychain[:password]).to eq(old_master)
+      expect(File.binread(yaml_file)).to eq(original_bytes)
+    end
+
+    [nil, 'SyntheticStaleKeychain789!'].each do |previous|
+      it "restores #{previous.nil? ? 'absent' : 'preexisting'} keychain state when publication fails" do
+        keychain[:password] = previous
+        allow(File).to receive(:rename).and_raise(IOError, 'synthetic publication failure')
+        expect { expect(described_class.change_master_password(old_master, new_master)).to eq(1) }
+          .not_to output(/success:/).to_stdout
+        expect(keychain[:password]).to eq(previous)
+        expect(File.binread(yaml_file)).to eq(original_bytes)
+        expect_cli_passwords(old_master)
+        expect(Dir.children(temp_dir)).to eq(['entry.yaml'])
+      end
+    end
+
+    [:returns_false, :raise].each do |failure|
+      it "restores a partially mutated keychain after a #{failure} store failure" do
+        allow(manager).to receive(:store_master_password) do |value|
+          keychain[:password] = value
+          if value == new_master
+            raise IOError, 'synthetic keychain failure' if failure == :raise
+            false
+          else
+            true
+          end
+        end
+        expect(described_class.change_master_password(old_master, new_master)).to eq(1)
+        expect(keychain[:password]).to eq(old_master)
+        expect(File.binread(yaml_file)).to eq(original_bytes)
+        expect_cli_passwords(old_master)
+      end
+    end
+
+    [:decrypt, :encrypt, :create_validation_test].each do |operation|
+      it "leaves credentials untouched when #{operation} returns nil" do
+        target = operation == :create_validation_test ? manager : cipher
+        allow(target).to receive(operation).and_return(nil)
+        expect(manager).not_to receive(:store_master_password)
+        expect(described_class.change_master_password(old_master, new_master)).to eq(1)
+        expect(File.binread(yaml_file)).to eq(original_bytes)
+        expect(keychain[:password]).to eq(old_master)
+      end
+    end
+
+    it 'reports manual recovery when keychain rollback also fails' do
+      allow(File).to receive(:rename).and_raise(IOError, 'synthetic publication failure')
+      allow(manager).to receive(:store_master_password) do |value|
+        next false if value == old_master
+        keychain[:password] = value
+        true
+      end
+      expect { expect(described_class.change_master_password(old_master, new_master)).to eq(1) }
+        .to output(/manual keychain recovery is required/).to_stdout
+      expect(File.binread(yaml_file)).to eq(original_bytes)
+    end
+
+    it 'preserves the account file and reports failure when a password update cannot publish' do
+      allow(File).to receive(:rename).and_raise(IOError, 'synthetic publication failure')
+      expect { expect(described_class.change_account_password('ALPHA', 'SyntheticUpdated123!')).to eq(1) }
+        .not_to output(/success:/).to_stdout
+      expect(File.binread(yaml_file)).to eq(original_bytes)
+      expect_cli_passwords(old_master)
+    end
+
+    it 'rejects failed account encryption without publishing nil' do
+      allow(cipher).to receive(:encrypt).and_return(nil)
+      expect(described_class.change_account_password('ALPHA', 'SyntheticUpdated123!')).to eq(1)
+      expect(File.binread(yaml_file)).to eq(original_bytes)
+    end
+  end
+
+  describe '.change_account_password' do
+    context 'with plaintext mode' do
+      before do
+        yaml_data = {
+          'encryption_mode' => 'plaintext',
+          'accounts'        => {
+            'DOUG' => {
+              'password' => 'oldpassword',
+              'username' => 'DOUG'
+            }
+          }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+        # Mock validation to pass for non-recovery tests
+        allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+      end
+
+      it 'changes account password in plaintext mode' do
+        exit_code = Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+        expect(exit_code).to eq(0)
+
+        yaml_data = YAML.load_file(yaml_file)
+        expect(yaml_data['accounts']['DOUG']['password']).to eq('newpassword')
+      end
+
+      it 'returns 2 when account not found' do
+        exit_code = Lich::Common::Authentication::CLIPassword.change_account_password('NONEXISTENT', 'newpass')
+        expect(exit_code).to eq(2)
+      end
+
+      it 'returns 2 when yaml file does not exist' do
+        File.delete(yaml_file)
+        exit_code = Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpass')
+        expect(exit_code).to eq(2)
+      end
+    end
+
+    context 'with standard encryption mode' do
+      before do
+        yaml_data = {
+          'encryption_mode' => 'standard',
+          'accounts'        => {
+            'DOUG' => {
+              'password' => 'encrypted_old_password',
+              'username' => 'DOUG'
+            }
+          }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+        # Mock validation to pass for non-recovery tests
+        allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+      end
+
+      it 'calls PasswordCipher.encrypt for standard mode' do
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new_password')
+
+        Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+
+        expect(Lich::Common::GUI::PasswordCipher).to have_received(:encrypt).with(
+          'newpassword',
+          mode: :standard,
+          account_name: 'DOUG'
+        )
+      end
+
+      it 'updates password field in standard mode' do
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new_password')
+
+        Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+
+        yaml_data = YAML.load_file(yaml_file)
+        expect(yaml_data['accounts']['DOUG']['password']).to eq('encrypted_new_password')
+      end
+
+      it 'returns 0 on success' do
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new_password')
+
+        exit_code = Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+        expect(exit_code).to eq(0)
+      end
+    end
+
+    context 'with enhanced encryption mode' do
+      before do
+        yaml_data = {
+          'encryption_mode' => 'enhanced',
+          'accounts'        => {
+            'DOUG' => {
+              'password' => 'encrypted_old_password',
+              'username' => 'DOUG'
+            }
+          }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+        # Mock validation to pass for non-recovery tests
+        allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+      end
+
+      it 'retrieves master password from keychain' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
+          .and_return('master_password')
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new_password')
+
+        Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+
+        expect(Lich::Common::GUI::MasterPasswordManager).to have_received(:retrieve_master_password)
+      end
+
+      it 'returns 1 when master password not in keychain' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
+          .and_return(nil)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+        expect(exit_code).to eq(1)
+      end
+
+      it 'encrypts with master password from keychain' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
+          .and_return('my_master_password')
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new_password')
+
+        Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpassword')
+
+        expect(Lich::Common::GUI::PasswordCipher).to have_received(:encrypt).with(
+          'newpassword',
+          mode: :enhanced,
+          account_name: 'DOUG',
+          master_password: 'my_master_password'
+        )
+      end
+    end
+
+    context 'error handling' do
+      before do
+        yaml_data = {
+          'encryption_mode' => 'plaintext',
+          'accounts'        => { 'DOUG' => { 'password' => 'oldpassword' } }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+        # Mock validation to pass for non-recovery tests
+        allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+      end
+
+      it 'returns 1 on general error' do
+        allow(YAML).to receive(:safe_load_file).and_raise(StandardError.new('Write error'))
+
+        exit_code = Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpass')
+        expect(exit_code).to eq(1)
+      end
+
+      it 'logs error message' do
+        expect(Lich).to receive(:log).at_least(:once)
+
+        Lich::Common::Authentication::CLIPassword.change_account_password('NONEXISTENT', 'newpass')
+      end
+    end
+  end
+
+  describe '.add_account' do
+    before do
+      yaml_data = {
+        'encryption_mode' => 'plaintext',
+        'accounts'        => {}
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+      # Mock validation to pass for non-recovery tests
+      allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+    end
+
+    it 'returns 1 when account already exists' do
+      yaml_data = YAML.load_file(yaml_file)
+      yaml_data['accounts']['DOUG'] = { 'password' => 'existing' }
+      File.write(yaml_file, YAML.dump(yaml_data))
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'newpass')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'authenticates with game servers' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([
+                      { char_name: 'Char1', game_code: 'GS3', game_name: 'GemStone IV' },
+                      { char_name: 'Char2', game_code: 'GS3', game_name: 'GemStone IV' }
+                    ])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(true)
+
+      Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', 'wizard')
+
+      expect(Lich::Common::Authentication).to have_received(:authenticate).with(
+        account: 'DOUG',
+        password: 'password',
+        legacy: true
+      )
+    end
+
+    it 'returns 2 when authentication fails' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return(nil)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'wrongpass')
+      expect(exit_code).to eq(2)
+    end
+
+    it 'returns 2 when no characters found' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([])
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password')
+      expect(exit_code).to eq(2)
+    end
+
+    it 'saves account with provided frontend' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Char1', game_code: 'GS3', game_name: 'GemStone IV' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(true)
+
+      Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', 'stormfront')
+
+      # Should call with frontend set
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_or_update_account)
+    end
+
+    it 'returns 0 on success' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Char1', game_code: 'GS3', game_name: 'GemStone IV' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(true)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', 'wizard')
+      expect(exit_code).to eq(0)
+    end
+
+    it 'returns 1 when AccountManager.add_or_update_account fails' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Char1', game_code: 'GS3', game_name: 'GemStone IV' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(false)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', 'wizard')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'reports the stormfront default it stored when no frontend is selected' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::Authentication::CLIPassword).to receive(:prompt_for_frontend).and_return(nil)
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_call_original
+
+      expect {
+        Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password')
+      }.to output(/note: No frontend selected - characters stored with frontend stormfront/).to_stdout
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_or_update_account)
+        .with(anything, 'DOUG', 'password', [hash_including(frontend: 'stormfront')])
+    end
+
+    it 'prints no frontend note when a frontend is provided' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+
+      expect {
+        Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', 'wizard')
+      }.not_to output(/note:/).to_stdout
+    end
+
+    it 'skips the frontend prompt and stores stormfront when prompt_frontend is false' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::Authentication::CLIPassword).to receive(:prompt_for_frontend)
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_call_original
+
+      expect {
+        expect(Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', nil, prompt_frontend: false)).to eq(0)
+      }.to output(/note: No frontend selected - characters stored with frontend stormfront/).to_stdout
+
+      expect(Lich::Common::Authentication::CLIPassword).not_to have_received(:prompt_for_frontend)
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_or_update_account)
+        .with(anything, 'DOUG', 'password', [hash_including(frontend: 'stormfront')])
+    end
+
+    it 'still uses an explicit frontend when prompt_frontend is false' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_call_original
+
+      expect {
+        Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password', 'wizard', prompt_frontend: false)
+      }.not_to output(/note:/).to_stdout
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_or_update_account)
+        .with(anything, 'DOUG', 'password', [hash_including(frontend: 'wizard')])
+    end
+  end
+
+  describe '.read_secret' do
+    # io/console's IO#getpass contract: reads one line with echo off and returns
+    # it without the line ending, or nil at end-of-input.
+    let(:terminal) do
+      Class.new do
+        attr_reader :prompts
+
+        def initialize(line)
+          @line = line
+          @prompts = []
+        end
+
+        def tty? = true
+
+        # A prompt passed here would go to $stderr, which Lich points at
+        # the debug log, so callers must print their own and pass none.
+        def getpass(prompt = nil)
+          @prompts << prompt
+          @line
+        end
+
+        def gets
+          raise 'a terminal secret must be read with getpass, not gets'
+        end
+      end
+    end
+
+    let(:output) { StringIO.new }
+
+    it 'reads from a terminal with getpass, keeping surrounding spaces' do
+      tty = terminal.new('  a b  ')
+
+      expect(described_class.read_secret('Password: ', from_stdin: false, input: tty, output: output)).to eq('  a b  ')
+    end
+
+    it 'prints the prompt and the closing newline itself instead of handing the prompt to getpass' do
+      tty = terminal.new('typed')
+
+      described_class.read_secret('Password: ', from_stdin: false, input: tty, output: output)
+
+      expect(tty.prompts).to eq([nil])
+      expect(output.string).to eq("Password: \n")
+      expect(output.string).not_to include('typed')
+    end
+
+    it 'ends the prompt line even at end-of-input' do
+      expect { described_class.read_secret('Password: ', from_stdin: false, input: terminal.new(nil), output: output) }
+        .to raise_error(described_class::SecretInputError)
+      expect(output.string).to eq("Password: \n")
+    end
+
+    it 'prints nothing when reading a pipe' do
+      described_class.read_secret('Password: ', from_stdin: true, input: StringIO.new("pw\n"), output: output)
+
+      expect(output.string).to be_empty
+    end
+
+    it 'reads with getpass even when --password-stdin is given and stdin is a terminal' do
+      tty = terminal.new('typed')
+
+      expect(described_class.read_secret('Password: ', from_stdin: true, input: tty, output: output)).to eq('typed')
+    end
+
+    it 'reads one line from a pipe with --password-stdin, removing only the line ending' do
+      pipe = StringIO.new(" \tsecret \r\nnext\n")
+
+      expect(described_class.read_secret('Password: ', from_stdin: true, input: pipe)).to eq(" \tsecret ")
+      expect(pipe.gets).to eq("next\n")
+    end
+
+    it 'refuses to read a pipe without --password-stdin, leaving it unread' do
+      pipe = StringIO.new("unrelated\n")
+
+      expect { described_class.read_secret('Password: ', from_stdin: false, input: pipe) }
+        .to raise_error(described_class::SecretInputError, /--password-stdin/)
+      expect(pipe.pos).to eq(0)
+    end
+
+    it 'raises at end-of-input on a pipe' do
+      expect { described_class.read_secret('Password: ', from_stdin: true, input: StringIO.new('')) }
+        .to raise_error(described_class::SecretInputError, /Unable to read password/)
+    end
+
+    it 'raises at end-of-input on a terminal' do
+      expect { described_class.read_secret('Password: ', from_stdin: false, input: terminal.new(nil), output: output) }
+        .to raise_error(described_class::SecretInputError, /Unable to read password/)
+    end
+
+    it 'raises on an empty line rather than returning an empty password' do
+      expect { described_class.read_secret('Password: ', from_stdin: true, input: StringIO.new("\n")) }
+        .to raise_error(described_class::SecretInputError, /cannot be empty/)
+      expect { described_class.read_secret('Password: ', from_stdin: false, input: terminal.new(''), output: output) }
+        .to raise_error(described_class::SecretInputError, /cannot be empty/)
+    end
+
+    it 'keeps a password that is only spaces' do
+      expect(described_class.read_secret('Password: ', from_stdin: true, input: StringIO.new("   \n"))).to eq('   ')
+    end
+
+    it 'shows the prompt on a real terminal even when $stderr is redirected, as Lich does' do
+      begin
+        require 'pty'
+        require 'io/console'
+      rescue LoadError
+        skip 'needs a pseudo-terminal'
+      end
+      master, slave = PTY.open
+      original_stderr = $stderr
+      $stderr = StringIO.new
+      # Typed ahead: the line discipline holds it until getpass reads.
+      master.write("pw\n")
+
+      expect(described_class.read_secret('Password: ', from_stdin: false, input: slave, output: slave)).to eq('pw')
+      expect($stderr.string).to be_empty
+      shown = +''
+      shown << master.read_nonblock(4096) while master.wait_readable(0.5) && !shown.include?('Password: ')
+      expect(shown).to include('Password: ')
+    ensure
+      $stderr = original_stderr
+      [master, slave].each { |io| io.close if io && !io.closed? }
+    end
+
+    it 'reads a real pipe' do
+      reader, writer = IO.pipe
+      writer.write("piped pw\n")
+      writer.close
+
+      expect(described_class.read_secret('Password: ', from_stdin: true, input: reader)).to eq('piped pw')
+    ensure
+      reader&.close
+    end
+  end
+
+  describe '.refresh_characters' do
+    before do
+      yaml_data = {
+        'encryption_mode' => 'plaintext',
+        'accounts'        => {
+          'DOUG' => {
+            'password'   => 'password',
+            'characters' => [
+              { 'char_name' => 'Oldchar', 'game_code' => 'DR', 'game_name' => 'DragonRealms', 'frontend' => 'wizard' }
+            ]
+          }
+        }
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+      allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+    end
+
+    it 'returns 2 when account not found' do
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('NONEXISTENT')
+      expect(exit_code).to eq(2)
+    end
+
+    it 'returns 2 when yaml file does not exist' do
+      File.delete(yaml_file)
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG')
+      expect(exit_code).to eq(2)
+    end
+
+    it 'decrypts the stored plaintext password and authenticates with it' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(true)
+
+      Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+      expect(Lich::Common::Authentication).to have_received(:authenticate).with(
+        account: 'DOUG',
+        password: 'password',
+        legacy: true
+      )
+    end
+
+    it 'decrypts using the account entry.yaml encryption_mode' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(true)
+      allow(Lich::Common::Authentication::EntryStore).to receive(:decrypt_password).and_call_original
+
+      Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+      expect(Lich::Common::Authentication::EntryStore).to have_received(:decrypt_password).with(
+        'password', mode: :plaintext, account_name: 'DOUG'
+      )
+    end
+
+    it 'returns 4 and does not authenticate when the stored password cannot be decrypted' do
+      allow(Lich::Common::Authentication::EntryStore).to receive(:decrypt_password)
+        .and_raise(StandardError, 'Master password not found in Keychain - cannot decrypt')
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG')
+
+      expect(exit_code).to eq(4)
+      expect(Lich::Common::Authentication).not_to have_received(:authenticate)
+    end
+
+    it 'returns 3 when authentication fails' do
+      allow(Lich::Common::Authentication).to receive(:authenticate).and_return(nil)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG')
+      expect(exit_code).to eq(3)
+    end
+
+    it 'returns 3 when no characters found' do
+      allow(Lich::Common::Authentication).to receive(:authenticate).and_return([])
+
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG')
+      expect(exit_code).to eq(3)
+    end
+
+    it 'merges fetched characters into existing account via AccountManager.add_or_update_account' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+      expect(exit_code).to eq(0)
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_or_update_account).with(
+        anything, 'DOUG', 'password', anything
+      )
+    end
+
+    it 'passes explicit frontend to convert_auth_data_to_characters' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_call_original
+
+      Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'avalon')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:convert_auth_data_to_characters).with(anything, 'avalon')
+    end
+
+    it 'falls back to predominant frontend when none provided' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_call_original
+
+      # DOUG's only existing character uses 'wizard', so that's the predominant frontend
+      Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:convert_auth_data_to_characters).with(anything, 'wizard')
+    end
+
+    it 'returns 1 when AccountManager.add_or_update_account fails' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(false)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'accurately reports the stormfront default when no frontend is selected' do
+      yaml_data = {
+        'encryption_mode' => 'plaintext',
+        'accounts'        => {
+          'DOUG' => { 'password' => 'password', 'characters' => [] }
+        }
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::Authentication::CLIPassword).to receive(:prompt_for_frontend).and_return(nil)
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account).and_return(true)
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_call_original
+
+      expect {
+        Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG')
+      }.to output(/note: No frontend selected - defaulted to stormfront, rerun with --frontend to change it/).to_stdout
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:convert_auth_data_to_characters).with(anything, 'stormfront')
+    end
+
+    it 'returns 3 and does not save when conversion drops all characters (defensive guard)' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Newchar', game_code: 'DR', game_name: 'DragonRealms' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:convert_auth_data_to_characters).and_return([])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+      expect(exit_code).to eq(3)
+      expect(Lich::Common::GUI::AccountManager).not_to have_received(:add_or_update_account)
+    end
+
+    # These exercise the real persistence path instead of stubbing
+    # add_or_update_account, because the merge semantics being asserted here live in
+    # the interaction between the two: add_or_update_account treats
+    # char_name+game_code+frontend+custom_launch as the identity of a character, so a
+    # refresh that rewrites frontend or drops custom_launch appends duplicates rather
+    # than matching what is already stored.
+    context 'when merging into stored characters' do
+      def stored_characters
+        YAML.load_file(yaml_file)['accounts']['DOUG']['characters']
+      end
+
+      def stub_server_characters(*names)
+        allow(Lich::Common::Authentication).to receive(:authenticate).and_return(
+          names.map { |n| { char_name: n, game_code: 'DR', game_name: 'DragonRealms' } }
+        )
+      end
+
+      before do
+        File.write(yaml_file, YAML.dump(
+                                'encryption_mode' => 'plaintext',
+                                'accounts'        => {
+                                  'DOUG' => {
+                                    'password'   => 'password',
+                                    'characters' => [
+                                      { 'char_name' => 'Alpha', 'game_code' => 'DR', 'game_name' => 'DragonRealms',
+                                        'frontend' => 'genie', 'custom_launch' => 'genie.exe', 'custom_launch_dir' => '/opt/genie',
+                                        'favorite' => true },
+                                      { 'char_name' => 'Beta', 'game_code' => 'DR', 'game_name' => 'DragonRealms',
+                                        'frontend' => 'avalon', 'custom_launch' => nil, 'custom_launch_dir' => nil }
+                                    ]
+                                  }
+                                }
+                              ))
+      end
+
+      it 'does not duplicate a stored character whose frontend differs from the selected one' do
+        stub_server_characters('Alpha', 'Beta')
+
+        Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+        expect(stored_characters.map { |c| c['char_name'] }).to contain_exactly('Alpha', 'Beta')
+      end
+
+      it 'does not duplicate a stored character that has a custom launch' do
+        stub_server_characters('Alpha')
+
+        Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'genie')
+
+        alpha = stored_characters.select { |c| c['char_name'] == 'Alpha' }
+        expect(alpha.length).to eq(1)
+        expect(alpha.first['custom_launch']).to eq('genie.exe')
+      end
+
+      it 'leaves stored frontend, launch, and favorite metadata untouched' do
+        stub_server_characters('Alpha', 'Beta')
+
+        Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+        alpha = stored_characters.find { |c| c['char_name'] == 'Alpha' }
+        expect(alpha).to include(
+          'frontend' => 'genie', 'custom_launch' => 'genie.exe',
+          'custom_launch_dir' => '/opt/genie', 'favorite' => true
+        )
+        expect(stored_characters.find { |c| c['char_name'] == 'Beta' }['frontend']).to eq('avalon')
+      end
+
+      it 'appends only characters the server reports that are not already stored' do
+        stub_server_characters('Alpha', 'Beta', 'Gamma')
+
+        exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+        expect(exit_code).to eq(0)
+        expect(stored_characters.map { |c| c['char_name'] }).to contain_exactly('Alpha', 'Beta', 'Gamma')
+        expect(stored_characters.find { |c| c['char_name'] == 'Gamma' }['frontend']).to eq('wizard')
+      end
+
+      it 'treats the same character name under a different game code as new' do
+        allow(Lich::Common::Authentication).to receive(:authenticate).and_return(
+          [{ char_name: 'Alpha', game_code: 'DRF', game_name: 'DragonRealms Fallen' }]
+        )
+
+        Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+        expect(stored_characters.map { |c| c.values_at('char_name', 'game_code') })
+          .to contain_exactly(%w[Alpha DR], %w[Beta DR], %w[Alpha DRF])
+      end
+
+      it 'reports how many characters were added rather than how many the server returned' do
+        stub_server_characters('Alpha', 'Beta', 'Gamma')
+
+        expect {
+          Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+        }.to output(/1 added, 3 found/).to_stdout
+      end
+
+      it 'returns 0 without rewriting entry.yaml when the server reports no new characters' do
+        stub_server_characters('Alpha', 'Beta')
+        before_contents = File.read(yaml_file)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.refresh_characters('DOUG', 'wizard')
+
+        expect(exit_code).to eq(0)
+        expect(File.read(yaml_file)).to eq(before_contents)
+      end
+    end
+  end
+
+  describe '.add_character' do
+    before do
+      yaml_data = {
+        'encryption_mode' => 'plaintext',
+        'accounts'        => {
+          'DOUG' => {
+            'password'   => 'password',
+            'characters' => [
+              { 'char_name' => 'Oldchar', 'game_code' => 'DR', 'game_name' => 'DragonRealms', 'frontend' => 'wizard' }
+            ]
+          }
+        }
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+    end
+
+    it 'calls AccountManager.add_character with the given char_name and default game_code' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: "Character 'Newchar' added successfully." })
+
+      Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_character).with(
+        anything, 'DOUG', hash_including(char_name: 'Newchar', game_code: 'DR')
+      )
+    end
+
+    it 'uses an explicit game_code when provided' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: 'ok' })
+
+      Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar', game_code: 'GS3')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_character).with(
+        anything, 'DOUG', hash_including(game_code: 'GS3')
+      )
+    end
+
+    it 'uses an explicit frontend when provided' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: 'ok' })
+
+      Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar', frontend: 'avalon')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_character).with(
+        anything, 'DOUG', hash_including(frontend: 'avalon')
+      )
+    end
+
+    it 'falls back to the predominant frontend when none provided' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: 'ok' })
+
+      # DOUG's only existing character uses 'wizard', so that's the predominant frontend
+      Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_character).with(
+        anything, 'DOUG', hash_including(frontend: 'wizard')
+      )
+    end
+
+    it 'falls back to stormfront when no frontend is provided or determinable' do
+      File.write(yaml_file, YAML.dump('encryption_mode' => 'plaintext', 'accounts' => { 'DOUG' => { 'password' => 'password' } }))
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: 'ok' })
+
+      Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar')
+
+      expect(Lich::Common::GUI::AccountManager).to have_received(:add_character).with(
+        anything, 'DOUG', hash_including(frontend: 'stormfront')
+      )
+    end
+
+    it 'returns 0 on success' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: 'ok' })
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar')
+      expect(exit_code).to eq(0)
+    end
+
+    it 'returns 1 and surfaces the message when AccountManager.add_character fails (e.g. duplicate)' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: false, message: "Character 'Newchar' already exists for DR (wizard) with this launch configuration. Duplicates are not allowed." })
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'returns 1 and surfaces the message when the account does not exist' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: false, message: "Account 'NONEXISTENT' not found. Please add the account first." })
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_character('NONEXISTENT', 'Newchar')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'returns 1 when yaml file is malformed' do
+      File.write(yaml_file, "not: valid: yaml: [")
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar')
+      expect(exit_code).to eq(1)
+    end
+
+    # Validity is not the CLI layer's alone to enforce: a direct call carrying a
+    # retired code (GSX) or an unrecognized one must be rejected here too, before
+    # AccountManager persists a record whose game_name is 'Unknown'.
+    it 'returns 1 without persisting a character for a retired game code' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar', game_code: 'GSX')
+
+      expect(exit_code).to eq(1)
+      expect(Lich::Common::GUI::AccountManager).not_to have_received(:add_character)
+    end
+
+    it 'returns 1 without persisting a character for an unrecognized game code' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar', game_code: 'ZZ')
+
+      expect(exit_code).to eq(1)
+      expect(Lich::Common::GUI::AccountManager).not_to have_received(:add_character)
+    end
+
+    it 'persists every game code the login validator accepts' do
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_character)
+        .and_return({ success: true, message: 'ok' })
+
+      Lich::Common::Authentication::LoginHelpers::VALID_GAME_CODES.each do |game_code|
+        expect(Lich::Common::Authentication::CLIPassword.add_character('DOUG', 'Newchar', game_code: game_code)).to eq(0), game_code
+        expect(Lich::Common::GUI::AccountManager).to have_received(:add_character).with(
+          anything, 'DOUG', hash_including(game_code: game_code, game_name: satisfy { |name| name != 'Unknown' })
+        )
+      end
+    end
+  end
+
+  describe '.determine_predominant_frontend' do
+    before do
+      yaml_data = {
+        'encryption_mode' => 'plaintext',
+        'accounts'        => {
+          'ACCOUNTA' => {
+            'password'   => 'password',
+            'characters' => [
+              { 'char_name' => 'Achar1', 'game_code' => 'DR', 'game_name' => 'DragonRealms', 'frontend' => 'wizard' },
+              { 'char_name' => 'Achar2', 'game_code' => 'DR', 'game_name' => 'DragonRealms', 'frontend' => 'wizard' },
+              { 'char_name' => 'Achar3', 'game_code' => 'DR', 'game_name' => 'DragonRealms', 'frontend' => 'wizard' }
+            ]
+          },
+          'ACCOUNTB' => {
+            'password'   => 'password',
+            'characters' => [
+              { 'char_name' => 'Bchar1', 'game_code' => 'DR', 'game_name' => 'DragonRealms', 'frontend' => 'avalon' }
+            ]
+          }
+        }
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+    end
+
+    it 'only counts the target account characters, not other accounts sharing the yaml file' do
+      result = Lich::Common::Authentication::CLIPassword.determine_predominant_frontend(yaml_file, 'ACCOUNTB')
+      expect(result).to eq('avalon')
+    end
+
+    it 'still finds the predominant frontend for an account with multiple characters' do
+      result = Lich::Common::Authentication::CLIPassword.determine_predominant_frontend(yaml_file, 'ACCOUNTA')
+      expect(result).to eq('wizard')
+    end
+
+    it 'returns nil when the target account has no characters' do
+      yaml_data = YAML.safe_load_file(yaml_file, permitted_classes: [Symbol])
+      yaml_data['accounts']['ACCOUNTC'] = { 'password' => 'password' }
+      File.write(yaml_file, YAML.dump(yaml_data))
+
+      result = Lich::Common::Authentication::CLIPassword.determine_predominant_frontend(yaml_file, 'ACCOUNTC')
+      expect(result).to be_nil
+    end
+
+    it 'returns nil when the target account does not exist' do
+      result = Lich::Common::Authentication::CLIPassword.determine_predominant_frontend(yaml_file, 'NONEXISTENT')
+      expect(result).to be_nil
+    end
+
+    it 'returns nil when the yaml file does not exist' do
+      File.delete(yaml_file)
+      result = Lich::Common::Authentication::CLIPassword.determine_predominant_frontend(yaml_file, 'ACCOUNTA')
+      expect(result).to be_nil
+    end
+  end
+
+  describe '.change_master_password' do
+    before do
+      yaml_data = {
+        'encryption_mode'                 => 'enhanced',
+        'master_password_validation_test' => {
+          'validation_salt'    => 'salt',
+          'validation_hash'    => 'hash',
+          'validation_version' => 1
+        },
+        'accounts'                        => {
+          'DOUG' => {
+            'password' => 'encrypted_pass',
+            'username' => 'DOUG'
+          }
+        }
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+      # Mock validation to pass for non-recovery tests
+      allow(Lich::Common::Authentication::CLIPassword).to receive(:validate_master_password_available).and_return(true)
+    end
+
+    it 'returns 2 when yaml file does not exist' do
+      File.delete(yaml_file)
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+      expect(exit_code).to eq(2)
+    end
+
+    it 'returns 3 when not in enhanced mode' do
+      yaml_data = YAML.load_file(yaml_file)
+      yaml_data['encryption_mode'] = 'plaintext'
+      File.write(yaml_file, YAML.dump(yaml_data))
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+      expect(exit_code).to eq(3)
+    end
+
+    it 'validates old password against validation test' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(false)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('wrongpass')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'returns 1 when old password validation fails' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(false)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('wrongpass')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'prompts for new password' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow($stdin).to receive(:gets).and_return("newpass\n", "newpass\n")
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+        .and_return({})
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+        .and_return(true)
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+        .and_return('plaintext_pass')
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+        .and_return('encrypted_new')
+
+      Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+
+      expect($stdin).to have_received(:gets).at_least(:once)
+    end
+
+    it 're-encrypts all accounts with new password' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow($stdin).to receive(:gets).and_return("newpassword\n", "newpassword\n")
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+        .and_return({ 'validation_salt' => 'new_salt', 'validation_hash' => 'new_hash' })
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+        .and_return(true)
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+        .and_return('plaintext_pass')
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+        .and_return('encrypted_new')
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+
+      # Verify success - re-encryption occurs as part of successful flow
+      expect(exit_code).to eq(0)
+    end
+
+    it 'returns 1 when passwords do not match' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow($stdin).to receive(:gets).and_return("newpass1\n", "newpass2\n")
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'returns 1 when password is too short' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow($stdin).to receive(:gets).and_return("short\n", "short\n")
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'returns 1 when keychain update fails' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow($stdin).to receive(:gets).and_return("newpassword\n", "newpassword\n")
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+        .and_return({})
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+        .and_return(false)
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+        .and_return('plaintext_pass')
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+        .and_return('encrypted_new')
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+      expect(exit_code).to eq(1)
+    end
+
+    it 'returns 0 on success' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow($stdin).to receive(:gets).and_return("newpassword\n", "newpassword\n")
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+        .and_return({ 'validation_salt' => 'new_salt', 'validation_hash' => 'new_hash' })
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+        .and_return(true)
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+        .and_return('plaintext_pass')
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+        .and_return('encrypted_new')
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass')
+      expect(exit_code).to eq(0)
+    end
+
+    it 'accepts new password as argument and does not prompt' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+        .and_return({ 'validation_salt' => 'new_salt', 'validation_hash' => 'new_hash' })
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+        .and_return(true)
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+        .and_return('plaintext_pass')
+      allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+        .and_return('encrypted_new')
+
+      # Should NOT call $stdin.gets when new_password is provided
+      expect($stdin).not_to receive(:gets)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass', 'newpassword')
+      expect(exit_code).to eq(0)
+    end
+
+    it 'returns 1 when new password is too short (from argument)' do
+      allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+        .and_return(true)
+
+      exit_code = Lich::Common::Authentication::CLIPassword.change_master_password('oldpass', 'short')
+      expect(exit_code).to eq(1)
+    end
+  end
+
+  describe 'security concerns' do
+    it 'does not log password values in change_account_password' do
+      yaml_data = {
+        'encryption_mode' => 'plaintext',
+        'accounts'        => { 'DOUG' => { 'password' => 'oldpass' } }
+      }
+      File.write(yaml_file, YAML.dump(yaml_data))
+
+      expect(Lich).not_to receive(:log).with(/oldpass|newpass/)
+
+      Lich::Common::Authentication::CLIPassword.change_account_password('DOUG', 'newpass')
+    end
+
+    it 'does not log password values in add_account' do
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return([{ char_name: 'Char1', game_code: 'GS3', game_name: 'GemStone IV' }])
+      allow(Lich::Common::GUI::AccountManager).to receive(:add_or_update_account)
+        .and_return(true)
+
+      expect(Lich).not_to receive(:log).with(/password123|secretpass/)
+
+      Lich::Common::Authentication::CLIPassword.add_account('DOUG', 'password123', 'stormfront')
+    end
+
+    it 'delegates account persistence to AccountManager' do
+      auth_data = [
+        { char_name: 'Char1', game_code: 'GS3', game_name: 'GemStone IV' }
+      ]
+      characters = [auth_data.first.merge(frontend: 'stormfront')]
+      manager = Lich::Common::GUI::AccountManager
+
+      allow(Lich::Common::Authentication).to receive(:authenticate)
+        .and_return(auth_data)
+      allow(manager).to receive(:convert_auth_data_to_characters)
+        .with(auth_data, 'stormfront').and_return(characters)
+
+      expect(manager).to receive(:add_or_update_account)
+        .with(DATA_DIR, 'DOUG', 'password', characters)
+        .and_return(true)
+
+      expect(described_class.add_account('doug', 'password', 'stormfront'))
+        .to eq(0)
+    end
+  end
+
+  describe '.validate_master_password_available' do
+    context 'with enhanced encryption mode' do
+      before do
+        yaml_data = {
+          'encryption_mode'                 => 'enhanced',
+          'master_password_validation_test' => { 'validation_salt' => 'salt', 'validation_hash' => 'hash' },
+          'accounts'                        => { 'DOUG' => { 'password' => 'encrypted_pass' } }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'returns true when master password is available in keychain' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
+          .and_return('master_password')
+
+        result = Lich::Common::Authentication::CLIPassword.validate_master_password_available
+        expect(result).to eq(true)
+      end
+
+      it 'returns false when master password is missing from keychain' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
+          .and_return(nil)
+
+        result = Lich::Common::Authentication::CLIPassword.validate_master_password_available
+        expect(result).to eq(false)
+      end
+
+      it 'prints helpful recovery message when keychain is missing' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:retrieve_master_password)
+          .and_return(nil)
+
+        # Just verify puts is called with recovery-related output
+        allow($stdout).to receive(:puts)
+        expect($stdout).to receive(:puts).with(include('recover'))
+
+        Lich::Common::Authentication::CLIPassword.validate_master_password_available
+      end
+    end
+
+    context 'with non-enhanced encryption modes' do
+      before do
+        yaml_data = {
+          'encryption_mode' => 'plaintext',
+          'accounts'        => { 'DOUG' => { 'password' => 'plaintext_pass' } }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'returns true for plaintext mode (no keychain needed)' do
+        result = Lich::Common::Authentication::CLIPassword.validate_master_password_available
+        expect(result).to eq(true)
+      end
+    end
+
+    context 'when yaml file does not exist' do
+      it 'returns false' do
+        File.delete(yaml_file) if File.exist?(yaml_file)
+
+        result = Lich::Common::Authentication::CLIPassword.validate_master_password_available
+        expect(result).to eq(false)
+      end
+    end
+  end
+
+  describe '.recover_master_password' do
+    context 'when not in enhanced mode' do
+      before do
+        yaml_data = {
+          'encryption_mode' => 'plaintext',
+          'accounts'        => { 'DOUG' => { 'password' => 'oldpass' } }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'returns 3 when not in enhanced encryption mode' do
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(3)
+      end
+
+      it 'prints error message about wrong mode' do
+        expect($stdout).to receive(:puts).at_least(:once).with(/Enhanced|mode/)
+
+        Lich::Common::Authentication::CLIPassword.recover_master_password
+      end
+    end
+
+    context 'when yaml file does not exist' do
+      it 'returns 2 when yaml file missing' do
+        File.delete(yaml_file) if File.exist?(yaml_file)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(2)
+      end
+    end
+
+    context 'in enhanced mode with no accounts' do
+      before do
+        yaml_data = {
+          'encryption_mode'                 => 'enhanced',
+          'master_password_validation_test' => { 'validation_salt' => 'salt', 'validation_hash' => 'hash' },
+          'accounts'                        => {}
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'returns 1 when no accounts exist to verify with' do
+        allow($stdin).to receive(:gets).and_return("newpassword\n", "newpassword\n")
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(1)
+      end
+    end
+
+    context 'in enhanced mode with interactive password entry' do
+      before do
+        yaml_data = {
+          'encryption_mode'                 => 'enhanced',
+          'master_password_validation_test' => { 'validation_salt' => 'salt', 'validation_hash' => 'hash', 'validation_version' => 1 },
+          'accounts'                        => {
+            'DOUG' => {
+              'password'   => 'encrypted_pass',
+              'characters' => []
+            }
+          }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'prompts for new master password interactively' do
+        allow($stdin).to receive(:gets).and_return("newpassword\n", "newpassword\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+          .and_return({ 'validation_salt' => 'salt', 'validation_hash' => 'hash' })
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+          .and_return('plaintext_pass')
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new')
+
+        Lich::Common::Authentication::CLIPassword.recover_master_password
+
+        expect($stdin).to have_received(:gets).at_least(:once)
+      end
+
+      it 'returns 1 when passwords do not match' do
+        allow($stdin).to receive(:gets).and_return("pass1\n", "pass2\n")
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(1)
+      end
+
+      it 'returns 1 when password is too short' do
+        allow($stdin).to receive(:gets).and_return("short\n", "short\n")
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(1)
+      end
+
+      it 'returns 1 when stdin is unavailable' do
+        allow($stdin).to receive(:gets).and_return(nil)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(1)
+      end
+
+      it 'validates password against validation test' do
+        allow($stdin).to receive(:gets).and_return("master_password\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+
+        Lich::Common::Authentication::CLIPassword.recover_master_password
+
+        expect(Lich::Common::GUI::MasterPasswordManager).to have_received(:validate_master_password)
+          .with('master_password', kind_of(Hash))
+      end
+
+      it 'stores master password in keychain after validation' do
+        allow($stdin).to receive(:gets).and_return("master_password\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+
+        Lich::Common::Authentication::CLIPassword.recover_master_password
+
+        expect(Lich::Common::GUI::MasterPasswordManager).to have_received(:store_master_password)
+          .with('master_password')
+      end
+
+      it 'returns 1 when password validation fails' do
+        allow($stdin).to receive(:gets).and_return("wrong_password\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(false)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(1)
+      end
+
+      it 'returns 1 when keychain storage fails' do
+        allow($stdin).to receive(:gets).and_return("master_password\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(false)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(1)
+      end
+
+      it 'returns 0 on successful recovery' do
+        allow($stdin).to receive(:gets).and_return("master_password\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password
+        expect(exit_code).to eq(0)
+      end
+    end
+
+    context 'in enhanced mode with direct password argument' do
+      before do
+        yaml_data = {
+          'encryption_mode'                 => 'enhanced',
+          'master_password_validation_test' => { 'validation_salt' => 'salt', 'validation_hash' => 'hash', 'validation_version' => 1 },
+          'accounts'                        => {
+            'DOUG' => {
+              'password'   => 'encrypted_pass',
+              'characters' => []
+            }
+          }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'accepts password as argument without prompting' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+
+        expect($stdin).not_to receive(:gets)
+
+        Lich::Common::Authentication::CLIPassword.recover_master_password('directpassword')
+      end
+
+      it 'returns 1 when direct password is too short' do
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password('short')
+        expect(exit_code).to eq(1)
+      end
+
+      it 'returns 0 with valid direct password' do
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:validate_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+
+        exit_code = Lich::Common::Authentication::CLIPassword.recover_master_password('validpassword12345')
+        expect(exit_code).to eq(0)
+      end
+    end
+
+    context 'security concerns for recovery' do
+      before do
+        yaml_data = {
+          'encryption_mode'                 => 'enhanced',
+          'master_password_validation_test' => { 'validation_salt' => 'salt', 'validation_hash' => 'hash' },
+          'accounts'                        => { 'DOUG' => { 'password' => 'encrypted_pass' } }
+        }
+        File.write(yaml_file, YAML.dump(yaml_data))
+      end
+
+      it 'does not log master password values' do
+        allow($stdin).to receive(:gets).and_return("newpassword\n", "newpassword\n")
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:create_validation_test)
+          .and_return({})
+        allow(Lich::Common::GUI::MasterPasswordManager).to receive(:store_master_password)
+          .and_return(true)
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:decrypt)
+          .and_return('plaintext_pass')
+        allow(Lich::Common::GUI::PasswordCipher).to receive(:encrypt)
+          .and_return('encrypted_new')
+
+        expect(Lich).not_to receive(:log).with(/newpassword/)
+
+        Lich::Common::Authentication::CLIPassword.recover_master_password
+      end
+    end
+  end
+end

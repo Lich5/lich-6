@@ -1,0 +1,479 @@
+# frozen_string_literal: true
+
+# CLI argument processing and orchestration (Layer 2)
+# Three-layer architecture:
+#   - Layer 1 (Opts): Pure parsing of ARGV -> frozen OpenStruct
+#   - Layer 2 (this file): Validation, routing to handlers, side effects
+#   - Layer 3 (CliPasswordManager): Domain-specific handlers
+
+require File.join(LIB_DIR, 'util', 'opts.rb')
+require File.join(LIB_DIR, 'common', 'cli', 'cli_orchestration.rb')
+require File.join(LIB_DIR, 'common', 'bind_host_resolver.rb')
+require File.join(LIB_DIR, 'main', 'bind_address_option.rb')
+require File.join(LIB_DIR, 'main', 'arg_normalization.rb')
+require File.join(LIB_DIR, 'main', 'detachable_client_target.rb')
+require File.join(LIB_DIR, 'main', 'startup_theme.rb')
+
+module Lich
+  module Main
+    # Orchestrates ARGV processing: parsing -> validation -> handler execution -> side effects
+    module ArgvOptions
+      # CLI operations are now handled by lib/common/cli/cli_orchestration.rb
+      # which handles early-exit operations (password mgmt, conversion)
+      # before normal argv_options processing
+
+      # Parse ARGV and build @argv_options hash for backward compatibility
+      module OptionParser
+        def self.execute
+          @argv_options = {}
+          bad_args = []
+          invalid_fe_version = false
+
+          ARGV.each do |arg|
+            case arg
+            when '--link-to-sge'
+              result = Lich.link_to_sge
+              $stdout.puts(result ? 'Successfully linked to SGE.' : 'Failed to link to SGE.') if $stdout.isatty
+              exit
+            when '--unlink-from-sge'
+              result = Lich.unlink_from_sge
+              $stdout.puts(result ? 'Successfully unlinked from SGE.' : 'Failed to unlink from SGE.') if $stdout.isatty
+              exit
+            when '--link-to-sal'
+              result = Lich.link_to_sal
+              $stdout.puts(result ? 'Successfully linked to SAL files.' : 'Failed to link to SAL files.') if $stdout.isatty
+              exit
+            when '--unlink-from-sal'
+              result = Lich.unlink_from_sal
+              $stdout.puts(result ? 'Successfully unlinked from SAL files.' : 'Failed to unlink from SAL files.') if $stdout.isatty
+              exit
+            when '--install'
+              if Lich.link_to_sge && Lich.link_to_sal
+                $stdout.puts 'Install was successful.'
+                Lich.log 'Install was successful.'
+              else
+                $stdout.puts 'Install failed.'
+                Lich.log 'Install failed.'
+              end
+              exit
+            when '--uninstall'
+              if Lich.unlink_from_sge && Lich.unlink_from_sal
+                $stdout.puts 'Uninstall was successful.'
+                Lich.log 'Uninstall was successful.'
+              else
+                $stdout.puts 'Uninstall failed.'
+                Lich.log 'Uninstall failed.'
+              end
+              exit
+            when /^--start-scripts=(.+)$/i
+              @argv_options[:start_scripts] = $1
+            when /^--reconnect$/i
+              @argv_options[:reconnect] = true
+            when /^--reconnect-delay=(.+)$/i
+              @argv_options[:reconnect_delay] = $1
+            when /^--host=(.+):(.+)$/
+              @argv_options[:host] = { domain: $1, port: $2.to_i }
+            when /^--bind-address=(.+)$/i
+              @argv_options[:bind_address] = $1
+            when /^--hosts-file=(.+)$/i
+              @argv_options[:hosts_file] = $1
+            when /^--no-(?:gui|gtk)$/i
+              @argv_options[:gui] = false
+            when /^--gui$/i
+              @argv_options[:gui] = true
+            when /^--game=(.+)$/i
+              @argv_options[:game] = $1
+            when /^--auth-provider=(eaccess|web)$/i
+              @argv_options[:auth_provider] = $1.downcase.to_sym
+            when /^--game-transport=(direct|websocket)$/i
+              # :websocket is opt-in only (Genie5#356 phase 2) -- direct TCP
+              # to the game port remains the default; see Lich::Common::GameTransport.
+              @argv_options[:game_transport] = $1.downcase.to_sym
+            when /^--account=(.+)$/i
+              @argv_options[:account] = $1
+            when /^--password=(.+)$/i
+              @argv_options[:password] = $1
+            when /^--character=(.+)$/i
+              @argv_options[:character] = $1
+            when /^--frontend=(.+)$/i
+              @argv_options[:frontend] = $1
+            when /\A--fe-version=([A-Za-z0-9._+-]{1,32})\z/i
+              # \A..\z, not ^..$: the value is written onto the game socket, so an
+              # embedded newline must not let a valid first line slip through.
+              @argv_options[:fe_version] = $1
+            when /\A--fe-version=/i
+              # Without this, a rejected value would silently send the default /VERSION:.
+              invalid_fe_version = true
+            when /^--frontend-command=(.+)$/i
+              @argv_options[:frontend_command] = $1
+            when /^--save$/i
+              @argv_options[:save] = true
+            when /^--pipe$/i
+              @argv_options[:pipe] = true
+            when /^--sentinel$/i
+              @argv_options[:sentinel] = true
+            when /^--keep-fe-string$/i
+              # Kill switch for Frontend.proxy_handshake: forward the front end's own /FE: line.
+              @argv_options[:keep_fe_string] = true
+            when /^--frontend-caps=(.*)$/i
+              @argv_options[:frontend_caps] = $1
+            when /^--wine(?:\-prefix)?=.+$/i
+              nil # already used when defining the Wine module
+            when /\.sal$|Gse\.~xt$/i
+              handle_sal_file(arg)
+              bad_args.clear
+            when /^--dark-mode=(true|false|on|off)$/i
+              handle_dark_mode($1)
+            when /^--saga$/i
+              $frontend = 'saga'
+            else
+              bad_args.push(arg)
+            end
+          end
+
+          # Warn after the loop so the message names the value actually in effect.
+          if invalid_fe_version
+            warning = 'warning: ignoring invalid --fe-version (allowed: 1-32 of A-Z a-z 0-9 . _ + -); ' \
+                      "using #{@argv_options[:fe_version] || 'the default'}"
+            $stdout.puts warning
+            Lich.log warning
+          end
+
+          @argv_options
+        end
+
+        def self.handle_sal_file(arg)
+          @argv_options[:sal] = arg
+          unless File.exist?(@argv_options[:sal])
+            @argv_options[:sal] = $1 if ARGV.join(' ') =~ /([A-Z]:\\.+?\.(?:sal|~xt))/i
+          end
+          unless File.exist?(@argv_options[:sal])
+            @argv_options[:sal] = "#{Wine::PREFIX}/drive_c/#{@argv_options[:sal][3..-1].split('\\').join('/')}" if defined?(Wine)
+          end
+        end
+
+        def self.handle_dark_mode(value)
+          # Regex returns Integer/nil; force strict boolean for startup handling.
+          @argv_options[:dark_mode] = !!(value =~ /^(true|on)$/i)
+        end
+      end
+
+      # Apply side effects: dark mode, hosts-dir, bind-address, detachable-client
+      module SideEffects
+        def self.execute(argv_options)
+          StartupTheme.apply(argv_options)
+          handle_hosts_dir(argv_options)
+          handle_bind_address(argv_options)
+          handle_detachable_client(argv_options)
+          handle_sentinel(argv_options)
+          handle_frontend_caps(argv_options)
+          handle_sal_launch(argv_options)
+          argv_options
+        end
+
+        # --sentinel: the running session gets the origin marker whichever
+        # frontend it identifies as.
+        def self.handle_sentinel(argv_options)
+          Lich::Common::Frontend.sentinel_requested = true if argv_options[:sentinel]
+        end
+
+        # --frontend-caps=LIST: the rich-stream capabilities every client gets
+        # unless it declares its own with SET_FRONTEND_CAPS, in place of the
+        # catalog's for the frontend (see Lich::Common::ClientCapabilities).
+        # An empty LIST (or one with no known name) gives every client the
+        # legacy rewrites. Feeds in LIST (script_list) replace the catalog's
+        # feeds; a LIST of feeds alone leaves its rewrites alone.
+        def self.handle_frontend_caps(argv_options)
+          return unless argv_options.key?(:frontend_caps)
+
+          unknown = Lich::Common::ClientCapabilities.apply_launch_list(argv_options[:frontend_caps])
+          announce('warning', "--frontend-caps: ignoring unknown capabilities: #{unknown.join(', ')}") unless unknown.empty?
+        end
+
+        # Surface a message on both channels every bind handler uses.
+        def self.announce(level, message)
+          $stdout.puts "#{level}: #{message}"
+          Lich.log "#{level}: #{message}"
+        end
+
+        # Fatal argv problem: tell the user everywhere, then stop.
+        def self.die(message)
+          announce('error', message)
+          exit 1
+        end
+
+        # --bind-address shares the keyword vocabulary of --detachable-client
+        # hosts (tailscale/lan/any). Resolve it once, up front, so the
+        # frontend listener, the --game proxy, and a detachable client that
+        # inherits it all bind the same concrete address -- and so the
+        # exposure warning appears exactly once.
+        def self.handle_bind_address(argv_options)
+          result = BindAddressOption.apply(argv_options[:bind_address])
+          die(result.error) if result.error
+          return unless result.host
+
+          argv_options[:bind_address] = result.host
+          announce('warning', result.warning) if result.warning
+        end
+
+        def self.handle_hosts_dir(argv_options)
+          if (arg = ARGV.find { |a| a =~ /^--hosts-dir=(.+)$/i })
+            hosts_dir = arg[/^--hosts-dir=(.+)$/i, 1]
+            ARGV.delete(arg)
+            if hosts_dir && File.exist?(hosts_dir)
+              hosts_dir = hosts_dir.tr('\\', '/')
+              hosts_dir += '/' unless hosts_dir[-1..-1] == '/'
+              argv_options[:hosts_dir] = hosts_dir
+            else
+              $stdout.puts "warning: given hosts directory does not exist: #{hosts_dir}"
+            end
+          end
+        end
+
+        def self.handle_detachable_client(argv_options)
+          argv_options[:detachable_client_host] = argv_options[:bind_address] || '127.0.0.1'
+          argv_options[:detachable_client_port] = nil
+          arg = ARGV.find { |a| a.start_with?('--detachable-client=') }
+          return unless arg
+
+          begin
+            target = DetachableClientTarget.parse(arg.split('=', 2).last)
+            if target.host
+              resolution = Lich::Common::BindHostResolver.resolve(target.host)
+              argv_options[:detachable_client_host] = resolution.host
+              announce('warning', resolution.warning) if resolution.warning
+            end
+            # (The port-only form inherits --bind-address, which
+            # handle_bind_address already resolved and warned about; the
+            # loopback default warrants no warning.)
+            argv_options[:detachable_client_port] = target.port
+          rescue DetachableClientTarget::ParseError, Lich::Common::BindHostResolver::Error => e
+            die(e.message)
+          end
+        end
+
+        # Plain bind probe (no SO_REUSEADDR on Windows), so a live listener fails it.
+        def self.port_in_use?(host, port)
+          TCPServer.new(host, port).close
+          false
+        rescue Errno::EADDRINUSE, Errno::EACCES
+          true
+        rescue StandardError
+          false
+        end
+
+        def self.handle_sal_launch(argv_options)
+          return unless argv_options[:sal]
+
+          unless File.exist?(argv_options[:sal])
+            msg = "error: launch file does not exist: #{argv_options[:sal]}"
+            # A launcher that deletes its .sal once it reaches the detachable port
+            # (e.g. Saga) does so early if something else already holds that port.
+            port = argv_options[:detachable_client_port]
+            if port && port_in_use?(argv_options[:detachable_client_host], port)
+              msg += "\n\nThe detachable client port #{port} is already in use, most likely by another Lich " \
+                     "that is still running. Your launcher may have connected to it and deleted the launch " \
+                     "file. Close that Lich or choose a different port, then try again."
+            end
+            Lich.log msg
+            Lich.msgbox(message: msg, icon: :error)
+            exit
+          end
+          Lich.log "info: launch file: #{argv_options[:sal]}"
+
+          if argv_options[:sal] =~ /SGE\.sal/i
+            unless (launcher_cmd = Lich.get_simu_launcher)
+              $stdout.puts 'error: failed to find the Simutronics launcher'
+              Lich.log 'error: failed to find the Simutronics launcher'
+              exit
+            end
+            launcher_cmd.sub!('%1', argv_options[:sal])
+            Lich.log "info: launcher_cmd: #{launcher_cmd}"
+            if defined?(Win32) && launcher_cmd =~ /^"(.*?)"\s*(.*)$/
+              dir_file = $1
+              param = $2
+              dir = dir_file.slice(/^.*[\\\/]/)
+              file = dir_file.sub(/^.*[\\\/]/, '')
+              operation = (Win32.isXP? ? 'open' : 'runas')
+              r = Win32.ShellExecute(lpOperation: operation, lpFile: file, lpDirectory: dir, lpParameters: param)
+              Lich.log "error: Win32.ShellExecute returned #{r}; Win32.GetLastError: #{Win32.GetLastError}" if r < 33
+            elsif defined?(Wine)
+              system("#{Wine::BIN} #{launcher_cmd}")
+            else
+              system(launcher_cmd)
+            end
+            exit
+          end
+        end
+      end
+
+      # Handle game connection configuration
+      module GameConnection
+        def self.execute(processed_options)
+          if (arg = ARGV.find { |a| a == '-g' || a == '--game' })
+            handle_explicit_game_connection(arg, processed_options)
+          elsif ARGV.include?('--shattered')
+            handle_shattered_connection(processed_options)
+          elsif ARGV.include?('--fallen')
+            handle_fallen_connection(processed_options)
+          elsif Lich::Common::Authentication::LoginHelpers.gemstone_flag?(ARGV)
+            handle_gemstone_connection(processed_options)
+          elsif Lich::Common::Authentication::LoginHelpers.dragonrealms_flag?(ARGV)
+            handle_dragonrealms_connection(processed_options)
+          else
+            processed_options[:game_host] = nil
+            processed_options[:game_port] = nil
+            Lich.log 'info: no force-mode info given'
+          end
+          processed_options
+        end
+
+        def self.handle_explicit_game_connection(arg, processed_options)
+          processed_options[:game_host], processed_options[:game_port] = ARGV[ARGV.index(arg) + 1].split(':')
+          processed_options[:game_port] = processed_options[:game_port].to_i
+          $frontend = determine_frontend
+          # Initialize frontend from parent process unless using detachable client
+          unless ARGV.any? { |a| a =~ /^--detachable-client/i }
+            Lich::Common::Frontend.init_from_parent(Process.ppid)
+          end
+        end
+
+        def self.handle_gemstone_connection(processed_options)
+          if ARGV.include?('--platinum')
+            $platinum = true
+            if ARGV.any? { |a| a =~ /^-s$/i || a =~ /^--stormfront$/i }
+              processed_options[:game_host] = 'storm.gs4.game.play.net'
+              processed_options[:game_port] = 10124
+              $frontend = 'stormfront'
+            else
+              processed_options[:game_host] = 'storm.gs4.game.play.net'
+              processed_options[:game_port] = 10124
+              $frontend = ARGV.any? { |a| a =~ /^--avalon$/i } ? 'avalon' : ARGV.any? { |a| a =~ /^--frostbite$/i } ? 'frostbite' : ARGV.any? { |a| a =~ /^--saga$/i } ? 'saga' : 'wizard'
+            end
+          else
+            $platinum = false
+            if ARGV.any? { |a| a =~ /^-s$/i || a =~ /^--stormfront$/i }
+              processed_options[:game_host] = 'storm.gs4.game.play.net'
+              processed_options[:game_port] = ARGV.include?('--test') ? 10624 : 10024
+              $frontend = 'stormfront'
+            else
+              processed_options[:game_host] = 'storm.gs4.game.play.net'
+              processed_options[:game_port] = ARGV.include?('--test') ? 10624 : 10024
+              $frontend = ARGV.any? { |a| a =~ /^--avalon$/i } ? 'avalon' : ARGV.any? { |a| a =~ /^--frostbite$/i } ? 'frostbite' : ARGV.any? { |a| a =~ /^--saga$/i } ? 'saga' : 'wizard'
+            end
+          end
+        end
+
+        def self.handle_shattered_connection(processed_options)
+          $platinum = false
+          if ARGV.any? { |a| a =~ /^-s$/i || a =~ /^--stormfront$/i }
+            processed_options[:game_host] = 'storm.gs4.game.play.net'
+            processed_options[:game_port] = 10324
+            $frontend = 'stormfront'
+          else
+            processed_options[:game_host] = 'storm.gs4.game.play.net'
+            processed_options[:game_port] = 10324
+            $frontend = ARGV.any? { |a| a =~ /^--avalon$/i } ? 'avalon' : ARGV.any? { |a| a =~ /^--frostbite$/i } ? 'frostbite' : ARGV.any? { |a| a =~ /^--saga$/i } ? 'saga' : 'wizard'
+          end
+        end
+
+        def self.handle_fallen_connection(processed_options)
+          $platinum = false
+          if ARGV.any? { |a| a =~ /^-s$/i || a =~ /^--stormfront$/i }
+            processed_options[:game_host] = 'dr.simutronics.net'
+            processed_options[:game_port] = 11324
+            $frontend = 'stormfront'
+          elsif ARGV.grep(/--genie/i).any?
+            processed_options[:game_host] = 'dr.simutronics.net'
+            processed_options[:game_port] = 11324
+            $frontend = 'genie'
+          else
+            processed_options[:game_host] = 'dr.simutronics.net'
+            processed_options[:game_port] = 11324
+            $frontend = ARGV.any? { |a| a =~ /^--avalon$/i } ? 'avalon' : ARGV.any? { |a| a =~ /^--frostbite$/i } ? 'frostbite' : ARGV.any? { |a| a =~ /^--saga$/i } ? 'saga' : 'wizard'
+          end
+        end
+
+        def self.handle_dragonrealms_connection(processed_options)
+          if ARGV.include?('--platinum')
+            $platinum = true
+            if ARGV.any? { |a| a =~ /^-s$/i || a =~ /^--stormfront$/i }
+              processed_options[:game_host] = 'dr.simutronics.net'
+              processed_options[:game_port] = 11124
+              $frontend = 'stormfront'
+            elsif ARGV.grep(/--genie/i).any?
+              processed_options[:game_host] = 'dr.simutronics.net'
+              processed_options[:game_port] = 11124
+              $frontend = 'genie'
+            else
+              processed_options[:game_host] = 'dr.simutronics.net'
+              processed_options[:game_port] = 11124
+              $frontend = ARGV.any? { |a| a =~ /^--avalon$/i } ? 'avalon' : ARGV.any? { |a| a =~ /^--frostbite$/i } ? 'frostbite' : ARGV.any? { |a| a =~ /^--saga$/i } ? 'saga' : 'wizard'
+            end
+          else
+            $platinum = false
+            if ARGV.any? { |a| a =~ /^-s$/i || a =~ /^--stormfront$/i }
+              processed_options[:game_host] = 'dr.simutronics.net'
+              processed_options[:game_port] = ARGV.include?('--test') ? 11624 : 11024
+              $frontend = 'stormfront'
+            elsif ARGV.grep(/--genie/i).any?
+              processed_options[:game_host] = 'dr.simutronics.net'
+              processed_options[:game_port] = ARGV.include?('--test') ? 11624 : 11024
+              $frontend = 'genie'
+            else
+              processed_options[:game_host] = 'dr.simutronics.net'
+              processed_options[:game_port] = ARGV.include?('--test') ? 11624 : 11024
+              $frontend = ARGV.any? { |a| a =~ /^--avalon$/i } ? 'avalon' : ARGV.any? { |a| a =~ /^--frostbite$/i } ? 'frostbite' : ARGV.any? { |a| a =~ /^--saga$/i } ? 'saga' : 'wizard'
+            end
+          end
+        end
+
+        def self.determine_frontend
+          if ARGV.any? { |a| a == '-s' || a == '--stormfront' }
+            'stormfront'
+          elsif ARGV.any? { |a| a == '-w' || a == '--wizard' }
+            'wizard'
+          elsif ARGV.any? { |a| a == '--avalon' }
+            'avalon'
+          elsif ARGV.any? { |a| a == '--frostbite' }
+            'frostbite'
+          elsif ARGV.any? { |a| a == '--saga' }
+            'saga'
+          else
+            'unknown'
+          end
+        end
+      end
+
+      # Main orchestrator: Step 1-4 of ARGV processing
+      def self.process_argv
+        # Step 1: Clean launcher.exe
+        ARGV.delete_if { |arg| arg =~ /launcher\.exe/i }
+
+        begin
+          ArgNormalization.normalize!(ARGV)
+        rescue ArgumentError => e
+          $stderr.puts "error: #{e.message}"
+          exit 1
+        end
+
+        # Step 2: Handle early-exit CLI operations (now in lib/common/cli/cli_orchestration.rb)
+        Lich::Common::CLI::CLIOrchestration.execute
+
+        # Step 3: Parse normal options and build @argv_options
+        processed_options = ArgvOptions::OptionParser.execute
+
+        # Step 4: Apply side effects and handle special cases
+        processed_options = ArgvOptions::SideEffects.execute(processed_options)
+
+        # Step 5: Handle game connection configuration
+        processed_options = ArgvOptions::GameConnection.execute(processed_options)
+
+        processed_options
+      end
+    end
+  end
+end
+
+# Execute ARGV processing
+@argv_options = Lich::Main::ArgvOptions.process_argv

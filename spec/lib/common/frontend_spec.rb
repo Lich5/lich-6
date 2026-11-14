@@ -1,0 +1,1384 @@
+# frozen_string_literal: true
+
+require 'rspec'
+
+# Minimal mock setup - we test the Frontend module in isolation
+# without loading the full Lich application stack.
+
+module Lich
+  module Common
+    # Reset Frontend if already loaded, so we get a clean slate
+  end
+end
+
+# Stub out the heavy dependencies that front-end.rb pulls in
+# before requiring it
+require 'tempfile'
+require 'json'
+require 'fileutils'
+
+# Stub Lich.log for test output
+module Lich
+  def self.log(msg)
+    # silent in tests
+  end
+end unless Lich.respond_to?(:log)
+
+require_relative '../../../lib/common/front-end'
+
+# Shorthand for use in describe-level iteration
+FE = Lich::Common::Frontend unless defined?(FE)
+
+RSpec.describe Lich::Common::Frontend do
+  let(:frontend) { Lich::Common::Frontend }
+
+  describe 'built-in definition files' do
+    it 'loads the complete catalog in its stable order' do
+      expect(frontend::BUILT_IN_DEFINITION_FILES).to eq(
+        [
+          %w[stormfront wrayth],
+          %w[profanity profanity],
+          %w[genie genie],
+          %w[frostbite frostbite],
+          %w[suks suks],
+          %w[wizard wizard],
+          %w[avalon avalon],
+          %w[saga saga]
+        ]
+      )
+      expect(frontend.built_in_frontends).to eq(
+        %w[stormfront profanity genie frostbite suks wizard avalon saga]
+      )
+    end
+
+    it 'keeps the ordered legacy capability constants unchanged' do
+      expect(frontend::XML_FRONTENDS).to eq(%w[stormfront profanity genie frostbite saga wrayth])
+      expect(frontend::GSL_FRONTENDS).to eq(%w[wizard avalon])
+      expect(frontend::STREAM_FRONTENDS).to eq(%w[stormfront profanity genie saga wrayth])
+      expect(frontend::MONO_FRONTENDS).to eq(%w[stormfront genie saga wrayth])
+      expect(frontend::SENTINEL_FRONTENDS).to eq(%w[saga])
+    end
+  end
+
+  describe '.definition_for' do
+    it 'returns immutable catalog metadata for Saga' do
+      definition = frontend.definition_for(:saga)
+
+      expect(definition[:id]).to eq('saga')
+      expect(definition.dig(:metadata, :display_name)).to eq('Saga')
+      expect(definition.dig(:metadata, :gui_selectable)).to be(true)
+      expect(definition.dig(:metadata, :gui_platforms)).to eq(%i[darwin windows linux])
+      expect(definition.dig(:metadata, :launcher_status)).to eq(:supported_cold_start_only)
+      expect(definition.dig(:metadata, :launch_notice)).to eq(
+        'Saga 0.8.5 environment handoff; cold start only'
+      )
+      expect(definition.dig(:metadata, :launch_plans, :darwin)).to eq(
+        {
+          command: '/usr/bin/open',
+          arguments: %w[-n -b com.auchand.saga],
+          environment: {
+            'SAGA_LICH_MODE' => '1',
+            'SAGA_LICH_HOST' => '%host%',
+            'SAGA_LICH_PORT' => '%port%',
+            'SAGA_LICH_KEY'  => '%key%'
+          }
+        }
+      )
+      expect(definition.dig(:metadata, :launch_plans, :windows)).to eq(
+        {
+          command: :resolved_executable,
+          arguments: [],
+          environment: {
+            'SAGA_LICH_MODE' => '1',
+            'SAGA_LICH_HOST' => '%host%',
+            'SAGA_LICH_PORT' => '%port%',
+            'SAGA_LICH_KEY'  => '%key%'
+          }
+        }
+      )
+      expect(definition.dig(:metadata, :launch_plans, :linux)).to eq(
+        {
+          command: :resolved_executable,
+          arguments: [],
+          environment: {
+            'SAGA_LICH_MODE' => '1',
+            'SAGA_LICH_HOST' => '%host%',
+            'SAGA_LICH_PORT' => '%port%',
+            'SAGA_LICH_KEY'  => '%key%'
+          }
+        }
+      )
+      expect(definition.dig(:metadata, :discovery, :path_lookup)).to be(false)
+      expect(definition.dig(:metadata, :discovery, :paths, :linux)).to eq(['/opt/Saga/saga'])
+      expect(definition).to be_frozen
+      expect(definition[:metadata]).to be_frozen
+      expect(definition.dig(:metadata, :launch_plans)).to be_frozen
+      expect(definition.dig(:metadata, :launch_plans, :darwin)).to be_frozen
+      expect(definition.dig(:metadata, :launch_plans, :darwin, :arguments)).to be_frozen
+      expect(definition.dig(:metadata, :launch_plans, :darwin, :environment)).to be_frozen
+      expect {
+        definition.dig(:metadata, :launch_plans, :darwin, :arguments) << '--override'
+      }.to raise_error(FrozenError)
+    end
+
+    it 'reuses the immutable catalog definition' do
+      expect(frontend.definition_for(:saga)).to equal(frontend.definition_for(:saga))
+    end
+
+    it 'keeps embedded SUKS free of frontend protocol capabilities' do
+      expect(frontend.definition_for(:suks)[:capabilities]).to be_empty
+      expect(frontend.supports_xml?('suks')).to be(false)
+      expect(frontend.supports_gsl?('suks')).to be(false)
+    end
+
+    it 'raises for a blank frontend identifier' do
+      expect { frontend.definition_for(nil) }
+        .to raise_error(ArgumentError, 'frontend name must not be empty')
+    end
+
+    it 'raises for an unknown frontend identifier without registering it' do
+      expect { frontend.definition_for('not-a-frontend') }
+        .to raise_error(ArgumentError, 'unknown frontend: not-a-frontend')
+      expect(frontend.registered_frontends).not_to include('not-a-frontend')
+    end
+  end
+
+  describe '.platform_key' do
+    before do
+      allow(OS).to receive_messages(mac?: false, linux?: false, windows?: false)
+    end
+
+    it 'uses the OS gem to classify macOS' do
+      allow(OS).to receive(:mac?).and_return(true)
+
+      expect(frontend.platform_key).to eq(:darwin)
+    end
+
+    it 'prefers a Linux host classification over a leaked Windows environment signal' do
+      allow(OS).to receive_messages(linux?: true, windows?: true)
+
+      expect(frontend.platform_key).to eq(:linux)
+    end
+
+    it 'uses the OS gem to classify Windows' do
+      allow(OS).to receive(:windows?).and_return(true)
+
+      expect(frontend.platform_key).to eq(:windows)
+      expect(frontend.windows_platform?).to be(true)
+    end
+
+    it 'returns unsupported when the OS gem recognizes no supported host' do
+      expect(frontend.platform_key).to eq(:unsupported)
+    end
+
+    it 'rejects noncanonical injected platform keys' do
+      expect { frontend.validate_platform_key!(:msys) }
+        .to raise_error(ArgumentError, 'invalid platform key: :msys')
+    end
+  end
+
+  describe '.native_windows_runtime?' do
+    it 'accepts RubyInstaller MinGW/UCRT and mswin host ABIs' do
+      allow(OS).to receive(:host_os).and_return('mingw-ucrt')
+      expect(frontend.native_windows_runtime?).to be(true)
+
+      allow(OS).to receive(:host_os).and_return('mswin64')
+      expect(frontend.native_windows_runtime?).to be(true)
+    end
+
+    it 'does not treat an MSYS-native Ruby host as native for Fiddle bindings' do
+      allow(OS).to receive(:host_os).and_return('msys')
+
+      expect(frontend.native_windows_runtime?).to be(false)
+    end
+  end
+
+  describe '.ensure_windows_modules' do
+    it 'requires both native Windows API bindings on a compatible Ruby ABI' do
+      allow(frontend).to receive(:native_windows_runtime?).and_return(true)
+      stub_const('Win32Enum', Module.new)
+      stub_const('WinAPI', Module.new)
+
+      expect(frontend.ensure_windows_modules).to be_truthy
+    end
+
+    it 'does not expose native Windows API bindings on incompatible Ruby ABIs' do
+      allow(frontend).to receive(:native_windows_runtime?).and_return(false)
+
+      expect(frontend.ensure_windows_modules).to be(false)
+    end
+  end
+
+  describe '.definitions' do
+    it 'exposes the first-tier GUI frontend catalog from one registry' do
+      ids = frontend.definitions(gui_selectable: true).map { |definition| definition[:id] }
+
+      expect(ids).to contain_exactly('stormfront', 'wizard', 'avalon', 'saga', 'profanity')
+    end
+
+    it 'keeps historical Wrayth and Wizard GUI choices available on macOS' do
+      expect(frontend.definition_for('stormfront').dig(:metadata, :gui_platforms)).to include(:darwin)
+      expect(frontend.definition_for('wizard').dig(:metadata, :gui_platforms)).to include(:darwin)
+      expect(frontend.definition_for('avalon').dig(:metadata, :gui_platforms)).to eq([:darwin])
+    end
+  end
+
+  describe '.display_name' do
+    it 'uses the catalog label for a known frontend' do
+      expect(frontend.display_name('stormfront')).to eq('Wrayth')
+    end
+
+    it 'uses a stable fallback for a legacy frontend' do
+      expect(frontend.display_name('suks')).to eq('Suks')
+    end
+  end
+
+  describe '.canonical_name' do
+    it 'maps Wrayth to the stable StormFront identifier' do
+      expect(frontend.canonical_name('wrayth')).to eq('stormfront')
+      expect(frontend.definition_for('wrayth')[:id]).to eq('stormfront')
+    end
+
+    it 'does not register unknown values while normalizing them' do
+      expect(frontend.canonical_name('UNKNOWN-FE')).to eq('unknown-fe')
+      expect(frontend.registered_frontends).not_to include('unknown-fe')
+    end
+  end
+
+  # --- Constants ---------------------------------------------
+
+  describe 'CLIENT_STRING' do
+    it 'is defined' do
+      expect(frontend::CLIENT_STRING).to be_a(String)
+    end
+
+    it 'identifies as WRAYTH frontend' do
+      expect(frontend::CLIENT_STRING).to include('/FE:WRAYTH')
+    end
+
+    it 'includes version 1.0.1.28' do
+      expect(frontend::CLIENT_STRING).to include('/VERSION:1.0.1.28')
+    end
+
+    it 'uses SAGA as platform' do
+      expect(frontend::CLIENT_STRING).to include('/P:SAGA')
+    end
+
+    it 'requests XML protocol' do
+      expect(frontend::CLIENT_STRING).to include('/XML')
+    end
+
+    it 'does not leak RUBY_PLATFORM' do
+      # The platform token is fixed (/P:SAGA) regardless of actual platform
+      expect(frontend::CLIENT_STRING).not_to include(RUBY_PLATFORM)
+    end
+  end
+
+  # --- Capability Sets ---------------------------------------
+
+  describe 'XML_FRONTENDS' do
+    it 'is frozen' do
+      expect(FE::XML_FRONTENDS).to be_frozen
+    end
+
+    it 'includes stormfront' do
+      expect(FE::XML_FRONTENDS).to include('stormfront')
+    end
+
+    it 'includes wrayth' do
+      expect(FE::XML_FRONTENDS).to include('wrayth')
+    end
+
+    it 'includes frostbite' do
+      expect(FE::XML_FRONTENDS).to include('frostbite')
+    end
+
+    it 'includes profanity' do
+      expect(FE::XML_FRONTENDS).to include('profanity')
+    end
+
+    it 'includes genie' do
+      expect(FE::XML_FRONTENDS).to include('genie')
+    end
+
+    it 'does not include GSL-based frontends' do
+      expect(FE::XML_FRONTENDS).not_to include('wizard')
+      expect(FE::XML_FRONTENDS).not_to include('avalon')
+    end
+  end
+
+  describe 'GSL_FRONTENDS' do
+    it 'is frozen' do
+      expect(FE::GSL_FRONTENDS).to be_frozen
+    end
+
+    it 'includes wizard' do
+      expect(FE::GSL_FRONTENDS).to include('wizard')
+    end
+
+    it 'includes avalon' do
+      expect(FE::GSL_FRONTENDS).to include('avalon')
+    end
+
+    it 'does not include XML frontends' do
+      expect(FE::GSL_FRONTENDS).not_to include('stormfront')
+      expect(FE::GSL_FRONTENDS).not_to include('wrayth')
+      expect(FE::GSL_FRONTENDS).not_to include('profanity')
+    end
+  end
+
+  describe 'STREAM_FRONTENDS' do
+    it 'is frozen' do
+      expect(FE::STREAM_FRONTENDS).to be_frozen
+    end
+
+    it 'includes stormfront' do
+      expect(FE::STREAM_FRONTENDS).to include('stormfront')
+    end
+
+    it 'includes wrayth' do
+      expect(FE::STREAM_FRONTENDS).to include('wrayth')
+    end
+
+    it 'includes profanity' do
+      expect(FE::STREAM_FRONTENDS).to include('profanity')
+    end
+
+    it 'does not include frostbite' do
+      expect(FE::STREAM_FRONTENDS).not_to include('frostbite')
+    end
+
+    it 'includes genie' do
+      expect(FE::STREAM_FRONTENDS).to include('genie')
+    end
+
+    it 'is a subset of XML_FRONTENDS' do
+      expect(FE::STREAM_FRONTENDS - FE::XML_FRONTENDS).to be_empty
+    end
+  end
+
+  describe 'MONO_FRONTENDS' do
+    it 'is frozen' do
+      expect(FE::MONO_FRONTENDS).to be_frozen
+    end
+
+    it 'includes stormfront' do
+      expect(FE::MONO_FRONTENDS).to include('stormfront')
+    end
+
+    it 'includes wrayth' do
+      expect(FE::MONO_FRONTENDS).to include('wrayth')
+    end
+
+    it 'includes genie' do
+      expect(FE::MONO_FRONTENDS).to include('genie')
+    end
+
+    it 'does not include profanity' do
+      expect(FE::MONO_FRONTENDS).not_to include('profanity')
+    end
+
+    it 'does not include frostbite' do
+      expect(FE::MONO_FRONTENDS).not_to include('frostbite')
+    end
+
+    it 'is a subset of XML_FRONTENDS' do
+      expect(FE::MONO_FRONTENDS - FE::XML_FRONTENDS).to be_empty
+    end
+  end
+
+  describe 'SENTINEL_FRONTENDS' do
+    it 'is frozen' do
+      expect(FE::SENTINEL_FRONTENDS).to be_frozen
+    end
+
+    it 'includes saga' do
+      expect(FE::SENTINEL_FRONTENDS).to include('saga')
+    end
+
+    it 'does not include non-sentinel based frontends' do
+      expect(FE::SENTINEL_FRONTENDS).not_to include('wizard')
+      expect(FE::SENTINEL_FRONTENDS).not_to include('avalon')
+      expect(FE::SENTINEL_FRONTENDS).not_to include('genie')
+      expect(FE::SENTINEL_FRONTENDS).not_to include('wrayth')
+      expect(FE::SENTINEL_FRONTENDS).not_to include('stormfront')
+    end
+  end
+
+  describe 'GSL_FRONTENDS and XML_FRONTENDS are mutually exclusive' do
+    it 'have no overlap' do
+      overlap = FE::GSL_FRONTENDS & FE::XML_FRONTENDS
+      expect(overlap).to be_empty
+    end
+  end
+
+  # --- Predicate Methods -------------------------------------
+
+  describe '.supports_xml?' do
+    context 'with explicit argument' do
+      FE::XML_FRONTENDS.each do |fe|
+        it "returns true for '#{fe}'" do
+          expect(frontend.supports_xml?(fe)).to be true
+        end
+      end
+
+      FE::GSL_FRONTENDS.each do |fe|
+        it "returns false for '#{fe}'" do
+          expect(frontend.supports_xml?(fe)).to be false
+        end
+      end
+
+      it "returns false for 'unknown'" do
+        expect(frontend.supports_xml?('unknown')).to be false
+      end
+
+      it 'returns false for nil' do
+        expect(frontend.supports_xml?(nil)).to be false
+      end
+    end
+
+    context 'with $frontend global (default argument)' do
+      around do |example|
+        original = $frontend
+        example.run
+        $frontend = original
+      end
+
+      it 'reads from $frontend when no argument given' do
+        $frontend = 'stormfront'
+        expect(frontend.supports_xml?).to be true
+      end
+
+      it 'returns false for GSL frontend' do
+        $frontend = 'wizard'
+        expect(frontend.supports_xml?).to be false
+      end
+    end
+  end
+
+  describe '.supports_gsl?' do
+    context 'with explicit argument' do
+      FE::GSL_FRONTENDS.each do |fe|
+        it "returns true for '#{fe}'" do
+          expect(frontend.supports_gsl?(fe)).to be true
+        end
+      end
+
+      FE::XML_FRONTENDS.each do |fe|
+        it "returns false for '#{fe}'" do
+          expect(frontend.supports_gsl?(fe)).to be false
+        end
+      end
+
+      it "returns false for 'unknown'" do
+        expect(frontend.supports_gsl?('unknown')).to be false
+      end
+
+      it 'returns false for nil' do
+        expect(frontend.supports_gsl?(nil)).to be false
+      end
+    end
+
+    context 'with $frontend global (default argument)' do
+      around do |example|
+        original = $frontend
+        example.run
+        $frontend = original
+      end
+
+      it 'reads from $frontend when no argument given' do
+        $frontend = 'wizard'
+        expect(frontend.supports_gsl?).to be true
+      end
+
+      it 'returns true for avalon' do
+        $frontend = 'avalon'
+        expect(frontend.supports_gsl?).to be true
+      end
+
+      it 'returns false for stormfront' do
+        $frontend = 'stormfront'
+        expect(frontend.supports_gsl?).to be false
+      end
+    end
+  end
+
+  describe '.supports_streams?' do
+    context 'with explicit argument' do
+      FE::STREAM_FRONTENDS.each do |fe|
+        it "returns true for '#{fe}'" do
+          expect(frontend.supports_streams?(fe)).to be true
+        end
+      end
+
+      it "returns false for 'frostbite'" do
+        expect(frontend.supports_streams?('frostbite')).to be false
+      end
+
+      it "returns false for 'wizard'" do
+        expect(frontend.supports_streams?('wizard')).to be false
+      end
+
+      it 'returns false for nil' do
+        expect(frontend.supports_streams?(nil)).to be false
+      end
+    end
+
+    context 'with $frontend global (default argument)' do
+      around do |example|
+        original = $frontend
+        example.run
+        $frontend = original
+      end
+
+      it 'returns true for profanity' do
+        $frontend = 'profanity'
+        expect(frontend.supports_streams?).to be true
+      end
+
+      it 'returns false for wizard' do
+        $frontend = 'wizard'
+        expect(frontend.supports_streams?).to be false
+      end
+    end
+  end
+
+  describe '.supports_mono?' do
+    context 'with explicit argument' do
+      FE::MONO_FRONTENDS.each do |fe|
+        it "returns true for '#{fe}'" do
+          expect(frontend.supports_mono?(fe)).to be true
+        end
+      end
+
+      it "returns false for 'profanity'" do
+        expect(frontend.supports_mono?('profanity')).to be false
+      end
+
+      it "returns false for 'frostbite'" do
+        expect(frontend.supports_mono?('frostbite')).to be false
+      end
+
+      it "returns false for 'wizard'" do
+        expect(frontend.supports_mono?('wizard')).to be false
+      end
+
+      it 'returns false for nil' do
+        expect(frontend.supports_mono?(nil)).to be false
+      end
+    end
+
+    context 'with $frontend global (default argument)' do
+      around do |example|
+        original = $frontend
+        example.run
+        $frontend = original
+      end
+
+      it 'returns true for genie' do
+        $frontend = 'genie'
+        expect(frontend.supports_mono?).to be true
+      end
+
+      it 'returns false for wizard' do
+        $frontend = 'wizard'
+        expect(frontend.supports_mono?).to be false
+      end
+    end
+  end
+
+  # --- Client Accessor -------------------------------------
+
+  describe '.client' do
+    around do |example|
+      original = $frontend
+      example.run
+      $frontend = original
+    end
+
+    it 'returns the current $frontend value' do
+      $frontend = 'stormfront'
+      expect(frontend.client).to eq('stormfront')
+    end
+
+    it 'reflects changes to $frontend' do
+      $frontend = 'wizard'
+      expect(frontend.client).to eq('wizard')
+      $frontend = 'profanity'
+      expect(frontend.client).to eq('profanity')
+    end
+  end
+
+  describe '.client=' do
+    around do |example|
+      original = $frontend
+      example.run
+      $frontend = original
+    end
+
+    it 'sets the $frontend value' do
+      frontend.client = 'frostbite'
+      expect($frontend).to eq('frostbite')
+    end
+
+    it 'is readable via .client after assignment' do
+      frontend.client = 'genie'
+      expect(frontend.client).to eq('genie')
+    end
+
+    it 'integrates with predicates' do
+      frontend.client = 'wizard'
+      expect(frontend.supports_gsl?).to be true
+      expect(frontend.supports_xml?).to be false
+
+      frontend.client = 'stormfront'
+      expect(frontend.supports_gsl?).to be false
+      expect(frontend.supports_xml?).to be true
+    end
+  end
+
+  describe '.set_from_client' do
+    around do |example|
+      original = frontend.pid
+      example.run
+      frontend.pid = original
+    end
+
+    it 'records the process id supplied by a detachable Saga client' do
+      allow(Lich).to receive(:log)
+
+      expect(frontend.set_from_client(12_345)).to eq(12_345)
+      expect(frontend.pid).to eq(12_345)
+      expect(Lich).to have_received(:log).with('Frontend PID set from client: 12345')
+    end
+  end
+
+  describe '.launched_pid=' do
+    around do |example|
+      original_pid = frontend.pid
+      original_launched = frontend.launched_pid
+      example.run
+      frontend.instance_variable_set(:@launched_pid, original_launched)
+      frontend.pid = original_pid
+    end
+
+    it 'records the launched frontend and makes it the current PID' do
+      frontend.launched_pid = 777
+      expect(frontend.launched_pid).to eq(777)
+      expect(frontend.pid).to eq(777)
+    end
+
+    it 'is left alone when a detachable client sets the PID' do
+      allow(Lich).to receive(:log)
+      frontend.launched_pid = 777
+      frontend.set_from_client(12_345)
+      expect(frontend.pid).to eq(12_345)
+      expect(frontend.launched_pid).to eq(777)
+    end
+  end
+
+  # --- client_string ------------------------------------------
+
+  describe '.client_string' do
+    let(:default_string) { '/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML' }
+
+    it 'is byte-identical to CLIENT_STRING for a frontend without an override' do
+      expect(frontend.client_string(frontend: 'wrayth')).to eq(frontend::CLIENT_STRING)
+      expect(frontend.client_string(nil, frontend: 'wrayth').bytes).to eq(default_string.bytes)
+    end
+
+    it 'falls back to CLIENT_STRING for nil or unregistered frontends' do
+      expect(frontend.client_string(frontend: nil)).to eq(default_string)
+      expect(frontend.client_string(frontend: 'unknown')).to eq(default_string)
+    end
+
+    it 'replaces only the /VERSION: value when a version is given' do
+      expect(frontend.client_string('genie-5.1', frontend: 'wrayth')).to eq('/FE:WRAYTH /VERSION:genie-5.1 /P:SAGA /XML')
+    end
+
+    it 'identifies Saga with /P:SAGA and the default version when no version is given' do
+      expect(frontend.client_string(frontend: 'saga')).to eq('/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML')
+    end
+
+    it 'puts the given version into the Saga string' do
+      expect(frontend.client_string('saga-0.10.2', frontend: 'saga')).to eq('/FE:WRAYTH /VERSION:saga-0.10.2 /P:SAGA /XML')
+    end
+
+    it 'defaults frontend to the current client' do
+      allow(frontend).to receive(:client).and_return('saga')
+      expect(frontend.client_string).to eq('/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML')
+    end
+
+    it 'leaves the CLIENT_STRING constant unchanged and Saga without a metadata override' do
+      frontend.client_string('saga-0.10.2', frontend: 'wrayth')
+      frontend.client_string('saga-0.10.2', frontend: 'saga')
+      expect(frontend::CLIENT_STRING).to eq(default_string)
+      expect(frontend.metadata_for('saga', :client_string)).to be_nil
+    end
+
+    it 'treats the version literally (no regex backreference expansion)' do
+      expect(frontend.client_string('1\\0', frontend: 'wrayth')).to eq('/FE:WRAYTH /VERSION:1\\0 /P:SAGA /XML')
+    end
+  end
+
+  # --- proxy_handshake ----------------------------------------
+
+  describe '.proxy_handshake' do
+    let(:lich_string) { '/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML' }
+
+    # Each front end's handshake line exactly as it reaches Lich's proxy:
+    # Genie4 Core/Game.cs GameSocket_EventConnected (no slash, LF),
+    # Frostbite gui/tcpclient.cpp connectToLichListener + writeCommand (<c>, CRLF),
+    # Warlock3 wrayth/.../WraythClient.kt connect (LF).
+    {
+      'Genie4'    => ["FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML\n", "\n", 'genie'],
+      'Frostbite' => ["<c>/FE:STORMFRONT /VERSION:1.0.1.26 /P:WIN_UNKNOWN /XML\r\n", "\r\n", nil, '<c>'],
+      'Warlock3'  => ["/FE:WRAYTH /VERSION:1.0.1.28 /P:WIN_UNKNOWN /XML\n", "\n", nil]
+    }.each do |name, (line, eol, fe, prefix)|
+      it "replaces #{name}'s handshake with Lich's, keeping its prefix and line ending" do
+        expect(frontend.proxy_handshake(line, frontend: fe)).to eq("#{prefix}#{lich_string}#{eol}")
+      end
+    end
+
+    it 'puts the --fe-version value into the replacement' do
+      expect(frontend.proxy_handshake("FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML\n", version: 'genie-4.5', frontend: 'genie'))
+        .to eq("/FE:WRAYTH /VERSION:genie-4.5 /P:SAGA /XML\n")
+    end
+
+    it 'adds no line ending when the front end sent none' do
+      expect(frontend.proxy_handshake('FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML', frontend: 'genie')).to eq(lich_string)
+    end
+
+    context 'with $frontend global (default argument)' do
+      around do |example|
+        original = $frontend
+        example.run
+      ensure
+        $frontend = original
+      end
+
+      it 'defaults the front end to the current client' do
+        $frontend = 'saga'
+        expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:1.0.1.28 /P:WIN_UNKNOWN /XML\n"))
+          .to eq("/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n")
+      end
+
+      it 'leaves $frontend alone, so capability lookups still answer for the real front end' do
+        $frontend = 'genie'
+        expect(frontend.proxy_handshake("FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML\n")).to eq("#{lich_string}\n")
+        expect($frontend).to eq('genie')
+        expect(frontend.supports_game_links?).to be(false)
+      end
+    end
+
+    it "uses a front end's registry :client_string" do
+      expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:1.0.1.28 /P:WIN_UNKNOWN /XML\n", frontend: 'saga'))
+        .to eq("/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n")
+    end
+
+    # Saga in Lich mode sends its own key and handshake (saga-archive
+    # src/main/index.js: `/FE:${name} /VERSION:saga-${version} /P:SAGA /XML\r\n`).
+    # DragonRealms needs Lich's /VERSION:, so Saga's line is replaced too.
+    it "replaces Saga's own /P:SAGA handshake with Lich's" do
+      saga = "/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n"
+      expect(frontend.proxy_handshake(saga, frontend: 'saga')).to eq("#{lich_string}\r\n")
+      expect(frontend.proxy_handshake(saga, version: 'saga-9', frontend: 'saga')).to eq("/FE:WRAYTH /VERSION:saga-9 /P:SAGA /XML\r\n")
+      expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:x /p:saga /XML\n", frontend: 'genie')).to eq("#{lich_string}\n")
+    end
+
+    it "forwards Saga's own handshake with keep (--keep-fe-string)" do
+      saga = "/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n"
+      expect(frontend.proxy_handshake(saga, keep: true, frontend: 'saga')).to equal(saga)
+    end
+
+    describe 'logging' do
+      let(:logged) { [] }
+
+      before { allow(Lich).to receive(:log) { |msg| logged << msg } }
+
+      it 'logs both client strings when it replaces the front end handshake' do
+        frontend.proxy_handshake("<c>/FE:STORMFRONT /VERSION:1.0.1.26 /P:WIN_UNKNOWN /XML\r\n", frontend: nil)
+        expect(logged).to eq([
+                               'info: client string from front end: <c>/FE:STORMFRONT /VERSION:1.0.1.26 /P:WIN_UNKNOWN /XML',
+                               "info: client string sent to game: <c>#{lich_string} (Lich's, in place of the front end's)"
+                             ])
+      end
+
+      it "logs both client strings when it replaces Saga's own /P:SAGA handshake" do
+        frontend.proxy_handshake("/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n", frontend: 'saga')
+        expect(logged).to eq([
+                               'info: client string from front end: /FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML',
+                               "info: client string sent to game: #{lich_string} (Lich's, in place of the front end's)"
+                             ])
+      end
+
+      it 'logs both client strings when keep is set (the kill switch)' do
+        line = "FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML\n"
+        expect(frontend.proxy_handshake(line, keep: true, frontend: 'genie')).to equal(line)
+        expect(logged).to eq([
+                               'info: client string from front end: FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML',
+                               "info: client string sent to game: FE:WRAYTH /VERSION:1.0.1.22 /P:WIN_UNKNOWN /XML (the front end's own: --keep-fe-string or Lich.keep_fe_string)"
+                             ])
+      end
+
+      it 'logs a line that is not a handshake by length only' do
+        frontend.proxy_handshake("SET_FRONTEND_PID 4242\r\n", frontend: 'genie')
+        expect(logged).to eq([
+                               'info: client string from front end: (withheld: not a client string, 21 characters)',
+                               'info: client string sent to game: (withheld: not a client string, 21 characters) (forwarded unchanged: not a client string)'
+                             ])
+      end
+
+      it 'never logs a login key that arrives where the handshake was expected' do
+        key = 'SECRETKEY0123456789abcdef0123456'
+        frontend.proxy_handshake("<c>#{key}\r\n", frontend: 'genie')
+        expect(logged.size).to eq(2)
+        expect(logged.join("\n")).not_to include('SECRETKEY')
+      end
+    end
+
+    {
+      'nil'                         => nil,
+      'a login key'                 => "0123456789abcdef0123456789abcdef\n",
+      'a <c>-prefixed key'          => "<c>0123456789abcdef\r\n",
+      'a ready line'                => "<c>\r\n",
+      'an empty line'               => "\n",
+      'a handshake without /XML'    => "/FE:STORMFRONT /VERSION:1.0.1.26 /P:WIN_UNKNOWN\n",
+      'an /XML that is not a token' => "/FE:WRAYTH /VERSION:1 /P:WIN_UNKNOWN /XMLX\n",
+      'FE: after other text'        => "say FE:WRAYTH /VERSION:1 /XML\n",
+      'FE: after a space'           => " /FE:WRAYTH /VERSION:1 /XML\n",
+      'a doubled <c> prefix'        => "<c><c>/FE:WRAYTH /VERSION:1 /XML\n",
+      "Profanity's PID line"        => "SET_FRONTEND_PID 4242\r\n",
+      'a bare CR ending'            => "/FE:WRAYTH /VERSION:1 /XML\r",
+      'two lines'                   => "/FE:WRAYTH /VERSION:1 /XML\nlook\n"
+    }.each do |label, line|
+      it "forwards #{label} unchanged" do
+        expect(frontend.proxy_handshake(line, frontend: 'genie')).to equal(line)
+      end
+    end
+  end
+
+  # --- log_client_string -------------------------------------
+
+  describe '.log_client_string' do
+    let(:logged) { [] }
+
+    before { allow(Lich).to receive(:log) { |msg| logged << msg } }
+
+    def log_line(line, source: :frontend, note: nil)
+      frontend.log_client_string(source, line, note: note)
+      logged.last
+    end
+
+    it 'labels the two sides and strips the line ending' do
+      expect(log_line("/FE:WRAYTH /VERSION:1 /P:SAGA /XML\r\n")).to eq('info: client string from front end: /FE:WRAYTH /VERSION:1 /P:SAGA /XML')
+      expect(log_line("/FE:WRAYTH /VERSION:1 /P:SAGA /XML\n", source: :game)).to eq('info: client string sent to game: /FE:WRAYTH /VERSION:1 /P:SAGA /XML')
+      expect(log_line("/FE:WRAYTH /XML\r", source: :game)).to eq('info: client string sent to game: /FE:WRAYTH /XML')
+    end
+
+    it 'appends the note in parentheses' do
+      expect(log_line('/FE:WRAYTH /XML', source: :game, note: 'why')).to eq('info: client string sent to game: /FE:WRAYTH /XML (why)')
+    end
+
+    it 'logs nil (front end gone before it sent a line) as (none)' do
+      expect(log_line(nil)).to eq('info: client string from front end: (none)')
+    end
+
+    it 'accepts a frozen line' do
+      expect(log_line(frontend::CLIENT_STRING, source: :game)).to eq("info: client string sent to game: #{frontend::CLIENT_STRING}")
+    end
+
+    it 'rejects an unknown source rather than logging an unlabelled line' do
+      expect { frontend.log_client_string(:client, '/FE:X /XML') }.to raise_error(KeyError)
+      expect(logged).to be_empty
+    end
+
+    it 'caps the logged string at CLIENT_STRING_LOG_LIMIT characters' do
+      limit = frontend::CLIENT_STRING_LOG_LIMIT
+      at_limit = "/FE:#{'x' * (limit - 4)}"
+      expect(log_line("#{at_limit}\n")).to end_with(": #{at_limit}")
+      expect(log_line("#{at_limit}yz\n")).to end_with(": #{at_limit}... (2 more characters)")
+    end
+
+    it 'withholds a line that is not shaped like a handshake, logging only its length' do
+      expect(log_line("0123456789abcdef0123456789abcdef\r\n")).to eq('info: client string from front end: (withheld: not a client string, 32 characters)')
+      expect(log_line("<c>\r\n")).to eq('info: client string from front end: (withheld: not a client string, 3 characters)')
+      expect(log_line("say FE:WRAYTH /XML\n")).to include('(withheld: not a client string, 18 characters)')
+    end
+
+    it 'withholds anything after an embedded line break' do
+      expect(log_line("/FE:WRAYTH /XML\nSECRETKEY\n")).to eq('info: client string from front end: /FE:WRAYTH /XML (9 characters after a line break withheld)')
+      expect(log_line("/FE:WRAYTH /XML\rSECRET")).not_to include('SECRET')
+    end
+
+    it 'shows control characters as ?' do
+      expect(log_line("/FE:WRAYTH\e[31m /XML\0\n")).to eq('info: client string from front end: /FE:WRAYTH?[31m /XML?')
+    end
+
+    it 'logs a line with invalid UTF-8 instead of raising' do
+      expect(log_line("/FE:WRAYTH /VERSION:#{255.chr} /XML\n".dup.force_encoding('UTF-8'))).to eq('info: client string from front end: /FE:WRAYTH /VERSION:? /XML')
+    end
+
+    # A socket's gets returns BINARY, where String#scrub does nothing.
+    it 'shows invalid UTF-8 as ? in a BINARY line, as a socket reads it' do
+      expect(log_line("/FE:WRAYTH /VERSION:#{255.chr} /XML\n".b)).to eq('info: client string from front end: /FE:WRAYTH /VERSION:? /XML')
+    end
+
+    it 'shows C1 control characters in a BINARY line as ?' do
+      expect(log_line("/FE:WRAYTH #{[0xC2, 0x9B].pack('C*')}31m /XML\n".b)).to eq('info: client string from front end: /FE:WRAYTH ?31m /XML')
+    end
+
+    it 'counts and caps a BINARY line by characters, never splitting one' do
+      limit = frontend::CLIENT_STRING_LOG_LIMIT
+      e_acute = [0xC3, 0xA9].pack('C*') # e-acute, two bytes in UTF-8
+      line = "/FE:#{e_acute * limit}".b
+      expected = line.dup.force_encoding(Encoding::UTF_8)[0, limit]
+      expect(log_line(line)).to eq("info: client string from front end: #{expected}... (4 more characters)")
+    end
+
+    it 'leaves the caller\'s BINARY line untouched' do
+      line = "/FE:WRAYTH /XML\n".b
+      log_line(line)
+      expect(line.encoding).to eq(Encoding::BINARY)
+    end
+  end
+
+  # --- send_handshake ----------------------------------------
+
+  describe '.send_handshake' do
+    it 'is defined as a module method' do
+      expect(frontend).to respond_to(:send_handshake)
+    end
+
+    it 'accepts one argument (version_string)' do
+      expect(frontend.method(:send_handshake).arity).to eq(1)
+    end
+
+    context 'when sending' do
+      around do |example|
+        saved_buffer = $_CLIENTBUFFER_
+        saved_prefix = $cmd_prefix
+        $_CLIENTBUFFER_ = []
+        $cmd_prefix = '<c>'
+        example.run
+      ensure
+        $_CLIENTBUFFER_ = saved_buffer
+        $cmd_prefix = saved_prefix
+      end
+
+      it 'logs the client string it sends to the game, and only that' do
+        game = Module.new
+        game.define_singleton_method(:sent) { @sent ||= [] }
+        game.define_singleton_method(:_puts) { |str| sent << str }
+        stub_const('Game', game)
+        allow(frontend).to receive(:sleep)
+        logged = []
+        allow(Lich).to receive(:log) { |msg| logged << msg }
+
+        frontend.send_handshake(frontend::CLIENT_STRING)
+
+        expect(Game.sent.first).to eq(frontend::CLIENT_STRING)
+        expect(logged).to eq(["info: client string sent to game: #{frontend::CLIENT_STRING} (Lich's, in place of the front end's)"])
+      end
+    end
+  end
+
+  describe '.player_id_tag' do
+    it 'is defined as a module method' do
+      expect(frontend).to respond_to(:player_id_tag)
+    end
+
+    it 'builds the tag from a bare numeric id' do
+      expect(frontend.player_id_tag('12345')).to eq("<playerID id='12345'/>")
+    end
+
+    it 'accepts an integer id and stringifies it' do
+      expect(frontend.player_id_tag(12345)).to eq("<playerID id='12345'/>")
+    end
+
+    it 'reproduces the id verbatim (no zero-stripping)' do
+      expect(frontend.player_id_tag('007')).to eq("<playerID id='007'/>")
+    end
+
+    it 'returns nil for an empty id (login not yet populated)' do
+      expect(frontend.player_id_tag('')).to be_nil
+    end
+
+    it 'returns nil for a nil id' do
+      expect(frontend.player_id_tag(nil)).to be_nil
+    end
+
+    it 'returns nil for a non-numeric id' do
+      expect(frontend.player_id_tag('abc')).to be_nil
+    end
+
+    it 'returns nil when the id has non-numeric characters mixed in' do
+      expect(frontend.player_id_tag('12a45')).to be_nil
+    end
+
+    it 'returns nil when the id has surrounding whitespace' do
+      expect(frontend.player_id_tag(' 12345 ')).to be_nil
+    end
+  end
+
+  # --- Behavioral Consistency --------------------------------
+
+  describe 'predicate consistency across all known frontends' do
+    all_frontends = %w[stormfront wrayth frostbite profanity genie wizard avalon unknown suks]
+
+    all_frontends.each do |fe|
+      context "for frontend '#{fe}'" do
+        it 'is not both xml_capable and gsl_based' do
+          expect(frontend.supports_xml?(fe) && frontend.supports_gsl?(fe)).to be false
+        end
+
+        it 'stream support implies XML capability' do
+          next unless frontend.supports_streams?(fe)
+
+          expect(frontend.supports_xml?(fe)).to be true
+        end
+      end
+    end
+  end
+
+  # --- Existing Functionality Preserved ----------------------
+
+  describe 'existing session file functionality' do
+    it 'still responds to create_session_file' do
+      expect(frontend).to respond_to(:create_session_file)
+    end
+
+    it 'still responds to cleanup_session_file' do
+      expect(frontend).to respond_to(:cleanup_session_file)
+    end
+
+    it 'still responds to session_file_location' do
+      expect(frontend).to respond_to(:session_file_location)
+    end
+  end
+
+  describe 'existing PID functionality' do
+    it 'still responds to pid' do
+      expect(frontend).to respond_to(:pid)
+    end
+
+    it 'still responds to pid=' do
+      expect(frontend).to respond_to(:pid=)
+    end
+
+    it 'still responds to detect_pid' do
+      expect(frontend).to respond_to(:detect_pid)
+    end
+
+    it 'still responds to refocus' do
+      expect(frontend).to respond_to(:refocus)
+    end
+  end
+
+  # --- Registry API --------------------------------------------
+
+  describe '.register' do
+    it 'is defined as a module method' do
+      expect(frontend).to respond_to(:register)
+    end
+
+    it 'accepts name with capabilities and metadata keyword args' do
+      # Verify the method signature: name (required), capabilities/metadata (optional keywords)
+      params = frontend.method(:register).parameters
+      expect(params).to include([:req, :name])
+      expect(params).to include([:key, :capabilities])
+      expect(params).to include([:key, :metadata])
+    end
+
+    it 'rejects a blank frontend name' do
+      expect { frontend.register(nil) }
+        .to raise_error(ArgumentError, 'frontend name must not be empty')
+    end
+
+    it 'invalidates a cached definition after registration' do
+      cached = frontend.definition_for(:suks)
+
+      frontend.register(:suks, metadata: { launcher_adapter: :embedded })
+      refreshed = frontend.definition_for(:suks)
+
+      expect(refreshed).not_to equal(cached)
+      expect(refreshed).to eq(cached)
+    end
+  end
+
+  describe '.supports_room_element?' do
+    it 'is true only for Saga, the front end that renders the inline <room> block' do
+      expect(frontend.supports_room_element?('saga')).to be true
+      %w[wrayth stormfront genie profanity frostbite wizard avalon suks unknown].each do |fe|
+        expect(frontend.supports_room_element?(fe)).to be(false), fe
+      end
+    end
+  end
+
+  describe '.supports_game_links? / .supports_double_bold?' do
+    it 'is true only for Saga, the front end that handles DragonRealms links and doubled bold' do
+      expect(frontend.supports_game_links?('saga')).to be true
+      expect(frontend.supports_double_bold?('saga')).to be true
+      %w[wrayth stormfront genie profanity frostbite wizard avalon suks unknown].each do |fe|
+        expect(frontend.supports_game_links?(fe)).to be(false), fe
+        expect(frontend.supports_double_bold?(fe)).to be(false), fe
+      end
+    end
+
+    it 'lets a custom front end declare them' do
+      expect(frontend.capability_vocabulary).to include(:game_links, :double_bold)
+    end
+  end
+
+  describe '.has_capability?' do
+    it 'returns true for registered capabilities' do
+      expect(frontend.has_capability?('wrayth', :xml)).to be true
+      expect(frontend.has_capability?('wrayth', :streams)).to be true
+      expect(frontend.has_capability?('wrayth', :mono)).to be true
+      expect(frontend.has_capability?('wrayth', :room_window)).to be true
+    end
+
+    it 'returns false for unregistered capabilities' do
+      expect(frontend.has_capability?('wizard', :xml)).to be false
+      expect(frontend.has_capability?('frostbite', :streams)).to be false
+      expect(frontend.has_capability?('profanity', :mono)).to be false
+    end
+
+    it 'returns false for unknown frontends' do
+      expect(frontend.has_capability?('unknown_frontend', :xml)).to be false
+      expect(frontend.registered_frontends).not_to include('unknown_frontend')
+    end
+
+    it 'returns false for nil frontend' do
+      expect(frontend.has_capability?(nil, :xml)).to be false
+    end
+
+    it 'handles string and symbol capabilities equivalently' do
+      expect(frontend.has_capability?('wrayth', :xml)).to be true
+      expect(frontend.has_capability?('wrayth', 'xml')).to be true
+    end
+
+    it 'is case-insensitive for frontend names' do
+      expect(frontend.has_capability?('WRAYTH', :xml)).to be true
+      expect(frontend.has_capability?('Wrayth', :xml)).to be true
+      expect(frontend.has_capability?('wrayth', :xml)).to be true
+    end
+  end
+
+  describe '.metadata_for' do
+    it 'returns nil for unregistered metadata keys' do
+      expect(frontend.metadata_for('wrayth', :nonexistent_key)).to be_nil
+    end
+
+    it 'returns nil for frontends without that metadata' do
+      expect(frontend.metadata_for('stormfront', :client_string)).to be_nil
+    end
+
+    it 'returns nil for nil frontend' do
+      expect(frontend.metadata_for(nil, :client_string)).to be_nil
+    end
+
+    it 'is case-insensitive for frontend names' do
+      # Both should return nil (no metadata set) but should not raise
+      expect(frontend.metadata_for('WRAYTH', :client_string)).to be_nil
+      expect(frontend.metadata_for('Wrayth', :client_string)).to be_nil
+    end
+
+    it 'does not expose mutable registry-owned metadata' do
+      launch_plans = frontend.metadata_for('saga', :launch_plans)
+
+      expect(launch_plans).to be_frozen
+      expect(launch_plans.fetch(:darwin).fetch(:arguments)).to be_frozen
+      expect do
+        launch_plans.fetch(:darwin).fetch(:arguments) << '--mutated'
+      end.to raise_error(FrozenError)
+    end
+  end
+
+  describe '.registered_frontends' do
+    it 'returns an array of frontend names' do
+      result = frontend.registered_frontends
+      expect(result).to be_an(Array)
+      expect(result).to include('wrayth', 'stormfront', 'wizard')
+    end
+
+    it 'includes all known frontends' do
+      result = frontend.registered_frontends
+      %w[wrayth stormfront profanity genie frostbite suks wizard avalon].each do |fe|
+        expect(result).to include(fe)
+      end
+    end
+  end
+
+  describe '.frontends_with_capability' do
+    it 'returns frontends that have :xml capability' do
+      result = frontend.frontends_with_capability(:xml)
+      expect(result).to include('wrayth', 'stormfront', 'profanity', 'genie', 'frostbite')
+      expect(result).not_to include('wizard', 'avalon')
+    end
+
+    it 'returns frontends that have :gsl capability' do
+      result = frontend.frontends_with_capability(:gsl)
+      expect(result).to include('wizard', 'avalon')
+      expect(result).not_to include('wrayth', 'stormfront')
+    end
+
+    it 'returns frontends that have :streams capability' do
+      result = frontend.frontends_with_capability(:streams)
+      expect(result).to include('wrayth', 'stormfront', 'profanity', 'genie')
+      expect(result).not_to include('frostbite', 'wizard')
+    end
+
+    it 'returns frontends that have :room_window capability' do
+      result = frontend.frontends_with_capability(:room_window)
+      expect(result).to include('wrayth', 'stormfront')
+      expect(result).not_to include('wizard', 'profanity')
+    end
+
+    it 'returns empty array for unknown capability' do
+      result = frontend.frontends_with_capability(:nonexistent_capability)
+      expect(result).to be_empty
+    end
+  end
+
+  describe '.supports_sentinel?' do
+    around do |example|
+      original = $frontend
+      example.run
+      $frontend = original
+      frontend.sentinel_requested = false
+    end
+
+    it 'follows the frontend capability by default' do
+      expect(frontend.supports_sentinel?('saga')).to be true
+      expect(frontend.supports_sentinel?('stormfront')).to be false
+      $frontend = 'stormfront'
+      expect(frontend.supports_sentinel?).to be false
+    end
+
+    it 'is true for the running frontend once --sentinel requested it' do
+      $frontend = 'stormfront'
+      frontend.sentinel_requested = true
+
+      expect(frontend.supports_sentinel?).to be true
+      expect(frontend.supports_sentinel?('wrayth')).to be true
+    end
+
+    it 'still answers from the catalog for other frontends' do
+      $frontend = 'stormfront'
+      frontend.sentinel_requested = true
+
+      expect(frontend.supports_sentinel?('wizard')).to be false
+      expect(frontend.supports_sentinel?('saga')).to be true
+    end
+  end
+
+  describe '.supports_room_window?' do
+    it 'returns true for frontends with room_window capability' do
+      expect(frontend.supports_room_window?('wrayth')).to be true
+      expect(frontend.supports_room_window?('stormfront')).to be true
+    end
+
+    it 'returns false for frontends without room_window capability' do
+      expect(frontend.supports_room_window?('profanity')).to be false
+      expect(frontend.supports_room_window?('genie')).to be false
+      expect(frontend.supports_room_window?('wizard')).to be false
+    end
+
+    context 'with $frontend global (default argument)' do
+      around do |example|
+        original = $frontend
+        example.run
+        $frontend = original
+      end
+
+      it 'reads from $frontend when no argument given' do
+        $frontend = 'stormfront'
+        expect(frontend.supports_room_window?).to be true
+      end
+
+      it 'returns false for profanity' do
+        $frontend = 'profanity'
+        expect(frontend.supports_room_window?).to be false
+      end
+    end
+  end
+
+  # --- Registry-Backed Constants --------------------------------
+
+  describe 'backward-compatible constants are derived from registry' do
+    it 'XML_FRONTENDS matches frontends_with_capability(:xml)' do
+      expect(FE::XML_FRONTENDS.sort).to eq(frontend.frontends_with_capability(:xml).sort)
+    end
+
+    it 'GSL_FRONTENDS matches frontends_with_capability(:gsl)' do
+      expect(FE::GSL_FRONTENDS.sort).to eq(frontend.frontends_with_capability(:gsl).sort)
+    end
+
+    it 'STREAM_FRONTENDS matches frontends_with_capability(:streams)' do
+      expect(FE::STREAM_FRONTENDS.sort).to eq(frontend.frontends_with_capability(:streams).sort)
+    end
+
+    it 'MONO_FRONTENDS matches frontends_with_capability(:mono)' do
+      expect(FE::MONO_FRONTENDS.sort).to eq(frontend.frontends_with_capability(:mono).sort)
+    end
+  end
+
+  # --- Regression: Old Patterns Still Match ------------------
+
+  describe 'regression: predicate methods match old regex patterns' do
+    # These tests verify that the new predicate methods produce the same
+    # results as the old regex patterns they replaced.
+
+    describe 'old: $frontend =~ /^(?:wizard|avalon)$/' do
+      it 'matches supports_gsl? for all known frontends' do
+        %w[stormfront wrayth frostbite profanity genie wizard avalon unknown suks].each do |fe|
+          old_result = !!(fe =~ /^(?:wizard|avalon)$/)
+          new_result = frontend.supports_gsl?(fe)
+          expect(new_result).to eq(old_result),
+                                "Mismatch for '#{fe}': old=#{old_result}, new=#{new_result}"
+        end
+      end
+    end
+
+    describe 'old: $frontend =~ /^(?:stormfront|frostbite|wrayth|profanity|genie)$/' do
+      it 'matches supports_xml? for all known frontends' do
+        %w[stormfront wrayth frostbite profanity genie wizard avalon unknown suks].each do |fe|
+          old_result = !!(fe =~ /^(?:stormfront|frostbite|wrayth|profanity|genie)$/)
+          new_result = frontend.supports_xml?(fe)
+          expect(new_result).to eq(old_result),
+                                "Mismatch for '#{fe}': old=#{old_result}, new=#{new_result}"
+        end
+      end
+    end
+
+    describe 'old: $frontend =~ /stormfront|profanity/i (stream_window in messaging.rb)' do
+      it 'supports_streams? is a superset that adds wrayth (intentional bug fix)' do
+        # The old pattern was missing wrayth - supports_streams? fixes this
+        %w[stormfront profanity].each do |fe|
+          old_result = !!(fe =~ /stormfront|profanity/i)
+          new_result = frontend.supports_streams?(fe)
+          expect(new_result).to eq(old_result),
+                                "Mismatch for '#{fe}': old=#{old_result}, new=#{new_result}"
+        end
+
+        # Wrayth is the intentional addition (bug fix)
+        expect(frontend.supports_streams?('wrayth')).to be true
+      end
+    end
+
+    describe 'old: $fake_stormfront (was true when wizard/avalon)' do
+      it 'supports_gsl? matches old $fake_stormfront behavior' do
+        %w[wizard avalon].each do |fe|
+          expect(frontend.supports_gsl?(fe)).to(be(true),
+                                                "supports_gsl?('#{fe}') should be true (was $fake_stormfront=true)")
+        end
+
+        %w[stormfront wrayth frostbite profanity genie unknown].each do |fe|
+          expect(frontend.supports_gsl?(fe)).to(be(false),
+                                                "supports_gsl?('#{fe}') should be false (was $fake_stormfront=false)")
+        end
+      end
+    end
+  end
+end

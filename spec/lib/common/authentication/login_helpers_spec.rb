@@ -1,0 +1,764 @@
+# frozen_string_literal: true
+
+# NOTE: This spec intentionally does NOT require spec_helper.
+# It tests LoginHelpers in isolation to verify login flow logic works
+# standalone without the full Lich networking and game state infrastructure.
+
+require 'rspec'
+
+# Define LICH_VERSION; the .format_launch_flag examples stub and hide it
+LICH_VERSION = '5.14.0' unless defined?(LICH_VERSION)
+
+# Mock dependencies before requiring
+module Lich
+  def self.log(_message)
+    # no-op for tests
+  end
+end unless defined?(Lich)
+
+# Guard the method, not the module: other files (e.g. util/deep_freeze, loaded
+# via frontend.rb) define Lich::Util without install_gem_requirements, and
+# login_helpers.rb calls it at load time.
+module Lich
+  module Util
+    unless respond_to?(:install_gem_requirements)
+      def self.install_gem_requirements(_gems)
+        # no-op for tests
+      end
+    end
+  end
+end
+
+module Lich
+  module Messaging
+    def self.msg(_level, _message)
+      # no-op for tests
+    end
+  end
+end unless defined?(Lich::Messaging)
+
+module GameConfig
+  DEFAULT_REALM = 'prime'
+  DEFAULT_GAME_NAME = 'Unknown Game'
+end unless defined?(GameConfig)
+
+require_relative '../../../../lib/common/authentication/login_helpers'
+require_relative '../../../../lib/main/help_text'
+
+RSpec.describe Lich::Common::Authentication::LoginHelpers do
+  describe 'constants' do
+    it 'defines the complete accepted game-code set' do
+      expect(described_class::VALID_GAME_CODES).to eq(%w[GS3 GST GSF DR DRX DRT DRF])
+    end
+
+    it 'defines VALID_FRONTENDS' do
+      expect(described_class::VALID_FRONTENDS).to include('stormfront', 'wizard', 'avalon', 'genie', 'frostbite', 'wrayth')
+      expect(described_class::VALID_FRONTENDS).not_to include('suks')
+    end
+
+    it 'defines VALID_REALMS' do
+      expect(described_class::VALID_REALMS).to include('prime', 'platinum', 'shattered', 'test')
+    end
+
+    it 'defines GEMSTONE_FLAGS' do
+      expect(described_class::GEMSTONE_FLAGS).to eq(%w[--gemstone --gs])
+    end
+
+    it 'defines DRAGONREALMS_FLAGS' do
+      expect(described_class::DRAGONREALMS_FLAGS).to eq(%w[--dragonrealms --dr])
+    end
+
+    it 'defines GAME_CODE_TO_NAME mappings' do
+      expect(described_class::GAME_CODE_TO_NAME['GS3']).to eq('GemStone IV')
+      expect(described_class::GAME_CODE_TO_NAME['DR']).to eq('DragonRealms')
+    end
+  end
+
+  describe '.valid_game_code?' do
+    it 'accepts every canonical GemStone and DragonRealms game code' do
+      described_class::VALID_GAME_CODES.each do |game_code|
+        expect(described_class.valid_game_code?(game_code)).to be(true), game_code
+      end
+    end
+
+    it 'rejects retired, invented, blank, and non-normalized game codes' do
+      ['GSX', 'GS4', 'BOGUS', 'gs3', '', nil].each do |game_code|
+        expect(described_class.valid_game_code?(game_code)).to be(false), game_code.inspect
+      end
+    end
+  end
+
+  describe '.realm_from_game_code' do
+    it 'returns platinum for GSX' do
+      expect(described_class.realm_from_game_code('GSX')).to eq('platinum')
+    end
+
+    it 'returns shattered for GSF' do
+      expect(described_class.realm_from_game_code('GSF')).to eq('shattered')
+    end
+
+    it 'returns test for GST' do
+      expect(described_class.realm_from_game_code('GST')).to eq('test')
+    end
+
+    it 'returns default realm for unknown codes' do
+      expect(described_class.realm_from_game_code('UNKNOWN')).to eq(GameConfig::DEFAULT_REALM)
+    end
+
+    it 'handles case insensitivity' do
+      expect(described_class.realm_from_game_code('gsx')).to eq('platinum')
+    end
+  end
+
+  describe '.realm_to_game_code' do
+    it 'returns GS3 for prime' do
+      expect(described_class.realm_to_game_code('prime')).to eq('GS3')
+    end
+
+    it 'returns GSX for platinum' do
+      expect(described_class.realm_to_game_code('platinum')).to eq('GSX')
+    end
+
+    it 'returns GSF for shattered' do
+      expect(described_class.realm_to_game_code('shattered')).to eq('GSF')
+    end
+
+    it 'returns GST for test' do
+      expect(described_class.realm_to_game_code('test')).to eq('GST')
+    end
+
+    it 'returns nil for unknown realms' do
+      expect(described_class.realm_to_game_code('unknown')).to be_nil
+    end
+  end
+
+  describe '.game_name_from_game_code' do
+    it 'returns GemStone IV for GS3' do
+      expect(described_class.game_name_from_game_code('GS3')).to eq('GemStone IV')
+    end
+
+    it 'returns DragonRealms for DR' do
+      expect(described_class.game_name_from_game_code('DR')).to eq('DragonRealms')
+    end
+
+    it 'returns default name for unknown codes' do
+      expect(described_class.game_name_from_game_code('UNKNOWN')).to eq(GameConfig::DEFAULT_GAME_NAME)
+    end
+  end
+
+  describe '.valid_realm?' do
+    it 'returns true for prime' do
+      expect(described_class.valid_realm?('prime')).to be true
+    end
+
+    it 'returns true for platinum' do
+      expect(described_class.valid_realm?('platinum')).to be true
+    end
+
+    it 'returns false for unknown realm' do
+      expect(described_class.valid_realm?('unknown')).to be false
+    end
+  end
+
+  describe 'FRONTEND_PATTERN' do
+    it 'matches --stormfront' do
+      match = '--stormfront'.match(described_class::FRONTEND_PATTERN)
+      expect(match[:fe]).to eq('stormfront')
+    end
+
+    it 'matches --wizard' do
+      match = '--wizard'.match(described_class::FRONTEND_PATTERN)
+      expect(match[:fe]).to eq('wizard')
+    end
+
+    it 'matches --avalon' do
+      match = '--avalon'.match(described_class::FRONTEND_PATTERN)
+      expect(match[:fe]).to eq('avalon')
+    end
+
+    it 'matches --genie' do
+      match = '--genie'.match(described_class::FRONTEND_PATTERN)
+      expect(match[:fe]).to eq('genie')
+    end
+
+    it 'matches --frostbite' do
+      match = '--frostbite'.match(described_class::FRONTEND_PATTERN)
+      expect(match[:fe]).to eq('frostbite')
+    end
+
+    it 'does not match invalid frontends' do
+      expect('--invalid'.match(described_class::FRONTEND_PATTERN)).to be_nil
+      expect('--suks'.match(described_class::FRONTEND_PATTERN)).to be_nil
+    end
+  end
+
+  describe 'INSTANCE_PATTERN' do
+    it 'matches --GS3' do
+      match = '--GS3'.match(described_class::INSTANCE_PATTERN)
+      expect(match[:inst]).to eq('GS3')
+    end
+
+    it 'matches --DR' do
+      match = '--DR'.match(described_class::INSTANCE_PATTERN)
+      expect(match[:inst]).to eq('DR')
+    end
+
+    it 'matches case insensitively' do
+      match = '--gs3'.match(described_class::INSTANCE_PATTERN)
+      expect(match[:inst]).to eq('gs3')
+    end
+  end
+
+  describe 'CUSTOM_LAUNCH_PATTERN' do
+    it 'extracts custom launch value' do
+      match = '--custom-launch=/path/to/launch'.match(described_class::CUSTOM_LAUNCH_PATTERN)
+      expect(match[:cl]).to eq('/path/to/launch')
+    end
+
+    it 'does not match without value' do
+      expect('--custom-launch'.match(described_class::CUSTOM_LAUNCH_PATTERN)).to be_nil
+    end
+  end
+
+  describe '.symbolize_keys' do
+    it 'converts string keys to symbols' do
+      input = { 'name' => 'Test', 'value' => 123 }
+      result = described_class.symbolize_keys(input)
+      expect(result).to eq({ name: 'Test', value: 123 })
+    end
+
+    it 'handles nested hashes' do
+      input = { 'outer' => { 'inner' => 'value' } }
+      result = described_class.symbolize_keys(input)
+      expect(result).to eq({ outer: { inner: 'value' } })
+    end
+
+    it 'handles arrays of hashes' do
+      input = [{ 'a' => 1 }, { 'b' => 2 }]
+      result = described_class.symbolize_keys(input)
+      expect(result).to eq([{ a: 1 }, { b: 2 }])
+    end
+
+    it 'returns non-hash/array values unchanged' do
+      expect(described_class.symbolize_keys('string')).to eq('string')
+      expect(described_class.symbolize_keys(123)).to eq(123)
+    end
+  end
+
+  describe '.data_format' do
+    it 'returns :legacy_array for array data' do
+      expect(described_class.data_format([{ char_name: 'Test' }])).to eq(:legacy_array)
+    end
+
+    it 'returns :yaml_accounts for hash with :accounts key' do
+      expect(described_class.data_format({ accounts: {} })).to eq(:yaml_accounts)
+    end
+
+    it 'returns :unknown for other data types' do
+      expect(described_class.data_format({ other: 'data' })).to eq(:unknown)
+      expect(described_class.data_format('string')).to eq(:unknown)
+    end
+  end
+
+  describe '.find_character_by_attributes' do
+    let(:legacy_data) do
+      [
+        { char_name: 'Testchar', game_code: 'GS3', frontend: 'stormfront' },
+        { char_name: 'Testchar', game_code: 'GSX', frontend: 'wizard' },
+        { char_name: 'Otherchar', game_code: 'GS3', frontend: 'stormfront' }
+      ]
+    end
+
+    let(:yaml_data) do
+      {
+        accounts: {
+          'TESTUSER' => {
+            password: 'secret',
+            characters: [
+              { char_name: 'Testchar', game_code: 'GS3', frontend: 'stormfront' },
+              { char_name: 'Testchar', game_code: 'GSX', frontend: 'wizard' }
+            ]
+          }
+        }
+      }
+    end
+
+    context 'with legacy array data' do
+      it 'finds character by name' do
+        results = described_class.find_character_by_attributes(legacy_data, char_name: 'Testchar')
+        expect(results.length).to eq(2)
+        expect(results.all? { |r| r[:char_name] == 'Testchar' }).to be true
+      end
+
+      it 'finds character by name and game_code' do
+        results = described_class.find_character_by_attributes(
+          legacy_data,
+          char_name: 'Testchar',
+          game_code: 'GS3'
+        )
+        expect(results.length).to eq(1)
+        expect(results.first[:game_code]).to eq('GS3')
+      end
+
+      it 'returns empty array when no match' do
+        results = described_class.find_character_by_attributes(
+          legacy_data,
+          char_name: 'Nonexistent'
+        )
+        expect(results).to be_empty
+      end
+
+      it 'is case insensitive for character names' do
+        results = described_class.find_character_by_attributes(
+          legacy_data,
+          char_name: 'TESTCHAR'
+        )
+        expect(results.length).to eq(2)
+      end
+    end
+
+    context 'with YAML accounts data' do
+      it 'finds character and includes account info' do
+        results = described_class.find_character_by_attributes(yaml_data, char_name: 'Testchar')
+        expect(results.length).to eq(2)
+        expect(results.first[:username]).to eq('TESTUSER')
+        expect(results.first[:password]).to eq('secret')
+      end
+    end
+
+    context 'with GST fallback to GS3' do
+      it 'falls back to GS3 when GST not found' do
+        results = described_class.find_character_by_attributes(
+          legacy_data,
+          char_name: 'Testchar',
+          game_code: 'GST'
+        )
+        # Should find GS3 entry as fallback
+        expect(results.length).to eq(1)
+        expect(results.first[:game_code]).to eq('GS3')
+      end
+    end
+  end
+
+  describe '.select_best_fit' do
+    let(:char_data_sets) do
+      [
+        { char_name: 'Testchar', game_code: 'GS3', frontend: 'stormfront' },
+        { char_name: 'Testchar', game_code: 'GS3', frontend: 'wizard' },
+        { char_name: 'Testchar', game_code: 'GSF', frontend: 'stormfront' }
+      ]
+    end
+
+    it 'returns nil for empty array' do
+      result = described_class.select_best_fit(
+        char_data_sets: [],
+        requested_character: 'Test'
+      )
+      expect(result).to be_nil
+    end
+
+    it 'returns nil for nil array' do
+      result = described_class.select_best_fit(
+        char_data_sets: nil,
+        requested_character: 'Test'
+      )
+      expect(result).to be_nil
+    end
+
+    it 'returns nil when no character name match' do
+      result = described_class.select_best_fit(
+        char_data_sets: char_data_sets,
+        requested_character: 'Nonexistent'
+      )
+      expect(result).to be_nil
+    end
+
+    it 'returns first match when only character specified' do
+      result = described_class.select_best_fit(
+        char_data_sets: char_data_sets,
+        requested_character: 'Testchar'
+      )
+      expect(result).not_to be_nil
+      expect(result[:char_name]).to eq('Testchar')
+    end
+
+    it 'filters by game instance when specified' do
+      result = described_class.select_best_fit(
+        char_data_sets: char_data_sets,
+        requested_character: 'Testchar',
+        requested_instance: 'GSF'
+      )
+      expect(result[:game_code]).to eq('GSF')
+    end
+
+    it 'prefers frontend match when specified' do
+      result = described_class.select_best_fit(
+        char_data_sets: char_data_sets,
+        requested_character: 'Testchar',
+        requested_instance: 'GS3',
+        requested_fe: 'wizard'
+      )
+      expect(result[:frontend]).to eq('wizard')
+    end
+
+    it 'uses canonical frontend aliases when ranking matches' do
+      result = described_class.select_best_fit(
+        char_data_sets: [char_data_sets[1], char_data_sets[0]],
+        requested_character: 'Testchar',
+        requested_instance: 'GS3',
+        requested_fe: 'wrayth'
+      )
+
+      expect(result[:frontend]).to eq('stormfront')
+    end
+
+    it 'returns nil for invalid game instance' do
+      result = described_class.select_best_fit(
+        char_data_sets: char_data_sets,
+        requested_character: 'Testchar',
+        requested_instance: 'INVALID'
+      )
+      expect(result).to be_nil
+    end
+  end
+
+  describe '.resolve_instance' do
+    it 'returns GS3 for --gemstone' do
+      expect(described_class.resolve_instance(['--gemstone'])).to eq('GS3')
+    end
+
+    it 'returns GS3 for --gs (alias)' do
+      expect(described_class.resolve_instance(['--gs'])).to eq('GS3')
+    end
+
+    it 'returns GST for --gemstone --test' do
+      expect(described_class.resolve_instance(['--gemstone', '--test'])).to eq('GST')
+    end
+
+    it 'rejects the retired GemStone Platinum selector' do
+      expect(described_class.resolve_instance(['--gemstone', '--platinum'])).to be_nil
+    end
+
+    it 'returns DR for --dragonrealms' do
+      expect(described_class.resolve_instance(['--dragonrealms'])).to eq('DR')
+    end
+
+    it 'returns DR for --dr (alias)' do
+      expect(described_class.resolve_instance(['--dr'])).to eq('DR')
+    end
+
+    it 'returns DRF for --dragonrealms --fallen' do
+      expect(described_class.resolve_instance(['--dragonrealms', '--fallen'])).to eq('DRF')
+    end
+
+    it 'returns direct game code for --GS3' do
+      expect(described_class.resolve_instance(['--GS3'])).to eq('GS3')
+    end
+
+    it 'rejects retired and nonexistent direct GemStone game codes' do
+      expect(described_class.resolve_instance(['--GSX'])).to be_nil
+      expect(described_class.resolve_instance(['--GS4'])).to be_nil
+    end
+
+    it 'returns :__unset when no instance flags present' do
+      expect(described_class.resolve_instance(['--stormfront'])).to eq(:__unset)
+    end
+
+    it 'ignores bare --login and dark-mode modifiers when resolving instance' do
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--dark-mode=true'])).to eq(:__unset)
+    end
+
+    it 'ignores --fe-version when resolving instance' do
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--fe-version=saga-0.10.2'])).to eq(:__unset)
+      expect(described_class.resolve_instance(['--GS3', '--fe-version=saga-0.10.2'])).to eq('GS3')
+    end
+
+    it 'ignores the public headless alias when resolving instance' do
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--headless'])).to eq(:__unset)
+    end
+
+    it 'ignores runtime transport, bind, and debug options when resolving instance' do
+      %w[--auth-provider=web --bind-address=lan --game-transport=direct --host=example.com:4900
+         --pipe --no-wine --no-gtk --debug].each do |arg|
+        expect(described_class.resolve_instance(['--login', 'Tsetem', arg])).to eq(:__unset), arg
+      end
+      expect(described_class.resolve_instance(['--GS3', '--bind-address=lan'])).to eq('GS3')
+    end
+
+    it 'ignores optional path modifiers used by persistent launcher child sessions' do
+      expect(described_class.resolve_instance(['--home=/tmp/lich', '--data=/tmp/data'])).to eq(:__unset)
+    end
+
+    it 'ignores every -dir path option alongside --login' do
+      %w[--script-dir=/x --data-dir=/x --temp-dir=/x --map-dir=/x --log-dir=/x
+         --backup-dir=/x --lib-dir=/x --active-session-dir=/x].each do |arg|
+        expect(described_class.resolve_instance(['--login', 'Tsetem', arg])).to eq(:__unset), arg
+      end
+    end
+
+    # Derived from the rendered --help text so a newly documented option that is
+    # missing from the ignore lists fails here instead of in a user's --login.
+    it 'accepts every documented option alongside --login' do
+      not_login_options = %w[
+        --help --version --active-sessions --session-info
+        --add-account --add-character --refresh-characters --convert-entries
+        --change-account-password --change-master-password --recover-master-password
+        --change-encryption-mode --game-code --master-password --password-stdin
+        --test --platinum
+      ]
+      help = ([nil] + Lich::Main::HelpText::HELP_TOPICS).map { |topic| Lich::Main::HelpText.render(topic) }.join("\n")
+      # Keep a trailing '=' so --opt=VALUE options are checked in that form:
+      # NON_INSTANCE_OPTION_KEYS matches the key before '=', NON_INSTANCE_FLAGS
+      # matches only the whole arg.
+      options = help.scan(/--[a-z][a-z0-9-]*=?/).uniq.reject { |opt| not_login_options.include?(opt.chomp('=')) }
+
+      expect(options).to include('--login', '--pipe', '--log-dir=')
+      options.each do |opt|
+        arg = opt.end_with?('=') ? "#{opt}x" : opt
+        expect(described_class.resolve_instance(['--login', 'Tsetem', arg])).not_to be_nil, arg
+      end
+    end
+
+    it 'ignores long-form path modifiers used by legacy CLI options' do
+      expect(described_class.resolve_instance(['--script-dir=/tmp/scripts', '--data-dir=/tmp/data', '--temp-dir=/tmp/temp'])).to eq(:__unset)
+    end
+
+    it 'ignores non-instance frontend modifiers that do not imply game instance' do
+      expect(described_class.resolve_instance(['--genie'])).to eq(:__unset)
+      expect(described_class.resolve_instance(['--frostbite'])).to eq(:__unset)
+    end
+
+    # --login with an unlisted --flag exits "Invalid game code".
+    it 'ignores --frontend-caps, which is not a game-instance selector' do
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--frontend-caps=game_links,double_bold'])).to eq(:__unset)
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--frontend-caps='])).to eq(:__unset)
+    end
+
+    it 'ignores the CLI-only SUKS flag without treating it as a frontend selector' do
+      expect(described_class.resolve_instance(['--login', 'Tsetem', '--suks'])).to eq(:__unset)
+      expect(described_class.resolve_login_args(['--login', 'Tsetem', '--suks']))
+        .to eq([:__unset, :__unset, :__unset])
+    end
+
+    it 'returns nil for unknown option-like flags (probable invalid instance intent)' do
+      expect(described_class.resolve_instance(['--invalid-instance-flag'])).to be_nil
+    end
+  end
+
+  describe '.resolve_login_args' do
+    before do
+      # Mock Lich::Messaging for debug output
+      allow(Lich::Messaging).to receive(:msg) if defined?(Lich::Messaging)
+    end
+
+    it 'parses instance, frontend, and custom_launch' do
+      instance, frontend, custom_launch = described_class.resolve_login_args(
+        ['--GS3', '--stormfront', '--custom-launch=warlock']
+      )
+      expect(instance).to eq('GS3')
+      expect(frontend).to eq('stormfront')
+      expect(custom_launch).to eq('warlock')
+    end
+
+    it 'returns :__unset for missing values' do
+      instance, frontend, custom_launch = described_class.resolve_login_args(['--GS3'])
+      expect(instance).to eq('GS3')
+      expect(frontend).to eq(:__unset)
+      expect(custom_launch).to eq(:__unset)
+    end
+
+    it 'parses extended frontend selectors' do
+      instance, frontend, custom_launch = described_class.resolve_login_args(['--GS3', '--frostbite'])
+      expect(instance).to eq('GS3')
+      expect(frontend).to eq('frostbite')
+      expect(custom_launch).to eq(:__unset)
+    end
+
+    it 'parses Saga as a frontend selector' do
+      instance, frontend, custom_launch = described_class.resolve_login_args(['--GS3', '--saga'])
+      expect(instance).to eq('GS3')
+      expect(frontend).to eq('saga')
+      expect(custom_launch).to eq(:__unset)
+    end
+
+    it 'parses the canonical long-form Saga frontend selector' do
+      instance, frontend, custom_launch = described_class.resolve_login_args(
+        ['--GS3', '--frontend=saga']
+      )
+      expect(instance).to eq('GS3')
+      expect(frontend).to eq('saga')
+      expect(custom_launch).to eq(:__unset)
+    end
+
+    it 'parses a registered custom frontend through the canonical long form' do
+      allow(Lich::Common::Frontend).to receive(:registered_frontends).and_return(
+        Lich::Common::Frontend.registered_frontends + ['vellum']
+      )
+
+      expect(described_class.resolve_login_args(['--GS3', '--frontend=vellum']))
+        .to eq(['GS3', 'vellum', :__unset])
+    end
+
+    it 'does not accept an unregistered long-form frontend selector' do
+      expect(described_class.resolve_login_args(['--GS3', '--frontend=not-registered']))
+        .to eq(['GS3', :__unset, :__unset])
+    end
+
+    it 'does not read --sentinel as a game instance' do
+      expect(described_class.resolve_login_args(['--login', 'Tsetem', '--sentinel'])).to eq([:__unset, :__unset, :__unset])
+    end
+
+    it 'does not read --keep-fe-string as a game instance' do
+      expect(described_class.resolve_login_args(['--login', 'Tsetem', '--keep-fe-string'])).to eq([:__unset, :__unset, :__unset])
+    end
+
+    it 'does not report an invalid game code as a resolved instance' do
+      allow(Lich).to receive(:log)
+
+      result = described_class.resolve_login_args(['--login', 'Tsetem', '--GS4'])
+
+      expect(result).to eq([nil, :__unset, :__unset])
+      expect(Lich).not_to have_received(:log).with(/Resolved instance/)
+      expect(Lich::Messaging).not_to have_received(:msg).with('debug', /Resolved instance/)
+    end
+  end
+
+  describe '.resolve_lookup_frontend' do
+    it 'returns the requested frontend for normal CLI saved-entry matching' do
+      expect(described_class.resolve_lookup_frontend('frostbite', ['--login', 'pickasso'])).to eq('frostbite')
+    end
+
+    it 'ignores the requested frontend for headless CLI saved-entry matching' do
+      expect(
+        described_class.resolve_lookup_frontend('frostbite', ['--login', 'pickasso', '--without-frontend'])
+      ).to eq(:__unset)
+    end
+
+    it 'preserves an unset frontend when no frontend was requested' do
+      expect(described_class.resolve_lookup_frontend(:__unset, ['--login', 'pickasso'])).to eq(:__unset)
+    end
+  end
+
+  describe '.resolve_headless_frontend' do
+    it 'identifies a Genie client attached to the detachable port' do
+      expect(
+        described_class.resolve_headless_frontend(['--login', 'pickasso', '--genie'], detachable_client: true)
+      ).to eq('genie')
+    end
+
+    it 'is not affected by --fe-version' do
+      argv = ['--saga', '--without-frontend', '--detachable-client=8000', '--fe-version=saga-0.10.2']
+      expect(described_class.resolve_headless_frontend(argv, detachable_client: true)).to eq('saga')
+      expect(described_class.resolve_frontend_arg(['--frontend=genie', '--fe-version=genie-5.1'])).to eq('genie')
+    end
+
+    it 'identifies Saga regardless of the detachable port' do
+      expect(described_class.resolve_headless_frontend(['--saga'], detachable_client: true)).to eq('saga')
+      expect(described_class.resolve_headless_frontend(['--saga'], detachable_client: false)).to eq('saga')
+    end
+
+    # handle_detachable_client compares these results to 'saga' and 'genie'.
+    it 'resolves the --frontend= forms of Saga and Genie, case-insensitively' do
+      %w[--frontend=saga --frontend=SAGA].each do |arg|
+        expect(described_class.resolve_headless_frontend([arg], detachable_client: true)).to eq('saga'), arg
+      end
+      %w[--frontend=genie --frontend=Genie --genie].each do |arg|
+        expect(described_class.resolve_headless_frontend([arg], detachable_client: true)).to eq('genie'), arg
+      end
+    end
+
+    it 'assumes Profanity for a detachable client with no frontend flag' do
+      expect(described_class.resolve_headless_frontend(['--login', 'pickasso'], detachable_client: true)).to eq('profanity')
+    end
+
+    it 'preserves a registered custom frontend for a detachable client' do
+      allow(Lich::Common::Frontend).to receive(:registered_frontends).and_return(
+        Lich::Common::Frontend.registered_frontends + ['vellum']
+      )
+
+      expect(
+        described_class.resolve_headless_frontend(
+          ['--login', 'pickasso', '--without-frontend', '--frontend=vellum'],
+          detachable_client: true
+        )
+      ).to eq('vellum')
+    end
+
+    it 'returns unknown when nothing can attach' do
+      expect(described_class.resolve_headless_frontend(['--login', 'pickasso', '--genie'])).to eq('unknown')
+      expect(described_class.resolve_headless_frontend(['--login', 'pickasso'])).to eq('unknown')
+    end
+  end
+
+  describe '.resolve_pipe_frontend' do
+    it 'keeps the frontend named on the command line' do
+      expect(described_class.resolve_pipe_frontend(['--pipe', '--frontend=stormfront'])).to eq('stormfront')
+      expect(described_class.resolve_pipe_frontend(['--pipe', '--stormfront'])).to eq('stormfront')
+      expect(described_class.resolve_pipe_frontend(['--pipe', '--saga'])).to eq('saga')
+    end
+
+    it 'resolves an alias to its canonical frontend' do
+      expect(described_class.resolve_pipe_frontend(['--pipe', '--frontend=wrayth'])).to eq('stormfront')
+    end
+
+    it 'preserves a registered custom frontend' do
+      allow(Lich::Common::Frontend).to receive(:registered_frontends).and_return(
+        Lich::Common::Frontend.registered_frontends + ['vellum']
+      )
+
+      expect(described_class.resolve_pipe_frontend(['--pipe', '--frontend=vellum'])).to eq('vellum')
+    end
+
+    it 'stays unknown without a frontend flag or with an unregistered one' do
+      expect(described_class.resolve_pipe_frontend(['-g', '127.0.0.1:4000', '--pipe', '--no-gtk', '--gemstone'])).to eq('unknown')
+      expect(described_class.resolve_pipe_frontend(['--pipe', '--frontend=nosuchclient'])).to eq('unknown')
+    end
+  end
+
+  describe '.format_launch_flag' do
+    it 'returns nil for a blank game code' do
+      expect(described_class.format_launch_flag('')).to be_nil
+      expect(described_class.format_launch_flag(nil)).to be_nil
+      expect(described_class.format_launch_flag('   ')).to be_nil
+      expect(described_class.format_launch_flag(:'')).to be_nil
+    end
+
+    it 'returns exactly --GAMECODE for every accepted game code' do
+      described_class::VALID_GAME_CODES.each do |code|
+        expect(described_class.format_launch_flag(code)).to eq("--#{code}")
+      end
+    end
+
+    it 'upcases lowercase and symbol game codes' do
+      expect(described_class.format_launch_flag('drx')).to eq('--DRX')
+      expect(described_class.format_launch_flag('gst')).to eq('--GST')
+      expect(described_class.format_launch_flag(:drt)).to eq('--DRT')
+    end
+
+    it 'passes a non-blank code that is not an accepted game code through upcased' do
+      expect(described_class::VALID_GAME_CODES).not_to include('GSX')
+      expect(described_class.format_launch_flag('gsx')).to eq('--GSX')
+    end
+
+    it 'emits a flag that resolve_login_args resolves back to the same instance' do
+      described_class::VALID_GAME_CODES.each do |code|
+        argv = ['--login', 'Tsetem', described_class.format_launch_flag(code.downcase)]
+        expect(described_class.resolve_login_args(argv).first).to eq(code)
+      end
+    end
+
+    it 'does not depend on the Lich version' do
+      stub_const('LICH_VERSION', '5.11.0')
+
+      expect(described_class.format_launch_flag('GS3')).to eq('--GS3')
+      expect(described_class.format_launch_flag('drt')).to eq('--DRT')
+    end
+
+    it 'still formats the flag when LICH_VERSION is not defined' do
+      hide_const('LICH_VERSION')
+
+      expect(described_class.format_launch_flag('DR')).to eq('--DR')
+      expect(described_class.format_launch_flag('gst')).to eq('--GST')
+    end
+  end
+end

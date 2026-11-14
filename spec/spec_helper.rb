@@ -1,0 +1,2270 @@
+# frozen_string_literal: true
+
+# spec/spec_helper.rb - Shared test configuration and mocks for lich-5 specs
+#
+# This file provides:
+# 1. RSpec configuration
+# 2. Shared mock definitions for game infrastructure (XMLData, Script, Effects, etc.)
+# 3. Fixture loading (effect-list.xml)
+# 4. Path constants for consistent file resolution
+#
+# Usage: Add `require_relative '../../spec_helper'` at the top of each spec file
+#        (adjust the relative path depth to match the file's location under spec/)
+#
+# =============================================================================
+# FIXTURE: effect-list.xml
+# =============================================================================
+# The effect-list.xml file in spec/fixtures/ is a LOCAL COPY of the upstream
+# file from elanthia-online/scripts. This eliminates network dependencies
+# during test runs.
+#
+# IMPORTANT: This file must be kept in sync with upstream!
+#
+# The canonical source is:
+#   https://github.com/elanthia-online/scripts/blob/master/scripts/effect-list.xml
+#
+# To update the fixture manually:
+#   curl -o spec/fixtures/effect-list.xml \
+#     https://raw.githubusercontent.com/elanthia-online/scripts/master/scripts/effect-list.xml
+#
+# TODO: Set up automated sync via GitHub Actions or pre-commit hook to ensure
+# the fixture stays current with upstream changes. See spec/fixtures/README.md
+# for detailed update procedures.
+# =============================================================================
+
+require 'rspec'
+require 'date'
+require 'tmpdir'
+require 'ostruct'
+require 'fileutils'
+
+# =============================================================================
+# Path Constants
+# =============================================================================
+SPEC_ROOT = File.expand_path(__dir__) unless defined?(SPEC_ROOT)
+LIB_DIR = File.join(SPEC_ROOT, '..', 'lib') unless defined?(LIB_DIR)
+FIXTURE_DIR = File.join(SPEC_ROOT, 'fixtures') unless defined?(FIXTURE_DIR)
+require_relative 'support/data_dir' # DATA_DIR: used by settings.rb for database storage
+
+# Add lib directory to load path for require statements
+$LOAD_PATH.unshift(LIB_DIR) unless $LOAD_PATH.include?(LIB_DIR)
+
+# =============================================================================
+# RSpec Configuration
+# =============================================================================
+RSpec.configure do |config|
+  # Enable flags like --only-failures and --next-failure. parallel_tests sets
+  # TEST_ENV_NUMBER ('' for the first worker, then '2', '3', ...), so each
+  # worker keeps its own status file instead of overwriting a shared one.
+  config.example_status_persistence_file_path = File.join(SPEC_ROOT, ".rspec_status#{ENV.fetch('TEST_ENV_NUMBER', '')}")
+
+  # NOTE: We can't use disable_monkey_patching! because existing specs use bare `describe`
+  # and the NilClass extension interferes with RSpec internals
+
+  # Enable more verbose output when running a single spec file
+  config.default_formatter = 'doc' if config.files_to_run.one?
+
+  # Map.clear and the combat AsyncProcessor shutdown call GC.start (and
+  # GC.compact), and the recorder specs call GC.start in their cleanup. With
+  # the whole suite loaded, each forced collection costs 50-100ms, which added
+  # ~17s to a full run. These specs assert on data, never on reclaimed memory,
+  # so skip the collection here. Windows keeps the real GC: the recorder
+  # cleanup relies on it to release SQLite WAL handles before unlinking.
+  # async_processor_spec sets the same allows itself, so this does not change
+  # what it asserts.
+  unless Gem.win_platform?
+    config.before(:each, file_path: %r{/spec/lib/(common/map|gemstone/combat)/}) do
+      allow(GC).to receive(:start)
+      allow(GC).to receive(:compact)
+    end
+  end
+
+  # In GitHub Actions, annotate any example slower than
+  # RSPEC_SLOW_EXAMPLE_SECONDS (default 2s; CI runners are slower, so that is
+  # roughly 1s locally) unless it is tagged :slow. Warning only; never fails.
+  # RSpec::Core::Time is used because some specs stub Time.now.
+  if ENV['GITHUB_ACTIONS'] == 'true'
+    slow_limit = Float(ENV.fetch('RSPEC_SLOW_EXAMPLE_SECONDS', '2'))
+    config.after do |example|
+      elapsed = RSpec::Core::Time.now - example.execution_result.started_at
+      next if elapsed < slow_limit || example.metadata[:slow]
+
+      file = example.metadata[:file_path].delete_prefix('./')
+      text = "Slow example (#{format('%.1f', elapsed)}s): #{example.full_description}. Speed it up or tag it :slow."
+      text = text.gsub('%', '%25').gsub("\r", '%0D').gsub("\n", '%0A')
+      STDOUT.puts "\n::warning file=#{file},line=#{example.metadata[:line_number]}::#{text}"
+    end
+  end
+
+  # Fail any example or top-level group that leaves one of the globals set up
+  # below (see "Global Variables") holding a different object than it started
+  # with. Under parallel_rspec, a spec that nils or replaces one of these in an
+  # `after` breaks whichever unrelated file happens to run next in the same
+  # process. Mutate the object in place, or save it and restore it.
+  # $_LASTUPSTREAM_ is left out because the before hook below resets it to nil
+  # for every example.
+  snapshot_globals = -> { SPEC_HELPER_GLOBALS.transform_values { |(read, _write)| read.call } }
+  # Put back every global that no longer holds the object it held in `before`,
+  # so one leak fails on its own instead of taking every later example in the
+  # process down with it. Returns the names put back.
+  restore_globals = lambda do |before|
+    leaked = SPEC_HELPER_GLOBALS.reject { |name, (read, _write)| read.call.equal?(before[name]) }
+    leaked.each { |name, (_read, write)| write.call(before[name]) }
+    leaked.keys
+  end
+  # The check compares snapshots, so it cannot tell who made the change: a
+  # thread started earlier that reassigns a global later is reported against
+  # whatever was running when it did.
+  leak_message = lambda do |names, during|
+    "#{names.join(', ')} changed to a different object #{during} " \
+      '(possibly from a background thread started earlier); ' \
+      'save and restore spec_helper globals instead of reassigning them'
+  end
+
+  # A config-level around hook runs outside every group's own around hooks and
+  # before/after(:example) hooks, so it sees the value after they restored it.
+  # A top-level group defined before this file loads (a spec file that does
+  # not require spec_helper, loaded first in a worker) is the exception: RSpec
+  # adds the hook inside that group's own around hooks, where it would fail an
+  # example whose change the group's around hook is about to put back. Those
+  # groups are checked by the reporter listener below instead.
+  groups_defined_earlier = RSpec::Core::ExampleGroup.subclasses
+  defined_earlier = ->(example) { groups_defined_earlier.any? { |group| example.example_group <= group } }
+  config.around do |example|
+    next example.run if defined_earlier.call(example)
+
+    before = snapshot_globals.call
+    example.run
+    leaked = restore_globals.call(before)
+    raise leak_message.call(leaked, "during the example at #{example.location}") unless leaked.empty?
+  end
+
+  # The reporter's example_started and example_finished notifications come
+  # before and after all of an example's hooks, so they make the same check
+  # for each example of a group defined before this file loads. They cannot
+  # fail the example: the leak is put back there and reported by the context
+  # check below when the top-level group finishes. The listener is registered
+  # when the suite starts, so it is on the reporter that runs the examples even
+  # if the reporter is replaced after this file loads (`--bisect` calls
+  # reset_reporter).
+  early_leaks = []
+  early_before = nil
+  early_listener = Object.new
+  early_listener.define_singleton_method(:example_started) do |notification|
+    early_before = defined_earlier.call(notification.example) ? snapshot_globals.call : nil
+  end
+  early_listener.define_singleton_method(:example_finished) do |notification|
+    return unless early_before
+
+    leaked = restore_globals.call(early_before)
+    early_before = nil
+    early_leaks << leak_message.call(leaked, "during the example at #{notification.example.location}") unless leaked.empty?
+  end
+  config.before(:suite) { config.reporter.register_listener(early_listener, :example_started, :example_finished) }
+
+  # before/after(:context) hooks run outside the around hook above. Config-level
+  # context hooks run once per top-level group, before the group's own
+  # before(:context) hooks and after its own after(:context) hooks, so these
+  # catch a leak from any context hook in the group or its nested groups. The
+  # failure is reported as an error outside the examples, together with any
+  # example leak the listener above recorded for the group.
+  # prepend_before/append_after keep that order for groups defined before this
+  # file loads (a spec file that does not require spec_helper, loaded first in
+  # a worker): plain before/after would add these after those groups' own
+  # before(:context) hooks and ahead of their own after(:context) hooks.
+  context_before = nil
+  config.prepend_before(:context) { context_before = snapshot_globals.call }
+  config.append_after(:context) do
+    before = context_before
+    context_before = nil
+    messages = early_leaks.dup
+    early_leaks.clear
+    leaked = before ? restore_globals.call(before) : []
+    messages << leak_message.call(leaked, "in a before/after(:context) hook of the group at #{self.class.metadata[:location]}") unless leaked.empty?
+    raise messages.join("\n") unless messages.empty?
+  end
+
+  # Reset shared state before each example to ensure test isolation.
+  # This prevents state leakage between tests and allows random ordering.
+  #
+  # prepend_before, not before: some specs (the settings specs) skip
+  # spec_helper and stub_const Script/XMLData in their own before hooks. When
+  # such a file loads before spec_helper in a process, RSpec adds this config
+  # hook to its already-defined groups, and a plain before would append it
+  # after the group's own hooks. The reset would then run against the stubs
+  # (MockScript has no current=) and fail every example. prepend_before makes
+  # the reset run first whatever order the files load in.
+  config.prepend_before do
+    # Core game state
+    XMLData.reset if defined?(XMLData) && XMLData.respond_to?(:reset)
+    Script.current = nil if defined?(Script)
+    # Room.current memoizes its double, so clear it or one example's room
+    # identity leaks into the next.
+    Room.current = nil if defined?(Room) && Room.respond_to?(:current=)
+    # The map specs add these XMLData fields themselves, so XMLData.reset does
+    # not know about them and a value assigned in one example survives into the
+    # next. A stale room_window_disabled is the dangerous one: it makes the
+    # matchers skip their description check without failing anything.
+    if defined?(XMLData) && XMLData.respond_to?(:room_window_disabled=)
+      XMLData.room_window_disabled = false
+      XMLData.room_exits_string = nil
+      XMLData.room_count = nil
+    end
+    $_SERVERBUFFER_&.clear
+    $_CLIENTBUFFER_&.clear
+    $_LASTUPSTREAM_ = nil
+
+    # Lich messaging
+    Lich::Messaging.clear_messages! if defined?(Lich::Messaging) && Lich::Messaging.respond_to?(:clear_messages!)
+    Lich.reset_display_expgains! if defined?(Lich) && Lich.respond_to?(:reset_display_expgains!)
+    Lich.display_roomid_location = nil if defined?(Lich) && Lich.respond_to?(:display_roomid_location=)
+    Lich.db.reset! if defined?(Lich) && Lich.respond_to?(:db) && Lich.db.respond_to?(:reset!)
+    Lich::Common::DB_Store.reset! if defined?(Lich::Common::DB_Store) && Lich::Common::DB_Store.respond_to?(:reset!)
+    # Drain Infomon's async write queue so a queued INSERT from a prior example
+    # cannot land in a later example's freshly reset table (seed/timing-dependent
+    # cross-file leakage). Specs that need a clean slate still call reset! themselves.
+    Lich::Gemstone::Infomon.flush if defined?(Lich::Gemstone::Infomon) && Lich::Gemstone::Infomon.respond_to?(:flush)
+
+    # Lich::Common::Account state (class-level accessors leak across specs)
+    if defined?(Lich::Common::Account)
+      Lich::Common::Account.name = nil if Lich::Common::Account.respond_to?(:name=)
+      Lich::Common::Account.game_code = nil if Lich::Common::Account.respond_to?(:game_code=)
+      Lich::Common::Account.character = nil if Lich::Common::Account.respond_to?(:character=)
+      Lich::Common::Account.subscription = nil if Lich::Common::Account.respond_to?(:subscription=)
+    end
+
+    # DR production classes - only if they're loaded (may override mocks)
+    Lich::DragonRealms::DRExpMonitor.reset! if defined?(Lich::DragonRealms::DRExpMonitor) && Lich::DragonRealms::DRExpMonitor.respond_to?(:reset!)
+    # DRCC remembers crafting item ids for the whole process; an id one
+    # example stowed would turn the next example's by-name GET into "get #id".
+    Lich::DragonRealms::DRCC::CRAFTING_ITEM_IDS.clear if defined?(Lich::DragonRealms::DRCC::CRAFTING_ITEM_IDS)
+    # DRCI remembers thrown-away ids for the whole process too; one example's
+    # dispose_trash would stop the next example's GET by that id.
+    Lich::DragonRealms::DRCI.clear_thrown_away if defined?(Lich::DragonRealms::DRCI) && Lich::DragonRealms::DRCI.respond_to?(:clear_thrown_away)
+
+    # Game objects - clear registries via class_variable_set (no test methods in production)
+    # NOTE: class_variable_set used because GameObj is a production class with no reset! method
+    if defined?(Lich::Common::GameObj)
+      g = Lich::Common::GameObj
+      %i[@@loot @@npcs @@npc_status @@pcs @@pc_status @@inv @@room_desc
+         @@fam_loot @@fam_npcs @@fam_pcs @@fam_room_desc @@index @@type_cache @@contents].each do |cv|
+        g.class_variable_get(cv).clear if g.class_variable_defined?(cv)
+      end
+      g.class_variable_set(:@@right_hand, nil) if g.class_variable_defined?(:@@right_hand)
+      g.class_variable_set(:@@left_hand, nil) if g.class_variable_defined?(:@@left_hand)
+
+      # Staged registry refresh buffers (present once lib/common/gameobj.rb is
+      # loaded). nil when idle; reset so a refresh left open by one example
+      # never leaks into the next.
+      %i[@@staging_inv @@staging_reserve @@staging_loot @@staging_npcs
+         @@staging_npc_status @@staging_pcs @@staging_pc_status @@staging_room_desc
+         @@staging_fam_room_desc @@staging_fam_loot @@staging_fam_npcs
+         @@staging_fam_pcs].each do |cv|
+        g.class_variable_set(cv, nil) if g.class_variable_defined?(cv)
+      end
+      g.class_variable_set(:@@staging_contents, {}) if g.class_variable_defined?(:@@staging_contents)
+      g.class_variable_set(:@@staging_all_contents, {}) if g.class_variable_defined?(:@@staging_all_contents)
+      # Full-container INV LIST refresh flag: reset so a refresh opened (and not
+      # committed/discarded) by one example never leaks into the next, where it
+      # would silently route new_inv into staging instead of the live registry.
+      g.class_variable_set(:@@staging_all_containers, false) if g.class_variable_defined?(:@@staging_all_containers)
+      # Identity-keyed like the production initializer; a plain {} would break buffer scoping.
+      g.class_variable_set(:@@pending_metadata, {}.compare_by_identity) if g.class_variable_defined?(:@@pending_metadata)
+    end
+
+    # DR mocks from spec_helper - these have reset! defined in the mock (not production)
+    Flags.reset! if defined?(Flags) && Flags.respond_to?(:reset!)
+    UserVars.reset! if defined?(UserVars) && UserVars.respond_to?(:reset!)
+    DRC.reset! if defined?(DRC) && DRC.respond_to?(:reset!)
+    DRStats.reset! if defined?(DRStats) && DRStats.respond_to?(:reset!)
+    DRSkill.reset! if defined?(DRSkill) && DRSkill.respond_to?(:reset!)
+    DRSpells.reset! if defined?(DRSpells) && DRSpells.respond_to?(:reset!)
+    DRRoom.reset! if defined?(DRRoom) && DRRoom.respond_to?(:reset!)
+
+    # DR production classes - use class_variable_set (no reset! in production)
+    # NOTE: class_variable_set used because DRParser is a production module with no reset! method
+    if defined?(Lich::DragonRealms::DRParser) && Lich::DragonRealms::DRParser.class_variable_defined?(:@@parsing_exp_mods_output)
+      Lich::DragonRealms::DRParser.class_variable_set(:@@parsing_exp_mods_output, false)
+      Lich::DragonRealms::DRParser.class_variable_set(:@@parsing_inventory_get, false)
+    end
+  end
+
+  # Random ordering now enabled - the before hook resets shared state
+  config.order = :random
+  Kernel.srand config.seed
+end
+
+# =============================================================================
+# Shared Examples and Contexts
+# =============================================================================
+# Reusable test patterns to reduce duplication across specs.
+
+# Guild predicate shared examples - use with include_examples
+# Example: include_examples 'guild predicate', 'Barbarian', :barbarian?
+RSpec.shared_examples 'guild predicate' do |guild_name, method_name|
+  describe ".#{method_name}" do
+    it "returns true when guild is #{guild_name}" do
+      described_class.guild = guild_name
+      expect(described_class.send(method_name)).to be true
+    end
+
+    it "returns false when guild is not #{guild_name}" do
+      described_class.guild = 'Other Guild'
+      expect(described_class.send(method_name)).to be false
+    end
+
+    it 'returns false when guild is nil' do
+      described_class.guild = nil
+      expect(described_class.send(method_name)).to be false
+    end
+  end
+end
+
+# XMLData stub context for common delegator patterns
+RSpec.shared_context 'XMLData stubs' do
+  before do
+    allow(XMLData).to receive(:name).and_return('TestChar')
+    allow(XMLData).to receive(:health).and_return(100)
+    allow(XMLData).to receive(:mana).and_return(50)
+    allow(XMLData).to receive(:stamina).and_return(75)
+    allow(XMLData).to receive(:spirit).and_return(80)
+    allow(XMLData).to receive(:concentration).and_return(90)
+  end
+end
+
+# DRSpells XMLData stub context
+RSpec.shared_context 'DRSpells XMLData stubs' do
+  before do
+    allow(XMLData).to receive(:dr_active_spells).and_return({ 'Protection' => 120, 'Shield' => 60 })
+    allow(XMLData).to receive(:dr_active_spells_slivers).and_return(3)
+    allow(XMLData).to receive(:dr_active_spells_stellar_percentage).and_return(45)
+  end
+end
+
+# Gemstone injury data for Wounds/Scars specs
+# Extracts duplicated injury hash setup from games_spec.rb
+RSpec.shared_context 'Gemstone injury data' do
+  let(:base_injuries) do
+    {
+      'leftEye'   => { 'wound' => 0, 'scar' => 0 },
+      'rightEye'  => { 'wound' => 0, 'scar' => 0 },
+      'head'      => { 'wound' => 0, 'scar' => 0 },
+      'neck'      => { 'wound' => 0, 'scar' => 0 },
+      'back'      => { 'wound' => 0, 'scar' => 0 },
+      'chest'     => { 'wound' => 0, 'scar' => 0 },
+      'abdomen'   => { 'wound' => 0, 'scar' => 0 },
+      'leftArm'   => { 'wound' => 0, 'scar' => 0 },
+      'rightArm'  => { 'wound' => 0, 'scar' => 0 },
+      'leftHand'  => { 'wound' => 0, 'scar' => 0 },
+      'rightHand' => { 'wound' => 0, 'scar' => 0 },
+      'leftLeg'   => { 'wound' => 0, 'scar' => 0 },
+      'rightLeg'  => { 'wound' => 0, 'scar' => 0 },
+      'leftFoot'  => { 'wound' => 0, 'scar' => 0 },
+      'rightFoot' => { 'wound' => 0, 'scar' => 0 },
+      'nsys'      => { 'wound' => 0, 'scar' => 0 }
+    }
+  end
+
+  # Helper to set specific injury values on top of base
+  def set_injuries(overrides = {})
+    injuries = base_injuries.dup
+    overrides.each do |location, values|
+      injuries[location] = injuries[location].merge(values)
+    end
+    XMLData.injuries = injuries
+  end
+end
+
+# DRParser stub context for common parser test setup
+RSpec.shared_context 'DRParser stubs' do
+  let(:drstats_class) { Lich::DragonRealms::DRStats }
+  let(:drspells_class) { Lich::DragonRealms::DRSpells }
+  let(:drroom_class) { Lich::DragonRealms::DRRoom }
+  let(:drskill_class) { Lich::DragonRealms::DRSkill }
+  let(:drexpmonitor_class) { Lich::DragonRealms::DRExpMonitor }
+
+  before do
+    # Stub DRStats setters
+    allow(drstats_class).to receive(:gender=)
+    allow(drstats_class).to receive(:age=)
+    allow(drstats_class).to receive(:circle=)
+    allow(drstats_class).to receive(:race=)
+    allow(drstats_class).to receive(:guild=)
+    allow(drstats_class).to receive(:encumbrance=)
+    allow(drstats_class).to receive(:luck=)
+    allow(drstats_class).to receive(:tdps=)
+    allow(drstats_class).to receive(:favors=)
+    allow(drstats_class).to receive(:balance=)
+    allow(drstats_class).to receive(:position=)
+    allow(drstats_class).to receive(:strength=)
+    allow(drstats_class).to receive(:agility=)
+    allow(drstats_class).to receive(:discipline=)
+    allow(drstats_class).to receive(:intelligence=)
+    allow(drstats_class).to receive(:reflex=)
+    allow(drstats_class).to receive(:charisma=)
+    allow(drstats_class).to receive(:wisdom=)
+    allow(drstats_class).to receive(:stamina=)
+
+    # Stub DRSpells
+    allow(drspells_class).to receive(:grabbing_known_spells).and_return(false)
+    allow(drspells_class).to receive(:grabbing_known_spells=)
+    allow(drspells_class).to receive(:grabbing_known_khri).and_return(false)
+    allow(drspells_class).to receive(:grabbing_known_khri=)
+    allow(drspells_class).to receive(:check_known_barbarian_abilities).and_return(false)
+    allow(drspells_class).to receive(:check_known_barbarian_abilities=)
+
+    # Stub DRRoom
+    allow(drroom_class).to receive(:pcs).and_return([])
+    allow(drroom_class).to receive(:pcs=)
+    allow(drroom_class).to receive(:pcs_prone).and_return([])
+    allow(drroom_class).to receive(:pcs_prone=)
+    allow(drroom_class).to receive(:pcs_sitting).and_return([])
+    allow(drroom_class).to receive(:pcs_sitting=)
+    allow(drroom_class).to receive(:npcs).and_return([])
+    allow(drroom_class).to receive(:npcs=)
+    allow(drroom_class).to receive(:dead_npcs).and_return([])
+    allow(drroom_class).to receive(:dead_npcs=)
+    allow(drroom_class).to receive(:room_objs).and_return([])
+    allow(drroom_class).to receive(:room_objs=)
+    allow(drroom_class).to receive(:group_members).and_return([])
+    allow(drroom_class).to receive(:group_members=)
+
+    # Stub DRSkill
+    allow(drskill_class).to receive(:update)
+    allow(drskill_class).to receive(:clear_mind)
+    allow(drskill_class).to receive(:update_mods)
+    allow(drskill_class).to receive(:update_rested_exp)
+    allow(drskill_class).to receive(:exp_modifiers).and_return({})
+
+    # Stub DRExpMonitor
+    allow(drexpmonitor_class).to receive(:inline_display?).and_return(false)
+    allow(drexpmonitor_class).to receive(:format_briefexp_on) { |line, _skill| line }
+    allow(drexpmonitor_class).to receive(:format_briefexp_off) { |line, _skill, _rate| line }
+
+    # Stub Lich::Common::Account
+    allow(Lich::Common::Account).to receive(:name=) if defined?(Lich::Common::Account)
+    allow(Lich::Common::Account).to receive(:subscription=) if defined?(Lich::Common::Account)
+
+    # Stub Flags
+    allow(Flags).to receive(:flags).and_return({})
+    allow(Flags).to receive(:matchers).and_return({})
+
+    # Stub XMLData
+    allow(XMLData).to receive(:game).and_return('DR')
+  end
+end
+
+RSpec.shared_context 'mock GTK hardening environment' do
+  before(:context) do
+    @tmpdir = Dir.mktmpdir(tmpdir_prefix)
+    @saved_consts = {}
+    @saved_gtk_hardening_consts = {}
+
+    %i[Gtk GLib GdkPixbuf LICH_DIR].each do |name|
+      next unless Object.const_defined?(name)
+
+      @saved_consts[name] = Object.const_get(name)
+      Object.send(:remove_const, name)
+    end
+
+    %i[
+      GtkSignalHandlerRetention
+      GtkTimeoutRetention
+      GtkIdleRetention
+      GtkMainLoopGuards
+    ].each do |name|
+      next unless Lich::Common.const_defined?(name, false)
+
+      @saved_gtk_hardening_consts[name] = Lich::Common.const_get(name, false)
+      Lich::Common.send(:remove_const, name)
+    end
+
+    glib_mod = Module.new
+    base_instantiatable = Module.new do
+      def signal_connect(signal, *_args, &block)
+        if signal.to_s != 'destroy' && @signal_connect_failures_remaining.to_i.positive?
+          @signal_connect_failures_remaining -= 1
+          raise 'signal registration failed'
+        end
+
+        if signal.to_s == 'destroy' && @destroy_connect_failures_remaining.to_i.positive?
+          @destroy_connect_failures_remaining -= 1
+          raise 'destroy hook failed'
+        end
+
+        @signals ||= Hash.new { |hash, key| hash[key] = [] }
+        @signals[signal.to_s] << block if block
+        @signals[signal.to_s].length
+      end
+
+      def fail_next_destroy_connection!
+        @destroy_connect_failures_remaining = @destroy_connect_failures_remaining.to_i + 1
+      end
+
+      def fail_next_signal_connection!
+        @signal_connect_failures_remaining = @signal_connect_failures_remaining.to_i + 1
+      end
+
+      def signal_blocks(signal)
+        @signals ||= {}
+        @signals[signal.to_s] || []
+      end
+
+      def emit(signal, *args)
+        @signals ||= {}
+        (@signals[signal.to_s] || []).map { |block| block.call(*args) }
+      end
+    end
+    instantiatable_mod = Module.new
+    instantiatable_mod.include(base_instantiatable)
+    glib_mod.const_set(:Instantiatable, instantiatable_mod)
+
+    timeout_mod = Module.new
+    timeout_mod.singleton_class.class_eval do
+      attr_accessor :blocks, :next_id
+
+      def add(*_args, &block)
+        self.blocks ||= {}
+        self.next_id ||= 0
+        self.next_id += 1
+        self.blocks[self.next_id] = block
+        self.next_id
+      end
+    end
+    glib_mod.const_set(:Timeout, timeout_mod)
+
+    idle_mod = Module.new
+    idle_mod.singleton_class.class_eval do
+      attr_accessor :blocks, :next_id
+
+      def add(*_args, &block)
+        self.blocks ||= {}
+        self.next_id ||= 0
+        self.next_id += 1
+        self.blocks[self.next_id] = block
+        self.next_id
+      end
+    end
+    glib_mod.const_set(:Idle, idle_mod)
+    Object.const_set(:GLib, glib_mod)
+
+    gtk_mod = Module.new
+    gtk_mod.singleton_class.class_eval do
+      attr_accessor :main_level, :main_calls, :main_quit_calls, :main_quit_failure
+
+      def main(*)
+        self.main_calls ||= 0
+        self.main_calls += 1
+        :main_called
+      end
+
+      def main_quit(*)
+        raise 'main_quit boom' if main_quit_failure
+
+        self.main_quit_calls ||= 0
+        self.main_quit_calls += 1
+        :main_quit_called
+      end
+    end
+
+    widget_class = Class.new do
+      include GLib::Instantiatable
+
+      def destroy
+        return self if destroyed?
+
+        @destroyed = true
+        emit('destroy')
+        self
+      end
+
+      def destroyed?
+        !!@destroyed
+      end
+    end
+    gtk_mod.const_set(:Widget, widget_class)
+    Object.const_set(:Gtk, gtk_mod)
+
+    pixbuf_mod = Module.new
+    pixbuf_class = Class.new do
+      def self.new(*)
+        Object.new
+      end
+    end
+    pixbuf_mod.const_set(:Pixbuf, pixbuf_class)
+    Object.const_set(:GdkPixbuf, pixbuf_mod)
+    Object.const_set(:LICH_DIR, @tmpdir)
+
+    @original_dir = Dir.pwd
+    Dir.chdir(@tmpdir)
+    load File.expand_path('../lib/common/gtk.rb', __dir__)
+  end
+
+  after(:context) do
+    Dir.chdir(@original_dir) if @original_dir
+
+    %i[Gtk GLib GdkPixbuf LICH_DIR].each do |name|
+      Object.send(:remove_const, name) if Object.const_defined?(name)
+    end
+
+    %i[
+      GtkSignalHandlerRetention
+      GtkTimeoutRetention
+      GtkIdleRetention
+      GtkMainLoopGuards
+    ].each do |name|
+      Lich::Common.send(:remove_const, name) if Lich::Common.const_defined?(name, false)
+    end
+
+    @saved_consts.each do |name, value|
+      Object.const_set(name, value)
+    end
+
+    @saved_gtk_hardening_consts.each do |name, value|
+      Lich::Common.const_set(name, value)
+    end
+
+    FileUtils.remove_entry(@tmpdir) if @tmpdir && File.exist?(@tmpdir)
+  end
+
+  before do
+    Gtk.main_level = 0
+    Gtk.main_calls = 0
+    Gtk.main_quit_calls = 0
+    Gtk.main_quit_failure = false if Gtk.respond_to?(:main_quit_failure=)
+    GLib::Timeout.blocks = {}
+    GLib::Timeout.next_id = 0
+    GLib::Idle.blocks = {}
+    GLib::Idle.next_id = 0
+    Lich::Common.with_gtk_registry_lock do
+      Lich::Common.gtk_signal_handlers.clear
+      Lich::Common.gtk_timeout_callbacks.clear
+      Lich::Common.gtk_idle_callbacks.clear
+    end
+    stub_const('Script', Class.new) unless defined?(Script)
+    allow(Script).to receive(:current).and_return(nil)
+    allow(Lich).to receive(:log)
+  end
+
+  def tmpdir_prefix
+    raise NotImplementedError, 'define tmpdir_prefix in the including spec'
+  end
+end
+
+# =============================================================================
+# Global Output Methods
+# =============================================================================
+# These methods are used throughout lich-5 for output to the game client.
+# In tests, they either suppress output or print to stdout (if DEBUG=1).
+
+# Returns nil, as the production respond and _respond do.
+def respond(first = "", *messages)
+  return unless ENV['DEBUG']
+
+  if first.is_a?(Array)
+    first.flatten.each { |ln| puts ln.to_s.chomp }
+  else
+    puts first.to_s.chomp
+  end
+  messages.flatten.each { |message| puts message.to_s.chomp }
+  nil
+end
+
+def _respond(first = "", *messages)
+  respond(first, *messages)
+end
+
+# =============================================================================
+# XMLData Mock
+# =============================================================================
+# Central game state container. Most specs need this.
+# Methods are additive - specs can extend with additional attributes as needed.
+
+module XMLData
+  @dialogs = {}
+  @injuries = {}
+  @game = "rspec"
+  @name = "testing"
+  @server_time = Time.at(1234567890)
+  @current_target_ids = []
+
+  @room_title = ''
+  @room_description = ''
+  @room_exits = []
+
+  # DR-specific active spell tracking
+  @dr_active_spells = {}
+  @dr_active_spells_slivers = 0
+  @dr_active_spells_stellar_percentage = 0
+
+  class << self
+    attr_accessor :game, :name, :room_id, :room_title, :room_description, :room_exits, :injury_mode, :stamina, :server_time, :previous_nav_rm, :nav_count, :show_room_id
+    attr_accessor :dr_active_spells, :dr_active_spells_slivers, :dr_active_spells_stellar_percentage
+    attr_accessor :current_target_ids
+
+    def indicator
+      { 'IconSTUNNED' => 'n', 'IconDEAD' => 'n', 'IconWEBBED' => false }
+    end
+
+    def dialogs
+      @dialogs ||= {}
+    end
+
+    def save_dialogs(kind, attributes)
+      @dialogs ||= {}
+      @dialogs[kind] = attributes
+    end
+
+    # Progress bar id => text per dialog, as the parser records it.
+    def dialog_names
+      @dialog_names ||= {}
+    end
+
+    def save_dialog_names(kind, names)
+      @dialog_names ||= {}
+      @dialog_names[kind] = names
+    end
+
+    def reset_dialogs
+      @dialogs = {}
+      @dialog_names = {}
+    end
+
+    def injuries
+      @injuries ||= {}
+    end
+
+    def injuries=(value)
+      @injuries = value
+    end
+
+    # Mirrors XMLParser#stream_feature?. Defaults to the linked (Saga
+    # identity) stream every session uses now; a spec for the legacy stream
+    # sets XMLData.stream_features = [].
+    def stream_features
+      @stream_features ||= [:links]
+    end
+
+    attr_writer :stream_features
+
+    def stream_feature?(feature)
+      stream_features.include?(feature)
+    end
+
+    def reset
+      @game = "rspec"
+      @name = "testing"
+      @stream_features = [:links]
+      @dialogs = {}
+      @dialog_names = {}
+      @injuries = {}
+      @room_id = 0
+      @previous_nav_rm = nil
+      @nav_count = 0
+      @show_room_id = false
+      @room_title = ''
+      @room_description = ''
+      @room_exits = []
+      @injury_mode = 2
+      @stamina = 100
+      @server_time = Time.at(1234567890)
+      @dr_active_spells = {}
+      @dr_active_spells_slivers = 0
+      @dr_active_spells_stellar_percentage = 0
+      @current_target_ids = []
+      # Clear any dynamically added attributes (e.g., prepared_spell from arcana specs)
+      @prepared_spell = nil if instance_variable_defined?(:@prepared_spell)
+    end
+  end
+end
+
+# =============================================================================
+# Script Mock
+# =============================================================================
+# Represents running scripts. Full implementation for testing pause/unpause.
+
+class Script
+  attr_accessor :paused, :no_pause_all, :name, :ignore_pause
+
+  def paused?
+    @paused || false
+  end
+
+  def pause; end
+
+  def unpause; end
+
+  class << self
+    attr_accessor :current
+
+    def current_without_pause
+      current
+    end
+
+    # NOTE: Production uses Script.self (not Script.current) to get the running script
+    def self
+      @current || OpenStruct.new(name: 'test')
+    end
+
+    def exist?(_name)
+      false
+    end
+
+    def exists?(_name)
+      true
+    end
+
+    def running
+      []
+    end
+
+    def running?(_name)
+      false
+    end
+
+    def hidden
+      []
+    end
+
+    def start(_name)
+      # Mock implementation
+    end
+
+    def new_downstream_xml(_data)
+      # Mock implementation
+    end
+
+    def new_downstream(_data)
+      # Mock implementation
+    end
+  end
+end
+
+# =============================================================================
+# ExecScript Mock
+# =============================================================================
+# Script execution wrapper used by DRInfomon.startup
+
+class ExecScript
+  class << self
+    def start(script_body, **_opts)
+      # Mock implementation - does nothing in tests
+    end
+  end
+end unless defined?(ExecScript)
+
+# =============================================================================
+# Lich Module Mock
+# =============================================================================
+# Core Lich namespace. Fine-grained per-component guards let this file load in
+# either order relative to login_spec_helper (which may define a minimal Lich
+# first). Each piece is added only if absent - no coarse all-or-nothing guard.
+
+module Lich
+  # MockDB: in-memory store answering the SQL query patterns used by lich-5's
+  # internal lich_settings table. Single definition, guarded so a prior Lich
+  # definition (e.g. from login_spec_helper) does not cause a re-definition.
+  class MockDB
+    def initialize
+      @data = {}
+    end
+
+    def reset!
+      @data = {}
+    end
+
+    def get_first_value(query)
+      if (match = query.match(/WHERE name\s*=\s*'([^']+)'/))
+        @data[match[1]]
+      end
+    end
+
+    def execute(query, params = [])
+      if query.include?('INSERT INTO lich_settings VALUES')
+        if (match = query.match(/VALUES\s*\('([^']+)'/))
+          @data[match[1]] = params[0]
+        end
+      elsif query.include?('INSERT OR REPLACE')
+        if (match = query.match(/values\s*\('([^']+)'/i))
+          @data[match[1]] = params[0]
+        elsif params.length >= 2
+          @data[params[0]] = params[1]
+        end
+      end
+    end
+  end unless const_defined?(:MockDB)
+
+  @db = MockDB.new unless instance_variable_defined?(:@db)
+
+  class << self
+    # attr_accessor is idempotent - reopening Lich and re-declaring these is safe.
+    attr_accessor :display_lichid, :display_uid, :hide_uid_flag, :display_stringprocs, :display_exits, :display_room_links, :display_room_mono
+    attr_accessor :display_script_window
+    attr_accessor :display_expgains, :display_roomid_location, :follow_description_flag
+
+    def db
+      @db ||= MockDB.new
+    end unless respond_to?(:db)
+
+    def log(msg)
+      puts "[Lich.log] #{msg}" if ENV['DEBUG']
+    end unless respond_to?(:log)
+
+    # Display consumers use mock accessors here; real persistence and strict
+    # scope behavior are exercised in isolated children with lib/lich.rb.
+    def with_strict_display_reads
+      yield
+    end unless respond_to?(:with_strict_display_reads)
+
+    def enable_display_uid_automatically
+      self.display_uid = true
+    end unless respond_to?(:enable_display_uid_automatically)
+
+    def reset_display_expgains!
+      @display_expgains = nil
+    end unless respond_to?(:reset_display_expgains!)
+  end
+
+  # Messaging is always opened (not guarded by const_defined?) because production
+  # code defines Lich::Messaging without test helpers. Using const_defined? would
+  # skip this entire block when production Messaging loads first, leaving specs
+  # without clear_messages!. Per-method guards add only what is missing.
+  module Messaging
+    @messages ||= []
+
+    class << self
+      def msg_format(_format, _msg); end unless respond_to?(:msg_format)
+      def mono(_msg); end unless respond_to?(:mono)
+
+      # Returns nil, as the production msg does.
+      def msg(type, message, **_opts)
+        @messages ||= []
+        @messages << { type: type, message: message }
+        puts "[Lich::Messaging] #{message}" if ENV['DEBUG']
+        nil
+      end unless respond_to?(:msg)
+
+      def messages
+        @messages ||= []
+      end unless respond_to?(:messages)
+
+      # clear_messages! is test-only infrastructure - production Lich::Messaging
+      # never defines it. Always add it so assertion teardown works regardless of
+      # which Messaging (mock or production) was loaded first.
+      def clear_messages!
+        @messages = []
+      end unless respond_to?(:clear_messages!)
+    end
+  end
+end
+
+# =============================================================================
+# DB_Store Mock
+# =============================================================================
+# In-memory replacement for the SQLite-backed script_auto_settings store.
+# Matches the production API from lib/common/db_store.rb.
+
+module Lich
+  module Common
+    module DB_Store
+      @store = {}
+
+      class << self
+        def read(scope, script)
+          case script
+          when 'vars', 'uservars'
+            get_vars(scope)
+          else
+            get_data(scope, script)
+          end
+        end
+
+        def save(scope, script, val)
+          case script
+          when 'vars', 'uservars'
+            store_vars(scope, val)
+          else
+            store_data(scope, script, val)
+          end
+        end
+
+        def get_data(scope, script)
+          @store ||= {}
+          @store["#{scope}::#{script}"] || {}
+        end
+
+        def get_vars(scope)
+          @store ||= {}
+          @store["#{scope}::vars"] || {}
+        end
+
+        def store_data(scope, script, val)
+          @store ||= {}
+          @store["#{scope}::#{script}"] = val
+        end
+
+        def store_vars(scope, val)
+          @store ||= {}
+          @store["#{scope}::vars"] = val
+        end
+
+        def reset!
+          @store = {}
+        end
+      end
+    end
+  end
+end unless defined?(Lich::Common::DB_Store)
+
+# =============================================================================
+# Effects Mock
+# =============================================================================
+# Game effects (buffs, debuffs, spells, cooldowns).
+# Uses a Registry class that reads from XMLData.dialogs for realistic behavior.
+
+module Effects
+  class Registry
+    include Enumerable
+
+    def initialize(dialog)
+      @dialog = dialog
+    end
+
+    def to_h
+      XMLData.dialogs.fetch(@dialog, {})
+    end
+
+    def each(&block)
+      to_h.each(&block)
+    end
+
+    def active?(effect)
+      expiry = to_h.fetch(effect, 0)
+      expiry.to_f > Time.now.to_f
+    end
+
+    def time_left(effect)
+      expiry = to_h.fetch(effect, 0)
+      return 0 if expiry.zero?
+
+      ((expiry - Time.now) / 60.0)
+    end
+  end
+
+  # Remove old constants if redefined (needed when specs run together)
+  remove_const(:Spells) if const_defined?(:Spells)
+  remove_const(:Buffs) if const_defined?(:Buffs)
+  remove_const(:Debuffs) if const_defined?(:Debuffs)
+  remove_const(:Cooldowns) if const_defined?(:Cooldowns)
+
+  Spells    = Registry.new("Active Spells")
+  Buffs     = Registry.new("Buffs")
+  Debuffs   = Registry.new("Debuffs")
+  Cooldowns = Registry.new("Cooldowns")
+end
+
+# =============================================================================
+# NilClass Extension
+# =============================================================================
+# Match production behavior where nil.method returns nil instead of raising.
+# This is controversial but matches what lich-5 expects.
+#
+# NOTE: This extension is DISABLED in specs because it interferes with RSpec
+# and standard Ruby library internals (File.expand_path, etc.).
+# Specs that depend on this behavior should mock it locally.
+#
+# class NilClass
+#   def method_missing(*)
+#     nil
+#   end
+#
+#   def respond_to_missing?(*)
+#     true
+#   end
+# end
+
+# =============================================================================
+# =============================================================================
+# Game Map class loader
+# =============================================================================
+# map_gs.rb and map_dr.rb both define Lich::Common::Map. Requiring both in one
+# process reopens the same class, so whichever loads last owns every method they
+# both define, including #initialize. That would leave each game's specs at the
+# mercy of the order RSpec happens to load spec files in.
+#
+# Map specs call MapLoader.use to get the class they need. Swapping costs about
+# 2 ms and only happens when the other game is currently loaded, so calling this
+# from a plain before hook is cheap. The map files are required lazily so specs
+# that never touch the map are unaffected.
+module MapLoader
+  MAP_DIR = File.expand_path('../lib/common/map', __dir__)
+
+  class << self
+    # @param game [Symbol] :gs or :dr
+    # @return [Class] Lich::Common::Map for that game
+    def use(game)
+      require 'common/map/map_base'
+      return ::Lich::Common::Map if @loaded == game && map_constants_present?
+
+      %i[Room Map].each do |const|
+        ::Lich::Common.send(:remove_const, const) if ::Lich::Common.const_defined?(const, false)
+      end
+      Kernel.load File.join(MAP_DIR, "map_#{game}.rb")
+      @loaded = game
+      ::Lich::Common::Map
+    end
+
+    # @return [Symbol, nil] the game currently loaded
+    attr_reader :loaded
+
+    private
+
+    # @loaded is only set after a successful load, so a load that raises part
+    # way through leaves it pointing at a game whose constants have already been
+    # removed. Check them before trusting the cache, or the next call for that
+    # game reports an uninitialized constant instead of just reloading.
+    # @return [Boolean]
+    def map_constants_present?
+      %i[Map Room].all? { |const| ::Lich::Common.const_defined?(const, false) }
+    end
+  end
+end
+
+# Room and Map Mocks
+# =============================================================================
+# Navigation infrastructure. Provides minimal implementation for testing.
+
+class Room
+  class << self
+    # Production calls Room.current.dijkstra(target_list) with an
+    # argument, and an OpenStruct attribute reader takes none. Define real
+    # methods so an example that forgets to stub gets an empty result rather
+    # than an ArgumentError.
+    # @param id [Integer] room id the double should report
+    # @return [OpenStruct] a Room stand-in whose pathfinding methods accept the
+    #   arguments production passes, unlike a bare OpenStruct attribute
+    def room_double(id: 1234)
+      double = OpenStruct.new(tags: [], id: id)
+      def double.dijkstra(*_args) = [{}, {}]
+      def double.dijkstra_hashes(*_args) = [{}, {}]
+      double
+    end
+
+    attr_writer :current
+
+    def current
+      @current ||= room_double
+    end
+
+    def id
+      1234
+    end
+
+    # Resolve the key the way production would, so a lookup keeps its identity
+    # instead of always reporting the default. Integer and numeric-string keys
+    # are the room id; a "u1234" key is a uid lookup, and this stand-in maps a
+    # uid to the same number rather than inventing an unrelated id.
+    def [](key)
+      room_double(id: mock_room_id(key))
+    end
+
+    # @param key [Integer, String] room id, numeric string, uid or title
+    # @return [Integer] id the stand-in should report
+    def mock_room_id(key)
+      case key
+      when Integer then key
+      when /\Au(-?\d+)\z/i then Regexp.last_match(1).to_i
+      when /\A-?\d+\z/ then key.to_i
+      else 1234
+      end
+    end
+  end
+end unless defined?(Room)
+
+class Map
+  class << self
+    def current
+      self
+    end
+
+    def [](_key)
+      nil
+    end
+
+    def id
+      1234
+    end
+
+    def list
+      []
+    end
+
+    def dijkstra(_id, _target = nil)
+      [{}, {}]
+    end
+
+    def dijkstra_hashes(_id, _target = nil)
+      [{}, {}]
+    end
+
+    def rooms_by_tag(_tag_name)
+      []
+    end
+
+    def findpath(_room, _target)
+      []
+    end
+
+    def wayto
+      { 1 => 'north', 2 => 'south', 3 => proc {} }
+    end
+
+    def timeto
+      { 1 => 10, 2 => 20, 3 => 30 }
+    end
+
+    def title
+      ['[Test Room]']
+    end
+  end
+end unless defined?(Map)
+
+# =============================================================================
+# DownstreamHook Mock
+# =============================================================================
+
+module DownstreamHook
+  def self.run(data)
+    data
+  end
+
+  # Matches the production HookRegistry surface: add/remove are hash writes
+  # that never raise, so code driven by them (Combat::Messages) behaves as
+  # it does in production instead of tripping over a missing method.
+  def self.add(name, action, persist: nil)
+    (@hooks ||= {})[name] = [action, persist]
+    action
+  end
+
+  def self.remove(name)
+    (@hooks ||= {}).delete(name)&.first
+  end
+
+  # Matches the production surface used by the ScriptDeath cleanup.
+  def self.cleanup_on_death(_owner_id)
+    0
+  end
+end unless defined?(DownstreamHook)
+
+# =============================================================================
+# UpstreamHook Mock
+# =============================================================================
+
+module UpstreamHook
+  def self.run(data)
+    data
+  end
+
+  # Matches the production surface used by the ScriptDeath cleanup.
+  def self.cleanup_on_death(_owner_id)
+    0
+  end
+end unless defined?(UpstreamHook)
+
+# =============================================================================
+# Char Mock
+# =============================================================================
+# Character information module.
+
+module Char
+  def self.name
+    XMLData.name || "testing"
+  end
+end unless defined?(Char)
+
+# =============================================================================
+# Global Variables
+# =============================================================================
+# These are used by various parts of lich-5 for game communication.
+
+$_SERVERBUFFER_ ||= []
+$_CLIENTBUFFER_ ||= []
+$_LASTUPSTREAM_ ||= nil
+$SEND_CHARACTER ||= '>'
+$cmd_prefix ||= ''
+$frontend ||= 'stormfront'
+$fake_stormfront ||= false
+$_CLIENT_ ||= Object.new.tap do |obj|
+  def obj.write(_data); end
+  def obj.closed?; false; end
+  def obj.alive?; true; end
+end
+$_DETACHABLE_CLIENT_ ||= nil
+$pause_all_lock ||= Mutex.new
+$safe_pause_lock ||= Mutex.new
+# Same 20 words as Lich::DragonRealms::ORDINALS (drvariables.rb), so specs see
+# production behaviour whether or not drvariables has been loaded first.
+$ORDINALS ||= %w[first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth].freeze
+
+# Reader and writer for each global above that a spec must not reassign, used
+# by the leak check in RSpec.configure. Add an entry when adding a global.
+# The check compares object identity, not value. Restoring by assigning a
+# literal (`$frontend = 'stormfront'`) only passes when the spec file has the
+# frozen_string_literal magic comment, as this file does, because only then is
+# it the same interned string; without the comment it fails. Save the original
+# object and assign it back instead.
+SPEC_HELPER_GLOBALS = {
+  '$_SERVERBUFFER_'      => [-> { $_SERVERBUFFER_ }, ->(value) { $_SERVERBUFFER_ = value }],
+  '$_CLIENTBUFFER_'      => [-> { $_CLIENTBUFFER_ }, ->(value) { $_CLIENTBUFFER_ = value }],
+  '$SEND_CHARACTER'      => [-> { $SEND_CHARACTER }, ->(value) { $SEND_CHARACTER = value }],
+  '$cmd_prefix'          => [-> { $cmd_prefix }, ->(value) { $cmd_prefix = value }],
+  '$frontend'            => [-> { $frontend }, ->(value) { $frontend = value }],
+  '$fake_stormfront'     => [-> { $fake_stormfront }, ->(value) { $fake_stormfront = value }],
+  '$_CLIENT_'            => [-> { $_CLIENT_ }, ->(value) { $_CLIENT_ = value }],
+  '$_DETACHABLE_CLIENT_' => [-> { $_DETACHABLE_CLIENT_ }, ->(value) { $_DETACHABLE_CLIENT_ = value }],
+  '$pause_all_lock'      => [-> { $pause_all_lock }, ->(value) { $pause_all_lock = value }],
+  '$safe_pause_lock'     => [-> { $safe_pause_lock }, ->(value) { $safe_pause_lock = value }],
+  '$ORDINALS'            => [-> { $ORDINALS }, ->(value) { $ORDINALS = value }]
+}.freeze unless defined?(SPEC_HELPER_GLOBALS)
+
+# =============================================================================
+# Spell Data Loading
+# =============================================================================
+# Load effect-list.xml from fixtures for realistic spell testing.
+# This file is committed to the repo to avoid network dependencies.
+# See spec/fixtures/README.md for update procedures.
+
+# Loads the shared spell fixture once per spec process.
+# Repeated spec-file initialization must not reload an already-loaded list:
+# Spell.load calls active?/timeleft on each existing spell, which can fail in specs.
+# @return [Boolean, nil] true when loaded, or nil when the fixture is absent
+def load_spell_data
+  require 'rexml/document'
+  require 'rexml/streamlistener'
+  require "common/spell"
+
+  return true if Lich::Common::Spell.class_variable_get(:@@loaded)
+
+  effect_list_path = File.join(FIXTURE_DIR, 'effect-list.xml')
+
+  if File.exist?(effect_list_path)
+    Lich::Common::Spell.load(effect_list_path)
+  else
+    warn "WARNING: effect-list.xml not found at #{effect_list_path}"
+    warn "Run: curl -o spec/fixtures/effect-list.xml https://raw.githubusercontent.com/elanthia-online/scripts/master/scripts/effect-list.xml"
+  end
+end
+
+# =============================================================================
+# Spellsong Mock
+# =============================================================================
+# Bard spellsong tracking.
+
+module Lich
+  module Gemstone
+    class Spellsong
+      @@renewed = Time.at(Time.now.to_i - 1200)
+
+      def self.renewed
+        @@renewed = Time.now
+      end
+
+      def self.timeleft
+        8
+      end
+    end
+  end
+end unless defined?(Lich::Gemstone::Spellsong)
+
+# =============================================================================
+# GameObj Mock
+# =============================================================================
+# Game object tracking (NPCs, items, etc.).
+
+# Mock hand item for testing
+class MockGameObj
+  attr_accessor :id, :noun, :name, :type
+
+  def initialize(id: nil, noun: nil, name: nil, type: nil)
+    @id = id
+    @noun = noun
+    @name = name || "Empty"
+    @type = type
+  end
+end
+
+module Lich
+  module Common
+    class GameObj
+      @@npcs = []
+      @right_hand = MockGameObj.new
+      @left_hand = MockGameObj.new
+
+      def initialize(id, noun, name, before = nil, after = nil)
+        @id = id
+        @noun = noun
+        @name = name
+        @before_name = before
+        @after_name = after
+      end
+
+      class << self
+        attr_writer :right_hand, :left_hand
+
+        # Match production: return .dup to prevent mutation of shared state
+        def right_hand
+          @right_hand&.dup
+        end
+
+        def left_hand
+          @left_hand&.dup
+        end
+
+        def npcs
+          @@npcs.empty? ? nil : @@npcs.dup
+        end
+
+        def clear_npcs
+          @@npcs = []
+        end
+
+        # The double tracks no worn list; production returns nil for an
+        # empty one too.
+        def inv
+          nil
+        end
+
+        # Mirrors the production API so XMLParser#reset - which discards
+        # in-flight staged refreshes when resynchronizing - works against this
+        # lightweight double. The double has no staging buffers, so it is a
+        # no-op here.
+        def discard_staged_refreshes
+          nil
+        end
+
+        # Room-collection clears the <nav> handler invokes on arrival. The mock only needs
+        # them to exist as no-ops so xmlparser specs can drive a real <nav> tag end-to-end.
+        def clear_loot; end
+
+        def clear_pcs; end
+
+        def clear_room_desc; end
+
+        def set_right_hand(obj)
+          @right_hand = obj
+        end
+
+        def set_left_hand(obj)
+          @left_hand = obj
+        end
+
+        def clear_hands
+          @right_hand = MockGameObj.new
+          @left_hand = MockGameObj.new
+        end
+
+        def reset!
+          clear_npcs
+          clear_hands
+        end
+      end
+    end
+  end
+
+  # Gemstone uses the same GameObj class
+  module Gemstone
+    GameObj = Lich::Common::GameObj
+  end
+end unless defined?(Lich::Common::GameObj)
+
+# Top-level alias
+GameObj = Lich::Common::GameObj unless defined?(GameObj)
+
+# =============================================================================
+# Flags Mock
+# =============================================================================
+# Game event flag tracking. Matches production API from events.rb.
+# NOTE: Production defines this as a CLASS, not module.
+
+class Flags
+  @@flags = {}
+  @@matchers = {}
+
+  class << self
+    def add(name, *patterns)
+      @@flags[name] = nil
+      @@matchers[name] = patterns.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+    end
+
+    def delete(name)
+      @@flags.delete(name)
+      @@matchers.delete(name)
+    end
+
+    def []=(name, val)
+      @@flags[name] = val
+    end
+
+    def [](name)
+      @@flags[name]
+    end
+
+    def flags
+      @@flags
+    end
+
+    def matchers
+      @@matchers
+    end
+
+    def reset(name)
+      @@flags[name] = nil
+    end
+
+    def record_match(name, patterns, match)
+      @@flags[name] = match if @@matchers[name].equal?(patterns)
+    end
+
+    def reset!
+      @@flags = {}
+      @@matchers = {}
+    end
+  end
+end unless defined?(Flags)
+
+# =============================================================================
+# UserVars Mock
+# =============================================================================
+# User-defined variables for scripts.
+
+module UserVars
+  @data = {}
+  @moons = {}
+  @sun = nil
+  @friends = []
+  @hunting_nemesis = []
+
+  class << self
+    attr_accessor :discerns, :avtalia, :moons
+    attr_accessor :song, :climbing_song, :instrument
+    attr_accessor :friends, :hunting_nemesis
+    attr_accessor :slack_token
+
+    def sun
+      @sun || { 'night' => false, 'day' => true }
+    end
+
+    def sun=(val)
+      @sun = val
+    end
+
+    def method_missing(name, *args)
+      if name.to_s.end_with?('=')
+        @data[name.to_s.chomp('=')] = args.first
+      else
+        @data[name.to_s]
+      end
+    end
+
+    def respond_to_missing?(_name, _include_private = false)
+      true
+    end
+
+    def reset!
+      @data = {}
+      @moons = {}
+      @sun = nil
+      @discerns = nil
+      @avtalia = nil
+      @song = nil
+      @climbing_song = nil
+      @instrument = nil
+      @friends = []
+      @hunting_nemesis = []
+    end
+  end
+end unless defined?(UserVars)
+
+# =============================================================================
+# DR-Specific Mocks
+# =============================================================================
+# These are the DragonRealms commons modules used by most DR scripts.
+# Defined at top level first, then aliased into Lich::DragonRealms namespace.
+
+# Ensure namespace exists
+module Lich; module DragonRealms; end; end
+
+# -----------------------------------------------------------------------------
+# DRC - Common module (bput, hands, messaging)
+# -----------------------------------------------------------------------------
+module DRC
+  # Same as Lich::DragonRealms::DRC::IMMOBILE_PATTERN, for code that matches
+  # the immobile reply when the real DRC isn't loaded.
+  IMMOBILE_PATTERN = /^You don't seem to be able to move/.freeze
+
+  @right_hand = nil
+  @left_hand = nil
+
+  class << self
+    attr_accessor :right_hand, :left_hand
+
+    def bput(_command, *_patterns)
+      'default'
+    end
+
+    def message(_msg); end
+
+    def retreat(*_args); end
+
+    def fix_standing; end
+
+    def release_invisibility; end
+
+    def set_stance(_stance); end
+
+    def get_noun(item)
+      item.to_s.split.last
+    end
+
+    def text2num(*_args)
+      0
+    end
+
+    def rummage(*_args)
+      []
+    end
+
+    def strip_xml(lines)
+      lines.map { |line| line.gsub(/<[^>]+>/, '').gsub('&gt;', '>').gsub('&lt;', '<').strip }
+           .reject(&:empty?)
+    end
+
+    def reset!
+      @right_hand = nil
+      @left_hand = nil
+    end
+  end
+
+  # Mock DRC::Item class for in_hand? method in DRCI
+  class Item
+    attr_reader :short_regex
+
+    def initialize(text)
+      @short_regex = /#{Regexp.escape(text.to_s)}/i
+    end
+
+    def self.from_text(text)
+      return nil if text.nil? || text.to_s.strip.empty?
+
+      new(text)
+    end
+  end
+end unless defined?(DRC)
+
+# -----------------------------------------------------------------------------
+# DRCI - Common items module
+# -----------------------------------------------------------------------------
+module DRCI
+  class << self
+    def get_item?(_item, _container = nil)
+      true
+    end
+
+    def get_item(_item, _container = nil)
+      true
+    end
+
+    def get_item_if_not_held?(_item, _container = nil)
+      true
+    end
+
+    def put_away_item?(_item, _container = nil)
+      true
+    end
+
+    def put_away_item_unsafe?(_item, _container = nil, _preposition = 'in')
+      true
+    end
+
+    def stow_item?(_item)
+      true
+    end
+
+    def wear_item?(_item)
+      true
+    end
+
+    def remove_item?(_item)
+      true
+    end
+
+    def tie_item?(_item, _container = nil)
+      true
+    end
+
+    def untie_item?(_item, _container = nil)
+      true
+    end
+
+    def in_hands?(_item)
+      false
+    end
+
+    def in_left_hand?(_item)
+      false
+    end
+
+    def in_right_hand?(_item)
+      false
+    end
+
+    def inside?(_item, _container)
+      true
+    end
+
+    def dispose_trash(_item, _container = nil, _verb = nil); end
+
+    def stow_hand(_hand)
+      true
+    end
+  end
+end unless defined?(DRCI)
+
+# -----------------------------------------------------------------------------
+# DRStats - Character stats module
+# -----------------------------------------------------------------------------
+module DRStats
+  @mana = 100
+  @concentration = 100
+  @guild = 'Warrior Mage'
+  @encumbrance = 'None'
+  @race = 'Human'
+  @gender = 'male'
+
+  class << self
+    attr_accessor :mana, :concentration, :guild, :encumbrance, :race, :gender
+
+    def barbarian?
+      @guild == 'Barbarian'
+    end
+
+    def bard?
+      @guild == 'Bard'
+    end
+
+    def cleric?
+      @guild == 'Cleric'
+    end
+
+    def commoner?
+      @guild == 'Commoner'
+    end
+
+    def empath?
+      @guild == 'Empath'
+    end
+
+    def moon_mage?
+      @guild == 'Moon Mage'
+    end
+
+    def necromancer?
+      @guild == 'Necromancer'
+    end
+
+    def paladin?
+      @guild == 'Paladin'
+    end
+
+    def ranger?
+      @guild == 'Ranger'
+    end
+
+    def thief?
+      @guild == 'Thief'
+    end
+
+    def trader?
+      @guild == 'Trader'
+    end
+
+    def warrior_mage?
+      @guild == 'Warrior Mage'
+    end
+
+    def reset!
+      @mana = 100
+      @concentration = 100
+      @guild = 'Warrior Mage'
+      @encumbrance = 'None'
+      @race = 'Human'
+      @gender = 'male'
+    end
+  end
+end unless defined?(DRStats)
+
+# -----------------------------------------------------------------------------
+# DRSkill - Skill ranks/xp tracking
+# -----------------------------------------------------------------------------
+class DRSkill
+  @ranks = {}
+  @xps = {}
+
+  class << self
+    def getrank(skill = nil, *_rest)
+      @ranks ||= {}
+      @ranks[skill] || 0
+    end
+
+    def getxp(skill = nil, *_rest)
+      @xps ||= {}
+      @xps[skill] || 0
+    end
+
+    def set_rank(skill, rank)
+      @ranks ||= {}
+      @ranks[skill] = rank
+    end
+
+    def set_xp(skill, xp)
+      @xps ||= {}
+      @xps[skill] = xp
+    end
+
+    def reset!
+      @ranks = {}
+      @xps = {}
+    end
+  end
+end unless defined?(DRSkill)
+
+# -----------------------------------------------------------------------------
+# DRSpells - Active spells tracking
+# -----------------------------------------------------------------------------
+module DRSpells
+  @@known_spells = {}
+  @@known_feats = {}
+  @@spellbook_format = nil
+  @@grabbing_known_spells = false
+  @@grabbing_known_barbarian_abilities = false
+  @@grabbing_known_khri = false
+
+  class << self
+    def active_spells
+      XMLData.dr_active_spells
+    end
+
+    def active_spells=(val)
+      XMLData.dr_active_spells = val
+    end
+
+    def slivers
+      XMLData.dr_active_spells_slivers
+    end
+
+    def stellar_percentage
+      XMLData.dr_active_spells_stellar_percentage
+    end
+
+    def known_spells
+      @@known_spells
+    end
+
+    def known_feats
+      @@known_feats
+    end
+
+    def spellbook_format
+      @@spellbook_format
+    end
+
+    def spellbook_format=(val)
+      @@spellbook_format = val
+    end
+
+    def grabbing_known_spells
+      @@grabbing_known_spells
+    end
+
+    def grabbing_known_spells=(val)
+      @@grabbing_known_spells = val
+    end
+
+    def check_known_barbarian_abilities
+      @@grabbing_known_barbarian_abilities
+    end
+
+    def check_known_barbarian_abilities=(val)
+      @@grabbing_known_barbarian_abilities = val
+    end
+
+    def grabbing_known_khri
+      @@grabbing_known_khri
+    end
+
+    def grabbing_known_khri=(val)
+      @@grabbing_known_khri = val
+    end
+
+    def reset!
+      @@known_spells = {}
+      @@known_feats = {}
+      @@spellbook_format = nil
+      @@grabbing_known_spells = false
+      @@grabbing_known_barbarian_abilities = false
+      @@grabbing_known_khri = false
+      XMLData.dr_active_spells = {}
+    end
+  end
+end unless defined?(DRSpells)
+
+# -----------------------------------------------------------------------------
+# DRRoom - Room information (class in production)
+# -----------------------------------------------------------------------------
+class DRRoom
+  @npcs = []
+  @pcs = []
+  @group_members = []
+  @room_objs = []
+
+  class << self
+    attr_accessor :npcs, :pcs, :group_members, :room_objs
+
+    # The production method with no Creature roster: the noun rule only.
+    def unignored_npcs(ignored)
+      (npcs || []) - Array(ignored).compact.map(&:to_s)
+    end
+
+    # Clear through the accessors, not the mock's instance variables. When the
+    # production DRRoom (lib/dragonrealms/drinfomon/drroom.rb) is loaded in the
+    # same process it reopens DRRoom and redefines the accessors to read/write
+    # class variables (@@npcs, ...), while this mock's reset! kept assigning the
+    # class-level instance variables (@npcs, ...). The two no longer refer to the
+    # same storage, so reset! silently failed to clear production state and NPCs
+    # leaked between examples (a later cambrinth spec would spin in an endless
+    # retreat loop). Routing through the setters writes to whichever storage the
+    # live accessor uses; respond_to? guards attributes the mock lacks.
+    def reset!
+      %i[npcs pcs group_members room_objs pcs_prone pcs_sitting dead_npcs].each do |attribute|
+        setter = :"#{attribute}="
+        public_send(setter, []) if respond_to?(setter)
+      end
+    end
+  end
+end unless defined?(DRRoom)
+
+# -----------------------------------------------------------------------------
+# DRCA - Arcana module
+# -----------------------------------------------------------------------------
+module DRCA
+  class << self
+    def perc_mana
+      0
+    end
+  end
+end unless defined?(DRCA)
+
+# -----------------------------------------------------------------------------
+# DRCT - Travel module
+# -----------------------------------------------------------------------------
+module DRCT
+  class << self
+    def walk_to(_room_id, *_args)
+      true
+    end
+  end
+end unless defined?(DRCT)
+
+# -----------------------------------------------------------------------------
+# DRCM - Money module
+# -----------------------------------------------------------------------------
+module DRCM
+  class << self
+    def ensure_copper_on_hand(_copper, _settings = nil, _hometown = nil)
+      true
+    end
+
+    def town_currency(_hometown)
+      'Kronars'
+    end
+  end
+end unless defined?(DRCM)
+
+# -----------------------------------------------------------------------------
+# DRCMM - Moon mage module
+# -----------------------------------------------------------------------------
+module DRCMM
+  class << self
+    def update_astral_data(data, _settings)
+      data
+    end
+
+    def set_moon_data(_data)
+      true
+    end
+  end
+end unless defined?(DRCMM)
+
+# -----------------------------------------------------------------------------
+# DRCTH - Theurgy module
+# -----------------------------------------------------------------------------
+module DRCTH
+  # Minimal mock - extend as needed
+end unless defined?(DRCTH)
+
+# -----------------------------------------------------------------------------
+# DRExpMonitor - Experience monitor module
+# -----------------------------------------------------------------------------
+module DRExpMonitor
+  class << self
+    def inline_display?
+      false
+    end
+
+    def format_briefexp_on(line, _skill)
+      line
+    end
+
+    def format_briefexp_off(line, _skill, _rate)
+      line
+    end
+
+    def reset!
+      # No state to reset
+    end
+  end
+end unless defined?(DRExpMonitor)
+
+# =============================================================================
+# Namespace Aliases
+# =============================================================================
+# Production code lives in Lich::DragonRealms::*
+# Aliases ensure both bare names and namespaced names resolve to same object.
+
+Lich::DragonRealms::DRC = DRC unless defined?(Lich::DragonRealms::DRC)
+Lich::DragonRealms::DRCI = DRCI unless defined?(Lich::DragonRealms::DRCI)
+Lich::DragonRealms::DRStats = DRStats unless defined?(Lich::DragonRealms::DRStats)
+Lich::DragonRealms::DRSkill = DRSkill unless defined?(Lich::DragonRealms::DRSkill)
+Lich::DragonRealms::DRSpells = DRSpells unless defined?(Lich::DragonRealms::DRSpells)
+Lich::DragonRealms::DRRoom = DRRoom unless defined?(Lich::DragonRealms::DRRoom)
+Lich::DragonRealms::DRExpMonitor = DRExpMonitor unless defined?(Lich::DragonRealms::DRExpMonitor)
+Lich::DragonRealms::DRCA = DRCA unless defined?(Lich::DragonRealms::DRCA)
+Lich::DragonRealms::DRCM = DRCM unless defined?(Lich::DragonRealms::DRCM)
+Lich::DragonRealms::DRCT = DRCT unless defined?(Lich::DragonRealms::DRCT)
+Lich::DragonRealms::DRCMM = DRCMM unless defined?(Lich::DragonRealms::DRCMM)
+Lich::DragonRealms::DRCTH = DRCTH unless defined?(Lich::DragonRealms::DRCTH)
+Lich::DragonRealms::Flags = Flags unless defined?(Lich::DragonRealms::Flags)
+Lich::DragonRealms::UserVars = UserVars unless defined?(Lich::DragonRealms::UserVars)
+
+# =============================================================================
+# Additional Infrastructure Mocks
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Frontend - Game client detection (see spec/support/frontend_mock.rb)
+# -----------------------------------------------------------------------------
+require_relative 'support/frontend_mock'
+
+# -----------------------------------------------------------------------------
+# StringProc - Delayed command execution
+# -----------------------------------------------------------------------------
+class StringProc
+  def initialize(string = '')
+    @string = string
+  end
+
+  def call(*_args)
+    # Evaluate the string expression and return the result.
+    # WARNING: This uses eval() which is a security risk if passed untrusted input.
+    # This is safe in test context but MUST NOT be used with user-provided strings
+    # in production code. The production StringProc has additional safeguards.
+    eval(@string)
+  end
+
+  def to_s
+    @string
+  end
+
+  def _dump(_level = nil)
+    @string
+  end
+
+  def to_json(*args)
+    ";e #{_dump}".to_json(args)
+  end
+end unless defined?(StringProc)
+
+# -----------------------------------------------------------------------------
+# Lich::Util - Utility functions
+# -----------------------------------------------------------------------------
+# Several individual spec files define their own guarded (`unless respond_to?`)
+# install_gem_requirements stand-in for whatever production file they load, and
+# which one wins depended on file load order - the root cause of #1542. Since
+# spec_helper.rb is required first by nearly every spec file, defining a safe,
+# working version here means those per-file stand-ins normally never even get a
+# chance to win the race. Every gem any of them request (ffi, os, kramdown) is
+# already in the Gemfile, so a plain require satisfies the real intent without
+# the live-install path of lib/util/util.rb's implementation.
+require 'os'
+require 'ffi'
+
+module Lich
+  module Util
+    class << self
+      def issue_command(*_args, **_kwargs)
+        []
+      end
+
+      def quiet_command_xml(*_args, **_kwargs)
+        []
+      end
+    end
+  end
+end unless defined?(Lich::Util)
+
+# Guarded on the method, not the module: a spec that opens Lich::Util for some
+# other reason before spec_helper loads (e.g. requiring a lib file that defines
+# Lich::Util itself) would otherwise skip this along with the block above.
+module Lich
+  module Util
+    unless respond_to?(:install_gem_requirements)
+      def self.install_gem_requirements(gems_to_install, **_kwargs)
+        # Mirrors the real impl's should_require semantics (lib/util/util.rb) rather
+        # than requiring unconditionally: textstripper.rb passes 'kramdown' => false
+        # and does its own require + rescue right after, so requiring it here too
+        # would just be redundant, not wrong - but a future false-valued call for a
+        # gem nothing requires afterward should stay a no-op, not force a require.
+        # Rescue LoadError (this only satisfies gems already in the Gemfile; it isn't
+        # a stand-in for the real gem-install path) so a spec-load-time failure here
+        # reads as "gem not requirable in this stub" instead of a raw LoadError.
+        gems_to_install.each do |gem_name, should_require|
+          require gem_name if should_require
+        end
+        true
+      rescue LoadError => e
+        raise LoadError, "#{e.message} (spec_helper.rb's install_gem_requirements stub only " \
+                          'requires already-bundled gems - add a real stub for anything else)'
+      end
+    end
+  end
+end
+
+# =============================================================================
+# Kernel Helper Methods
+# =============================================================================
+# Game interaction methods that are available at top level in scripts.
+# These are idempotent - safe to call multiple times.
+#
+# Spec files must not stub these with a top-level `def`. A top-level `def`
+# is a private method owned by Object; once loaded it shadows the Kernel stub
+# for the rest of the process and can break allow_any_instance_of(Object)
+# stubs in other files (see global_defs_spec). Stub the receiver with
+# allow(...) instead, or add the method here.
+
+module Kernel
+  def pause(_seconds = nil); end unless method_defined?(:pause)
+
+  # Stands in for the real global_defs get_settings (character-scoped settings).
+  # Returns an OpenStruct so any setting key (e.g. worn_trashcan) reads back nil
+  # by default; override per example with allow(self).to receive(:get_settings).
+  def get_settings(_character_suffixes = [])
+    OpenStruct.new
+  end unless method_defined?(:get_settings)
+
+  def waitrt?; end unless method_defined?(:waitrt?)
+
+  def waitcastrt?; end unless method_defined?(:waitcastrt?)
+
+  def echo(_msg); end unless method_defined?(:echo)
+
+  def fput(_cmd); end unless method_defined?(:fput)
+
+  def put(_cmd); end unless method_defined?(:put)
+
+  # NOTE: `clear` MUST be private - a public Kernel `clear` is inherited by all objects,
+  # causing `Effects::Buffs.respond_to?(:clear)` to return true in qstrike_spec,
+  # which breaks buff cleanup.
+  def clear; end unless method_defined?(:clear)
+  private :clear
+
+  def get?
+    nil
+  end unless method_defined?(:get?)
+
+  def move(_dir)
+    true
+  end unless method_defined?(:move)
+
+  def start_script(_name, _args = [], **_opts)
+    Object.new
+  end unless method_defined?(:start_script)
+
+  def kill_script(_handle); end unless method_defined?(:kill_script)
+
+  def checkprep
+    'None'
+  end unless method_defined?(:checkprep)
+
+  def checkcastrt
+    0
+  end unless method_defined?(:checkcastrt)
+
+  def reget(_count, _pattern = nil)
+    nil
+  end unless method_defined?(:reget)
+
+  def kneeling?
+    false
+  end unless method_defined?(:kneeling?)
+
+  def sitting?
+    false
+  end unless method_defined?(:sitting?)
+
+  def standing?
+    true
+  end unless method_defined?(:standing?)
+
+  def hiding?
+    false
+  end unless method_defined?(:hiding?)
+
+  def invisible?
+    false
+  end unless method_defined?(:invisible?)
+
+  def stunned?
+    false
+  end unless method_defined?(:stunned?)
+
+  def webbed?
+    false
+  end unless method_defined?(:webbed?)
+
+  def _respond(*_args); end unless method_defined?(:_respond)
+
+  def custom_require
+    proc { |_name| nil }
+  end unless method_defined?(:custom_require)
+
+  def get_data(_type)
+    OpenStruct.new(
+      prep_messages: ['You begin to'],
+      cast_messages: ['You gesture'],
+      invoke_messages: ['Your cambrinth absorbs'],
+      charge_messages: ['Your cambrinth absorbs all of the energy'],
+      segue_messages: ['You segue'],
+      khri_preps: ['You focus your mind'],
+      spell_data: {},
+      barb_abilities: {}
+    )
+  end unless method_defined?(:get_data)
+
+  def checkname
+    'TestChar'
+  end unless method_defined?(:checkname)
+
+  def get
+    nil
+  end unless method_defined?(:get)
+end
