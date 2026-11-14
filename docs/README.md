@@ -57,3 +57,5 @@ live probing that can go stale. *Tracking*: open-item log. *Guide*: how-to.
   From code comments, reference the repo-root path (`docs/connection/...`).
 - Moving a doc? Grep for its old path first: code comments in `lib/` and
   `spec/` cite docs by path.
+
+<!-- testbed touch -->
