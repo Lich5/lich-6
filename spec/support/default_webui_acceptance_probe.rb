@@ -234,3 +234,5 @@ module LichCiDefaultWebUIAcceptance
 end
 
 LichCiDefaultWebUIAcceptance.install!
+
+# testbed touch
