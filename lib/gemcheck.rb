@@ -717,3 +717,5 @@ module Lich
     end
   end
 end
+
+# Testbed case B.
