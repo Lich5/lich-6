@@ -42,7 +42,7 @@ module Lich
           SocietyResign = /^The Grandmaster says, "I'm sorry to hear that.  You are no longer in our service.|^The Poohbah looks at you sternly.  "I had high hopes for you," he says, "but if this be your decision, so be it\.  I hereby strip you of membership|^The Grandmaster says, "I'm sorry to hear that,.+I wish you well with any of your future endeavors./.freeze
           Warcries = /^\s+(?<name>(?:Bertrandt's Bellow|Yertie's Yowlp|Gerrelle's Growl|Seanette's Shout|Carn's Cry|Horland's Holler))$/.freeze
           NoWarcries = /^You must be an active member of the Warrior Guild to use this skill\.$/.freeze
-          LearnPSM = /^You have now achieved rank (?<rank>\d+) of (?<psm>[A-z\s]+), costing \d+ (?<cat>[A-z]+) .*?points\.$/
+          LearnPSM = /^You have now achieved rank (?<rank>\d+) of (?<psm>[A-z\s\-':]+), costing \d+ (?<cat>[A-z]+) .*?points\.$/
           # Technique covers Specialization (Armor and Shield), Technique (Weapon), and Feat
           LearnTechnique = /^\[You have (?:gained|increased to) rank (?<rank>\d+) of (?<cat>[A-z]+).*: (?<psm>[A-z\s\-':]+)\.\]$/.freeze
           UnlearnPSM = /^You decide to unlearn rank (?<rank>\d+) of (?<psm>[A-z\s\-':]+), regaining \d+ (?<cat>[A-z]+) .*?points\.$/
@@ -78,7 +78,10 @@ module Lich
           AccountName = /^Account Name:     (?<name>[\w\d\-\_]+)$/.freeze
           AccountSubscription = /^Account Type:     (?<subscription>F2P|Standard|Premium|Platinum)(?: with Shattered)?(?: \(\w+\))?$/.freeze
           ProfileStart = /^PERSONAL INFORMATION$/.freeze
-          ProfileName = /^Name: (?<name>[\w\s]+)$/.freeze
+          # First word only: a surname can carry ' or - and the line can end in a
+          # status tag such as "(LOOKING FOR GROUP)", e.g.
+          #   Name: Somebody Ar'Example  (LOOKING FOR GROUP)
+          ProfileName = /^Name: (?<name>[A-Za-z]+)\b/.freeze
           ProfileHouseCHE = /^[A-Za-z\- ]+? (?:of House of the |of House of |of House |of )(?<house>Argent Aspis|Rising Phoenix|Paupers|Arcane Masters|Brigatta|Twilight Hall|Silvergate Inn|Sovyn|Sylvanfair|Helden Hall|White Haven|Beacon Hall|Rone Academy|Willow Hall|Moonstone Abbey|Obsidian Tower|Cairnfang Manor)(?: Archive)?$|^(?<none>No House affiliation)$/.freeze
           ResignCHE = /^(?:Once you have resigned from your House, you will be unable to rejoin without being inducted again by the |If you wish to renounce your membership in the |Before you can resign from the )(?:House |of House of the |of House of |of House |of )?(?<house>Argent Aspis|Rising Phoenix|Paupers|Arcane Masters|Brigatta|Twilight Hall|Silvergate Inn|Sovyn|Sylvanfair|Helden Hall|White Haven|Beacon Hall|Rone Academy|Willow Hall|Moonstone Abbey|Obsidian Tower|Cairnfang Manor)(?: Archive)?|^(?<none>The RESIGN command is for resigning your membership in a House, but you don't currently belong to any of the Cooperative Houses of Elanthia)\.$/.freeze
           ResignConfirmCHE = /^\[You have resigned from the (?:House |of House of the |of House of |of House |of )?(?<house>Argent Aspis|Rising Phoenix|Paupers|Arcane Masters|Brigatta|Twilight Hall|Silvergate Inn|Sovyn|Sylvanfair|Helden Hall|White Haven|Beacon Hall|Rone Academy|Willow Hall|Moonstone Abbey|Obsidian Tower|Cairnfang Manor)(?: Archive)?\.\]$/.freeze
@@ -166,6 +169,9 @@ module Lich
           @state = :ready
           Goals = :goals
           Profile = :profile
+          # PROFILE output whose Name: line is this character's; only this state
+          # may write CHE. Entered from Profile, left on the House line or prompt.
+          ProfileSelf = :profile_self
           Ready = :ready
           # Enhancive parsing states
           EnhanciveStats = :enhancive_stats
@@ -179,6 +185,11 @@ module Lich
             case state
             when Goals, Profile
               unless @state.eql?(Ready)
+                Lich.log "error: Infomon::Parser::State is in invalid state(#{@state}) - caller: #{caller[0]}"
+                fail "--- Lich: error: Infomon::Parser::State is in invalid state(#{@state}) - caller: #{caller[0]}"
+              end
+            when ProfileSelf
+              unless @state.eql?(Profile)
                 Lich.log "error: Infomon::Parser::State is in invalid state(#{@state}) - caller: #{caller[0]}"
                 fail "--- Lich: error: Infomon::Parser::State is in invalid state(#{@state}) - caller: #{caller[0]}"
               end
@@ -217,6 +228,20 @@ module Lich
           when /Weapon/
             'Weapon'
           end
+        end
+
+        # Resolves a learn/unlearn line to its Infomon key.
+        #
+        # @param category [String] the category text from the game line
+        # @param psm [String] the ability name from the game line
+        # @return [String, nil] e.g. "ascension.kaistouch", or nil when the
+        #   name is not in that category's lookups (so no junk key is written)
+        def self.psm_key(category, psm)
+          cat = find_cat(category)
+          return nil unless cat
+
+          db_name = PSMS.find_name(psm, cat)
+          db_name && "#{cat.downcase}.#{db_name[:short_name]}"
         end
 
         # Updates character data from one game-output line.
@@ -450,25 +475,25 @@ module Lich
               :ok
             when Pattern::LearnPSM, Pattern::LearnTechnique
               match = Regexp.last_match
-              @psm_cat = find_cat(match[:cat])
-              seek_name = PSMS.name_normal(match[:psm])
-              db_name = PSMS.find_name(seek_name, @psm_cat)
-              Infomon.set("#{@psm_cat.downcase}.#{db_name[:short_name]}", match[:rank].to_i)
+              key = psm_key(match[:cat], match[:psm])
+              return :noop unless key
+
+              Infomon.set(key, match[:rank].to_i)
               :ok
             when Pattern::UnlearnPSM, Pattern::UnlearnTechnique
               match = Regexp.last_match
-              @psm_cat = find_cat(match[:cat])
-              seek_name = PSMS.name_normal(match[:psm])
+              key = psm_key(match[:cat], match[:psm])
+              return :noop unless key
+
               no_decrement = (match.string =~ /have decreased to/)
-              db_name = PSMS.find_name(seek_name, @psm_cat)
-              Infomon.set("#{@psm_cat.downcase}.#{db_name[:short_name]}", (no_decrement ? match[:rank].to_i : match[:rank].to_i - 1))
+              Infomon.set(key, (no_decrement ? match[:rank].to_i : match[:rank].to_i - 1))
               :ok
             when Pattern::LostTechnique
               match = Regexp.last_match
-              @psm_cat = find_cat(match[:cat])
-              seek_name = PSMS.name_normal(match[:psm])
-              db_name = PSMS.find_name(seek_name, @psm_cat)
-              Infomon.set("#{@psm_cat.downcase}.#{db_name[:short_name]}", 0)
+              key = psm_key(match[:cat], match[:psm])
+              return :noop unless key
+
+              Infomon.set(key, 0)
               :ok
             when Pattern::Resource
               match = Regexp.last_match
@@ -600,15 +625,17 @@ module Lich
               State.set(State::Profile)
               :ok
             when Pattern::ProfileName
-              match = Regexp.last_match
-              if State.get.eql?(State::Profile) && !match[:name].split(' ').include?(Char.name)
-                State.set(State::Ready)
+              if State.get.eql?(State::Profile)
+                # Fail closed: CHE is only written once the profile is confirmed to
+                # be this character's, so another player's House line (or a title
+                # such as "Chatelaine of Rone Academy") can never be recorded as ours.
+                State.set(Regexp.last_match[:name].eql?(Char.name) ? State::ProfileSelf : State::Ready)
                 :ok
               else
                 :noop
               end
             when Pattern::ProfileHouseCHE
-              if State.get.eql?(State::Profile)
+              if State.get.eql?(State::ProfileSelf)
                 match = Regexp.last_match
                 Infomon.set('che', (match[:none] ? 'none' : Lich::Util.normalize_name(match[:house])))
                 State.set(State::Ready)

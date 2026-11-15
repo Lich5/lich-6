@@ -12,19 +12,13 @@ module StreamReplay
   # Prepended onto Lich::Util::Update's singleton class: no core update, no
   # repo sync (both reach GitHub).
   module OfflineUpdate
-    # Suppresses core updates during offline replay.
-    # @return [nil] does no network work in the replay child
     def update_core_data_and_scripts(*) = nil
-    # Suppresses repository synchronization during offline replay.
-    # @return [nil] does no network work in the replay child
     def sync_all_repos(*) = nil
   end
 
   # Prepended onto Lich's singleton class: the core always counts as updated
   # for the running version, so handle_autostart never starts a core update.
   module CurrentCore
-    # Marks the replay child core as current.
-    # @return [String, nil] the running version, falling back to the original method if undefined
     def core_updated_with_lich_version = (defined?(LICH_VERSION) ? LICH_VERSION : super)
   end
 

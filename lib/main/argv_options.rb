@@ -24,8 +24,6 @@ module Lich
 
       # Parse ARGV and build @argv_options hash for backward compatibility
       module OptionParser
-        # Parses launch arguments into the options hash.
-        # @return [Hash] the parsed or updated launch options
         def self.execute
           @argv_options = {}
           bad_args = []
@@ -162,10 +160,6 @@ module Lich
 
       # Apply side effects: dark mode, hosts-dir, bind-address, detachable-client
       module SideEffects
-        # Applies startup side effects to already-parsed options. Handlers may
-        # update the hash or exit the process for terminal launch actions.
-        # @param argv_options [Hash] parsed launch options to apply and update
-        # @return [Hash] the same options hash after handler updates
         def self.execute(argv_options)
           StartupTheme.apply(argv_options)
           handle_hosts_dir(argv_options)
@@ -187,15 +181,13 @@ module Lich
         # unless it declares its own with SET_FRONTEND_CAPS, in place of the
         # catalog's for the frontend (see Lich::Common::ClientCapabilities).
         # An empty LIST (or one with no known name) gives every client the
-        # legacy rewrites.
-        # @param argv_options [Hash] launch options to update
-        # @return [void] updates session capabilities and warns about unknown names
+        # legacy rewrites. Feeds in LIST (script_list) replace the catalog's
+        # feeds; a LIST of feeds alone leaves its rewrites alone.
         def self.handle_frontend_caps(argv_options)
           return unless argv_options.key?(:frontend_caps)
 
-          capabilities, unknown = Lich::Common::ClientCapabilities.parse(argv_options[:frontend_caps])
+          unknown = Lich::Common::ClientCapabilities.apply_launch_list(argv_options[:frontend_caps])
           announce('warning', "--frontend-caps: ignoring unknown capabilities: #{unknown.join(', ')}") unless unknown.empty?
-          Lich::Common::ClientCapabilities.launch_capabilities = capabilities
         end
 
         # Surface a message on both channels every bind handler uses.

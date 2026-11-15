@@ -6,9 +6,6 @@ require 'stringio'
 module Lich; end
 
 module Lich
-  # Suppresses unrelated log output in the test harness.
-  # @param _msg [Object]  msg fixture input
-  # @return [void] suppresses diagnostics in the isolated harness
   def self.log(_msg); end
 end unless Lich.respond_to?(:log)
 
@@ -25,10 +22,6 @@ RSpec.describe 'proxied front-end handshake (main.rb)' do
   raise 'could not extract the proxied handshake forward from main.rb' unless forward_block
 
   harness_class = Class.new do
-    # Initializes the isolated launch harness and captured output.
-    # @param argv_options [Hash] launch options to update
-    # @param launcher_cmd [Object] launcher cmd fixture input
-    # @return [void] initializes the isolated launch harness
     def initialize(argv_options, launcher_cmd)
       @argv_options = argv_options
       @launcher_cmd = launcher_cmd
@@ -72,12 +65,6 @@ RSpec.describe 'proxied front-end handshake (main.rb)' do
     $offline_mode = false
   end
 
-  # Runs a handshake through the proxy harness.
-  # @param bytes [Object] bytes fixture input
-  # @param frontend [String, nil] frontend identity
-  # @param argv_options [Hash] launch options to update
-  # @param launcher_cmd [Object] launcher cmd fixture input
-  # @return [String] the handshake bytes forwarded by the proxy
   def forward(bytes, frontend: 'genie', argv_options: {}, launcher_cmd: nil)
     $frontend = frontend
     $_CLIENT_ = StringIO.new(bytes)
@@ -88,19 +75,19 @@ RSpec.describe 'proxied front-end handshake (main.rb)' do
 
   it "sends Genie's key, then Lich's client string in place of Genie's" do
     forward(genie)
-    expect(Game.sent).to eq(["0123abcd\n", "/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\n"])
-    expect($_CLIENTBUFFER_).to eq(["/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\n"])
+    expect(Game.sent).to eq(["0123abcd\n", "/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n"])
+    expect($_CLIENTBUFFER_).to eq(["/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n"])
     expect($frontend).to eq('genie')
   end
 
   it 'covers Frostbite launched without --frostbite (frontend unknown)' do
     forward(frostbite, frontend: 'unknown')
-    expect(Game.sent).to eq(["<c>0123abcd\r\n", "<c>/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n"])
+    expect(Game.sent).to eq(["<c>0123abcd\r\n", "<c>/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\r\n"])
   end
 
   it 'covers Warlock3 (frontend unknown)' do
     forward(warlock, frontend: nil)
-    expect(Game.sent.last).to eq("/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\n")
+    expect(Game.sent.last).to eq("/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n")
   end
 
   it 'puts --fe-version into the replacement' do
@@ -108,9 +95,9 @@ RSpec.describe 'proxied front-end handshake (main.rb)' do
     expect(Game.sent.last).to eq("/FE:WRAYTH /VERSION:genie-4.5 /P:SAGA /XML\n")
   end
 
-  it "forwards Saga's own handshake as sent" do
+  it "replaces Saga's own handshake with Lich's, keeping its key" do
     forward(saga, frontend: 'saga')
-    expect(Game.sent).to eq(saga.lines)
+    expect(Game.sent).to eq(["0123abcd\r\n", "/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\r\n"])
   end
 
   it 'forwards the front end handshake with --keep-fe-string' do

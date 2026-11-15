@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-require 'os'
 require 'tempfile'
 
 require_relative '../gui/state'
 require_relative '../gui/password_cipher'
 require_relative '../gui/master_password_manager'
+require_relative '../gui/master_password_prompt'
 
 module Lich
   module Common
@@ -136,11 +136,8 @@ module Lich
         #
         # @param data_dir [String] Directory containing entry data
         # @param encryption_mode [Symbol] Encryption mode (:plaintext, :standard, :enhanced)
-        # @param master_password [String, nil] caller-supplied enhanced password;
-        #   when omitted, use the existing keychain workflow. This method does
-        #   not store a caller-supplied password in the keychain.
         # @return [Boolean] True if migration was successful
-        def self.migrate_from_legacy(data_dir, encryption_mode: :plaintext, master_password: nil)
+        def self.migrate_from_legacy(data_dir, encryption_mode: :plaintext)
           dat_file = File.join(data_dir, "entry.dat")
           yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
 
@@ -151,16 +148,11 @@ module Lich
           # ====================================================================
           # Handle master_password mode - check for existing or create new
           # ====================================================================
+          master_password = nil
           validation_test = nil
           if encryption_mode == :enhanced
-            if master_password.to_s.empty?
-              result = get_existing_master_password_for_migration
-            else
-              validation_test = Lich::Common::GUI::MasterPasswordManager.create_validation_test(master_password)
-              return false unless validation_test
-
-              result = { password: master_password, validation_test: validation_test }
-            end
+            # First check if master password already exists in keychain
+            result = get_existing_master_password_for_migration
 
             # If no existing password, prompt user to create one
             if result.nil?
@@ -259,23 +251,84 @@ module Lich
           raise
         end
 
-        # Decrypts a password and reports when an enhanced credential must be
-        # unlocked through the native WebUI or CLI workflow.
+        # Decrypts password with recovery mechanism for missing master password
+        # If master password is missing from Keychain but validation test exists,
+        # prompts user to re-enter master password, validates it, and saves to Keychain
         #
         # @param encrypted_password [String] Encrypted password to decrypt
         # @param mode [Symbol] Encryption mode (:plaintext, :standard, :enhanced)
         # @param account_name [String] Account name for :standard mode
         # @param master_password [String, nil] Master password if already known
         # @param validation_test [Hash, nil] Validation test hash from YAML (optional)
-        # @return [String] Decrypted password
-        # @raise [StandardError] If decryption requires an unavailable master password
+        # @return [String, nil] Decrypted password, or nil if the user cancels
+        #   master password recovery and Lich begins shutting down
+        # @raise [StandardError] If decryption fails and cannot be recovered
         def self.decrypt_password_with_recovery(encrypted_password, mode:, account_name: nil, master_password: nil, validation_test: nil)
+          # Try normal decryption first
           return decrypt_password(encrypted_password, mode: mode, account_name: account_name, master_password: master_password)
         rescue StandardError => e
+          # Only attempt recovery for enhanced mode with missing master password
           if mode.to_sym == :enhanced && e.message.include?("Master password not found") && validation_test && !validation_test.empty?
-            Lich.log 'info: Master password must be unlocked through the WebUI or CLI workflow'
+            Lich.log "info: Master password missing from Keychain, attempting recovery via user prompt"
+
+            # Show appropriate dialog based on context - use data access for conversion, recovery for actual recovery
+            recovery_result = Lich::Common::GUI::MasterPasswordPromptUI.show_password_for_data_access(validation_test)
+
+            if recovery_result.nil? || recovery_result[:password].nil?
+              Lich.log "info: User cancelled master password recovery"
+              Lich::Common.quit_gtk_main_loop
+              return nil
+            end
+
+            recovered_password = recovery_result[:password]
+            continue_session = recovery_result[:continue_session]
+
+            # Password was validated by the UI layer, proceed with recovery
+            Lich.log "info: Master password recovered and validated, storing to Keychain"
+
+            # Save recovered password to Keychain for future use
+            unless Lich::Common::GUI::MasterPasswordManager.store_master_password(recovered_password)
+              Lich.log "warning: Failed to store recovered master password to Keychain"
+              # Continue anyway - decryption will still work with in-memory password
+            end
+
+            # Handle session continuation decision
+            if !continue_session
+              Lich.log "info: User chose to close application after password recovery"
+              # Exit the application gracefully
+              Lich::Common.quit_gtk_main_loop
+            end
+
+            # Retry decryption with recovered password
+            return decrypt_password(encrypted_password, mode: mode, account_name: account_name, master_password: recovered_password)
+          else
+            # Re-raise if not recoverable
+            raise
           end
-          raise
+        end
+
+        # Encrypts all passwords in yaml_data structure
+        #
+        # @param yaml_data [Hash] YAML data structure
+        # @param mode [Symbol] Encryption mode
+        # @param master_password [String, nil] Master password if using :enhanced mode
+        # @return [Hash] YAML data with encrypted passwords
+        def self.encrypt_all_passwords(yaml_data, mode, master_password: nil)
+          return yaml_data if mode == :plaintext
+
+          yaml_data['accounts'].each do |account_name, account_data|
+            next unless account_data['password']
+
+            # Encrypt password based on mode
+            account_data['password'] = encrypt_password(
+              account_data['password'],
+              mode: mode,
+              account_name: account_name,
+              master_password: master_password
+            )
+          end
+
+          yaml_data
         end
 
         # Changes encryption mode for all accounts
@@ -409,9 +462,9 @@ module Lich
         # Reports unsuccessful rollback without including password values.
         #
         # @param previous_password [String, nil] previous value, or nil for absence
-        # @param manager [Object] credential provider used by the publishing caller
         # @return [Boolean] whether the previous observable state was restored
-        def self.restore_master_password(previous_password, manager: Lich::Common::GUI::MasterPasswordManager)
+        def self.restore_master_password(previous_password)
+          manager = Lich::Common::GUI::MasterPasswordManager
           return true if manager.retrieve_master_password(strict: true) == previous_password
 
           restored = if previous_password.nil?
@@ -445,6 +498,209 @@ module Lich
           yaml_data['master_password_validation_test'] ||= nil
 
           yaml_data
+        end
+
+        # Adds a character to the favorites list
+        # Marks the specified character as a favorite with proper ordering
+        # Optimized to preserve account ordering in YAML structure
+        #
+        # @param data_dir [String] Directory containing entry data
+        # @param username [String] Account username
+        # @param char_name [String] Character name
+        # @param game_code [String] Game code
+        # @param frontend [String] Frontend identifier (optional for backward compatibility)
+        # @param custom_launch [String, nil, Symbol] Exact custom launch command, or :__unset for legacy matching
+        # @return [Boolean] True if operation was successful
+        def self.add_favorite(data_dir, username, char_name, game_code, frontend = nil, custom_launch = :__unset)
+          yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+          return false unless File.exist?(yaml_file)
+
+          begin
+            yaml_data = YAML.safe_load_file(yaml_file, permitted_classes: [Symbol])
+            yaml_data = migrate_to_favorites_format(yaml_data)
+
+            # Find the character with frontend precision
+            character = find_character(yaml_data, username, char_name, game_code, frontend, custom_launch)
+            return false unless character
+
+            # Don't add if already a favorite
+            return true if character['is_favorite']
+
+            # Mark as favorite and assign order
+            character['is_favorite'] = true
+            character['favorite_order'] = get_next_favorite_order(yaml_data)
+            character['favorite_added'] = Time.now.to_s
+
+            # Save updated data directly without conversion round-trip
+            # This preserves the original YAML structure and account ordering
+            content = generate_yaml_content(yaml_data)
+            result = Lich::Common::GUI::Utilities.safe_file_operation(yaml_file, :write, content)
+
+            result ? true : false
+          rescue StandardError => e
+            Lich.log "error: Error adding favorite: #{e.message}"
+            false
+          end
+        end
+
+        # Removes a character from the favorites list
+        # Unmarks the specified character as a favorite and reorders remaining favorites
+        #
+        # @param data_dir [String] Directory containing entry data
+        # @param username [String] Account username
+        # @param char_name [String] Character name
+        # @param game_code [String] Game code
+        # @param frontend [String] Frontend identifier (optional for backward compatibility)
+        # @param custom_launch [String, nil, Symbol] Exact custom launch command, or :__unset for legacy matching
+        # @return [Boolean] True if operation was successful
+        def self.remove_favorite(data_dir, username, char_name, game_code, frontend = nil, custom_launch = :__unset)
+          yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+          return false unless File.exist?(yaml_file)
+
+          begin
+            yaml_data = YAML.safe_load_file(yaml_file, permitted_classes: [Symbol])
+            yaml_data = migrate_to_favorites_format(yaml_data)
+
+            # Find the character with frontend precision
+            character = find_character(yaml_data, username, char_name, game_code, frontend, custom_launch)
+            return false unless character
+
+            # Don't remove if not a favorite
+            return true unless character['is_favorite']
+
+            # Remove favorite status
+            character['is_favorite'] = false
+            character.delete('favorite_order')
+            character.delete('favorite_added')
+
+            # Reorder remaining favorites
+            reorder_all_favorites(yaml_data)
+
+            # Save updated data
+            content = generate_yaml_content(yaml_data)
+            result = Lich::Common::GUI::Utilities.safe_file_operation(yaml_file, :write, content)
+
+            result ? true : false
+          rescue StandardError => e
+            Lich.log "error: Error removing favorite: #{e.message}"
+            false
+          end
+        end
+
+        # Checks if a character is marked as a favorite
+        # Returns true if the specified character is in the favorites list
+        #
+        # @param data_dir [String] Directory containing entry data
+        # @param username [String] Account username
+        # @param char_name [String] Character name
+        # @param game_code [String] Game code
+        # @param frontend [String] Frontend identifier (optional for backward compatibility)
+        # @param custom_launch [String, nil, Symbol] Exact custom launch command, or :__unset for legacy matching
+        # @return [Boolean] True if character is a favorite
+        def self.is_favorite?(data_dir, username, char_name, game_code, frontend = nil, custom_launch = :__unset)
+          yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+          return false unless File.exist?(yaml_file)
+
+          begin
+            yaml_data = YAML.safe_load_file(yaml_file, permitted_classes: [Symbol])
+            yaml_data = migrate_to_favorites_format(yaml_data)
+
+            character = find_character(yaml_data, username, char_name, game_code, frontend, custom_launch)
+            character && character['is_favorite'] == true
+          rescue StandardError => e
+            Lich.log "error: Error checking favorite status: #{e.message}"
+            false
+          end
+        end
+
+        # Gets all favorite characters across all accounts
+        # Returns an array of favorite characters sorted by favorite order
+        #
+        # @param data_dir [String] Directory containing entry data
+        # @return [Array] Array of favorite character data in legacy format
+        def self.get_favorites(data_dir)
+          yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+          return [] unless File.exist?(yaml_file)
+
+          begin
+            yaml_data = YAML.safe_load_file(yaml_file, permitted_classes: [Symbol])
+            yaml_data = migrate_to_favorites_format(yaml_data)
+
+            favorites = []
+
+            yaml_data['accounts'].each do |username, account_data|
+              next unless account_data['characters']
+
+              account_data['characters'].each do |character|
+                if character['is_favorite']
+                  favorites << {
+                    user_id: username,
+                    char_name: character['char_name'],
+                    game_code: character['game_code'],
+                    game_name: character['game_name'],
+                    frontend: character['frontend'],
+                    custom_launch: character['custom_launch'],
+                    favorite_order: character['favorite_order'] || 999,
+                    favorite_added: character['favorite_added']
+                  }
+                end
+              end
+            end
+
+            # Sort by favorite order
+            favorites.sort_by { |fav| fav[:favorite_order] }
+          rescue StandardError => e
+            Lich.log "error: Error getting favorites: #{e.message}"
+            []
+          end
+        end
+
+        # Reorders favorites based on provided character list
+        # Updates the favorite order for all favorites based on new ordering
+        #
+        # @param data_dir [String] Directory containing entry data
+        # @param ordered_favorites [Array] Array of hashes with username, char_name, game_code, frontend
+        # @return [Boolean] True if operation was successful
+        def self.reorder_favorites(data_dir, ordered_favorites)
+          yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+          return false unless File.exist?(yaml_file)
+
+          begin
+            yaml_data = YAML.safe_load_file(yaml_file, permitted_classes: [Symbol])
+            yaml_data = migrate_to_favorites_format(yaml_data)
+
+            # Update favorite order for each character in the provided order
+            ordered_favorites.each_with_index do |favorite_info, index|
+              custom_launch = if favorite_info.key?(:custom_launch)
+                                favorite_info[:custom_launch]
+                              elsif favorite_info.key?('custom_launch')
+                                favorite_info['custom_launch']
+                              else
+                                :__unset
+                              end
+              character = find_character(
+                yaml_data,
+                favorite_info[:username] || favorite_info['username'],
+                favorite_info[:char_name] || favorite_info['char_name'],
+                favorite_info[:game_code] || favorite_info['game_code'],
+                favorite_info[:frontend] || favorite_info['frontend'],
+                custom_launch
+              )
+
+              if character && character['is_favorite']
+                character['favorite_order'] = index + 1
+              end
+            end
+
+            # Save updated data
+            content = generate_yaml_content(yaml_data)
+            result = Lich::Common::GUI::Utilities.safe_file_operation(yaml_file, :write, content)
+
+            result ? true : false
+          rescue StandardError => e
+            Lich.log "error: Error reordering favorites: #{e.message}"
+            false
+          end
         end
 
         # @api private
@@ -614,6 +870,126 @@ module Lich
         end
 
         # @api private
+        # Finds a character in the YAML data with precise matching
+        # Prioritizes exact frontend matches for newly added characters
+        #
+        # @param yaml_data [Hash] YAML data structure
+        # @param username [String] Account username
+        # @param char_name [String] Character name
+        # @param game_code [String] Game code
+        # @param frontend [String, nil] Frontend identifier
+        # @param custom_launch [String, nil, Symbol] Exact custom launch command, or :__unset for legacy matching
+        # @return [Hash, nil] Character hash or nil if not found
+        def self.find_character(yaml_data, username, char_name, game_code, frontend = nil, custom_launch = :__unset)
+          return nil unless yaml_data['accounts'] && yaml_data['accounts'][username]
+          account_data = yaml_data['accounts'][username]
+          return nil unless account_data['characters']
+
+          # If frontend is specified, find exact match first
+          if frontend
+            exact_match = account_data['characters'].find do |character|
+              character['char_name'] == char_name &&
+                character['game_code'] == game_code &&
+                character['frontend'] == frontend &&
+                (custom_launch == :__unset || character['custom_launch'].to_s.strip == custom_launch.to_s.strip)
+            end
+            return exact_match if exact_match
+          end
+
+          # Fallback to basic matching only if no exact match found and frontend is nil
+          if frontend.nil?
+            account_data['characters'].find do |character|
+              character['char_name'] == char_name &&
+                character['game_code'] == game_code &&
+                (custom_launch == :__unset || character['custom_launch'].to_s.strip == custom_launch.to_s.strip)
+            end
+          else
+            # If frontend was specified but no exact match found, return nil
+            nil
+          end
+        end
+
+        # Gets the next available favorite order number
+        # Finds the highest current favorite order and returns the next number
+        #
+        # @param yaml_data [Hash] YAML data structure
+        # @return [Integer] Next available favorite order number
+        def self.get_next_favorite_order(yaml_data)
+          max_order = 0
+
+          yaml_data['accounts'].each do |_username, account_data|
+            next unless account_data['characters']
+
+            account_data['characters'].each do |character|
+              if character['is_favorite'] && character['favorite_order']
+                max_order = [max_order, character['favorite_order']].max
+              end
+            end
+          end
+
+          max_order + 1
+        end
+
+        # Finds an entry in legacy format array using the same matching logic as find_character
+        # Searches for an entry based on key identifying fields rather than exact hash equality
+        # @api private
+        # This method reuses the proven matching logic from find_character for consistency
+        #
+        # @param entry_data [Array] Array of entry data in legacy format
+        # @param username [String] Account username
+        # @param char_name [String] Character name
+        # @param game_code [String] Game code
+        # @param frontend [String] Frontend identifier (optional for backward compatibility)
+        # @param custom_launch [String, nil, Symbol] Exact custom launch command, or :__unset for legacy matching
+        # @return [Hash, nil] Entry hash if found, nil otherwise
+        def self.find_entry_in_legacy_format(entry_data, username, char_name, game_code, frontend = nil, custom_launch = :__unset)
+          entry_data.find do |entry|
+            # Match on username first
+            next unless entry[:user_id] == username
+
+            # Apply same matching logic as find_character
+            matches_basic = entry[:char_name] == char_name && entry[:game_code] == game_code
+
+            matches_custom_launch = custom_launch == :__unset || entry[:custom_launch].to_s.strip == custom_launch.to_s.strip
+
+            if frontend.nil?
+              # Backward compatibility: if no frontend specified, match any frontend
+              matches_basic && matches_custom_launch
+            else
+              # Frontend precision: must match exact frontend
+              matches_basic && entry[:frontend] == frontend && matches_custom_launch
+            end
+          end
+        end
+
+        # @api private
+        # Reorders all favorites to have consecutive order numbers
+        # Ensures favorite_order values are consecutive starting from 1
+        #
+        # @param yaml_data [Hash] YAML data structure
+        # @return [void]
+        def self.reorder_all_favorites(yaml_data)
+          # Collect all favorites
+          all_favorites = []
+
+          yaml_data['accounts'].each do |_username, account_data|
+            next unless account_data['characters']
+
+            account_data['characters'].each do |character|
+              if character['is_favorite']
+                all_favorites << character
+              end
+            end
+          end
+
+          # Sort by current order and reassign consecutive numbers
+          all_favorites.sort_by! { |char| char['favorite_order'] || 999 }
+          all_favorites.each_with_index do |character, index|
+            character['favorite_order'] = index + 1
+          end
+        end
+
+        # @api private
         # Prepares YAML data for serialization with password preservation
         # Ensures encrypted passwords are serialized as quoted strings to prevent YAML multiline formatting
         # Clones the data to avoid mutating the caller's object
@@ -685,13 +1061,13 @@ module Lich
           return content
         end
 
-        # Atomically publishes a complete catalog with owner-only permissions.
-        # Writers share a stable sidecar lock; readers see the old or new document.
-        # This protects publication, not a caller's entire read/modify/write transaction.
-        # Non-Windows hosts also sync the directory after rename. A directory-sync
-        # failure logs uncertain durability without rolling back the published state.
-        # @param yaml_file [String] destination catalog path
-        # @param yaml_data [Hash] account data to serialize
+        # @api private
+        # Writes YAML data to file with standard headers and secure permissions
+        # Handles preparation and formatting of YAML data for all save operations
+        # Serializes before publication so serialization errors cannot truncate data.
+        #
+        # @param yaml_file [String] Path to YAML file to write
+        # @param yaml_data [Hash] YAML data structure to save
         # @param backup [Boolean] preserve the previous bytes in an owner-only .bak
         # @return [void]
         def self.write_yaml_file(yaml_file, yaml_data, backup: false)
@@ -707,11 +1083,11 @@ module Lich
         # @param yaml_file [String] credential destination
         # @param yaml_data [Hash] already re-encrypted credentials and validation data
         # @param password [String] new master password
-        # @param manager [Object] credential provider used by CLI or WebUI
         # @return [void]
         # @raise [StandardError] on publication failure or incomplete rollback
-        def self.write_yaml_with_master_password(yaml_file, yaml_data, password, manager: Lich::Common::GUI::MasterPasswordManager)
+        def self.write_yaml_with_master_password(yaml_file, yaml_data, password)
           content = generate_yaml_content(yaml_data)
+          manager = Lich::Common::GUI::MasterPasswordManager
           previous_password = manager.retrieve_master_password(strict: true)
           begin
             unless manager.store_master_password(password)
@@ -719,7 +1095,7 @@ module Lich
             end
             write_file_atomically(yaml_file, content)
           rescue StandardError
-            unless restore_master_password(previous_password, manager: manager)
+            unless restore_master_password(previous_password)
               raise StandardError, "Credential update failed; manual keychain recovery is required"
             end
             raise
@@ -731,8 +1107,6 @@ module Lich
         # are retained while group, other, and executable access is removed.
         # Existing symlinks are followed to their target; dangling links are refused.
         # The temporary file lives beside the resolved target for atomic replacement.
-        # Writers serialize publication through a stable sidecar lock. Non-Windows
-        # directory-sync failures after rename report uncertain durability without rollback.
         # Failures before rename leave the destination untouched and remove the temp.
         #
         # @param path [String] destination path, including backup paths
@@ -744,43 +1118,59 @@ module Lich
           path = File.realpath(path) if File.symlink?(path)
           raise Errno::EACCES, path if File.exist?(path) && !File.writable?(path)
 
-          File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
-            lock.flock(File::LOCK_EX)
-            mode = File.exist?(path) ? File.stat(path).mode & 0o600 : 0o600
-            Tempfile.create(['.entry-', '.tmp'], File.dirname(path)) do |file|
-              file.binmode
-              written = file.write(content)
-              raise IOError, "Incomplete entry file write" unless written == content.bytesize
+          mode = File.exist?(path) ? File.stat(path).mode & 0o600 : 0o600
+          Tempfile.create(['.entry-', '.tmp'], File.dirname(path)) do |file|
+            file.binmode
+            written = file.write(content)
+            raise IOError, "Incomplete entry file write" unless written == content.bytesize
 
-              file.flush
-              file.fsync
-              file.chmod(mode)
-              file.close
-              File.rename(file.path, path)
-            end
-            unless OS.windows?
-              begin
-                File.open(File.dirname(path), File::RDONLY) { |directory| directory.fsync }
-              rescue SystemCallError, IOError => error
-                # Publication succeeded; do not roll back credentials after a durability warning.
-                Lich.log "warning: Catalog was published, but directory sync failed; power-loss durability is uncertain (#{error.class})."
-              end
-            end
+            file.flush
+            file.fsync
+            file.chmod(mode)
+            file.close
+            File.rename(file.path, path)
           end
         end
         private_class_method :write_file_atomically
 
         # @api private
-        # Resolves an existing master password for conversion. Interactive
-        # creation belongs to the native WebUI or CLI workflow.
+        # Ensures master password exists for master_password mode conversions
+        # Shows UI prompt to user if not found in Keychain
+        # Creates validation test and stores in Keychain
         #
-        # @return [String, nil] existing password, or nil when the caller must obtain one
+        # @return [Hash, String, nil] Hash with {password, validation_test} if new, password string if existing, nil if cancelled
         def self.ensure_master_password_exists
+          # Check if master password already in Keychain
           existing = Lich::Common::GUI::MasterPasswordManager.retrieve_master_password
           return existing if !existing.nil? && !existing.empty?
 
-          Lich.log 'info: Master password must be created through the WebUI or CLI workflow'
-          nil
+          # Show UI prompt to CREATE master password
+          master_password = Lich::Common::GUI::MasterPasswordPrompt.show_create_master_password_dialog
+
+          if master_password.nil?
+            Lich.log "info: User declined to create master password"
+            return nil
+          end
+
+          # Create validation test (expensive 100k iterations, one-time)
+          validation_test = Lich::Common::GUI::MasterPasswordManager.create_validation_test(master_password)
+
+          if validation_test.nil?
+            Lich.log "error: Failed to create validation test"
+            return nil
+          end
+
+          # Store in Keychain
+          stored = Lich::Common::GUI::MasterPasswordManager.store_master_password(master_password)
+
+          unless stored
+            Lich.log "error: Failed to store master password in Keychain"
+            return nil
+          end
+
+          Lich.log "info: Master password created and stored in Keychain"
+          # Return both password and validation test for YAML storage
+          { password: master_password, validation_test: validation_test }
         end
 
         # @api private

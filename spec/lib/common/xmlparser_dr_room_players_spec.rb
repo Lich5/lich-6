@@ -23,15 +23,10 @@ RSpec.describe 'Lich::Common::XMLParser DragonRealms room players' do
     Lich::Common::GameObj.clear_pcs
   end
 
-  # Feeds stream fixtures into the isolated parser.
-  # @param fragment [Object] fragment fixture input
-  # @return [void] parses the supplied XML fragment or fragments
   def feed(fragment)
     Ox.sax_parse(parser, fragment, convert_special: false, symbolize: false, skip: :skip_none)
   end
 
-  # Returns the parsed player roster for assertions.
-  # @return [Array] the parsed room player roster
   def pcs
     (Lich::Common::GameObj.pcs || []).map { |pc| [pc.id, pc.noun, pc.name, pc.status] }
   end
@@ -85,7 +80,7 @@ RSpec.describe 'Lich::Common::XMLParser DragonRealms room players' do
     end
 
     # Shared with GemStone and parked until a GemStone capture exists
-    # (https://github.com/elanthia-online/lich-5/blob/612d91d680e3f304264a74699e9d5c9968cc48bc/docs/saga-stream-deferred.md, P1): a title after " and " is not captured.
+    # (docs/xml-stream/saga-stream-deferred.md, P1): a title after " and " is not captured.
     it 'documents the parked " and <title>" gap' do
       feed(saga)
       expect(pcs[3][2]).to eq('Delphine')

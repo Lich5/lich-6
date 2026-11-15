@@ -581,33 +581,33 @@ def multimove(*dirs)
   dirs.flatten.each { |dir| move(dir) }
 end
 
-def n;    'north';     end
+def n; 'north'; end
 
-def ne;   'northeast'; end
+def ne; 'northeast'; end
 
-def e;    'east';      end
+def e; 'east'; end
 
-def se;   'southeast'; end
+def se; 'southeast'; end
 
-def s;    'south';     end
+def s; 'south'; end
 
-def sw;   'southwest'; end
+def sw; 'southwest'; end
 
-def w;    'west';      end
+def w; 'west'; end
 
-def nw;   'northwest'; end
+def nw; 'northwest'; end
 
-def u;    'up';        end
+def u; 'up'; end
 
-def up;   'up'; end
+def up; 'up'; end
 
-def down; 'down';      end
+def down; 'down'; end
 
-def d;    'down';      end
+def d; 'down'; end
 
-def o;    'out';       end
+def o; 'out'; end
 
-def out;  'out';       end
+def out; 'out'; end
 
 # Moves one exit. Implementation lives in Lich::Common::Move (lib/common/move.rb);
 # this shim keeps the top-level name every script calls.
@@ -1435,13 +1435,6 @@ def get?
   Script.current.gets?
 end
 
-# Reads buffered downstream lines, normalizing room blocks for plain-text callers.
-# Selectors are flattened; an optional leading Numeric or nonzero count string
-# limits the history before remaining fragments are joined with | as a regex.
-# For example, reget(20, 'arrives', 'leaves') filters the last 20 buffered lines.
-# @param lines [Array<Numeric, String, Array>] optional count and case-insensitive regex fragments
-# @param core [Boolean] whether the caller may access raw core history
-# @return [Array<String>, nil, false] matching buffered lines, nil for no match, or false without a script
 def reget(*lines, core: false)
   unless (script = Script.current) || core.eql?(true)
     respond('--- reget: Unable to identify calling script.')
@@ -2088,6 +2081,7 @@ end
 $_DETACHABLE_CLIENT_REGISTRY_ ||= Lich::Common::DetachableClientRegistry.new
 $_DETACHABLE_CLIENTS_ ||= []
 $_DETACHABLE_CLIENT_ ||= nil
+$_DETACHABLE_FRONTEND_PID_MUTEX_ ||= Mutex.new
 
 def sync_detachable_client_globals
   $_DETACHABLE_CLIENTS_ = $_DETACHABLE_CLIENT_REGISTRY_.snapshot
@@ -2126,10 +2120,32 @@ def detachable_client_register(client)
 end
 
 def detachable_client_unregister(client)
+  previous_primary = $_DETACHABLE_CLIENT_REGISTRY_.primary
   removed, became_empty = $_DETACHABLE_CLIENT_REGISTRY_.unregister(client)
   sync_detachable_client_globals
   detachable_listener_connected(false) if removed && became_empty
+  detachable_client_apply_frontend_pid if removed && !previous_primary.equal?($_DETACHABLE_CLIENT_REGISTRY_.primary)
   removed
+end
+
+# Points Frontend.pid at the PID the primary detachable client declared with
+# SET_FRONTEND_PID. When the primary declared none, or no client is attached,
+# it goes back to the frontend Lich launched, or to 0 (none) without one, so
+# Frontend.refocus never targets a client that has gone. The mutex keeps a
+# promotion and the promoted client's own declaration from overwriting each
+# other with a stale value.
+def detachable_client_apply_frontend_pid
+  return unless defined?(Frontend)
+
+  $_DETACHABLE_FRONTEND_PID_MUTEX_.synchronize do
+    primary = $_DETACHABLE_CLIENT_REGISTRY_.primary
+    declared = primary.declared_pid if primary.respond_to?(:declared_pid)
+    if declared.to_i > 0
+      Frontend.set_from_client(declared) unless Frontend.pid == declared
+    else
+      Frontend.pid = Frontend.launched_pid unless Frontend.pid.to_i == Frontend.launched_pid.to_i
+    end
+  end
 end
 
 def detachable_clients_respond(string)
@@ -2156,6 +2172,7 @@ def detachable_clients_close
   sync_detachable_client_globals
   clients.each { |client| client.close rescue nil }
   detachable_listener_connected(false) unless clients.empty?
+  detachable_client_apply_frontend_pid unless clients.empty?
   clients.length
 end
 
@@ -2211,22 +2228,26 @@ def detachable_client_frontend?(name)
   ARGV.include?('--without-frontend') && Frontend.client == name
 end
 
-# Handles detachable client control lines and game input until disconnect.
-# @param client [Lich::Common::SynchronizedSocket] attaching client connection
-# @return [void] dispatches input and cleans up the disconnected client
 def handle_detachable_client(client)
   unless detachable_client_frontend?('genie') || detachable_client_frontend?('saga')
     Thread.new { detachable_client_send_init(client) }
   end
   Thread.new { detachable_client_send_player_id(client) } if detachable_client_frontend?('saga')
+  # The script list goes out now when the session's set includes it, or once
+  # the client declares script_list (docs/frontends/script-list-feed.md).
+  Lich::Common::ScriptListFeed.client_ready(client)
 
   while (client_string = client.gets)
-    if client_string.match?(/^SET_FRONTEND_PID\s+(\d+)\s*$/)
-      Frontend.set_from_client(Regexp.last_match(1).to_i) if defined?(Frontend) && detachable_client_primary?(client)
+    # match, not match?: match? never sets the capture, which read back as PID 0.
+    if (pid_match = client_string.match(/^SET_FRONTEND_PID\s+(\d+)\s*$/))
+      # Recorded even when this client is not the primary one, so the PID can
+      # be applied if it is promoted after the primary detaches.
+      client.declared_pid = pid_match[1].to_i if client.respond_to?(:declared_pid=)
+      detachable_client_apply_frontend_pid if detachable_client_primary?(client)
       next
     end
     # SET_FRONTEND_CAPS: the rich-stream rewrites this client handles itself
-    # (https://github.com/elanthia-online/lich-5/blob/612d91d680e3f304264a74699e9d5c9968cc48bc/docs/frontend-capability-declaration.md). Never sent to the game.
+    # (docs/frontends/capability-declaration.md). Never sent to the game.
     next if Lich::Common::ClientCapabilities.declare(client, client_string)
 
     # Detachable exits run script shutdown inline, so the watchdog must be armed

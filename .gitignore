@@ -18,6 +18,7 @@ jinxp
 .pre-commit-config.yaml
 .rubocop.yml
 .rubocop/
+/.bundle/
 
 # --- Editors / IDEs ---
 *.code-workspace
@@ -51,9 +52,6 @@ spec/*.db3
 # --- Test artifacts ---
 spec/.rspec_status*
 /tmp/parallel_runtime_rspec.log
-/spec/webui/node_modules/
-/spec/webui/test-results/
-/lib/webui/native/macos/build/
 
 # --- Debug logs ---
 debug-*.log

@@ -74,17 +74,6 @@ module StreamReplay
       Zarek Anwen Bastian Calla Dorian Elowen Faelan Gwyn Haldor Isolde Jory Kerrin
     ].freeze
 
-    # Initializes the fixture and its isolated extraction or replay options.
-    # @param game [String] game identity for the fixture
-    # @param char [String] logging character name
-    # @param from [Integer, nil] first cleaned line to include
-    # @param to [Integer, nil] last cleaned line to include
-    # @param keep [Array<String>] character names preserved unless explicitly scrubbed
-    # @param scrub [Array<String>] character names always replaced
-    # @param real_login [Boolean] whether to retain the captured login header
-    # @param drop_settings_body [Boolean] whether to remove settings payload bodies
-    # @param end_prompt [Boolean] whether to append a final prompt
-    # @return [void] initializes isolated fixture extraction or replay state
     def initialize(game:, char:, from: nil, to: nil, keep: [], scrub: [],
                    real_login: false, drop_settings_body: false, end_prompt: false)
       @game = game
@@ -98,9 +87,6 @@ module StreamReplay
       @end_prompt = end_prompt
     end
 
-    # Extracts a privacy-scrubbed replay fixture from a raw log.
-    # @param raw [String] captured raw stream text
-    # @return [String] the scrubbed fixture with its login header and body marker
     def call(raw)
       cleaned = clean(raw.lines)
       lines = cleaned[window(cleaned)]
@@ -156,9 +142,6 @@ module StreamReplay
 
     # The logging character's real id: the log's own <playerID> (it can sit
     # before the reget marker), and the link that names --char.
-    # @param raw [String] captured raw stream text
-    # @param cleaned [Array<String>] cleaned stream lines
-    # @return [Array<Integer>] distinct IDs associated with the logging character
     def self_ids(raw, cleaned)
       tag = raw[PLAYER_ID_TAG, 1]
       link = cleaned.join[/<a exist="-1(\d{7})" noun="#{Regexp.escape(@char)}"/, 1]
@@ -171,8 +154,6 @@ module StreamReplay
     #
     # @raise [ArgumentError] if --from is outside the cleaned log or --to
     #   precedes it
-    # @param lines [Array<String>] input stream lines or buffer selectors
-    # @return [Range<Integer>] the inclusive prompt-aligned range of cleaned lines
     def window(lines)
       from = (@from || 1) - 1
       to = (@to || lines.length) - 1
@@ -186,9 +167,6 @@ module StreamReplay
       from..to
     end
 
-    # Removes log framing and client echoes.
-    # @param lines [Array<String>] input stream lines or buffer selectors
-    # @return [Array<String>] server lines without timestamps or client echoes
     def clean(lines)
       start = lines.index { |l| l.include?(LOGGING_ACTIVE) }
       lines = lines.drop(start + 1) if start
@@ -202,9 +180,6 @@ module StreamReplay
       end
     end
 
-    # Collects player names from links and known textual stream forms.
-    # @param lines [Array<String>] input stream lines or buffer selectors
-    # @return [Array<String>] distinct character names to pseudonymize
     def collect_names(lines)
       names = [@char]
       lines.each do |l|
@@ -227,10 +202,6 @@ module StreamReplay
       names.uniq - %w[You Also Members There]
     end
 
-    # Replaces private names in one cleaned stream line.
-    # @param line [String] stream or handshake line
-    # @param map [Hash] original values mapped to replacements
-    # @return [String] the line with account and selected character names replaced
     def scrub(line, map)
       line = line.gsub(/(Account Info for )[A-Z0-9_]+/, '\1ACCOUNT')
       return line if map.empty?
@@ -244,9 +215,6 @@ module StreamReplay
     #
     # @raise [ArgumentError] if the window has no <settingsInfo>, or nothing
     #   follows the <app> line
-    # @param body [String] rich room body or fixture source
-    # @param char [String] logging character name
-    # @return [String] the retained login header and marked replay body
     def split_real_login(body, char)
       info = body.index { |l| l.include?('<settingsInfo') }
       raise ArgumentError, '--real-login: the window has no <settingsInfo>' unless info
@@ -259,17 +227,11 @@ module StreamReplay
       lines[0..last].join + "#{MARKER}\n" + lines[(last + 1)..].join
     end
 
-    # Builds a synthetic app identity for fixture startup.
-    # @param char [String] logging character name
-    # @return [String] the synthetic game-and-character app element
     def app_line(char)
       title = @game == 'DR' ? "[DR: #{char}]" : "GemStone IV: #{char}"
       %(<app char="#{char}" game="#{@game}" title="#{title}"/>)
     end
 
-    # Builds a synthetic login header for fixture replay.
-    # @param char [String] logging character name
-    # @return [String] the minimal login header for the selected game
     def header(char)
       instance = @game == 'DR' ? 'DR' : 'GS4'
       <<~XML

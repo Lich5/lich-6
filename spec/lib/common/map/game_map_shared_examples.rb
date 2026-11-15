@@ -1414,7 +1414,7 @@ RSpec.shared_examples 'a game Map class' do |game|
     let(:target) { File.join(map_dir, 'saved.json') }
     let(:backup) { "#{target}.bak" }
     # rubocop:disable Custom/AsciiOnlySource -- Intentional non-ASCII fixture; the old backup broke on any byte above 0x7F.
-    let(:non_ascii_title) { "[Caf\u00e9 Row]" }
+    let(:non_ascii_title) { '[Café Row]' }
     # rubocop:enable Custom/AsciiOnlySource
     # A previous save holding non-ASCII text; JSON.generate emits it raw.
     let(:existing_bytes) { JSON.generate([{ 'id' => 1, 'title' => [non_ascii_title] }]).b }

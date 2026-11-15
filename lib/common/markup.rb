@@ -223,9 +223,6 @@ module Lich
 
         private
 
-        # Removes stream markup after normalizing rich room blocks.
-        # @param line [String] stream or handshake line
-        # @return [String, nil] stripped plain text, or nil for CRLF/blank output
         def strip_simple(line)
           return nil if line == "\r\n" # short-circuit empty links
 

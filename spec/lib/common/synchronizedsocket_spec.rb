@@ -50,6 +50,25 @@ RSpec.describe Lich::Common::SynchronizedSocket do
   end
 
   # ===========================================================================
+  # declared_feeds -- the feeds (script_list) the client asked for
+  # ===========================================================================
+  describe '#declared_feeds' do
+    it 'starts unset, apart from the rewrite set' do
+      expect(socket.declared_feeds).to be_nil
+      socket.declared_capabilities = [:game_links]
+      expect(socket.declared_feeds).to be_nil
+    end
+
+    it 'keeps a frozen copy' do
+      feeds = [:script_list]
+      socket.declared_feeds = feeds
+      feeds.clear
+      expect(socket.declared_feeds).to eq([:script_list])
+      expect(socket.declared_feeds).to be_frozen
+    end
+  end
+
+  # ===========================================================================
   # declared_capabilities -- the client's SET_FRONTEND_CAPS set
   # ===========================================================================
   describe '#declared_capabilities' do
@@ -69,6 +88,20 @@ RSpec.describe Lich::Common::SynchronizedSocket do
       socket.declared_capabilities = [:game_links]
       socket.declared_capabilities = nil
       expect(socket.declared_capabilities).to be_nil
+    end
+  end
+
+  # ===========================================================================
+  # declared_pid -- the client's SET_FRONTEND_PID process ID
+  # ===========================================================================
+  describe '#declared_pid' do
+    it 'starts undeclared' do
+      expect(socket.declared_pid).to be_nil
+    end
+
+    it 'keeps the declared process ID' do
+      socket.declared_pid = 4242
+      expect(socket.declared_pid).to eq(4242)
     end
   end
 
@@ -266,6 +299,7 @@ RSpec.describe Lich::Common::SynchronizedSocket do
 
       reader_thread.join(2)
       expect(reader_thread.alive?).to be false
+      expect(reader_result).to be_nil.or be_a(IOError)
     ensure
       [sock_a, sock_b].each { |s| s&.close rescue nil }
     end

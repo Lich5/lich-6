@@ -235,6 +235,12 @@ RSpec.configure do |config|
 
     # DR production classes - only if they're loaded (may override mocks)
     Lich::DragonRealms::DRExpMonitor.reset! if defined?(Lich::DragonRealms::DRExpMonitor) && Lich::DragonRealms::DRExpMonitor.respond_to?(:reset!)
+    # DRCC remembers crafting item ids for the whole process; an id one
+    # example stowed would turn the next example's by-name GET into "get #id".
+    Lich::DragonRealms::DRCC::CRAFTING_ITEM_IDS.clear if defined?(Lich::DragonRealms::DRCC::CRAFTING_ITEM_IDS)
+    # DRCI remembers thrown-away ids for the whole process too; one example's
+    # dispose_trash would stop the next example's GET by that id.
+    Lich::DragonRealms::DRCI.clear_thrown_away if defined?(Lich::DragonRealms::DRCI) && Lich::DragonRealms::DRCI.respond_to?(:clear_thrown_away)
 
     # Game objects - clear registries via class_variable_set (no test methods in production)
     # NOTE: class_variable_set used because GameObj is a production class with no reset! method
@@ -448,6 +454,203 @@ RSpec.shared_context 'DRParser stubs' do
   end
 end
 
+RSpec.shared_context 'mock GTK hardening environment' do
+  before(:context) do
+    @tmpdir = Dir.mktmpdir(tmpdir_prefix)
+    @saved_consts = {}
+    @saved_gtk_hardening_consts = {}
+
+    %i[Gtk GLib GdkPixbuf LICH_DIR].each do |name|
+      next unless Object.const_defined?(name)
+
+      @saved_consts[name] = Object.const_get(name)
+      Object.send(:remove_const, name)
+    end
+
+    %i[
+      GtkSignalHandlerRetention
+      GtkTimeoutRetention
+      GtkIdleRetention
+      GtkMainLoopGuards
+    ].each do |name|
+      next unless Lich::Common.const_defined?(name, false)
+
+      @saved_gtk_hardening_consts[name] = Lich::Common.const_get(name, false)
+      Lich::Common.send(:remove_const, name)
+    end
+
+    glib_mod = Module.new
+    base_instantiatable = Module.new do
+      def signal_connect(signal, *_args, &block)
+        if signal.to_s != 'destroy' && @signal_connect_failures_remaining.to_i.positive?
+          @signal_connect_failures_remaining -= 1
+          raise 'signal registration failed'
+        end
+
+        if signal.to_s == 'destroy' && @destroy_connect_failures_remaining.to_i.positive?
+          @destroy_connect_failures_remaining -= 1
+          raise 'destroy hook failed'
+        end
+
+        @signals ||= Hash.new { |hash, key| hash[key] = [] }
+        @signals[signal.to_s] << block if block
+        @signals[signal.to_s].length
+      end
+
+      def fail_next_destroy_connection!
+        @destroy_connect_failures_remaining = @destroy_connect_failures_remaining.to_i + 1
+      end
+
+      def fail_next_signal_connection!
+        @signal_connect_failures_remaining = @signal_connect_failures_remaining.to_i + 1
+      end
+
+      def signal_blocks(signal)
+        @signals ||= {}
+        @signals[signal.to_s] || []
+      end
+
+      def emit(signal, *args)
+        @signals ||= {}
+        (@signals[signal.to_s] || []).map { |block| block.call(*args) }
+      end
+    end
+    instantiatable_mod = Module.new
+    instantiatable_mod.include(base_instantiatable)
+    glib_mod.const_set(:Instantiatable, instantiatable_mod)
+
+    timeout_mod = Module.new
+    timeout_mod.singleton_class.class_eval do
+      attr_accessor :blocks, :next_id
+
+      def add(*_args, &block)
+        self.blocks ||= {}
+        self.next_id ||= 0
+        self.next_id += 1
+        self.blocks[self.next_id] = block
+        self.next_id
+      end
+    end
+    glib_mod.const_set(:Timeout, timeout_mod)
+
+    idle_mod = Module.new
+    idle_mod.singleton_class.class_eval do
+      attr_accessor :blocks, :next_id
+
+      def add(*_args, &block)
+        self.blocks ||= {}
+        self.next_id ||= 0
+        self.next_id += 1
+        self.blocks[self.next_id] = block
+        self.next_id
+      end
+    end
+    glib_mod.const_set(:Idle, idle_mod)
+    Object.const_set(:GLib, glib_mod)
+
+    gtk_mod = Module.new
+    gtk_mod.singleton_class.class_eval do
+      attr_accessor :main_level, :main_calls, :main_quit_calls, :main_quit_failure
+
+      def main(*)
+        self.main_calls ||= 0
+        self.main_calls += 1
+        :main_called
+      end
+
+      def main_quit(*)
+        raise 'main_quit boom' if main_quit_failure
+
+        self.main_quit_calls ||= 0
+        self.main_quit_calls += 1
+        :main_quit_called
+      end
+    end
+
+    widget_class = Class.new do
+      include GLib::Instantiatable
+
+      def destroy
+        return self if destroyed?
+
+        @destroyed = true
+        emit('destroy')
+        self
+      end
+
+      def destroyed?
+        !!@destroyed
+      end
+    end
+    gtk_mod.const_set(:Widget, widget_class)
+    Object.const_set(:Gtk, gtk_mod)
+
+    pixbuf_mod = Module.new
+    pixbuf_class = Class.new do
+      def self.new(*)
+        Object.new
+      end
+    end
+    pixbuf_mod.const_set(:Pixbuf, pixbuf_class)
+    Object.const_set(:GdkPixbuf, pixbuf_mod)
+    Object.const_set(:LICH_DIR, @tmpdir)
+
+    @original_dir = Dir.pwd
+    Dir.chdir(@tmpdir)
+    load File.expand_path('../lib/common/gtk.rb', __dir__)
+  end
+
+  after(:context) do
+    Dir.chdir(@original_dir) if @original_dir
+
+    %i[Gtk GLib GdkPixbuf LICH_DIR].each do |name|
+      Object.send(:remove_const, name) if Object.const_defined?(name)
+    end
+
+    %i[
+      GtkSignalHandlerRetention
+      GtkTimeoutRetention
+      GtkIdleRetention
+      GtkMainLoopGuards
+    ].each do |name|
+      Lich::Common.send(:remove_const, name) if Lich::Common.const_defined?(name, false)
+    end
+
+    @saved_consts.each do |name, value|
+      Object.const_set(name, value)
+    end
+
+    @saved_gtk_hardening_consts.each do |name, value|
+      Lich::Common.const_set(name, value)
+    end
+
+    FileUtils.remove_entry(@tmpdir) if @tmpdir && File.exist?(@tmpdir)
+  end
+
+  before do
+    Gtk.main_level = 0
+    Gtk.main_calls = 0
+    Gtk.main_quit_calls = 0
+    Gtk.main_quit_failure = false if Gtk.respond_to?(:main_quit_failure=)
+    GLib::Timeout.blocks = {}
+    GLib::Timeout.next_id = 0
+    GLib::Idle.blocks = {}
+    GLib::Idle.next_id = 0
+    Lich::Common.with_gtk_registry_lock do
+      Lich::Common.gtk_signal_handlers.clear
+      Lich::Common.gtk_timeout_callbacks.clear
+      Lich::Common.gtk_idle_callbacks.clear
+    end
+    stub_const('Script', Class.new) unless defined?(Script)
+    allow(Script).to receive(:current).and_return(nil)
+    allow(Lich).to receive(:log)
+  end
+
+  def tmpdir_prefix
+    raise NotImplementedError, 'define tmpdir_prefix in the including spec'
+  end
+end
+
 # =============================================================================
 # Global Output Methods
 # =============================================================================
@@ -512,8 +715,19 @@ module XMLData
       @dialogs[kind] = attributes
     end
 
+    # Progress bar id => text per dialog, as the parser records it.
+    def dialog_names
+      @dialog_names ||= {}
+    end
+
+    def save_dialog_names(kind, names)
+      @dialog_names ||= {}
+      @dialog_names[kind] = names
+    end
+
     def reset_dialogs
       @dialogs = {}
+      @dialog_names = {}
     end
 
     def injuries
@@ -524,10 +738,25 @@ module XMLData
       @injuries = value
     end
 
+    # Mirrors XMLParser#stream_feature?. Defaults to the linked (Saga
+    # identity) stream every session uses now; a spec for the legacy stream
+    # sets XMLData.stream_features = [].
+    def stream_features
+      @stream_features ||= [:links]
+    end
+
+    attr_writer :stream_features
+
+    def stream_feature?(feature)
+      stream_features.include?(feature)
+    end
+
     def reset
       @game = "rspec"
       @name = "testing"
+      @stream_features = [:links]
       @dialogs = {}
+      @dialog_names = {}
       @injuries = {}
       @room_id = 0
       @previous_nav_rm = nil
@@ -670,6 +899,7 @@ module Lich
   class << self
     # attr_accessor is idempotent - reopening Lich and re-declaring these is safe.
     attr_accessor :display_lichid, :display_uid, :hide_uid_flag, :display_stringprocs, :display_exits, :display_room_links, :display_room_mono
+    attr_accessor :display_script_window
     attr_accessor :display_expgains, :display_roomid_location, :follow_description_flag
 
     def db
@@ -1105,8 +1335,8 @@ SPEC_HELPER_GLOBALS = {
 # See spec/fixtures/README.md for update procedures.
 
 # Loads the shared spell fixture once per spec process.
-# Repeated spec-file initialization must not reload active spell instances:
-# production Spell.load can fail while preserving their duration state.
+# Repeated spec-file initialization must not reload an already-loaded list:
+# Spell.load calls active?/timeleft on each existing spell, which can fail in specs.
 # @return [Boolean, nil] true when loaded, or nil when the fixture is absent
 def load_spell_data
   require 'rexml/document'
@@ -1198,6 +1428,12 @@ module Lich
           @@npcs = []
         end
 
+        # The double tracks no worn list; production returns nil for an
+        # empty one too.
+        def inv
+          nil
+        end
+
         # Mirrors the production API so XMLParser#reset - which discards
         # in-flight staged refreshes when resynchronizing - works against this
         # lightweight double. The double has no staging buffers, so it is a
@@ -1283,6 +1519,10 @@ class Flags
 
     def reset(name)
       @@flags[name] = nil
+    end
+
+    def record_match(name, patterns, match)
+      @@flags[name] = match if @@matchers[name].equal?(patterns)
     end
 
     def reset!

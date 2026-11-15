@@ -75,7 +75,6 @@ module Lich
 
       # Configures the registry.
       #
-      # @param options [Hash] registry configuration options
       # @return [void]
       def configure(**options)
         instance_class.configure(**options)

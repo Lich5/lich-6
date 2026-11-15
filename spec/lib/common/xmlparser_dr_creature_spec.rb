@@ -228,12 +228,6 @@ RSpec.describe 'Lich::Common::XMLParser DragonRealms creature feed' do
   # noun, so the assess backfill keeps that noun instead of re-deriving the
   # last word of the name.
   describe 'Saga dialect: the linked assess stream' do
-    # Builds a Saga assessment fixture with linked targets.
-    # @param id [String, Integer] server object ID
-    # @param noun [Object] noun fixture input
-    # @param text [String] text to parse or append
-    # @param tail [Object] tail fixture input
-    # @return [String] the linked combat assessment stream
     def saga_assess(id, noun, text, tail = 'is facing you at melee range.')
       %(<pushStream id="assess"/><d cmd='look ##{id}'><pushBold/>A <a exist="#{id}" noun="#{noun}">#{text}</a><popBold/></d> ) +
         %((1: solidly balanced) #{tail}  | <d cmd='face ##{id}'>F</d><popStream/>)
@@ -404,9 +398,6 @@ RSpec.describe 'Lich::Common::XMLParser DragonRealms creature feed' do
         Lich::Common::GameObj.clear_loot
       end
 
-      # Reads the parsed creature status used by assertions.
-      # @param id [String, Integer] server object ID
-      # @return [Hash, nil] the tracked creature status for the given ID
       def npc_status(id)
         Lich::Common::GameObj.npcs.find { |npc| npc.id == id }&.status
       end

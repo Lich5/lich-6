@@ -19,25 +19,13 @@ RSpec.describe StreamReplay::Driver do
 
   after { file.close! }
 
-  # Appends text to the snapshot-count test file.
-  # @param text [String] text to parse or append
-  # @return [void] appends and flushes the snapshot fixture
   def append(text)
     file.write(text)
     file.flush
   end
 
-  # Queries the replay driver snapshot counter.
-  # @return [Integer] the number of complete snapshots excluding readiness
   def count
     driver.send(:snapshot_count, file.path)
-  end
-
-  it 'uses the parent Ruby and installed gems without invoking Bundler' do
-    args = driver.send(:child_args, '/tmp/replay', 4000)
-    expect(args.first).to eq(RbConfig.ruby)
-    expect(args).not_to include('bundle', 'exec')
-    expect(driver.send(:child_env, '/tmp/snapshots')).to eq('LICH_REPLAY_SNAPSHOTS' => '/tmp/snapshots')
   end
 
   it 'is 0 before the probe has written anything' do

@@ -46,7 +46,6 @@ require 'fileutils'
 require 'optparse'
 require 'timeout'
 require 'tmpdir'
-require 'rbconfig'
 
 REPO = File.expand_path(__dir__)
 FIXTURE_DIR = File.join(REPO, 'benchmark', 'fixtures')
@@ -116,9 +115,6 @@ end
 
 # Run the whole benchmark for one fixture in a single Lich process. Returns an
 # array of per-run measurement hashes (warmup runs excluded).
-# @param fx [Hash] parsed fixture and measured-size metadata
-# @param opts [Hash] benchmark run configuration
-# @return [Array<Hash>] measured runs excluding warmups
 def benchmark(fx, opts)
   tmp = File.join(Dir.tmpdir, "lich_bench_#{Process.pid}")
   FileUtils.rm_rf(tmp)
@@ -181,12 +177,12 @@ def benchmark(fx, opts)
   game_flag = fx[:game_code] == 'DR' ? '--dragonrealms' : '--gemstone'
 
   args = [
-    RbConfig.ruby, 'lich.rbw',
+    'bundle', 'exec', 'ruby', 'lich.rbw',
     "--data=#{tmp}/data", "--temp=#{tmp}/temp", "--logs=#{tmp}/logs",
     "--scripts=#{tmp}/scripts", "--maps=#{tmp}/maps", "--backup=#{tmp}/backup",
     '-g', "127.0.0.1:#{port}", '--pipe', '--no-gtk', game_flag
   ]
-  env = {}
+  env = { 'BUNDLE_WITHOUT' => 'gtk:vscode:profanity' }
 
   results = []
   Open3.popen2e(env, *args, chdir: REPO) do |stdin, stdout_err, wait_thr|

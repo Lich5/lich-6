@@ -21,9 +21,6 @@ RSpec.describe 'Lich::Common::XMLParser GemStone Creature guard' do
     %(<component id='room objs'>You also see<crtrStatus exist="5001" hostile="1"/><b> <pushBold/>a <a exist="5001" noun="rat">giant rat</a><popBold/></b>, <pushBold/>a <a exist="5002" noun="kobold">kobold</a><popBold/> and <a exist="5003" noun="dagger">a dagger</a>.</component>)
   end
 
-  # Feeds stream fixtures into the isolated parser.
-  # @param fragment [Object] fragment fixture input
-  # @return [void] parses the supplied XML fragment or fragments
   def feed(fragment)
     Ox.sax_parse(parser, fragment, convert_special: false, symbolize: false, skip: :skip_none)
   end

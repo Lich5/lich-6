@@ -98,12 +98,6 @@ module Lich
           'DRT' => 'DragonRealms Test'
         }.freeze
 
-        # CLI/WebUI labels use accepted codes and retain their Prime Test wording.
-        # Legacy lookup labels and retired codes remain in GAME_CODE_TO_NAME.
-        GAME_NAMES = VALID_GAME_CODES.to_h { |code| [code, GAME_CODE_TO_NAME.fetch(code)] }.merge(
-          'GST' => 'GemStone IV Prime Test', 'DRT' => 'DragonRealms Prime Test'
-        ).freeze
-
         def self.realm_from_game_code(code)
           GAME_CODE_TO_REALM.fetch(code.to_s.upcase, GameConfig::DEFAULT_REALM)
         end
@@ -300,6 +294,31 @@ module Lich
             favorite_order: character[:favorite_order],
             favorite_added: character[:favorite_added],
           }.compact
+        end
+
+        # Returns the first character matching the specified criteria, or nil if none found.
+        #
+        # This convenience method wraps find_character_by_attributes to return only the
+        # first match, which is useful when you expect a unique result or only need one
+        # character from potentially multiple matches.
+        #
+        # @param symbolized_data [Hash] The symbolized YAML data structure
+        # @param char_name [String, nil] The character name to search for (optional)
+        # @param game_code [String, nil] The game code/instance to filter by (optional)
+        # @param frontend [String, nil] The frontend type to filter by (optional)
+        # @return [Hash, nil] First matching character result hash, or nil if no matches
+        def self.find_first_character_by_attributes(symbolized_data, char_name: nil, game_code: nil, frontend: nil)
+          matches = find_character_by_attributes(symbolized_data, char_name: char_name, game_code: game_code, frontend: frontend)
+          matches.first
+        end
+
+        # Finds all characters with the specified name across all accounts and games.
+        #
+        # @param symbolized_data [Hash] The symbolized YAML data structure
+        # @param char_name [String] The character name to search for
+        # @return [Array<Hash>] Array of all characters with the specified name
+        def self.find_character_by_name(symbolized_data, char_name)
+          find_character_by_attributes(symbolized_data, char_name: char_name)
         end
 
         # Finds all characters with the specified name in the specified game.

@@ -11,28 +11,18 @@ require_relative '../support/stream_replay/driver'
 # network call. Uses stand-in modules: offline_preload.rb itself is never
 # loaded here (its TracePoint would patch this process's Lich::Util::Update).
 RSpec.describe StreamReplay do
-  # Builds an update module for offline-preload checks.
-  # @param names [Object] names fixture input
-  # @return [Module] a synthetic update module exposing requested entry points
   def update_module(*names)
     Module.new do
       names.each { |n| define_singleton_method(n) { |*| :real } }
     end
   end
 
-  # Builds the Lich facade used by offline-preload checks.
-  # @param with_core [Object] with core fixture input
-  # @return [Module] a synthetic Lich module with optional core-version method
   def lich_module(with_core: true)
     Module.new do
       define_singleton_method(:core_updated_with_lich_version) { '0.0.1' } if with_core
     end
   end
 
-  # Prepends an offline stub to an isolated test module.
-  # @param mod [Object] mod fixture input
-  # @param stub [Object] stub fixture input
-  # @return [Module] the target module with its offline stub prepended
   def stubbed(mod, stub)
     mod.singleton_class.prepend(stub)
     mod
@@ -78,9 +68,6 @@ RSpec.describe StreamReplay do
 
     after { marker.close! }
 
-    # Writes a readiness marker for offline verification tests.
-    # @param hash [Object] hash fixture input
-    # @return [void] writes the replay readiness marker
     def write_marker(hash)
       marker.write("#{JSON.generate(hash)}\n")
       marker.flush

@@ -2,6 +2,7 @@
 require 'digest'
 require 'fileutils'
 require 'json'
+require 'pp'
 require 'rubygems/package'
 require 'stringio'
 require 'tmpdir'
@@ -25,6 +26,7 @@ RSpec.describe Lich::DependencyRecovery do
 
   before do
     allow(Gem::Specification).to receive(:find_all_by_name).and_return([])
+    allow(Gem::Specification).to receive(:latest_spec_for).and_return(nil)
     allow(Gem::Specification).to receive(:reset)
     allow(Gem).to receive(:clear_paths)
   end
@@ -71,6 +73,82 @@ RSpec.describe Lich::DependencyRecovery do
       powershell_runner: powershell_runner,
       helper_launcher: helper_launcher
     )
+  end
+
+  context 'Lich version ranges' do
+    let(:legacy) { gem_unit(name: 'sqlite3', artifact_url: artifact_url, body: artifact_body) }
+    let(:modern) do
+      gem_unit(name: 'sqlite3', artifact_url: 'https://example.test/new.gem', body: 'new payload').merge(
+        'id' => 'sqlite3-current', 'lich_versions' => { 'min_inclusive' => '5.24.0', 'max_exclusive' => '6.0' }
+      ).tap { |unit| unit.fetch('packages').first['version'] = '2.10.2' }
+    end
+
+    def ranged_recovery(version, units: [legacy, modern])
+      described_class.new(manifest_url: manifest_url, gem_home: gem_home, temp_dir: recovery_temp_dir,
+                          lich_version: version, http_get: ->(_url) { manifest_for(units, ruby_abi: ruby_abi, platform: platform) })
+    end
+
+    it 'keeps the legacy closure below the lower bound and at the exclusive upper bound' do
+      %w[5.23.9 6.0].each do |version|
+        expect(ranged_recovery(version).recovery_plan(['sqlite3']).units.map { |unit| unit['id'] }).to eq(['sqlite3'])
+      end
+    end
+
+    it 'selects the modern closure at the inclusive lower bound for recovery and startup policy' do
+      recovery = ranged_recovery('5.24.0')
+      expect(recovery.recovery_plan(['sqlite3']).units).to eq([modern])
+      expect(recovery.policy_plan(['sqlite3']).target.fetch('units')).to eq([modern])
+    end
+
+    it 'rejects invalid, ambiguous or unknown-version range policy before downloading packages' do
+      expect(ranged_recovery(nil).recovery_plan(['sqlite3'])).not_to be_success
+      modern['lich_versions']['max_exclusive'] = '5.0'
+      expect(ranged_recovery('5.24').policy_plan(['sqlite3']).error).to include('empty Lich version range')
+      modern['lich_versions'].delete('max_exclusive')
+      duplicate = Marshal.load(Marshal.dump(modern)).merge('id' => 'overlap')
+      duplicate.fetch('packages').first['version'] = '2.10.3'
+      expect(ranged_recovery('5.24', units: [legacy, modern, duplicate]).recovery_plan(['sqlite3']).error).to include('ambiguous ranged')
+    end
+
+    it 'requires legacy coverage to precede ranges and rejects withdrawal through alternate units' do
+      expect(ranged_recovery('5.24', units: [modern, legacy]).recovery_plan(['sqlite3']).error).to include('legacy coverage')
+      target = { 'units' => [legacy], 'withdrawn_members' => ['sqlite3'] }
+      expect { Lich::RecoveryUnitPolicy.select(target, '5.24') }.to raise_error(Lich::RecoveryUnitPolicy::Error, /withdrawn member/)
+    end
+
+    it 'recovers an added transitive package only with the applicable newer closure' do
+      modern['members'] << 'added-child'
+      child = { 'name' => 'added-child', 'version' => '1.0', 'filename' => 'added-child.gem', 'sha256' => sha256('child bytes') }
+      modern['packages'] << child
+      modern['install_order'] = ['added-child', 'sqlite3']
+      modern['artifact'] = { 'url' => 'https://example.test/new.zip', 'filename' => 'new.zip', 'archive' => 'zip', 'sha256' => sha256('zip bytes') }
+      manifest = manifest_for([legacy, modern], ruby_abi: ruby_abi, platform: platform)
+      fetches = []
+      fetch = lambda do |url|
+        fetches << url
+        { manifest_url => manifest, 'https://example.test/new.zip' => 'zip bytes' }.fetch(url)
+      end
+      extractor = lambda do |_zip, destination|
+        File.write(File.join(destination, 'sqlite3.gem'), 'new payload')
+        File.write(File.join(destination, 'added-child.gem'), 'child bytes')
+      end
+      engine = described_class.new(manifest_url: manifest_url, gem_home: gem_home, temp_dir: recovery_temp_dir,
+                                   lich_version: '5.24', http_get: fetch, extract_zip: extractor,
+                                   install_gem: ->(path, _home) { installed << File.basename(path) })
+      expect(engine.recover(['sqlite3'])).to be_success
+      expect(installed).to eq(['added-child.gem', 'sqlite3.gem'])
+      expect(fetches).not_to include(artifact_url)
+      expect(ranged_recovery('5.23').recovery_plan(['sqlite3']).units).to eq([legacy])
+    end
+
+    it 'never installs an older shared package via an overlapping legacy closure' do
+      legacy['members'] << 'parent'
+      legacy['packages'] << legacy['packages'].first.merge('name' => 'parent')
+      legacy['install_order'] << 'parent'
+      result = ranged_recovery('5.24').recovery_plan(['parent', 'sqlite3'])
+      expect(result).not_to be_success
+      expect(result.error).to include('does not approve recovery')
+    end
   end
 
   it 'installs an exact, hash-verified single-gem unit into the runtime Gem.dir' do
@@ -334,7 +412,7 @@ RSpec.describe Lich::DependencyRecovery do
     expect(payloads.first.fetch('packages').map { |package| package.fetch('name') }).to eq(%w[glib2 gtk3])
   end
 
-  it 'installs a native single-gem artifact in process rather than scheduling a replacement' do
+  it 'defers a native single-gem artifact until the current process has exited' do
     body = 'native gem payload'
     unit = {
       'id'            => 'ox',
@@ -353,9 +431,9 @@ RSpec.describe Lich::DependencyRecovery do
     result = subject.recover(['ox'])
 
     expect(result).to be_success
-    expect(result.restart_required).to be_nil
-    expect(launcher).not_to have_received(:call)
-    expect(installed.map(&:first)).to eq(["ox-1.2.3-#{platform}.gem"])
+    expect(result.restart_required).to be(true)
+    expect(launcher).to have_received(:call)
+    expect(installed).to be_empty
   end
 
   describe 'native replacement rollback' do
@@ -420,6 +498,65 @@ RSpec.describe Lich::DependencyRecovery do
       end
       allow(subject).to receive(:wait_for_parent_exit)
       allow(subject).to receive(:restart_lich)
+    end
+
+    it 'rolls back Windows sharing contention with a second DLL holder, then retries and relaunches with native load' do
+      skip 'requires the native Windows loader and sharing rules' unless Gem.win_platform?
+
+      require 'digest/sha2'
+      native = $LOADED_FEATURES.find { |path| File.basename(path).match?(/\Asha2\.(?:so|dll)\z/i) }
+      raise 'Ruby digest native fixture is unavailable' unless native && File.file?(native)
+      blocked = runtime_specs.first.extension_dir
+      held_library = File.join(blocked, 'original.dll')
+      FileUtils.cp(native, held_library)
+      originals = original_files.to_h { |path| [path, File.binread(path)] }
+      helper = File.expand_path('../support/native_dll_holder.rb', __dir__)
+      environment = { 'RUBYOPT' => nil, 'RUBYLIB' => nil, 'BUNDLER_SETUP' => nil, 'RUBYGEMS_GEMDEPS' => nil }
+      input, output, errors, holder = Open3.popen3(environment, RbConfig.ruby, helper, held_library, blocked)
+      ready = Timeout.timeout(15) { output.gets }
+      unless ready == "native-library-held\n"
+        diagnostics = Timeout.timeout(5) { errors.read }
+        raise "native library holder failed: #{diagnostics}"
+      end
+      allow(subject).to receive(:backup_path).and_call_original
+      allow(installer).to receive(:call).and_wrap_original do |install, path, home|
+        install.call(path, home)
+        spec = runtime_specs.find { |entry| File.basename(path) == "#{entry.full_name}.gem" }
+        FileUtils.cp(native, File.join(spec.extension_dir, 'original.dll'))
+      end
+      expect { subject.send(:run_windows_replacement!, payload) }.to raise_error(described_class::Error)
+      expect(subject).to have_received(:backup_path).with(blocked, kind_of(String), kind_of(Array))
+      expect(installer).not_to have_received(:call)
+      expect(subject).not_to have_received(:restart_lich)
+      expect(originals.keys.to_h { |path| [path, File.binread(path)] }).to eq(originals)
+      expect(Dir.glob(File.join(gem_home, '.lich-previous-runtime-*'))).to be_empty
+
+      input.write('x')
+      input.close
+      released = Timeout.timeout(15) { holder.value }
+      expect(released.success?).to be(true), errors.read
+      marker = File.join(recovery_temp_dir, 'native-relaunch-complete')
+      relaunch = File.join(recovery_temp_dir, 'native-relaunch.rb')
+      File.write(relaunch, "require 'fiddle'\nFiddle.dlopen(#{held_library.inspect}).close\nFile.write(#{marker.inspect}, 'native-load-ok')\n")
+      payload['restart'] = { 'program' => relaunch, 'argv' => [], 'chdir' => recovery_temp_dir }
+      allow(subject).to receive(:restart_lich).and_call_original
+      restarted = subject.send(:run_windows_replacement!, payload)
+      _pid, status = Timeout.timeout(15) { Process.waitpid2(restarted) }
+      restarted = nil
+      expect(status.success?).to be(true)
+      expect(File.read(marker)).to eq('native-load-ok')
+      expect(subject).to have_received(:restart_lich).once
+    ensure
+      input.close if input && !input.closed?
+      if holder&.alive?
+        Process.kill('KILL', holder.pid) rescue nil
+        holder.join(5)
+      end
+      [output, errors].compact.each { |io| io.close unless io.closed? }
+      if restarted
+        Process.kill('KILL', restarted) rescue nil
+        Process.waitpid(restarted) rescue nil
+      end
     end
 
     it 'restores completed moves and preserves untouched originals after a partial backup' do
@@ -808,6 +945,26 @@ RSpec.describe Lich::DependencyRecovery do
       expect(subject).to have_received(:restart_lich).once
     end
 
+    context 'when repairing a direct sqlite3 unit' do
+      let(:gem_name) { 'sqlite3' }
+
+      it 'checks the exact accepted sqlite3 in a fresh process before relaunching' do
+        subject.send(:run_windows_replacement!, payload)
+        expect(installed_versions).to eq(['2.0.0'])
+        expect(subject).to have_received(:restart_lich).once
+      end
+
+      context 'when the replacement cannot load' do
+        let(:replacement_body) { "raise LoadError, 'fixture sqlite DLL unavailable'\n" }
+
+        it 'restores the prior registration and stops instead of repeatedly restarting' do
+          expect { subject.send(:run_windows_replacement!, payload) }
+            .to raise_error(described_class::Error, /sqlite3 runtime could not load.*fixture sqlite DLL unavailable/m)
+          expect_original_runtime
+        end
+      end
+    end
+
     context 'when the bundle contains GTK' do
       let(:gem_name) { 'gtk3' }
 
@@ -997,6 +1154,689 @@ RSpec.describe Lich::DependencyRecovery do
 
     it 'accepts ordinary filenames' do
       expect { subject.send(:require_filename!, 'sqlite3.gem', 'artifact') }.not_to raise_error
+    end
+  end
+  describe 'accepted policy and upgrade transactions' do
+    let(:unit) { gem_unit(name: 'sqlite3', artifact_url: artifact_url, body: artifact_body) }
+    let(:manifest) { manifest_for([unit], ruby_abi: ruby_abi, platform: platform) }
+    let(:subject) { recovery(artifacts: { manifest_url => manifest, artifact_url => artifact_body }) }
+
+    it 'validates all applicable units even when an invalid one is not requested' do
+      invalid = gem_unit(name: 'other', artifact_url: artifact_url, body: artifact_body)
+      invalid['packages'].first['sha256'] = 'invalid'
+      data = manifest_for([unit, invalid], ruby_abi: ruby_abi, platform: platform)
+      subject = recovery(artifacts: { manifest_url => data })
+      expect(subject.policy_plan(['sqlite3']).error).to include('SHA-256')
+      expect(installed).to be_empty
+    end
+
+    it 'rejects duplicate applicable targets rather than picking the first' do
+      data = JSON.parse(manifest)
+      data['targets'] << data['targets'].first.dup
+      subject = recovery(artifacts: { manifest_url => JSON.generate(data) })
+      expect(subject.policy_plan(['sqlite3']).error).to include('duplicate targets')
+    end
+
+    it 'classifies a well-formed manifest without this platform as an unsupported runtime' do
+      other_platform = platform == 'aarch64-mingw-ucrt' ? 'x64-mingw-ucrt' : 'aarch64-mingw-ucrt'
+      subject = recovery(artifacts: { manifest_url => manifest_for([unit], ruby_abi: ruby_abi, platform: other_platform) })
+      plan = subject.policy_plan(['sqlite3'])
+      expect(plan.error_kind).to eq(:unsupported_runtime)
+      expect(plan.error).to include('has no target')
+      expect(installed).to be_empty
+    end
+
+    it 'classifies a well-formed manifest without this Ruby ABI as an unsupported runtime' do
+      subject = recovery(artifacts: { manifest_url => manifest_for([unit], ruby_abi: '99.0', platform: platform) })
+      expect(subject.policy_plan(['sqlite3']).error_kind).to eq(:unsupported_runtime)
+    end
+
+    {
+      'an empty targets list'       => ->(targets) { targets.clear },
+      'a bare string target'        => ->(targets) { targets << 'x64-mingw-ucrt' },
+      'a numeric ruby_abi'          => ->(targets) { targets << targets.first.merge('ruby_abi' => 4.0, 'platform' => 'other-platform') },
+      'a target without a platform' => ->(targets) { targets << targets.first.except('platform') }
+    }.each do |shape, mutate|
+      it "keeps #{shape} an invalid policy, not an unsupported runtime" do
+        data = JSON.parse(manifest)
+        mutate.call(data['targets'])
+        plan = recovery(artifacts: { manifest_url => JSON.generate(data) }).policy_plan(['sqlite3'])
+        expect(plan.error_kind).to eq(:invalid)
+        expect(plan.error).not_to include('has no target')
+        expect(installed).to be_empty
+      end
+    end
+
+    it 'keeps duplicate applicable targets an invalid policy, not an unsupported runtime' do
+      data = JSON.parse(manifest)
+      data['targets'] << data['targets'].first.dup
+      subject = recovery(artifacts: { manifest_url => JSON.generate(data) })
+      expect(subject.policy_plan(['sqlite3']).error_kind).to eq(:invalid)
+    end
+
+    it 'rejects empty policy rather than reporting all dependencies satisfied' do
+      subject = recovery(artifacts: { manifest_url => manifest_for([], ruby_abi: ruby_abi, platform: platform) })
+      expect(subject.policy_plan(['sqlite3']).error).to include('no recovery units')
+    end
+
+    it 'reports an unavailable policy without making runtime changes' do
+      subject = described_class.new(gem_home: gem_home, temp_dir: recovery_temp_dir, http_get: ->(_) { raise SocketError, 'offline' })
+      expect(subject.policy_plan(['sqlite3']).error).to include('offline')
+      expect(installed).to be_empty
+    end
+
+    [Net::ProtocolError, Net::HTTPBadResponse].each do |error_class|
+      it "classifies #{error_class} as a policy acquisition failure" do
+        subject = described_class.new(gem_home: gem_home, temp_dir: recovery_temp_dir, http_get: ->(_) { raise error_class, 'proxy failure' })
+        plan = subject.policy_plan(['sqlite3'])
+        expect(plan.error_kind).to eq(:acquisition)
+        expect(plan.error).to include('proxy failure')
+        expect(installed).to be_empty
+      end
+    end
+
+    it 'bounds the whole manifest fetch and parse operation' do
+      expect(Timeout).to receive(:timeout).with(described_class::MANIFEST_TIMEOUT_SECONDS).and_raise(Timeout::Error)
+      expect(subject.policy_plan(['sqlite3'])).not_to be_success
+      expect(installed).to be_empty
+    end
+
+    it 'rejects oversized manifest bytes' do
+      subject = recovery(artifacts: { manifest_url => 'x' * (described_class::MAX_MANIFEST_BYTES + 1) })
+      expect(subject.policy_plan(['sqlite3']).error).to include('size limit')
+    end
+
+    it 'bounds the whole staging operation before starting a helper' do
+      plan = subject.recovery_plan(['sqlite3'])
+      expect(Timeout).to receive(:timeout).with(described_class::DOWNLOAD_TIMEOUT_SECONDS, described_class::StagingTimeoutError).and_raise(described_class::StagingTimeoutError)
+      result = subject.recover(['sqlite3'], plan: plan, restart: true)
+      expect(result).not_to be_success
+      expect(result.error_kind).to eq(:timeout)
+      expect(installed).to be_empty
+      expect(Dir.children(recovery_temp_dir)).to be_empty
+    end
+
+    it 'retains timeout classification through unit staging and removes partial downloads before any runtime write' do
+      plan = subject.recovery_plan(['sqlite3'])
+      expect(subject).not_to receive(:with_install_lock)
+      allow(subject).to receive(:download_to) do |_url, path|
+        File.binwrite(path, 'partial download')
+        raise Net::ReadTimeout, 'slow connection'
+      end
+      result = subject.recover(['sqlite3'], plan: plan, restart: true)
+      expect(result.error_kind).to eq(:timeout)
+      expect(result.error).to include('timed out')
+      expect(installed).to be_empty
+      expect(Dir.children(gem_home)).to be_empty
+      expect(Dir.children(recovery_temp_dir)).to be_empty
+    end
+
+    it 'cleans staging when the actual whole-transaction deadline interrupts a download' do
+      plan = subject.recovery_plan(['sqlite3'])
+      stub_const('Lich::DependencyRecovery::DOWNLOAD_TIMEOUT_SECONDS', 0.03)
+      expect(subject).not_to receive(:with_install_lock)
+      allow(subject).to receive(:download_to) do |_url, path|
+        File.binwrite(path, 'partial download')
+        sleep 1
+      end
+      result = subject.recover(['sqlite3'], plan: plan, restart: true)
+      expect(result.error_kind).to eq(:timeout)
+      expect(installed).to be_empty
+      expect(Dir.children(gem_home)).to be_empty
+      expect(Dir.children(recovery_temp_dir)).to be_empty
+    end
+
+    it 'starts only one helper for multiple complete units, including pure repairs' do
+      second = gem_unit(name: 'other', artifact_url: 'https://example.test/other.gem', body: 'other')
+      data = manifest_for([unit, second], ruby_abi: ruby_abi, platform: platform)
+      payloads = []
+      subject = recovery(artifacts: { manifest_url => data, artifact_url => artifact_body, 'https://example.test/other.gem' => 'other' },
+                         helper_launcher: ->(path) { payloads << JSON.parse(File.read(path)) })
+      result = subject.recover(%w[sqlite3 other], force: true, restart: true, preserve_newer: true)
+      expect(result).to be_success
+      expect(result.restart_required).to be(true)
+      expect(installed).to be_empty
+      expect(payloads.length).to eq(1)
+      expect(payloads.first.fetch('packages').map { |package| package.fetch('name') }).to eq(%w[sqlite3 other])
+      expect(payloads.first.fetch('preserve_newer')).to be(true)
+    end
+
+    it 'does not launch a repair helper when the gem home is unwritable' do
+      allow(File).to receive(:open).and_call_original
+      expect(File).to receive(:open).with(File.join(gem_home, described_class::LOCK_FILENAME), anything, anything).and_raise(Errno::EACCES)
+      expect(subject).not_to receive(:schedule_runtime_replacement)
+      result = subject.recover(['sqlite3'], restart: true)
+      shown = Gem.win_platform? ? gem_home.tr('/', '\\') : gem_home
+      expect(result.error_kind).to eq(:gem_home_not_writable)
+      expect(result.error).to eq("Writing to #{shown} was denied (EACCES), so gems cannot be installed. Give your account permission to modify it.")
+      expect(installed).to be_empty
+    end
+
+    it 'preserves a newer installed package when backing up versions for a floor repair' do
+      newer = Gem::Specification.new { |spec| spec.name = 'sqlite3'; spec.version = '9.0' }
+      newer.loaded_from = File.join(gem_home, 'specifications', 'sqlite3-9.0.gemspec')
+      FileUtils.mkdir_p(File.dirname(newer.loaded_from))
+      File.write(newer.loaded_from, 'newer registration')
+      allow(Gem::Specification).to receive(:find_all_by_name).with('sqlite3').and_return([newer])
+      moved = []
+      subject.send(:backup_existing_packages, unit.fetch('packages'), File.join(gem_home, 'backup'), moved, preserve_newer: true)
+      expect(moved).to be_empty
+      expect(File.read(newer.loaded_from)).to eq('newer registration')
+    end
+  end
+
+  describe '#wait_for_parent_exit' do
+    # Mirrors WindowsProcessApi: open returns [handle, nil] or [nil, error],
+    # wait returns [result, error], close takes the handle.
+    let(:fake_api_class) do
+      Class.new do
+        attr_reader :calls
+
+        def initialize(open:, wait: nil)
+          @open = open
+          @wait = wait
+          @calls = []
+        end
+
+        def open(pid)
+          @calls << [:open, pid]
+          @open
+        end
+
+        def wait(handle, milliseconds)
+          @calls << [:wait, handle, milliseconds]
+          raise @wait if @wait.is_a?(Exception)
+
+          @wait
+        end
+
+        def close(handle)
+          @calls << [:close, handle]
+        end
+      end
+    end
+    let(:api_constants) { described_class::WindowsProcessApi }
+
+    def waiter(api)
+      described_class.new(gem_home: gem_home, temp_dir: recovery_temp_dir, windows_process_api: api)
+    end
+
+    context 'on Windows (stubbed kernel32)' do
+      before do
+        allow(Gem).to receive(:win_platform?).and_return(true)
+        expect(Process).not_to receive(:kill)
+      end
+
+      it 'returns once the process handle is signalled, and closes it' do
+        api = fake_api_class.new(open: [:handle, nil], wait: [api_constants::WAIT_OBJECT_0, 0])
+        waiter(api).send(:wait_for_parent_exit, '4242')
+        expect(api.calls).to eq([[:open, 4242], [:wait, :handle, 120_000], [:close, :handle]])
+      end
+
+      it 'converts a fractional timeout to whole milliseconds without rounding down to zero' do
+        api = fake_api_class.new(open: [:handle, nil], wait: [api_constants::WAIT_OBJECT_0, 0])
+        waiter(api).send(:wait_for_parent_exit, 1, timeout: 0.0001)
+        expect(api.calls[1]).to eq([:wait, :handle, 1])
+      end
+
+      it 'treats a process id that names no process as already exited' do
+        api = fake_api_class.new(open: [nil, api_constants::ERROR_INVALID_PARAMETER])
+        waiter(api).send(:wait_for_parent_exit, 4242)
+        expect(api.calls).to eq([[:open, 4242]])
+      end
+
+      it 'fails with the Windows error when the process cannot be opened for another reason' do
+        api = fake_api_class.new(open: [nil, 5])
+        expect { waiter(api).send(:wait_for_parent_exit, 4242) }
+          .to raise_error(described_class::Error, /could not open Lich process 4242.*Windows error 5/)
+        expect(api.calls).to eq([[:open, 4242]])
+      end
+
+      it 'keeps the existing timeout message when Lich is still running, and closes the handle' do
+        api = fake_api_class.new(open: [:handle, nil], wait: [api_constants::WAIT_TIMEOUT, 0])
+        expect { waiter(api).send(:wait_for_parent_exit, 4242) }
+          .to raise_error(described_class::Error, 'timed out waiting for Lich to exit before native gem replacement')
+        expect(api.calls.last).to eq([:close, :handle])
+      end
+
+      it 'fails with the wait result and Windows error when the wait itself fails, and closes the handle' do
+        api = fake_api_class.new(open: [:handle, nil], wait: [0xFFFF_FFFF, 6])
+        expect { waiter(api).send(:wait_for_parent_exit, 4242) }
+          .to raise_error(described_class::Error, /could not wait for Lich process 4242.*wait result 4294967295, Windows error 6/)
+        expect(api.calls.last).to eq([:close, :handle])
+      end
+
+      it 'closes the handle when the wait raises' do
+        api = fake_api_class.new(open: [:handle, nil], wait: Interrupt.new)
+        expect { waiter(api).send(:wait_for_parent_exit, 4242) }.to raise_error(Interrupt)
+        expect(api.calls.last).to eq([:close, :handle])
+      end
+
+      it 'rejects a parent pid that is not an integer before calling Windows' do
+        api = fake_api_class.new(open: [:handle, nil])
+        expect { waiter(api).send(:wait_for_parent_exit, 'not-a-pid') }.to raise_error(ArgumentError)
+        expect(api.calls).to be_empty
+      end
+    end
+
+    context 'with native Windows processes' do
+      before { skip 'requires native Windows process handles' unless Gem.win_platform? }
+
+      it 'returns for an exited process that Process.kill(0) still reports as running' do
+        # Ruby keeps a spawned child's handle open until Process.wait, the
+        # same way any other holder (a launcher, a console host) keeps an
+        # exited Lich openable. This is the state the old kill(0) loop
+        # mistook for a running Lich.
+        child = Process.spawn(RbConfig.ruby, '-e', 'exit 7')
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        waiter(described_class::WindowsProcessApi).send(:wait_for_parent_exit, child, timeout: 30)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 30
+        expect(Process.kill(0, child)).to eq(1)
+        Process.wait(child)
+        expect($?.exitstatus).to eq(7)
+      end
+
+      it 'times out while the process is still running' do
+        child = Process.spawn(RbConfig.ruby, '-e', 'sleep 60')
+        begin
+          expect { waiter(described_class::WindowsProcessApi).send(:wait_for_parent_exit, child, timeout: 0.5) }
+            .to raise_error(described_class::Error, /timed out waiting for Lich to exit/)
+        ensure
+          Process.kill('KILL', child) rescue nil
+          Process.wait(child) rescue nil
+        end
+      end
+
+      it 'returns at once for a process id that names no process' do
+        child = Process.spawn(RbConfig.ruby, '-e', 'exit 0')
+        Process.wait(child)
+        waiter(described_class::WindowsProcessApi).send(:wait_for_parent_exit, child, timeout: 30)
+      end
+    end
+
+    context 'off Windows' do
+      before { skip 'covers the non-Windows polling path' if Gem.win_platform? }
+
+      it 'returns once the process is gone' do
+        child = Process.spawn(RbConfig.ruby, '-e', 'exit 0')
+        Process.wait(child)
+        waiter(fake_api_class.new(open: [:unused, nil])).send(:wait_for_parent_exit, child, timeout: 5)
+      end
+
+      it 'times out while the process is still running' do
+        child = Process.spawn(RbConfig.ruby, '-e', 'sleep 60')
+        begin
+          expect { waiter(fake_api_class.new(open: [:unused, nil])).send(:wait_for_parent_exit, child, timeout: 0.3) }
+            .to raise_error(described_class::Error, 'timed out waiting for Lich to exit before native gem replacement')
+        ensure
+          Process.kill('KILL', child) rescue nil
+          Process.wait(child) rescue nil
+        end
+      end
+    end
+  end
+
+  describe 'gem home write preflight' do
+    let(:launcher) { spy('replacement helper') }
+
+    # Builds a real .gem so the executables check reads a genuine spec.
+    def built_gem(executables: [], name: 'sqlite3')
+      source = Dir.mktmpdir('preflight-gem-source', recovery_temp_dir)
+      FileUtils.mkdir_p(File.join(source, 'lib'))
+      File.write(File.join(source, 'lib', "#{name}.rb"), "# fixture\n")
+      executables.each do |executable|
+        FileUtils.mkdir_p(File.join(source, 'exe'))
+        File.write(File.join(source, 'exe', executable), "#!/usr/bin/env ruby\n")
+      end
+      spec = Gem::Specification.new do |entry|
+        entry.name = name
+        entry.version = '1.2.3'
+        entry.summary = 'Preflight fixture'
+        entry.authors = ['Lich contributors']
+        entry.files = ["lib/#{name}.rb"] + executables.map { |executable| "exe/#{executable}" }
+        entry.bindir = 'exe'
+        entry.executables = executables
+        entry.license = 'MIT'
+        entry.homepage = 'https://example.test/'
+      end
+      filename = Dir.chdir(source) { Gem::DefaultUserInteraction.use_ui(Gem::SilentUI.new) { Gem::Package.build(spec) } }
+      File.binread(File.join(source, filename))
+    end
+
+    def preflight_recovery(body)
+      unit = gem_unit(name: 'sqlite3', artifact_url: artifact_url, body: body)
+      recovery(artifacts: { manifest_url => manifest_for([unit], ruby_abi: ruby_abi, platform: platform), artifact_url => body },
+               helper_launcher: launcher)
+    end
+
+    def probe_leftovers
+      Dir.glob(File.join(gem_home, '**', '.lich-write-probe-*'), File::FNM_DOTMATCH)
+    end
+
+    def skip_unless_posix_permissions
+      skip 'POSIX permission bits' if Gem.win_platform?
+      skip 'root ignores permission bits' if Process.uid.zero?
+    end
+
+    def lock_dir(path)
+      FileUtils.mkdir_p(path)
+      File.chmod(0o555, path)
+    end
+
+    after do
+      Dir.glob(File.join(gem_home, '**', '*'), File::FNM_DOTMATCH).each do |path|
+        File.chmod(0o755, path) if File.directory?(path) && !File.symlink?(path)
+      end
+    end
+
+    it 'installs when every directory is writable, and leaves no probe files behind' do
+      FileUtils.mkdir_p(File.join(gem_home, 'plugins'))
+      result = preflight_recovery(built_gem).recover(['sqlite3'])
+
+      expect(result).to be_success
+      expect(installed.map(&:first)).to eq(['sqlite3.gem'])
+      expect(probe_leftovers).to be_empty
+    end
+
+    it 'refuses before installing when the plugins directory is not writable, naming it' do
+      skip_unless_posix_permissions
+      plugins = File.join(gem_home, 'plugins')
+      lock_dir(plugins)
+
+      result = preflight_recovery(built_gem).recover(['sqlite3'])
+
+      expect(result).not_to be_success
+      expect(result.error_kind).to eq(:gem_home_not_writable)
+      expect(result.error).to eq("#{plugins} is not writable, so gems cannot be installed. Make it writable for your user (chmod u+w \"#{plugins}\").")
+      expect(installed).to be_empty
+      expect(probe_leftovers).to be_empty
+    end
+
+    it 'refuses before scheduling the replacement helper, so Lich does not exit into a failure' do
+      skip_unless_posix_permissions
+      lock_dir(File.join(gem_home, 'plugins'))
+
+      result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+
+      expect(result.error_kind).to eq(:gem_home_not_writable)
+      expect(result.restart_required).to be_falsey
+      expect(launcher).not_to have_received(:call)
+    end
+
+    it 'refuses when writing into a gem home directory is denied, naming it' do
+      skip_unless_posix_permissions
+      gems = File.join(gem_home, 'gems')
+      lock_dir(gems)
+
+      result = preflight_recovery(built_gem).recover(['sqlite3'])
+
+      expect(result.error_kind).to eq(:gem_home_not_writable)
+      expect(result.error).to eq("Writing to #{gems} was denied (EACCES), so gems cannot be installed. Give your account permission to modify it.")
+      expect(installed).to be_empty
+    end
+
+    it 'probes a missing directory through the parent RubyGems would create it in' do
+      skip_unless_posix_permissions
+      # An earlier recovery left its lock file, so the lock opens without
+      # creating anything and the preflight is what meets the denial.
+      File.write(File.join(gem_home, described_class::LOCK_FILENAME), '')
+      File.chmod(0o555, gem_home)
+      begin
+        result = preflight_recovery(built_gem).recover(['sqlite3'])
+        expect(result.error_kind).to eq(:gem_home_not_writable)
+        expect(result.error).to start_with("Writing to #{gem_home} was denied")
+      ensure
+        File.chmod(0o755, gem_home)
+      end
+    end
+
+    # 5.24.0's first startup repair is usually what creates the lock file,
+    # so a gem home that refuses writes most often has none yet.
+    it 'reports a gem home that refuses the lock file it has not created yet, before the helper starts' do
+      skip_unless_posix_permissions
+      File.chmod(0o555, gem_home)
+      begin
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true, preserve_newer: true)
+        expect(result.error_kind).to eq(:gem_home_not_writable)
+        expect(result.error).to eq("Writing to #{gem_home} was denied (EACCES), so gems cannot be installed. Give your account permission to modify it.")
+        expect(launcher).not_to have_received(:call)
+      ensure
+        File.chmod(0o755, gem_home)
+      end
+      expect(File.exist?(File.join(gem_home, described_class::LOCK_FILENAME))).to be(false)
+    end
+
+    it 'names the lock file itself when it exists but cannot be opened for writing' do
+      skip_unless_posix_permissions
+      lock = File.join(gem_home, described_class::LOCK_FILENAME)
+      File.write(lock, '')
+      File.chmod(0o444, lock)
+
+      result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+
+      expect(result.error_kind).to eq(:gem_home_not_writable)
+      expect(result.error).to start_with("Writing to #{lock} was denied (EACCES)")
+      expect(launcher).not_to have_received(:call)
+    end
+
+    it 'names the nearest existing parent when the gem home cannot be created' do
+      skip_unless_posix_permissions
+      parent = Dir.mktmpdir('preflight-parent', recovery_temp_dir)
+      File.chmod(0o555, parent)
+      missing_home = File.join(parent, 'gems', '4.0.0')
+      subject = described_class.new(gem_home: missing_home, temp_dir: recovery_temp_dir)
+      begin
+        expect { subject.send(:with_install_lock) { raise 'lock was acquired' } }
+          .to raise_error(described_class::GemHomeNotWritableError, /\AWriting to #{Regexp.escape(parent)} was denied/)
+      ensure
+        File.chmod(0o755, parent)
+      end
+    end
+
+    it 'keeps the old message for a refusal while the lock is held, such as the helper moving a gem aside' do
+      subject = described_class.new(gem_home: gem_home, temp_dir: recovery_temp_dir)
+
+      expect { subject.send(:with_install_lock) { raise Errno::EACCES, 'gems/sqlite3-1.2.3' } }
+        .to raise_error(described_class::Error, /\ACannot write Ruby runtime gem directory #{Regexp.escape(gem_home)}/) { |error|
+          expect(error).not_to be_a(described_class::GemHomeNotWritableError)
+        }
+    end
+
+    it 'closes the lock file after the block, including when it raises' do
+      subject = described_class.new(gem_home: gem_home, temp_dir: recovery_temp_dir)
+      opened = []
+      allow(File).to receive(:open).and_wrap_original do |original, *args, **kw|
+        original.call(*args, **kw).tap { |file| opened << file }
+      end
+
+      subject.send(:with_install_lock) { nil }
+      expect { subject.send(:with_install_lock) { raise ArgumentError, 'boom' } }.to raise_error(ArgumentError)
+
+      expect(opened.size).to eq(2)
+      expect(opened).to all(be_closed)
+    end
+
+    it 'does not refuse a non-plugins directory only because File.writable? is false (RubyGems writes into it anyway)' do
+      specifications = File.join(gem_home, 'specifications')
+      FileUtils.mkdir_p(specifications)
+      allow(File).to receive(:writable?).and_call_original
+      allow(File).to receive(:writable?).with(specifications).and_return(false)
+
+      expect(preflight_recovery(built_gem).recover(['sqlite3'])).to be_success
+    end
+
+    it 'does not judge a plugins directory that does not exist yet by its parent' do
+      allow(File).to receive(:writable?).and_call_original
+      allow(File).to receive(:writable?).with(gem_home).and_return(false)
+
+      expect(File.exist?(File.join(gem_home, 'plugins'))).to be(false)
+      expect(preflight_recovery(built_gem).recover(['sqlite3'])).to be_success
+    end
+
+    it 'checks the bin directory only when a staged gem has executables' do
+      skip_unless_posix_permissions
+      bin = File.join(gem_home, 'bin')
+      lock_dir(bin)
+
+      expect(preflight_recovery(built_gem).recover(['sqlite3'])).to be_success
+
+      installed.clear
+      result = preflight_recovery(built_gem(executables: ['sqlite3-tool'])).recover(['sqlite3'])
+      expect(result.error_kind).to eq(:gem_home_not_writable)
+      expect(result.error).to start_with("#{bin} is not writable")
+      expect(installed).to be_empty
+    end
+
+    it 'treats a staged package whose spec cannot be read as having no executables' do
+      skip_unless_posix_permissions
+      lock_dir(File.join(gem_home, 'bin'))
+
+      expect(preflight_recovery('not a gem archive').recover(['sqlite3'])).to be_success
+    end
+
+    context 'when a newer version of the gem is installed (RubyGems then skips the plugins check)' do
+      let(:plugins) { File.join(gem_home, 'plugins') }
+
+      # Stubs what Gem::Installer#generate_plugins consults.
+      def installed_sqlite3(version, platform: 'ruby')
+        spec = Gem::Specification.new do |entry|
+          entry.name = 'sqlite3'
+          entry.version = version
+          entry.platform = platform
+        end
+        allow(Gem::Specification).to receive(:latest_spec_for).with('sqlite3').and_return(spec)
+      end
+
+      before do
+        FileUtils.mkdir_p(plugins)
+        allow(File).to receive(:writable?).and_call_original
+        allow(File).to receive(:writable?).with(plugins).and_return(false)
+      end
+
+      it 'does not refuse an in-process install over a read-only plugins folder' do
+        installed_sqlite3('9.0')
+        expect(preflight_recovery(built_gem).recover(['sqlite3'], force: true)).to be_success
+      end
+
+      it 'does not refuse a replacement that keeps the newer version (preserve_newer)' do
+        installed_sqlite3('9.0')
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true, preserve_newer: true)
+        expect(result).to be_success
+        expect(launcher).to have_received(:call)
+      end
+
+      it 'refuses a replacement that moves the newer version aside first' do
+        installed_sqlite3('9.0')
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+        expect(result.error_kind).to eq(:gem_home_not_writable)
+        expect(launcher).not_to have_received(:call)
+      end
+
+      # find_all_by_name keeps only specs for this platform; latest_spec_for,
+      # which RubyGems consults, counts every platform.
+      it 'follows RubyGems when the newer installed version is for another platform' do
+        installed_sqlite3('9.0', platform: 'java')
+        expect(Gem::Specification.find_all_by_name('sqlite3')).to be_empty
+
+        expect(preflight_recovery(built_gem).recover(['sqlite3'], force: true)).to be_success
+      end
+
+      it 'refuses when the installed version is the same, since RubyGems skips only for a newer one' do
+        installed_sqlite3('1.2.3')
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true)
+        expect(result.error_kind).to eq(:gem_home_not_writable)
+        expect(installed).to be_empty
+      end
+    end
+
+    context 'with a real read-only attribute on native Windows' do
+      let(:plugins) { File.join(gem_home, 'plugins') }
+
+      before do
+        skip 'requires native Windows file attributes' unless Gem.win_platform?
+        # Real RubyGems runs here, and it consults latest_spec_for itself.
+        allow(Gem::Specification).to receive(:latest_spec_for).and_call_original
+        FileUtils.mkdir_p(plugins)
+        expect(system('attrib', '+R', plugins.tr('/', '\\'), out: File::NULL)).to be(true)
+      end
+
+      after do
+        system('attrib', '-R', plugins.tr('/', '\\'), out: File::NULL) if Gem.win_platform? && File.directory?(plugins)
+      end
+
+      def real_install(name)
+        gem_path = File.join(recovery_temp_dir, "#{name}-1.2.3.gem")
+        File.binwrite(gem_path, built_gem(name: name))
+        Gem::Installer.at(gem_path, install_dir: gem_home, ignore_dependencies: true, wrappers: false, force: true).install
+      end
+
+      # The state a player reached: attrib showed R on gems/<abi>/plugins.
+      it 'is what makes RubyGems refuse the install with the reported error' do
+        expect(File.writable?(plugins)).to be(false)
+        expect(Gem::Specification.latest_spec_for('lich-preflight-fixture')).to be_nil
+
+        expect { real_install('lich-preflight-fixture') }
+          .to raise_error(Gem::FilePermissionError, /write permissions for the #{Regexp.escape(plugins)} directory/)
+      end
+
+      # Gem::Installer#generate_plugins returns before its check when a newer
+      # version is installed; the bundle always carries a newer sqlite3.
+      it 'does not stop RubyGems when a newer version of the gem is installed' do
+        expect(Gem::Specification.latest_spec_for('sqlite3').version).to be > Gem::Version.new('1.2.3')
+
+        expect { real_install('sqlite3') }.not_to raise_error
+      end
+
+      it 'refuses the repair before the helper starts, naming the folder and the attrib command' do
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+
+        native = plugins.tr('/', '\\')
+        expect(result.error_kind).to eq(:gem_home_not_writable)
+        expect(result.error).to eq("#{native} is marked read-only, so gems cannot be installed. Open a Command Prompt and run: attrib -R \"#{native}\"")
+        expect(launcher).not_to have_received(:call)
+      end
+
+      it 'lets the repair through once that attrib command has run' do
+        expect(system('attrib', '-R', plugins.tr('/', '\\'), out: File::NULL)).to be(true)
+
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+
+        expect(result).to be_success
+        expect(launcher).to have_received(:call)
+      end
+    end
+
+    context 'with Windows messages' do
+      before { allow(Gem).to receive(:win_platform?).and_return(true) }
+
+      it 'names a read-only plugins folder with a backslash path and the attrib command to clear it' do
+        plugins = File.join(gem_home, 'plugins')
+        FileUtils.mkdir_p(plugins)
+        allow(File).to receive(:writable?).and_call_original
+        allow(File).to receive(:writable?).with(plugins).and_return(false)
+
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+
+        native = plugins.tr('/', '\\')
+        expect(result.error).to eq("#{native} is marked read-only, so gems cannot be installed. Open a Command Prompt and run: attrib -R \"#{native}\"")
+        expect(result.error.lines.size).to eq(1)
+        expect(launcher).not_to have_received(:call)
+      end
+
+      it 'names a denied folder with a backslash path' do
+        gems = File.join(gem_home, 'gems')
+        FileUtils.mkdir_p(gems)
+        allow(File).to receive(:open).and_call_original
+        allow(File).to receive(:open).with(start_with(File.join(gems, '.lich-write-probe-')), anything).and_raise(Errno::EACCES)
+
+        result = preflight_recovery(built_gem).recover(['sqlite3'], force: true, restart: true)
+
+        expect(result.error_kind).to eq(:gem_home_not_writable)
+        expect(result.error).to start_with("Writing to #{gems.tr('/', '\\')} was denied (EACCES)")
+        expect(launcher).not_to have_received(:call)
+      end
     end
   end
 end

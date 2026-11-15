@@ -23,16 +23,10 @@ RSpec.describe StreamReplay::Extract do
   end
   # 1: Also here  2: prompt  3: Zed nods...  4: prompt
 
-  # Returns the body section of an extracted fixture.
-  # @param fixture [Object] stream fixture or extracted fixture source
-  # @return [String] the extracted fixture body
   def body(fixture)
     fixture.split("### stream-replay:body-below ###\n", 2).last
   end
 
-  # Extracts the configured raw stream fixture.
-  # @param opts [Hash] benchmark run configuration
-  # @return [String] the extracted replay fixture
   def extract(**opts)
     described_class.new(game: 'DR', char: 'Hero', **opts).call(log)
   end
@@ -131,9 +125,6 @@ RSpec.describe StreamReplay::Extract do
       LOG
     end
 
-    # Collects player IDs from extracted fixture output.
-    # @param opts [Hash] benchmark run configuration
-    # @return [Array] the rewritten player IDs in extraction output
     def ids_out(**opts)
       body(described_class.new(game: 'DR', char: 'Hero', **opts).call(ids_log))
     end
@@ -200,9 +191,6 @@ RSpec.describe StreamReplay::Extract do
       LOG
     end
 
-    # Splits a fixture into its startup and replay sections.
-    # @param fixture [Object] stream fixture or extracted fixture source
-    # @return [Array<String>] the header and body sections
     def split(fixture)
       fixture.split("### stream-replay:body-below ###\n", 2)
     end

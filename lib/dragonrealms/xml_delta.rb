@@ -28,9 +28,6 @@ module Lich
       # show_room_id records whether the game displayed the RealID this arrival
       # (marker present == ShowRoomID ON), so the outbound room-name/subtitle
       # rewrite can preserve that choice GemStone-style.
-      # @param subtitle [String] main-window subtitle
-      # @param nav_uid_pending [Boolean] whether nav already supplied an arrival UID
-      # @return [Hash] parser state changes derived from the subtitle
       def self.main_subtitle(subtitle, nav_uid_pending:)
         room = subtitle.match(SUBTITLE_ROOM)
         return {} unless room
@@ -46,10 +43,6 @@ module Lich
       # it (the legacy stream has none). Names come from the room-objs link, the
       # stream-order pairing (legacy) or the assess backfill. Because sync
       # registers by id, this works whichever order the tag and the link arrive.
-      # @param id [String, Integer] server object ID
-      # @param flags [Hash<String, String>] creature status attributes
-      # @param in_room_objs [Boolean] whether the status arrived in the room-object component
-      # @return [Boolean, Symbol] true or :applied when updated, false when deferred or unavailable
       def self.apply_crtr_status(id, flags, in_room_objs: false) # rubocop:disable Lint/UnusedMethodArgument
         return false unless defined?(Lich::DragonRealms::Creature)
 

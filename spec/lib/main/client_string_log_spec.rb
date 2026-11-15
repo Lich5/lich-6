@@ -6,9 +6,6 @@ require 'stringio'
 module Lich; end
 
 module Lich
-  # Suppresses unrelated log output in the test harness.
-  # @param _msg [Object]  msg fixture input
-  # @return [void] suppresses diagnostics in the isolated harness
   def self.log(_msg); end
 end unless Lich.respond_to?(:log)
 
@@ -45,23 +42,13 @@ RSpec.describe 'client string logging on every login path (main.rb)' do
   raise 'could not extract the proxied handshake forward from main.rb' unless forward_block
 
   harness_class = Class.new do
-    # Initializes the isolated launch harness and captured output.
-    # @param argv_options [Hash] launch options to update
-    # @param launcher_cmd [Object] launcher cmd fixture input
-    # @return [void] initializes the isolated launch harness
     def initialize(argv_options, launcher_cmd)
       @argv_options = argv_options
       @launcher_cmd = launcher_cmd
     end
 
-    # Suppresses handshake delays in the isolated launch harness.
-    # @param _seconds [Object]  seconds fixture input
-    # @return [void] skips the production delay in this harness
     def sleep(_seconds); end
 
-    # Provides the Frostbite transport seam for launch tests.
-    # @param line [String] stream or handshake line
-    # @return [String] the fixture line converted to StormFront transport
     def fb_to_sf(line)
       Lich::Common::Markup.fb_to_sf(line)
     end
@@ -124,18 +111,10 @@ RSpec.describe 'client string logging on every login path (main.rb)' do
     $cmd_prefix = '<c>'
   end
 
-  # Creates a controlled launch harness with the supplied options.
-  # @param argv_options [Hash] launch options to update
-  # @param launcher_cmd [Object] launcher cmd fixture input
-  # @return [Object] the controlled launch harness
   def harness(argv_options: {}, launcher_cmd: nil)
     harness_class.new(argv_options, launcher_cmd)
   end
 
-  # Builds a frontend connection with predefined input bytes.
-  # @param frontend [String, nil] frontend identity
-  # @param bytes [Object] bytes fixture input
-  # @return [Object] the simulated frontend connection
   def client(frontend, bytes)
     $frontend = frontend
     $_CLIENT_ = StringIO.new(bytes)
@@ -239,10 +218,10 @@ RSpec.describe 'client string logging on every login path (main.rb)' do
                            ])
     end
 
-    it "logs Saga's own handshake as both sides" do
+    it "logs Saga's own handshake and Lich's replacement" do
       client('saga', "#{key_line}/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n")
       harness.run_forward
-      expect(logged.last).to eq("info: client string sent to game: /FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML (the front end's own: it already asks for /P:SAGA)")
+      expect(logged.last).to eq("info: client string sent to game: #{lich_string} (Lich's, in place of the front end's)")
     end
 
     it 'sends the key to the game but never logs it' do

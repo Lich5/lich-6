@@ -7,10 +7,6 @@ require_relative '../support/stream_replay/golden'
 # Every replay golden is a StreamReplay::Golden delta encoding, and every
 # golden failure is a Golden.diff report, so these pin both directly.
 RSpec.describe StreamReplay::Golden do
-  # Builds a complete snapshot for golden encoding tests.
-  # @param prompt [Object] prompt fixture input
-  # @param sections [Object] sections fixture input
-  # @return [Hash] the snapshot with supplied sections and prompt number
   def snap(prompt, **sections)
     sections.transform_keys(&:to_s).merge('prompt' => prompt)
   end

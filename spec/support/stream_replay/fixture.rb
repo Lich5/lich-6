@@ -14,17 +14,10 @@ module StreamReplay
 
     attr_reader :path, :header_lines, :body_lines, :game
 
-    # Reads and parses a stream fixture.
-    # @param path [String] fixture or snapshot file path
-    # @return [StreamReplay::Fixture] the parsed fixture read from disk
     def self.load(path)
       new(path, File.read(path))
     end
 
-    # Initializes the fixture and its isolated extraction or replay options.
-    # @param path [String] fixture or snapshot file path
-    # @param raw [String] captured raw stream text
-    # @return [void] initializes isolated fixture extraction or replay state
     def initialize(path, raw)
       @path = path
       marker = MARKERS.find { |m| raw.include?("#{m}\n") }
@@ -36,8 +29,6 @@ module StreamReplay
       @game = header =~ /instance=['"]DR/ ? 'DR' : 'GS'
     end
 
-    # Returns the fixture label used by the replay suite.
-    # @return [String] the fixture basename without its XML extension
     def name
       File.basename(path, '.xml')
     end

@@ -54,7 +54,7 @@ RSpec.describe Lich::Common::Frontend do
     it 'keeps the ordered legacy capability constants unchanged' do
       expect(frontend::XML_FRONTENDS).to eq(%w[stormfront profanity genie frostbite saga wrayth])
       expect(frontend::GSL_FRONTENDS).to eq(%w[wizard avalon])
-      expect(frontend::STREAM_FRONTENDS).to eq(%w[stormfront profanity saga wrayth])
+      expect(frontend::STREAM_FRONTENDS).to eq(%w[stormfront profanity genie saga wrayth])
       expect(frontend::MONO_FRONTENDS).to eq(%w[stormfront genie saga wrayth])
       expect(frontend::SENTINEL_FRONTENDS).to eq(%w[saga])
     end
@@ -256,8 +256,8 @@ RSpec.describe Lich::Common::Frontend do
       expect(frontend::CLIENT_STRING).to include('/FE:WRAYTH')
     end
 
-    it 'includes version saga-0.10.4' do
-      expect(frontend::CLIENT_STRING).to include('/VERSION:saga-0.10.4')
+    it 'includes version 1.0.1.28' do
+      expect(frontend::CLIENT_STRING).to include('/VERSION:1.0.1.28')
     end
 
     it 'uses SAGA as platform' do
@@ -348,8 +348,8 @@ RSpec.describe Lich::Common::Frontend do
       expect(FE::STREAM_FRONTENDS).not_to include('frostbite')
     end
 
-    it 'does not include genie' do
-      expect(FE::STREAM_FRONTENDS).not_to include('genie')
+    it 'includes genie' do
+      expect(FE::STREAM_FRONTENDS).to include('genie')
     end
 
     it 'is a subset of XML_FRONTENDS' do
@@ -515,10 +515,6 @@ RSpec.describe Lich::Common::Frontend do
         expect(frontend.supports_streams?('frostbite')).to be false
       end
 
-      it "returns false for 'genie'" do
-        expect(frontend.supports_streams?('genie')).to be false
-      end
-
       it "returns false for 'wizard'" do
         expect(frontend.supports_streams?('wizard')).to be false
       end
@@ -657,10 +653,34 @@ RSpec.describe Lich::Common::Frontend do
     end
   end
 
+  describe '.launched_pid=' do
+    around do |example|
+      original_pid = frontend.pid
+      original_launched = frontend.launched_pid
+      example.run
+      frontend.instance_variable_set(:@launched_pid, original_launched)
+      frontend.pid = original_pid
+    end
+
+    it 'records the launched frontend and makes it the current PID' do
+      frontend.launched_pid = 777
+      expect(frontend.launched_pid).to eq(777)
+      expect(frontend.pid).to eq(777)
+    end
+
+    it 'is left alone when a detachable client sets the PID' do
+      allow(Lich).to receive(:log)
+      frontend.launched_pid = 777
+      frontend.set_from_client(12_345)
+      expect(frontend.pid).to eq(12_345)
+      expect(frontend.launched_pid).to eq(777)
+    end
+  end
+
   # --- client_string ------------------------------------------
 
   describe '.client_string' do
-    let(:default_string) { '/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML' }
+    let(:default_string) { '/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML' }
 
     it 'is byte-identical to CLIENT_STRING for a frontend without an override' do
       expect(frontend.client_string(frontend: 'wrayth')).to eq(frontend::CLIENT_STRING)
@@ -676,8 +696,8 @@ RSpec.describe Lich::Common::Frontend do
       expect(frontend.client_string('genie-5.1', frontend: 'wrayth')).to eq('/FE:WRAYTH /VERSION:genie-5.1 /P:SAGA /XML')
     end
 
-    it 'identifies Saga with /P:SAGA and saga-unknown when no version is given' do
-      expect(frontend.client_string(frontend: 'saga')).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+    it 'identifies Saga with /P:SAGA and the default version when no version is given' do
+      expect(frontend.client_string(frontend: 'saga')).to eq('/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML')
     end
 
     it 'puts the given version into the Saga string' do
@@ -686,14 +706,14 @@ RSpec.describe Lich::Common::Frontend do
 
     it 'defaults frontend to the current client' do
       allow(frontend).to receive(:client).and_return('saga')
-      expect(frontend.client_string).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+      expect(frontend.client_string).to eq('/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML')
     end
 
-    it 'leaves the CLIENT_STRING constant and Saga metadata unchanged' do
+    it 'leaves the CLIENT_STRING constant unchanged and Saga without a metadata override' do
       frontend.client_string('saga-0.10.2', frontend: 'wrayth')
       frontend.client_string('saga-0.10.2', frontend: 'saga')
       expect(frontend::CLIENT_STRING).to eq(default_string)
-      expect(frontend.metadata_for('saga', :client_string)).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+      expect(frontend.metadata_for('saga', :client_string)).to be_nil
     end
 
     it 'treats the version literally (no regex backreference expansion)' do
@@ -704,7 +724,7 @@ RSpec.describe Lich::Common::Frontend do
   # --- proxy_handshake ----------------------------------------
 
   describe '.proxy_handshake' do
-    let(:lich_string) { '/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML' }
+    let(:lich_string) { '/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML' }
 
     # Each front end's handshake line exactly as it reaches Lich's proxy:
     # Genie4 Core/Game.cs GameSocket_EventConnected (no slash, LF),
@@ -740,7 +760,7 @@ RSpec.describe Lich::Common::Frontend do
       it 'defaults the front end to the current client' do
         $frontend = 'saga'
         expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:1.0.1.28 /P:WIN_UNKNOWN /XML\n"))
-          .to eq("/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML\n")
+          .to eq("/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n")
       end
 
       it 'leaves $frontend alone, so capability lookups still answer for the real front end' do
@@ -753,16 +773,22 @@ RSpec.describe Lich::Common::Frontend do
 
     it "uses a front end's registry :client_string" do
       expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:1.0.1.28 /P:WIN_UNKNOWN /XML\n", frontend: 'saga'))
-        .to eq("/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML\n")
+        .to eq("/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML\n")
     end
 
     # Saga in Lich mode sends its own key and handshake (saga-archive
     # src/main/index.js: `/FE:${name} /VERSION:saga-${version} /P:SAGA /XML\r\n`).
-    it "forwards Saga's own handshake so its real /VERSION: reaches the game" do
+    # DragonRealms needs Lich's /VERSION:, so Saga's line is replaced too.
+    it "replaces Saga's own /P:SAGA handshake with Lich's" do
       saga = "/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n"
-      expect(frontend.proxy_handshake(saga, frontend: 'saga')).to equal(saga)
-      expect(frontend.proxy_handshake(saga, version: 'saga-9', frontend: 'saga')).to equal(saga)
-      expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:x /p:saga /XML\n", frontend: 'genie')).to eq("/FE:WRAYTH /VERSION:x /p:saga /XML\n")
+      expect(frontend.proxy_handshake(saga, frontend: 'saga')).to eq("#{lich_string}\r\n")
+      expect(frontend.proxy_handshake(saga, version: 'saga-9', frontend: 'saga')).to eq("/FE:WRAYTH /VERSION:saga-9 /P:SAGA /XML\r\n")
+      expect(frontend.proxy_handshake("/FE:WRAYTH /VERSION:x /p:saga /XML\n", frontend: 'genie')).to eq("#{lich_string}\n")
+    end
+
+    it "forwards Saga's own handshake with keep (--keep-fe-string)" do
+      saga = "/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n"
+      expect(frontend.proxy_handshake(saga, keep: true, frontend: 'saga')).to equal(saga)
     end
 
     describe 'logging' do
@@ -778,11 +804,11 @@ RSpec.describe Lich::Common::Frontend do
                              ])
       end
 
-      it "logs both client strings when it keeps Saga's own /P:SAGA handshake" do
+      it "logs both client strings when it replaces Saga's own /P:SAGA handshake" do
         frontend.proxy_handshake("/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML\r\n", frontend: 'saga')
         expect(logged).to eq([
                                'info: client string from front end: /FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML',
-                               "info: client string sent to game: /FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML (the front end's own: it already asks for /P:SAGA)"
+                               "info: client string sent to game: #{lich_string} (Lich's, in place of the front end's)"
                              ])
       end
 
@@ -839,11 +865,6 @@ RSpec.describe Lich::Common::Frontend do
 
     before { allow(Lich).to receive(:log) { |msg| logged << msg } }
 
-    # Captures the diagnostic for one handshake line.
-    # @param line [String] stream or handshake line
-    # @param source [Object] source fixture input
-    # @param note [Object] note fixture input
-    # @return [String] the captured client-string diagnostic
     def log_line(line, source: :frontend, note: nil)
       frontend.log_client_string(source, line, note: note)
       logged.last
@@ -1204,8 +1225,8 @@ RSpec.describe Lich::Common::Frontend do
 
     it 'returns frontends that have :streams capability' do
       result = frontend.frontends_with_capability(:streams)
-      expect(result).to include('wrayth', 'stormfront', 'profanity')
-      expect(result).not_to include('genie', 'frostbite', 'wizard')
+      expect(result).to include('wrayth', 'stormfront', 'profanity', 'genie')
+      expect(result).not_to include('frostbite', 'wizard')
     end
 
     it 'returns frontends that have :room_window capability' do

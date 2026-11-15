@@ -1,3 +1,0 @@
-# Playwright output. Also keeps test discovery out of it (respectGitIgnore in
-# playwright.config.cjs), which parallel browser workers rely on.
-test-results/

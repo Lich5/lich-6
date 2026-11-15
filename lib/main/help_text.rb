@@ -68,7 +68,7 @@ module Lich
             lich --login CHARACTER
             lich --login CHARACTER --headless PORT
             lich --login CHARACTER --headless auto
-            lich --add-account ACCOUNT PASSWORD
+            lich --add-account ACCOUNT
 
           Help topics:
             lich --help login
@@ -143,7 +143,7 @@ module Lich
             lich [account command] [options]
 
           Commands:
-            --add-account ACCOUNT PASSWORD [--frontend FRONTEND]
+            --add-account ACCOUNT [--password-stdin] [--frontend FRONTEND]
             --refresh-characters ACCOUNT [--frontend FRONTEND]
             --add-character ACCOUNT CHAR_NAME --game-code CODE [--frontend FRONTEND]
             --change-account-password ACCOUNT NEWPASSWORD
@@ -151,6 +151,13 @@ module Lich
             --recover-master-password [NEWPASSWORD]
             --convert-entries MODE
             --change-encryption-mode MODE [--master-password PASSWORD]
+
+          Password for --add-account:
+            Prompted for on the terminal; what you type is not shown.
+            --password-stdin reads the first line of standard input instead.
+            Leading and trailing spaces are part of the password.
+            On Windows, pipe it from PowerShell 7 (pwsh) or cmd.
+            Windows PowerShell 5.1 changes non-ASCII characters in a pipe.
 
           Modes:
             plaintext
@@ -164,7 +171,11 @@ module Lich
                                           DRF  DragonRealms Fallen
 
           Examples:
-            lich --add-account MYACCOUNT MYPASSWORD --frontend stormfront
+            lich --add-account MYACCOUNT --frontend stormfront
+            # sh, bash, zsh:
+            printf '%s\\n' "$PASSWORD" | lich --add-account MYACCOUNT --password-stdin
+            # PowerShell 7:
+            $env:PASSWORD | lich --add-account MYACCOUNT --password-stdin
             lich --refresh-characters MYACCOUNT
             lich --add-character MYACCOUNT NewCharName --game-code DR
             lich --change-account-password MYACCOUNT NEWPASSWORD
@@ -231,15 +242,13 @@ module Lich
         TEXT
       end
 
-      # Returns advanced launch-option help text, including WebUI suppression and its legacy --no-gtk alias.
-      # @return [String] help text; this method does not print it
       def self.advanced_help
         <<~TEXT
           Lich Help: advanced
 
           Compatibility / advanced options:
-            --gui                  Open the native WebUI launcher
-            --no-gui, --no-gtk  Do not open the WebUI launcher (--no-gtk is a legacy alias)
+            --gui
+            --no-gui, --no-gtk  Run without the GTK GUI (aliases)
             --without-frontend
             --detachable-client=PORT|auto|HOST:PORT
             --pipe
@@ -253,21 +262,20 @@ module Lich
             --bind-address=HOST
 
           Notes:
-            The native WebUI launcher starts by default when no arguments are given.
-            To suppress it, pass --no-gui (or the legacy --no-gtk alias),
+            The GTK GUI starts by default. To suppress it, pass --no-gui or --no-gtk,
             including when using --headless.
             Prefer --headless PORT or --headless auto for new headless launches.
-            --fe-version=VALUE reports the frontend version (e.g. saga-0.10.2) in the
+            --fe-version=VALUE reports the frontend version (e.g. 1.0.1.28) in the
             /VERSION: field of the game handshake Lich builds: --without-frontend, and
             the handshake that replaces a proxied frontend's own (below). Wizard, Avalon
             and Frostbite always send the default. VALUE: 1-32 of A-Z a-z 0-9 . _ + -
-            With --saga, the handshake also identifies as /P:SAGA, and reports
-            /VERSION:saga-unknown when --fe-version is not given.
+            DragonRealms currently needs the default /VERSION:1.0.1.28 for its full XML
+            stream; another value may lose it.
             A frontend that connects through Lich and sends its own /FE: ... /XML
             handshake (Genie, Warlock, Wrayth, Frostbite without --frostbite) has it
             replaced with Lich's, so every session gets the same game stream; Lich
-            reshapes that stream for the frontend. A handshake that already says
-            /P:SAGA is forwarded as sent.
+            reshapes that stream for the frontend. Saga's own /P:SAGA handshake is
+            replaced too.
             --keep-fe-string forwards the frontend's own handshake instead, for that
             launch. To keep it for every launch: ;e Lich.keep_fe_string = true
             (;e Lich.keep_fe_string = false undoes it).
@@ -279,7 +287,10 @@ module Lich
             --frontend-caps=LIST names the DragonRealms rich-stream features every attached
             client renders itself (room_element, game_links, double_bold; comma-separated),
             in place of the frontend's defaults. Lich rewrites the rest to the legacy
-            stream. A client's own SET_FRONTEND_CAPS line takes precedence.
+            stream. script_list may be listed too: every client then gets the running
+            scripts as data (docs/frontends/script-list-feed.md); the Lich-drawn
+            scripts window is the separate ;display scriptwindow setting. A client's
+            own SET_FRONTEND_CAPS line takes precedence.
             --bind-address=HOST sets the local address Lich binds its listen sockets to
             (the frontend, --game proxy, and detachable-client listeners).
             Defaults to 127.0.0.1.

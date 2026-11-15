@@ -82,6 +82,8 @@ module Lich
         @role = role
         @write_queue_capacity = write_queue_capacity
         @declared_capabilities = nil
+        @declared_feeds = nil
+        @declared_pid = nil
       end
 
       # Whether the socket is usable for I/O.
@@ -161,10 +163,31 @@ module Lich
       end
 
       # @param capabilities [Array<Symbol>, nil]
-      # @return [Array<Symbol>, nil] a frozen copy of the declaration, or nil to use defaults
       def declared_capabilities=(capabilities)
         @declared_capabilities = capabilities.nil? ? nil : capabilities.dup.freeze
       end
+
+      # The feeds this client asked for with SET_FRONTEND_CAPS (for example
+      # :script_list), or nil when it has not named any. Kept apart from the
+      # rewrite set so a client can ask for a feed without restating its
+      # rewrites. A frozen Array replaced whole, like declared_capabilities.
+      #
+      # @return [Array<Symbol>, nil]
+      def declared_feeds
+        @declared_feeds
+      end
+
+      # @param feeds [Array<Symbol>, nil]
+      def declared_feeds=(feeds)
+        @declared_feeds = feeds.nil? ? nil : feeds.dup.freeze
+      end
+
+      # The process ID this client reported with a SET_FRONTEND_PID line, or
+      # nil when it has not reported one. Recorded whether or not the client is
+      # the primary one, so Frontend.pid can follow it if it is promoted later.
+      #
+      # @return [Integer, nil]
+      attr_accessor :declared_pid
 
       # Delegates all non-write methods to the underlying socket.
       #

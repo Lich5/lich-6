@@ -11,7 +11,7 @@
 #        ### Features (dr|gs)
 #        ### Bug Fixes (general|dr|gs)
 #      - Include ONLY type=feat|fix with scope=all|dr|gs.
-#      - Bullet format: "* <Title stripped of type(scope):> ([#<N>](https://github.com/<owner>/<repo>/pull/<N>))".
+#      - Bullet format: "* <Title stripped of type(scope):> ([#<N>](https://github.com/<owner>/<repo>/issues/<N>))".
 #      - Sort within each section: PR number ascending (oldest -> newest).
 #   2) RP credit footer next (verbatim, two lines), not the RP block:
 #        ---
@@ -66,7 +66,7 @@ runs:
         PR_NUMBER: ${{ inputs.pr_number }}
       with:
         script: |
-          const MODE = process.env.MODE; // 'beta' or 'stable'
+          const MODE = process.env.MODE; // 'pre' or 'stable'
           const CONTRACT_SHA = process.env.CONTRACT_SHA;
           const sentinelTag = `<!-- FORMATTER:v1 sha=${CONTRACT_SHA} mode=${MODE} -->`;
           const BREAK_AUTO = (process.env.BREAK_AUTO || 'false').toLowerCase() === 'true';
@@ -228,7 +228,7 @@ runs:
             return;
           }
 
-          // Expose final body; the following step performs the PATCH unless skipped by the sentinel.
+          // Expose final body to next step (and also patch here in case the next step is omitted)
           core.setOutput('finalBody', finalBody);
 
     - name: Patch PR body (unless skipped by sentinel)

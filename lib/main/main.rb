@@ -195,20 +195,11 @@ reconnect_if_wanted = proc {
       raise SystemExit.new(1) # With abort_on_exception=true, this propagates to main thread
     end
 
-  ## Native WebUI starts here
+  ## GUI starts here
 
-  elsif ARGV.empty? or @argv_options[:gui]
-    require File.join(LIB_DIR, 'common', 'webui_launcher.rb')
-    webui_launcher = Lich::Common::WebUILauncher.new(
-      data_dir: DATA_DIR,
-      on_launch: proc {},
-      dark_theme: Lich.track_dark_mode,
-      tab_layout: Lich.track_layout_state,
-      autosort: Lich.track_autosort_state,
-      persistent: Lich.track_persistent_launcher_mode
-    )
-    @launch_data = webui_launcher.start.await_launch
-    next unless @launch_data
+  elsif defined?(Gtk) and (ARGV.empty? or @argv_options[:gui])
+    require File.join(LIB_DIR, 'common', 'gui_login.rb')
+    gui_login
   end
 
   #
@@ -524,7 +515,7 @@ reconnect_if_wanted = proc {
                        else
                          spawn(launcher_cmd)
                        end
-        Lich::Common::Frontend.pid = frontend_pid if defined?(Lich::Common::Frontend)
+        Lich::Common::Frontend.launched_pid = frontend_pid if defined?(Lich::Common::Frontend)
       rescue
         Lich.log "error: #{$!.to_s.sub(game_key.to_s, '[scrubbed key]')}\n\t#{$!.backtrace.join("\n\t")}"
         Lich.msgbox(:message => "error: #{$!.to_s.sub(game_key.to_s, '[scrubbed key]')}", :icon => :error)
@@ -545,6 +536,7 @@ reconnect_if_wanted = proc {
         $_CLIENT_.close # rescue() # rubocop complaint, but is it even necessary?
         reconnect_if_wanted.call
         Lich.log "info: exiting..."
+        Lich::Common.shutdown_gtk_before_exit
         exit
       end
       #      if defined?(Win32)
@@ -569,6 +561,7 @@ reconnect_if_wanted = proc {
         $_CLIENT_.close rescue nil
         reconnect_if_wanted.call
         Lich.log "info: exiting..."
+        Lich::Common.shutdown_gtk_before_exit
         exit
       end
     end
@@ -877,10 +870,14 @@ reconnect_if_wanted = proc {
       # conditional, so no other reader can still be pending.
       game_key = nil
 
+      # A client that gets the script list from the session's set (no
+      # declaration of its own) is sent it now; a declaring one, on declaring.
+      Lich::Common::ScriptListFeed.client_ready($_CLIENT_)
+
       begin
         while (client_string = $_CLIENT_.gets)
           # SET_FRONTEND_CAPS: the rich-stream rewrites this client handles
-          # itself (https://github.com/elanthia-online/lich-5/blob/612d91d680e3f304264a74699e9d5c9968cc48bc/docs/frontend-capability-declaration.md). Never sent to the game.
+          # itself (docs/frontends/capability-declaration.md). Never sent to the game.
           next if Lich::Common::ClientCapabilities.declare($_CLIENT_, client_string)
 
           if Frontend.supports_gsl?
@@ -1188,7 +1185,6 @@ reconnect_if_wanted = proc {
       Lich::Common::ShutdownLog.info('saving script settings...')
       shutdown_step.call('Vars.save') { Vars.save }
     end
-    shutdown_step.call('WebUI reset') { Lich::WebUI.reset! if defined?(Lich::WebUI) }
     Lich::Common::ShutdownLog.info('closing connections...')
     shutdown_step.call('Game.close') { Game.close }
     shutdown_step.call('client_thread.kill') { client_thread.kill }
@@ -1226,14 +1222,9 @@ reconnect_if_wanted = proc {
       Lich::Common::ShutdownLog.flush_user_exit_summary!
     end
     Lich::Common::ShutdownLog.info('exiting...')
+    Lich::Common.shutdown_gtk_before_exit
     exit
   ensure
-    # Retry failed owned-window closes, including abnormal teardown exits.
-    begin
-      Lich::WebUI.reset! if defined?(Lich::WebUI)
-    rescue StandardError => error
-      Lich::Common::ShutdownLog.warning("WebUI shutdown failed: #{error.class}: #{error.message}")
-    end
     # Guarantee lifecycle stop even on abnormal exit (e.g. abort_on_exception).
     # Both .stop methods are idempotent -- safe to call if already stopped.
     Lich::Common::ShutdownLog.flush_user_exit_summary! rescue nil

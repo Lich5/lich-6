@@ -13,7 +13,7 @@ require_relative '../support/stream_replay/golden'
 # exactly. A mismatch means parser-visible behavior changed: if intended,
 # regenerate with
 #
-#   UPDATE_STREAM_GOLDENS=1 rspec spec/stream_replay
+#   UPDATE_STREAM_GOLDENS=1 bundle exec rspec spec/stream_replay
 #
 # and review the golden diff in the PR. Fixture provenance is recorded in
 # spec/fixtures/streams/MANIFEST.md.

@@ -73,10 +73,6 @@ RSpec.describe HMR, "#reload error handling" do
     HMR.send(:remove_const, :TestAfterFailure) if HMR.const_defined?(:TestAfterFailure, false)
   end
 
-  # Creates and loads an isolated reloading fixture.
-  # @param suffix [Object] suffix fixture input
-  # @param body [String] rich room body or fixture source
-  # @return [String] the temporary loaded feature path
   def loaded_file(suffix, body)
     filename = HMR::Helpers.unique_filename(suffix)
     written << filename
@@ -242,9 +238,6 @@ RSpec.describe HMR, "#reload path comparison" do
 
   after { FileUtils.rm_rf(tmp) }
 
-  # Marks a fixture as a loaded feature for reload tests.
-  # @param path [String] fixture or snapshot file path
-  # @return [void] registers the fixture path as a loaded feature
   def required_file(path)
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, "# hmr path spec\n")
@@ -252,9 +245,6 @@ RSpec.describe HMR, "#reload path comparison" do
     $LOADED_FEATURES.find { |f| f.end_with?(File.basename(path)) }
   end
 
-  # Invokes reload for one temporary fixture basename.
-  # @param path [String] fixture or snapshot file path
-  # @return [void] reloads the fixture by its escaped basename
   def reload_basename(path)
     Lich::Common::HMR.reload(/#{Regexp.escape(File.basename(path))}\z/)
   end

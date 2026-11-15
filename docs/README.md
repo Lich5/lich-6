@@ -1,7 +1,7 @@
-# Lich 6 developer docs
+# Lich 5 developer docs
 
-WebUI documentation and references inherited from the lich-5 engine.
-The upstream generated API reference (YARD) lives at https://lich-5-docs.elanthia.online/.
+Design notes, protocol references, and API contracts for the lich-5 engine.
+Generated API reference (YARD) lives at https://lich-5-docs.elanthia.online/.
 These docs cover what YARD doesn't: cross-cutting behavior, wire protocols,
 design decisions, and evidence behind them.
 
@@ -12,9 +12,6 @@ skip the RSpec run in CI.
 
 | Doc | Kind | Covers |
 |---|---|---|
-| **WebUI** | | |
-| [WebUI integration](webui-integration.md) | API | Native interfaces, script-local GTK compatibility, ownership and lifecycle |
-| [WebUI review readiness](webui-review-readiness.md) | Tracking | Implementation and acceptance evidence |
 | **Contributing** | | |
 | [YARD style guide](contributing/yard-style-guide.md) | Guide | Which methods get docs, required tags, type notation |
 | **Scripting API** | | |
@@ -24,7 +21,7 @@ skip the RSpec run in CI.
 | [Map travel time estimates](scripting/map-travel-estimates.md) | API | `Map.estimate_time(path)` and the `from:` start room |
 | **Engine** | | |
 | [Runtime I/O](engine/runtime-io.md) | Behavior | Detachable frontends, `Script#gets` timeouts, socket-read hooks |
-| [GTK compatibility lifecycle](engine/gtk-hardening.md) | Behavior | Script-local shim ownership, dispatch and cleanup; native GTK is retired |
+| [GTK hardening](engine/gtk-hardening.md) | Behavior | Shared GTK main loop protection and callback retention |
 | [SQLite busy timeout](engine/sqlite-busy-timeout.md) | Behavior | 5 s busy timeout on core DB connections |
 | **Connection** | | |
 | [EAccess protocol](connection/eaccess-protocol-analysis.md) | Research | `eaccess.play.net:7910` command reference |
@@ -32,10 +29,10 @@ skip the RSpec run in CI.
 | [Web login protocol](connection/web-login-protocol-analysis.md) | Research | HTTPS `play.net` fallback auth (`WebLogin`) |
 | [WebSocket shim findings](connection/websocket-shim-probe-findings.md) | Research | `--game-transport=websocket`, direct→WS fallback |
 | **Frontends** | | |
-| [Capability declaration](https://github.com/elanthia-online/lich-5/blob/56369a541fb6a6202b8b23927857630706461f0a/docs/frontends/capability-declaration.md) | Protocol | `SET_FRONTEND_CAPS` per-client stream rewrites |
+| [Capability declaration](frontends/capability-declaration.md) | Protocol | `SET_FRONTEND_CAPS` per-client stream rewrites |
 | [Saved frontend editing](frontends/saved-frontend-editing.md) | Behavior | Launcher frontend assignment, `frontends.yml` |
 | **XML stream** | | |
-| [Saga stream: deferred items](https://github.com/elanthia-online/lich-5/blob/56369a541fb6a6202b8b23927857630706461f0a/docs/xml-stream/saga-stream-deferred.md) | Tracking | Unverified/parked items for the Saga dialect |
+| [Saga stream: deferred items](xml-stream/saga-stream-deferred.md) | Tracking | Unverified/parked items for the Saga dialect |
 | **Dependency recovery** | | |
 | [Windows: R4L5 gem manifest](dependency-recovery/windows-r4l5-gem-manifest.md) | Behavior | Manifest-driven missing-gem repair |
 | [macOS: Bundler recovery](dependency-recovery/macos-bundler-recovery.md) | Behavior | Transactional Bundler repair of default gems |

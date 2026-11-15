@@ -95,7 +95,7 @@ RSpec.describe Lich::Common::GUI::AccountManager do
     it 'creates owner-only credentials and tightens an existing permissive file' do
       expect(File.stat(yaml_file).mode & 0o777).to eq(0o600)
       File.chmod(0o644, yaml_file)
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticChanged123!')).to be(true)
+      expect(described_class.change_password(data_dir, username, 'SyntheticChanged123!')).to be(true)
       expect(File.stat(yaml_file).mode & 0o777).to eq(0o600)
       expect(YAML.safe_load_file(yaml_file)['accounts'][username.upcase]['password']).to eq('SyntheticChanged123!')
     end
@@ -104,12 +104,12 @@ RSpec.describe Lich::Common::GUI::AccountManager do
       File.binwrite("#{yaml_file}.bak", 'older backup')
       File.chmod(0o644, "#{yaml_file}.bak")
 
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticChanged123!')).to be(true)
+      expect(described_class.change_password(data_dir, username, 'SyntheticChanged123!')).to be(true)
 
       expect(File.binread("#{yaml_file}.bak")).to eq(original)
       expect(File.stat("#{yaml_file}.bak").mode & 0o777).to eq(0o600)
       previous = File.binread(yaml_file)
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticNext123!')).to be(true)
+      expect(described_class.remove_account(data_dir, username)).to be(true)
       expect(File.binread("#{yaml_file}.bak")).to eq(previous)
     end
 
@@ -120,7 +120,7 @@ RSpec.describe Lich::Common::GUI::AccountManager do
         rename.call(source, destination)
       end
 
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticChanged123!')).to be(false)
+      expect(described_class.change_password(data_dir, username, 'SyntheticChanged123!')).to be(false)
 
       expect(File.binread(yaml_file)).to eq(original)
       expect(File.binread("#{yaml_file}.bak")).to eq(original)
@@ -134,7 +134,7 @@ RSpec.describe Lich::Common::GUI::AccountManager do
       allow(Lich).to receive(:log)
       allow(YAML).to receive(:dump).and_raise(TypeError, 'SyntheticSecretMustNotAppear')
 
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticChanged123!')).to be(false)
+      expect(described_class.change_password(data_dir, username, 'SyntheticChanged123!')).to be(false)
 
       expect(File.binread(yaml_file)).to eq(original)
       expect(File.binread("#{yaml_file}.bak")).to eq('older backup')
@@ -152,15 +152,68 @@ RSpec.describe Lich::Common::GUI::AccountManager do
           block.call(file)
         end
       end
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticChanged123!')).to be(false)
+      expect(described_class.change_password(data_dir, username, 'SyntheticChanged123!')).to be(false)
       expect(File.binread(yaml_file)).to eq(original)
-      expect(Dir.children(data_dir)).to contain_exactly('entry.yaml', 'entry.yaml.lock', 'entry.yaml.bak.lock')
+      expect(Dir.children(data_dir)).to eq(['entry.yaml'])
+    end
+
+    it 'does not remove an account when publication fails' do
+      allow(File).to receive(:rename).and_raise(IOError, 'synthetic publication failure')
+      expect(described_class.remove_account(data_dir, username)).to be(false)
+      expect(File.binread(yaml_file)).to eq(original)
     end
 
     it 'does not publish a failed password encryption result' do
       allow(Lich::Common::Authentication::EntryStore).to receive(:encrypt_password).and_return(nil)
-      expect(described_class.add_or_update_account(data_dir, username, 'SyntheticChanged123!')).to be(false)
+      expect(described_class.change_password(data_dir, username, 'SyntheticChanged123!')).to be(false)
       expect(File.binread(yaml_file)).to eq(original)
+    end
+  end
+
+  describe ".remove_account" do
+    context "when account exists" do
+      before do
+        # Create existing account
+        described_class.add_or_update_account(data_dir, username, "password")
+      end
+
+      it "removes the account" do
+        # Test that the account is removed
+        expect(described_class.remove_account(data_dir, username)).to be true
+
+        # Verify account is removed
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        yaml_data = YAML.load_file(yaml_file)
+        expect(yaml_data['accounts']).not_to have_key(username)
+      end
+    end
+
+    context "when account doesn't exist" do
+      before do
+        # Create YAML file without the account
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        File.write(yaml_file, YAML.dump({ 'accounts' => {} }))
+      end
+
+      it "returns false" do
+        # Test that false is returned when account doesn't exist
+        expect(described_class.remove_account(data_dir, username)).to be false
+      end
+    end
+
+    context "when file doesn't exist" do
+      it "returns false" do
+        # Test that false is returned when file doesn't exist
+        expect(described_class.remove_account(data_dir, username)).to be false
+      end
+    end
+  end
+
+  describe ".change_password" do
+    it "delegates to add_or_update_account with normalized username" do
+      # Test that change_password delegates to add_or_update_account with UPCASE username
+      expect(described_class).to receive(:add_or_update_account).with(data_dir, username.upcase, password)
+      described_class.change_password(data_dir, username, password)
     end
   end
 
@@ -220,6 +273,241 @@ RSpec.describe Lich::Common::GUI::AccountManager do
       end
     end
   end
+
+  describe ".remove_character" do
+    let(:char_name) { "TestChar" }
+    let(:game_code) { "GS" }
+
+    before do
+      # Create account with character
+      described_class.add_or_update_account(data_dir, username, "password")
+      yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+      yaml_data = YAML.load_file(yaml_file)
+      yaml_data['accounts'][username.upcase]['characters'] = [
+        {
+          'char_name' => char_name.capitalize,
+          'game_code' => game_code,
+          'game_name' => 'GemStone',
+          'frontend'  => 'stormfront'
+        }
+      ]
+      File.write(yaml_file, YAML.dump(yaml_data))
+    end
+
+    context "when character exists" do
+      it "removes the character" do
+        # Test that the character is removed
+        expect(described_class.remove_character(data_dir, username, char_name, game_code)).to be true
+
+        # Verify character is removed
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        yaml_data = YAML.load_file(yaml_file)
+        expect(yaml_data['accounts'][username.upcase]['characters'].size).to eq(0)
+      end
+
+      it "removes only the entry with the matching custom launch command" do
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        yaml_data = YAML.load_file(yaml_file)
+        yaml_data['accounts'][username.upcase]['characters'] = [
+          {
+            'char_name'     => char_name.capitalize,
+            'game_code'     => game_code,
+            'game_name'     => 'GemStone',
+            'frontend'      => 'stormfront',
+            'custom_launch' => nil
+          },
+          {
+            'char_name'     => char_name.capitalize,
+            'game_code'     => game_code,
+            'game_name'     => 'GemStone',
+            'frontend'      => 'stormfront',
+            'custom_launch' => '/opt/warlock'
+          }
+        ]
+        File.write(yaml_file, YAML.dump(yaml_data))
+
+        expect(
+          described_class.remove_character(
+            data_dir, username, char_name, game_code, 'stormfront', '/opt/warlock'
+          )
+        ).to be true
+
+        remaining = YAML.load_file(yaml_file)['accounts'][username.upcase]['characters']
+        expect(remaining.map { |character| character['custom_launch'] }).to eq([nil])
+      end
+    end
+
+    context "when character doesn't exist" do
+      it "returns false" do
+        # Test that false is returned when character doesn't exist
+        expect(described_class.remove_character(data_dir, username, "NonexistentChar", game_code)).to be false
+      end
+    end
+
+    context "when account doesn't exist" do
+      it "returns false" do
+        # Test that false is returned when account doesn't exist
+        expect(described_class.remove_character(data_dir, "nonexistent", char_name, game_code)).to be false
+      end
+    end
+  end
+
+  describe ".get_all_accounts" do
+    context "when accounts exist" do
+      before do
+        # Create accounts with characters
+        described_class.add_or_update_account(data_dir, "user1", "pass1")
+        described_class.add_character(data_dir, "user1", {
+          char_name: "Char1",
+          game_code: "GS",
+          game_name: "GemStone",
+          frontend: "stormfront"
+        })
+
+        described_class.add_or_update_account(data_dir, "user2", "pass2")
+        described_class.add_character(data_dir, "user2", {
+          char_name: "Char2",
+          game_code: "DR",
+          game_name: "DragonRealms",
+          frontend: "wizard"
+        })
+      end
+
+      it "returns all accounts with their characters" do
+        # Test that all accounts and characters are returned
+        accounts = described_class.get_all_accounts(data_dir)
+
+        expect(accounts.keys).to contain_exactly("USER1", "USER2")
+        expect(accounts["USER1"].size).to eq(1)
+        expect(accounts["USER1"][0][:char_name]).to eq("Char1")
+        expect(accounts["USER2"].size).to eq(1)
+        expect(accounts["USER2"][0][:char_name]).to eq("Char2")
+      end
+    end
+
+    context "when no accounts exist" do
+      before do
+        # Create empty YAML file
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        File.write(yaml_file, YAML.dump({ 'accounts' => {} }))
+      end
+
+      it "returns empty hash" do
+        # Test that empty hash is returned when no accounts exist
+        expect(described_class.get_all_accounts(data_dir)).to eq({})
+      end
+    end
+
+    context "when file doesn't exist" do
+      it "returns empty hash" do
+        # Test that empty hash is returned when file doesn't exist
+        expect(described_class.get_all_accounts(data_dir)).to eq({})
+      end
+    end
+  end
+
+  describe ".get_accounts" do
+    context "when accounts exist" do
+      before do
+        # Create accounts
+        described_class.add_or_update_account(data_dir, "user1", "pass1")
+        described_class.add_or_update_account(data_dir, "user2", "pass2")
+      end
+
+      it "returns array of account usernames" do
+        # Test that array of account usernames is returned
+        accounts = described_class.get_accounts(data_dir)
+
+        expect(accounts).to contain_exactly("USER1", "USER2")
+      end
+    end
+
+    context "when no accounts exist" do
+      before do
+        # Create empty YAML file
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        File.write(yaml_file, YAML.dump({ 'accounts' => {} }))
+      end
+
+      it "returns empty array" do
+        # Test that empty array is returned when no accounts exist
+        expect(described_class.get_accounts(data_dir)).to eq([])
+      end
+    end
+
+    context "when file doesn't exist" do
+      it "returns empty array" do
+        # Test that empty array is returned when file doesn't exist
+        expect(described_class.get_accounts(data_dir)).to eq([])
+      end
+    end
+  end
+
+  describe ".get_characters" do
+    context "when account with characters exists" do
+      before do
+        # Create account with characters
+        described_class.add_or_update_account(data_dir, username, "password")
+        result1 = described_class.add_character(data_dir, username, {
+          char_name: "Char1",
+          game_code: "GS",
+          game_name: "GemStone",
+          frontend: "stormfront"
+        })
+        result2 = described_class.add_character(data_dir, username, {
+          char_name: "Char2",
+          game_code: "DR",
+          game_name: "DragonRealms",
+          frontend: "wizard"
+        })
+        # Ensure both characters were added successfully
+        expect(result1[:success]).to be true
+        expect(result2[:success]).to be true
+      end
+
+      it "returns array of character data hashes" do
+        # Test that array of character data hashes is returned
+        characters = described_class.get_characters(data_dir, username)
+
+        expect(characters.size).to eq(2)
+        expect(characters[0][:char_name]).to eq("Char1")
+        expect(characters[1][:char_name]).to eq("Char2")
+      end
+    end
+
+    context "when account exists but has no characters" do
+      before do
+        # Create account without characters
+        described_class.add_or_update_account(data_dir, username, "password")
+      end
+
+      it "returns empty array" do
+        # Test that empty array is returned when account has no characters
+        expect(described_class.get_characters(data_dir, username)).to eq([])
+      end
+    end
+
+    context "when account doesn't exist" do
+      before do
+        # Create YAML file without the account
+        yaml_file = Lich::Common::Authentication::EntryStore.yaml_file_path(data_dir)
+        File.write(yaml_file, YAML.dump({ 'accounts' => {} }))
+      end
+
+      it "returns empty array" do
+        # Test that empty array is returned when account doesn't exist
+        expect(described_class.get_characters(data_dir, username)).to eq([])
+      end
+    end
+
+    context "when file doesn't exist" do
+      it "returns empty array" do
+        # Test that empty array is returned when file doesn't exist
+        expect(described_class.get_characters(data_dir, username)).to eq([])
+      end
+    end
+  end
+
   # Issue #1521: every write and lookup must agree on one normalized char_name,
   # and lookups must also normalize the stored side, since entry.yaml can hold
   # names written by older code in a different form.
@@ -253,6 +541,29 @@ RSpec.describe Lich::Common::GUI::AccountManager do
 
       expect(result[:success]).to be true
       expect(stored_names).to eq(['Alpha Beta'])
+    end
+
+    it "removes the multi-word character add_or_update_account wrote" do
+      described_class.add_or_update_account(data_dir, username, password, [character])
+
+      expect(described_class.remove_character(data_dir, username, 'Alpha Beta', 'DR', 'wizard')).to be true
+      expect(stored_names).to eq([])
+    end
+
+    it "removes a record stored in the old String#capitalize form" do
+      described_class.add_or_update_account(data_dir, username, password)
+      store_raw('Alpha beta')
+
+      expect(described_class.remove_character(data_dir, username, 'Alpha beta', 'DR', 'wizard')).to be true
+      expect(stored_names).to eq([])
+    end
+
+    it "removes a hand-edited record whose casing no write path produces" do
+      described_class.add_or_update_account(data_dir, username, password)
+      store_raw('TestChar')
+
+      expect(described_class.remove_character(data_dir, username, 'TestChar', 'DR', 'wizard')).to be true
+      expect(stored_names).to eq([])
     end
 
     it "treats an old-form record as the same character when merging" do

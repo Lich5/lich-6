@@ -72,13 +72,11 @@ module Lich
         # clears the stash, so a stashed tag whose link has already passed is
         # never applied.
         #
-        # The default hook ignores its arguments and returns false for parser
-        # stashing; game-specific implementations provide the other outcomes.
-        # @param _id [String] the exist id; ignored by this default hook
-        # @param _flags [Hash{String => String}] other tag attributes; ignored here
+        # @param id [String] the exist id
+        # @param flags [Hash{String=>String}] the tag's other attributes
         # @param in_room_objs [Boolean] the tag arrived inside a room objs
         #   component
-        # @return [false] defer to parser stashing
+        # @return [Boolean, Symbol] true, :applied or false
         def apply_crtr_status(_id, _flags, in_room_objs: false) # rubocop:disable Lint/UnusedMethodArgument
           false
         end

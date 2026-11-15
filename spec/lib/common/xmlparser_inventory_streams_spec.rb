@@ -18,17 +18,10 @@ RSpec.describe 'Lich::Common::XMLParser inventory streams' do
 
   let(:gameobj) { Lich::Common::GameObj }
 
-  # Feeds stream fixtures into the isolated parser.
-  # @param lines [Array<String>] input stream lines or buffer selectors
-  # @return [void] parses the supplied XML fragment or fragments
   def feed(*lines)
     lines.each { |l| Ox.sax_parse(parser, l, convert_special: false, symbolize: false, skip: :skip_none) }
   end
 
-  # Builds a stow refresh with a container header and linked items.
-  # @param container_id [Object] container id fixture input
-  # @param items [Object] items fixture input
-  # @return [String] the container refresh stream
   def stow_refresh(container_id, *items)
     header = %(<inv id='stow'>In the <a exist="#{container_id}" noun="pack">pack</a>:</inv>)
     body = items.map { |id, noun, name| %(<inv id='stow'> a <a exist="#{id}" noun="#{noun}">#{name}</a></inv>) }.join
@@ -37,9 +30,6 @@ RSpec.describe 'Lich::Common::XMLParser inventory streams' do
 
   prompt = '<prompt time="1792032136">&gt;</prompt>'
 
-  # Builds a worn-inventory stream from the supplied item fixtures.
-  # @param items [Object] items fixture input
-  # @return [String] the worn-inventory stream
   def worn_list(*items)
     ["<clearStream id='inv' ifClosed=''/><pushStream id='inv'/>Your worn items are:"] +
       items.map { |id, noun, name| %(  a <a exist="#{id}" noun="#{noun}">#{name}</a>) } +
@@ -53,15 +43,10 @@ RSpec.describe 'Lich::Common::XMLParser inventory streams' do
     gameobj.clear_all_containers
   end
 
-  # Returns the committed contents for one container.
-  # @param id [String, Integer] server object ID
-  # @return [Array] the committed item list for the container
   def contents(id)
     (gameobj.containers[id] || []).map(&:noun)
   end
 
-  # Returns the committed worn inventory for assertions.
-  # @return [Array] the committed worn-inventory list
   def worn
     (gameobj.inv || []).map(&:noun)
   end

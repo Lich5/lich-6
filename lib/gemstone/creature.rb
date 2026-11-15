@@ -745,7 +745,6 @@ module Lich
       end
 
       # Get registry stats (the shared stats plus the bestiary template count).
-      # @return [Hash] registry statistics including bestiary template count
       def self.stats
         { instances: CreatureInstance.size, templates: CreatureTemplate.all.size }.merge(super)
       end

@@ -18,6 +18,15 @@ RSpec.describe 'Lich::Util::Update SCRIPT_REPOS registry' do
     expect(config[:default_tracked]).to include('alias.lic', 'go2.lic', 'map.lic')
   end
 
+  # logxml.lic was removed from elanthia-online/scripts (;log --xml replaced
+  # it). A default script missing from the repo is reported as "not in repo,
+  # not synced" on every ;lich5-update, so it must not stay a default.
+  it 'does not track logxml.lic, which left the scripts repo, by default' do
+    config = Lich::Util::Update::SCRIPT_REPOS['scripts']
+    expect(config[:default_tracked]).to include('log.lic')
+    expect(config[:default_tracked]).not_to include('logxml.lic')
+  end
+
   it 'has frozen configs' do
     Lich::Util::Update::SCRIPT_REPOS.each_value do |config|
       expect(config).to be_frozen
@@ -181,6 +190,34 @@ RSpec.describe 'Lich::Util::Update.request while a revert is running' do
 
       expect(release_installer).to have_received(:perform_update)
       expect_revert_refused
+    end
+  end
+
+  # The archive downloads follow GitHub's redirects, so they use open-uri
+  # rather than GitHubClient, but with its timeouts instead of Net::HTTP's
+  # 60-second defaults.
+  describe 'archive downloads' do
+    let(:timeouts) do
+      { open_timeout: Lich::Util::Update::GitHubClient::OPEN_TIMEOUT,
+        read_timeout: Lich::Util::Update::GitHubClient::READ_TIMEOUT }
+    end
+
+    before do
+      stub_const('TEMP_DIR', File.join(root, 'tmp')).tap { FileUtils.mkdir_p(TEMP_DIR) }
+      allow(OpenURI).to receive(:open_uri).and_raise(SocketError, 'offline')
+    end
+
+    it '--update passes the GitHubClient timeouts to open-uri' do
+      expect { Lich::Util::Update.request('--update') }.to raise_error(SocketError)
+
+      expect(OpenURI).to have_received(:open_uri).with(URI('https://example.invalid/lich5.tar.gz'), timeouts).once
+    end
+
+    it '--branch passes the GitHubClient timeouts to open-uri' do
+      Lich::Util::Update.request('--branch=main')
+
+      expect(OpenURI).to have_received(:open_uri)
+        .with(URI("https://github.com/#{Lich::Util::Update::GITHUB_REPO}/archive/refs/heads/main.tar.gz"), timeouts).once
     end
   end
 end

@@ -16,9 +16,6 @@ require 'common/xmlparser'
 RSpec.describe 'Lich::Common::XMLParser stream features' do
   subject(:parser) { Lich::Common::XMLParser.new }
 
-  # Feeds stream fixtures into the isolated parser.
-  # @param fragments [Object] fragments fixture input
-  # @return [void] parses the supplied XML fragment or fragments
   def feed(*fragments)
     fragments.each do |fragment|
       Ox.sax_parse(parser, fragment, convert_special: false, symbolize: false, skip: :skip_none)

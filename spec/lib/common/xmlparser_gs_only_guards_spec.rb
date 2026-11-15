@@ -13,9 +13,6 @@ require 'common/xmlparser'
 RSpec.describe 'Lich::Common::XMLParser GemStone-only module guards' do
   subject(:parser) { Lich::Common::XMLParser.new }
 
-  # Feeds stream fixtures into the isolated parser.
-  # @param fragment [Object] fragment fixture input
-  # @return [void] parses the supplied XML fragment or fragments
   def feed(fragment)
     Ox.sax_parse(parser, fragment, convert_special: false, symbolize: false, skip: :skip_none)
   end
@@ -43,6 +40,18 @@ RSpec.describe 'Lich::Common::XMLParser GemStone-only module guards' do
     it 'records an effects progress bar without ActiveSpell loaded' do
       feed(%(<dialogData id='Buffs'><progressBar id='115' value='74' text="Fasthr's Reward" left='22%' top='0' width='76%' height='15' time='00:43:12'/></dialogData>))
       expect(parser.dialogs['Buffs']).not_to be_empty
+    end
+
+    it 'keeps each bar id => text, so two bars with one text both stay named' do
+      feed(%(<dialogData id='Buffs'><progressBar id='3011' value='3' text="Symbol of Protection" left='22%' top='16' width='76%' height='15' time='00:08:09'/><progressBar id='555001' value='50' text="Sword Hymn" left='22%' top='32' width='76%' height='15' time='00:07:30'/><progressBar id='555002' value='50' text="Sword Hymn" left='22%' top='48' width='76%' height='15' time='00:07:30'/></dialogData>))
+      expect(parser.dialog_names['Buffs']).to eq({ 3011 => 'Symbol of Protection', 555_001 => 'Sword Hymn', 555_002 => 'Sword Hymn' })
+      expect(parser.dialogs['Buffs'].keys).to contain_exactly('Symbol of Protection', 3011, 'Sword Hymn', 555_001, 555_002)
+    end
+
+    it 'clears the bar names along with the dialog' do
+      feed(%(<dialogData id='Buffs'><progressBar id='3011' value='3' text="Symbol of Protection" left='22%' top='16' width='76%' height='15' time='00:08:09'/></dialogData>))
+      feed(%(<dialogData id='Buffs' clear='t'></dialogData>))
+      expect(parser.dialog_names['Buffs']).to eq({})
     end
 
     it 'reads the next-level bar without Gift loaded' do

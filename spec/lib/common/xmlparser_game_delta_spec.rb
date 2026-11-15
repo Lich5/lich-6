@@ -165,9 +165,6 @@ RSpec.describe Lich::Common::XMLParserDelta do
   describe 'XMLParser integration' do
     subject(:parser) { Lich::Common::XMLParser.new }
 
-    # Feeds stream fixtures into the isolated parser.
-    # @param fragment [Object] fragment fixture input
-    # @return [void] parses the supplied XML fragment or fragments
     def feed(fragment)
       Ox.sax_parse(parser, fragment, convert_special: false, symbolize: false, skip: :skip_none)
     end

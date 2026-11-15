@@ -20,9 +20,6 @@ module StreamReplay
 
     module_function
 
-    # Flattens a full snapshot into comparison paths.
-    # @param snapshot [Hash] full per-prompt snapshot
-    # @return [Hash<String, Object>] stable field paths with volatile prompt data removed
     def flatten(snapshot)
       snapshot.each_with_object({}) do |(key, value), out|
         next if VOLATILE.include?(key)
@@ -48,25 +45,15 @@ module StreamReplay
       end
     end
 
-    # Writes delta records as newline-delimited JSON.
-    # @param path [String] fixture or snapshot file path
-    # @param deltas [Array<Hash>] golden delta records
-    # @return [Integer] bytes written to the golden file
     def write(path, deltas)
       File.write(path, deltas.map { |d| JSON.generate(d) }.join("\n") + "\n")
     end
 
-    # Reads newline-delimited golden records.
-    # @param path [String] fixture or snapshot file path
-    # @return [Array<Hash>] parsed nonempty golden records
     def read(path)
       File.readlines(path, chomp: true).reject(&:empty?).map { |l| JSON.parse(l) }
     end
 
     # @return [Array<String>] human-readable mismatches, at most +limit+
-    # @param expected [Array<Hash>] expected golden delta records
-    # @param actual [Array<Hash>] observed golden delta records
-    # @param limit [Integer] maximum mismatch messages
     def diff(expected, actual, limit: 20)
       exp = expected.to_h { |d| [d['prompt'], d['changes']] }
       act = actual.to_h { |d| [d['prompt'], d['changes']] }

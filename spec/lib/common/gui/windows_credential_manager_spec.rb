@@ -380,13 +380,14 @@ RSpec.describe Lich::Common::GUI::WindowsCredentialManager do
         allow(described_class).to receive(:available?).and_return(true)
         allow(Lich).to receive(:log)
 
-        # Escapes retain Cyrillic credential fields for UTF-8 to UTF-16 conversion.
         # Store credential with UTF-8 string to test encoding
+        # rubocop:disable Custom/AsciiOnlySource -- Intentional Unicode strings exercise UTF-16LE boundary conversion.
         result = described_class.store_credential(
-          "\u{442}\u{435}\u{441}\u{442}.service", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
-          "\u{43f}\u{43e}\u{43b}\u{44c}\u{437}\u{43e}\u{432}\u{430}\u{442}\u{435}\u{43b}\u{44c}", # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
-          "\u{43f}\u{430}\u{440}\u{43e}\u{43b}\u{44c}" # rubocop:disable Custom/AsciiOnlySource -- Functional Unicode encoding fixture.
+          "\u0442\u0435\u0441\u0442.service",
+          "\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c",
+          "\u043f\u0430\u0440\u043e\u043b\u044c"
         )
+        # rubocop:enable Custom/AsciiOnlySource
 
         expect([true, false]).to include(result)
       end

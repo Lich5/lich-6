@@ -41,7 +41,6 @@ module StreamReplay
     #   starts with (e.g. a ;display toggle), seeded into its lich.db3
     # @param client_lines [Array<String>] lines the client sends Lich after
     #   its handshake, before the stream starts (e.g. SET_FRONTEND_CAPS)
-    # @return [void] initializes isolated fixture extraction or replay state
     def initialize(fixture, frontend: nil, settings: {}, client_lines: [])
       @fixture = fixture
       @frontend = frontend
@@ -98,8 +97,6 @@ module StreamReplay
 
     # Lich creates its tables only if they are missing, so a row seeded here
     # is what the child reads, as a setting a player had stored.
-    # @param db_path [String] isolated settings database path
-    # @return [void] creates the settings table and writes configured rows
     def seed_settings(db_path)
       require 'sqlite3'
       db = SQLite3::Database.new(db_path)
@@ -109,17 +106,10 @@ module StreamReplay
       db&.close
     end
 
-    # Builds the replay child environment without changing its Ruby environment.
-    # @param snapshot_path [String] path to the child snapshot file
-    # @return [Hash<String, String>] the snapshot path inherited by the child
     def child_env(snapshot_path)
       { 'LICH_REPLAY_SNAPSHOTS' => snapshot_path }
     end
 
-    # Builds a replay launch using the parent Ruby and installed gem environment.
-    # @param tmp [String] isolated replay root
-    # @param port [Integer] loopback replay server port
-    # @return [Array<String>] arguments invoking the current Ruby with the offline preload
     def child_args(tmp, port)
       args = [
         RbConfig.ruby, '-r', OFFLINE_PRELOAD, 'lich.rbw',
@@ -133,10 +123,6 @@ module StreamReplay
       args
     end
 
-    # Feeds the fixture through the loopback connection at snapshot boundaries.
-    # @param conn [IO] loopback replay connection
-    # @param snapshot_path [String] path to the child snapshot file
-    # @return [void] writes the fixture and waits for prompt snapshots
     def feed(conn, snapshot_path)
       @snapshot_bytes = 0
       @snapshot_lines = 0
@@ -169,8 +155,6 @@ module StreamReplay
 
     # The ready marker (line 1) carries the offline preload's self-check. A
     # replay that may reach the network is refused rather than allowed to pass.
-    # @param snapshot_path [String] path to the child snapshot file
-    # @return [void] returns only when every expected offline stub is active
     def verify_offline!(snapshot_path)
       marker = JSON.parse(File.foreach(snapshot_path).first)
       problems = marker.fetch('offline_problems', ['ready marker has no offline_problems'])
@@ -179,10 +163,6 @@ module StreamReplay
       raise "stream replay: the child is not offline (spec/support/stream_replay/offline_update.rb): #{problems.join('; ')}"
     end
 
-    # Writes one fixture line to the replay connection.
-    # @param conn [IO] loopback replay connection
-    # @param line [String] stream or handshake line
-    # @return [void] writes and flushes one CRLF-terminated stream line
     def write_line(conn, line)
       conn.write("#{line.chomp}\r\n")
       conn.flush
@@ -190,8 +170,6 @@ module StreamReplay
 
     # Polled every few ms, so it reads only what the probe appended since the
     # last call instead of re-reading the whole file. Counts complete lines.
-    # @param path [String] fixture or snapshot file path
-    # @return [Integer] complete snapshots excluding the ready marker
     def snapshot_count(path)
       return 0 unless File.exist?(path)
 
@@ -204,11 +182,6 @@ module StreamReplay
       @snapshot_lines - 1 # first line is the ready marker
     end
 
-    # Waits for a replay condition until its monotonic deadline.
-    # @param timeout [Numeric] maximum wait in seconds
-    # @param what [String] description of the awaited replay condition
-    # @param raise_on_timeout [Boolean] whether to raise instead of returning false at the deadline
-    # @return [Boolean] true when the block succeeds, false on an allowed timeout
     def wait_until(timeout, what, raise_on_timeout: true)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
       until yield
@@ -222,9 +195,6 @@ module StreamReplay
       true
     end
 
-    # Reads the completed replay snapshots.
-    # @param path [String] fixture or snapshot file path
-    # @return [Array<Hash>] captured snapshots excluding ready and warmup markers
     def read_snapshots(path)
       return [] unless File.exist?(path)
 

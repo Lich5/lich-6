@@ -23,8 +23,6 @@ module Lich
       # RbConfig keys for Ruby's own library directories.
       RUBY_LIB_DIR_KEYS = %w[rubylibdir rubyarchdir sitelibdir sitearchdir vendorlibdir vendorarchdir].freeze
 
-      # Clears RubyGems caches before resolving reload candidates.
-      # @return [void] invalidates RubyGems lookup caches
       def self.clear_cache
         Gem.clear_paths
       end
@@ -100,9 +98,6 @@ module Lich
         "<b>[lich.hmr] skipped %d file(s) that belong to Ruby or an installed gem: %s</b>" % [skipped.size, names]
       end
 
-      # Reloads matching Lich files while skipping Ruby and installed-gem files.
-      # @param pattern [Regexp] pattern selecting loaded Lich files
-      # @return [void] reports reload outcomes and isolated load errors
       def self.reload(pattern)
         self.clear_cache
         matched = self.loaded.grep(pattern)

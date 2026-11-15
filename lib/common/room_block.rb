@@ -128,10 +128,6 @@ module Lich
         emptied ? out : server_string
       end
 
-      # Formats a rich room body as legacy room lines.
-      # @param body [String] contents of the game's rich <room> element
-      # @param compass [String, nil] optional legacy compass element
-      # @return [String] the legacy room view, optionally followed by its compass
       def legacy_lines(body, compass: nil)
         name = part(body, 'name')
         exists = part(body, 'exists')
@@ -155,20 +151,11 @@ module Lich
       end
       private_class_method :legacy_lines
 
-      # Extracts direction labels from a room body.
-      # @param body [String] rich room contents containing the game's <exits> element
-      # @return [Array<String>] exit labels in the order sent by the game
       def exit_names(body)
         part(body, 'exits').scan(%r{<d(?:\s[^>]*)?>(.*?)</d>}m).flatten
       end
       private_class_method :exit_names
 
-      # Matches a room block by UID, or by exits when no UID exists.
-      # @param body [String] rich room contents containing the name and optional UID
-      # @param exits [Array<String>] room exit names
-      # @param room_id [Integer] current room UID
-      # @param room_exits [Array<String>] current room exit names
-      # @return [Boolean] whether the block identifies the current room
       def current_room?(body, exits, room_id, room_exits)
         uid = part(body, 'name')[NAME_UID, 1]
         uid ? uid.to_i == room_id : exits == room_exits
@@ -188,10 +175,6 @@ module Lich
         "<compass>#{dirs.join}</compass>"
       end
 
-      # Extracts one named child from a rich room block.
-      # @param body [String] rich room contents to search for the named child element
-      # @param tag [String] child element name
-      # @return [String] the element body, or an empty string when absent
       def part(body, tag)
         body[%r{<#{tag}>(.*?)</#{tag}>}m, 1].to_s
       end

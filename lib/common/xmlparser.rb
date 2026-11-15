@@ -18,7 +18,7 @@ module Lich
                   :roundtime_end, :cast_roundtime_end, :last_pulse, :level, :next_level_value,
                   :next_level_text, :society_task, :stow_container_id, :name, :game, :in_stream,
                   :player_id, :prompt, :current_target_ids, :current_target_id, :room_window_disabled,
-                  :dialogs, :room_id, :previous_nav_rm, :nav_count, :show_room_id, :concentration, :max_concentration,
+                  :dialogs, :dialog_names, :room_id, :previous_nav_rm, :nav_count, :show_room_id, :concentration, :max_concentration,
                   :arrival_pcs, :room_player_hidden, :field_exp, :max_field_exp,
                   :ascension_exp, :exp, :until_next, :fashlonae, :lumnis, :rpa,
                   :room_climate, :room_terrain, :room_weather, :room_bonfire,
@@ -102,8 +102,6 @@ module Lich
       # Saga <room><name>: " (230008)", or " (**)" for a room without one.
       ROOM_NUMBER_SUFFIX = /\s*\((?:\d+|\*\*)\)\s*\z/.freeze
 
-      # Initializes the instance and its stream state.
-      # @return [void] initializes isolated instance state
       def initialize
         @buffer = String.new
         # @unescape = { 'lt' => '<', 'gt' => '>', 'quot' => '"', 'apos' => "'", 'amp' => '&' }
@@ -239,6 +237,9 @@ module Lich
 
         # psm 3.0 dialogdata updates
         @dialogs = {}
+        # each dialog's progress bar id => its text, kept beside @dialogs so a
+        # name shared by two bars (two Sword Hymns) is not lost to one Hash key
+        @dialog_names = {}
 
         # real id updates
         # Default 0 (not nil) so a read before the first <nav> tag is a valid "no UID" value
@@ -313,8 +314,6 @@ module Lich
         z
       end
 
-      # Resets parser state after a stream discontinuity.
-      # @return [void] clears transient parser state without forgetting stream capabilities
       def reset
         @active_tags = Array.new
         @active_ids = Array.new
@@ -390,6 +389,7 @@ module Lich
         name = attributes["text"]
         value = attributes["time"]
         return unless name && value
+        (@dialog_names[kind] ||= {})[id] = name
         # set the expiry for a decade for infinite duration effects
         return @dialogs[kind][name] = @dialogs[kind][id] = Time.now + DECADE if value.downcase.eql?("indefinite")
 
@@ -415,10 +415,6 @@ module Lich
       # subject id (trimmed; the stream sometimes pads it), or nil when the
       # subject has no link (legacy lines, self lines).
       # Returns a Hash, or nil for the header / unparseable lines.
-      # @param text [String] text to parse or append
-      # @param ids [Array<String>] ordered subject and target IDs
-      # @param link_nouns [Hash<String, String>] server nouns indexed by linked ID
-      # @return [Hash, nil] a structured combat entry, or nil for non-entry lines
       def parse_assess_line(text, ids, link_nouns = {})
         text = text.to_s.strip
         return nil if text.empty?
@@ -558,9 +554,6 @@ module Lich
 
       # Records the dialect capabilities an element reveals (see #stream_feature?).
       # Called for every element, so it only compares the name first.
-      # @param name [String] XML element name
-      # @param attributes [Hash<String, String>] element attributes
-      # @return [void] records capabilities revealed by the incoming tag
       def observe_stream_feature(name, attributes)
         case name
         when 'a'
@@ -596,8 +589,6 @@ module Lich
       # id was not yet known; a refresh it opened under another container is
       # abandoned (that container keeps its published contents) and reopened
       # under the named one.
-      # @param exist [String, nil] linked container ID
-      # @return [void] updates container routing and any pending refresh
       def learn_stow_container(exist)
         return if exist.nil?
         return unless @active_tags.include?('inv') && @active_ids.include?('stow')
@@ -620,7 +611,6 @@ module Lich
       # Opens the worn refresh a DR worn list deferred at its pushStream (see
       # @inv_stream_pending), at the list's first linked item. Every item of the
       # list follows, so the refresh is still complete.
-      # @return [void] starts worn-inventory staging when a linked item arrives
       def open_pending_inv_refresh
         return unless @inv_stream_pending && @current_stream == 'inv'
 
@@ -632,11 +622,6 @@ module Lich
       end
       private :open_pending_inv_refresh
 
-      # Records an Ox SAX diagnostic for later repair or desync checks.
-      # @param message [String] diagnostic text
-      # @param line [Integer] line of the parser diagnostic
-      # @param column [Integer] column of the parser diagnostic
-      # @return [void] appends the parse diagnostic for the current fragment
       def error(message, line, column)
         @sax_parse_errors << "#{message} (line #{line}, column #{column})"
       end
@@ -676,13 +661,9 @@ module Lich
         candidate <= @server_time_offset
       end
 
-      # Processes an opening stream element and its attributes.
-      # @param name [String] XML element name
-      # @param attributes [Hash<String, String>] element attributes
-      # @return [void] updates parser state for the incoming element
       def tag_start(name, attributes)
-        # The Ox SAX bridge calls this from attrs_done after collecting the
-        # opening element's attributes (see start_element and attr above).
+        # This is called once per element by REXML in games.rb
+        # https://ruby-doc.org/stdlib-2.6.1/libdoc/rexml/rdoc/REXML/StreamListener.html
         begin
           @active_tags.push(name)
           @active_ids.push(attributes['id'].to_s)
@@ -823,6 +804,7 @@ module Lich
           if name == 'dialogData' and attributes['clear'] == 't' and PSM_3_DIALOG_IDS.include?(attributes["id"])
             @dialogs[attributes["id"]] ||= {}
             @dialogs[attributes["id"]].clear
+            (@dialog_names[attributes["id"]] ||= {}).clear
             # detect a clear board request for effects, and send to activespell
             # (GemStone-only module; the shared parser must not raise without it)
             ActiveSpell.request_update if defined?(ActiveSpell)
@@ -856,11 +838,15 @@ module Lich
               GameObj.begin_reserve if attributes['id'].to_s == 'reserve'
             elsif attributes['id'].to_s == 'inv'
               # The linked worn-items list is a complete refresh, as on GemStone.
-              # An open INV LIST scrape already owns the worn staging, so none
-              # opens here then. The legacy list is plain text (no GameObj
-              # entries). Until the stream's first link has been seen (a login's
-              # first list arrives before it) the dialect is unknown, so the
-              # refresh waits for the list's first link; a legacy list has none.
+              # DRParser's INV LIST and INV SEARCH scrapes leave the worn list to
+              # it (they write container contents only); the inventoryManager
+              # feed (Lich::Common::Inventory#register_with_gameobj) also writes
+              # the worn list, with its own begin_inv/commit_inv. If another
+              # writer holds the worn staging, none opens here. The legacy list
+              # is plain text (no GameObj entries). Until the stream's first link
+              # has been seen (a login's first list arrives before it) the
+              # dialect is unknown, so the refresh waits for the list's first
+              # link; a legacy list has none.
               @inv_stream_pending = false
               unless GameObj.inv_refresh_open?
                 if stream_feature?(:links)
@@ -1290,9 +1276,6 @@ module Lich
         end
       end
 
-      # Processes stream character data.
-      # @param text_string [String] decoded stream character data
-      # @return [void] updates parser state for character data
       def text(text_string)
         # Called by Ox once per text node. Decode the standard XML entities (Ox
         # runs with convert_special: false; see Lich::Common::XmlEntities).

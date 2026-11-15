@@ -226,9 +226,9 @@ module Lich
 
   def Lich.class_variable_get(*_a); nil; end
 
-  def Lich.class_eval(*_a);         nil; end
+  def Lich.class_eval(*_a); nil; end
 
-  def Lich.module_eval(*_a);        nil; end
+  def Lich.module_eval(*_a); nil; end
 
   def Lich.log(msg)
     $stderr.puts "#{Time.now.strftime("%Y-%m-%d %H:%M:%S")}: #{msg}"
@@ -248,11 +248,6 @@ module Lich
     end
   end
 
-  # Uses the native Windows message box; other hosts emit a diagnostic without a GUI prompt.
-  # When stderr is the debug log, a terminal notice points to it. Non-Windows output
-  # does not supply consent or emulate Yes/No responses.
-  # @param args [Hash] message, optional title, buttons, and icon
-  # @return [Symbol, nil] Windows response, or nil for diagnostic-only/failure paths
   def Lich.msgbox(args)
     args = { message: args.to_s } unless args.is_a?(Hash)
     if defined?(Win32)
@@ -285,19 +280,45 @@ module Lich
       else
         return nil
       end
-    else
-      $stderr.puts(args[:message])
-      if !$stderr.equal?(STDERR) && $stderr.respond_to?(:path)
-        # init.rb redirects stderr to the debug log; main.rb can redirect
-        # $stdout to the game client. STDOUT retains the terminal stream.
-        begin
-          STDOUT.puts "Lich encountered an error. See the debug log: #{$stderr.path}"
-          STDOUT.flush
-        rescue IOError, SystemCallError
-          # A closed terminal or broken output pipe must not mask the logged error.
-          nil
-        end
+    elsif defined?(Gtk)
+      if args[:buttons] == :ok_cancel
+        buttons = :ok_cancel
+      elsif args[:buttons] == :yes_no
+        buttons = :yes_no
+      else
+        buttons = :ok
       end
+      if args[:icon] == :error
+        type = :error
+      elsif args[:icon] == :question
+        type = :question
+      elsif args[:icon] == :warning
+        type = :warning
+      else
+        type = :info
+      end
+      dialog = Gtk::MessageDialog.new(parent: nil, flags: :modal, type: type, buttons: buttons, message: args[:message])
+      args[:title] ||= "Lich v#{LICH_VERSION}"
+      dialog.title = args[:title]
+      begin
+        # GTK3 returns the response; it does not yield to a block passed to run.
+        response = dialog.run
+      ensure
+        dialog.destroy
+      end
+      if response == Gtk::ResponseType::OK
+        return :ok
+      elsif response == Gtk::ResponseType::CANCEL
+        return :cancel
+      elsif response == Gtk::ResponseType::YES
+        return :yes
+      elsif response == Gtk::ResponseType::NO
+        return :no
+      else
+        return nil
+      end
+    elsif $stdout.isatty
+      $stdout.puts(args[:message])
       return nil
     end
   end
@@ -924,7 +945,6 @@ module Lich
 
   # Sets and persists the room description filter toggle.
   # @param val [Boolean, String] truthy values are any of on/true/yes
-  # @return [void] persists whether room descriptions follow the game flag
   def Lich.follow_description_flag=(val)
     write_display_setting(:follow_description_flag, val.to_s.match?(/on|true|yes/))
   end
@@ -954,7 +974,6 @@ module Lich
 
   # Sets and persists the handshake kill switch; takes effect at the next login.
   # @param val [Boolean, String] true, or any of on/true/yes
-  # @return [void] persists the frontend handshake preference
   def Lich.keep_fe_string=(val)
     @@keep_fe_string = val.to_s.strip.match?(/\A(?:on|true|yes)\z/i)
     begin
@@ -965,8 +984,6 @@ module Lich
     end
   end
 
-  # Reads the recorded core-update version.
-  # @return [String, nil] the last recorded core-update version
   def Lich.core_updated_with_lich_version
     begin
       val = Lich.db.get_first_value("SELECT value FROM lich_settings WHERE name='core_updated_with_lich_version';")
@@ -1069,6 +1086,29 @@ module Lich
   #   always return their argument, not the method body's result
   def Lich.display_room_links=(val)
     write_display_setting(:display_room_links, val.to_s.match?(/on|true|yes/))
+  end
+
+  # Whether front ends that render stream windows (the streams capability)
+  # get the Lich Scripts window: the running scripts with pause/unpause and
+  # kill links, drawn by Lich (";display scriptwindow"). Off by default. A
+  # client that declared script_list gets the running-script data whatever
+  # this says (see Lich::Common::ScriptListFeed). Persisted in the
+  # lich_settings table.
+  # @return [Boolean, nil] nil until a game is identified and no value is stored
+  def Lich.display_script_window
+    read_display_setting(:display_script_window) do |val|
+      val = false if val.nil? && XMLData.game != ""
+      val.nil? ? nil : val.to_s.match?(/on|true|yes/)
+    end
+  end
+
+  # Sets and persists the Lich Scripts window toggle, then draws the window
+  # for the clients that now get it, or clears it for those that no longer do.
+  # @param val [Boolean, String] truthy values are any of on/true/yes
+  def Lich.display_script_window=(val)
+    enabled = val.to_s.match?(/on|true|yes/)
+    write_display_setting(:display_script_window, enabled)
+    Lich::Common::ScriptListFeed.window_setting_changed(enabled) if defined?(Lich::Common::ScriptListFeed)
   end
 
   # Whether the Lich-injected room lines (Room Number, Room Exits, StringProcs)

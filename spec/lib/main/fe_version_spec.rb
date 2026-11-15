@@ -145,9 +145,6 @@ RSpec.describe '--fe-version' do
       $_CLIENTBUFFER_ = saved_clientbuffer
     end
 
-    # Runs the extracted launch block with controlled arguments.
-    # @param argv_options [Hash] launch options to update
-    # @return [Object] the launch block result in the isolated harness
     def run(argv_options)
       harness_class.new(argv_options).run_handshake
     end
@@ -167,7 +164,7 @@ RSpec.describe '--fe-version' do
     it 'sends the default client string byte-for-byte when --fe-version is absent' do
       $frontend = 'wrayth'
       run({})
-      expected = '/FE:WRAYTH /VERSION:saga-0.10.4 /P:SAGA /XML'
+      expected = '/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML'
       expect(Game.sent[1].bytes).to eq(expected.bytes)
       expect($_CLIENTBUFFER_.first.bytes).to eq(expected.bytes)
     end
@@ -178,10 +175,10 @@ RSpec.describe '--fe-version' do
       expect(Game.sent[1]).to eq('/FE:WRAYTH /VERSION:saga-0.10.2 /P:SAGA /XML')
     end
 
-    it 'identifies Saga as saga-unknown when --fe-version is absent' do
+    it 'identifies Saga with the default version when --fe-version is absent' do
       $frontend = 'saga'
       run({})
-      expect(Game.sent[1]).to eq('/FE:WRAYTH /VERSION:saga-unknown /P:SAGA /XML')
+      expect(Game.sent[1]).to eq('/FE:WRAYTH /VERSION:1.0.1.28 /P:SAGA /XML')
     end
 
     it 'logs the client string it sends' do

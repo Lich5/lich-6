@@ -1,19 +1,11 @@
-# Lich Test Suite
+# lich-5 Test Suite
 
-This directory contains RSpec tests and JavaScript renderer tests for this
-lich-6 development tree. The [WebUI review record](../docs/webui-review-readiness.md)
-separates implementation, acceptance evidence and outstanding platform checks.
-
-The source-refresh acceptance spec covers pinned AbyssX and compass_and_wings setup
-flows. Builder specs retain both historical and refreshed eloot source failures,
-with explicitly repaired positive candidates; Bigshot's newer source has the same
-Setup bytes. See the [fixture record](fixtures/webui/README.txt) for provenance,
-external test boundaries and the compass startup-persistence distinction.
+This directory contains RSpec tests for the lich-5 codebase.
 
 ## Quick Start
 
 ```bash
-# Run Ruby tests
+# Run all tests
 rspec
 
 # Run specific file
@@ -46,248 +38,6 @@ parallel_rspec -n 4 spec
 - **Slow examples:** CI warns on any example over 2s in the spec files a PR
   changes (the full parallel run only flags examples over 60s). Speed it up, or
   tag it `:slow` if the time is unavoidable.
-
-### Weak ownership checks
-
-The WebUI adapter ownership specs cover abandoned graph collection alongside
-retained detached widget reuse, callbacks, viewer drafts and focus reattachment.
-Construct abandoned graphs on a short-lived worker and join it before requesting
-GC on the example thread, returning only weak observation tokens. Initialize
-memoized test dependencies before starting the worker; `Thread#value` propagates
-worker failures. Returning from a helper on the collecting thread alone does not
-eliminate conservative stack roots on every platform.
-
-Keep pruning-boundary assertions independent of GC timing by supplying a
-controlled dead reference, while retaining real collection/churn integration
-checks and live callback checks. A metadata bound applies after earlier records
-are actually collected; it is not a bound on live records awaiting collection.
-Do not replace these checks with relaxed thresholds, sleeps or production GC.
-When changing the harness, confirm that deliberate strong-retention and
-disabled-pruning mutations still fail, and validate with parallel workers.
-
-## WebUI JavaScript Tests
-
-From the repository root, install the locked test dependencies and run every
-`spec/webui/webui_*_test.cjs` suite:
-
-```bash
-npm ci --prefix spec/webui
-npm test --prefix spec/webui
-```
-
-Use Node 22.22.2+, 24.15.0+, or 26+ as specified in
-`spec/webui/package.json`. The lockfile pins the dependency tree; rerun `npm ci`
-after it changes. Dependencies are local to the ignored `spec/webui/node_modules`
-directory. No global installation or `NODE_PATH` is needed. Node and jsdom are
-test tools, not requirements for running Lich or converted scripts.
-
-The command runs both the lightweight renderer fixtures and the jsdom DOM tests,
-and exits unsuccessfully if a dependency cannot load or an assertion fails.
-RSpec does not invoke these suites. Browser layout requires actual browser
-checks; GTK visual parity requires comparison with the original GTK interface;
-OS-window geometry, restoration and cleanup require actual OS-window checks.
-The JavaScript suites alone do not establish any of those behaviors.
-The separate `WebUI Tests` GitHub Actions workflow runs these suites on Ubuntu 26.04.
-It runs on pushes to `main` and manual dispatch, and on pull requests that change
-WebUI-relevant paths (listed in the workflow); other pull requests skip it.
-RSpec runs separately in its own workflow; the renderer job does not replace it.
-
-## WebUI Browser Tests
-
-Progress-provider lifecycle checks live in
-`spec/lib/common/script_scope_style_spec.rb`, with the preserved spellson case in
-`script_scope_widgets_spec.rb`. They cover source-derived staminabar2 declarations
-(provenance recorded in the spec), positional loading, live reload/removal,
-priority, authored-value restoration, owner isolation and cleanup. These are
-isolated style/control checks, not whole-script or gameplay acceptance. PR 2's
-first slice adds synthetic cases for unloaded/recognized/omitted states,
-recognized-to-omitted resets, lower-priority recognized providers, re-recognition,
-inert URL/import strings, bounded-input refusals and per-owner attributed notices.
-`script_scope_decoration_spec.rb` adds synthetic checks for shared widget contexts,
-class snapshots and bounds, screen-provider bookkeeping, owner/lifetime rejection,
-cleanup and consolidated CSS versus geometry notices. `script_scope_css_corpus_spec.rb`
-tests all 71 retained payloads and executes reviewed CSS-only excerpts from eleven
-scripts. `fixtures/webui/css-decoration.json` records source hashes, lines, call
-shapes, substitutions and measurements. See the [acceptance report](../docs/webui-css-decoration-acceptance.md)
-for reproduction and per-script limitations; no whole game scripts run. The adapter specs verify
-optional-property reset validation and stable rendered
-identity; the compact renderer suite verifies that reset colors/heights disappear.
-The independent `shim-progress-style` Chrome case in the existing widget suite
-checks attach-before-load, callback-driven reload/omission/re-recognition/removal,
-stable component identity, fraction preservation, unchanged sibling typography,
-no request to the omitted CSS URL and final window closure. Its label context and
-unmatched screen rules remain inert, and local class names do not appear in the DOM.
-`script_scope_manatimer_spec.rb` checks progress text/fraction, overlay alignment,
-pass-through lifetime, window decoration requests and unchanged source blocks.
-Its `shim-manatimer` Chrome scenario checks centered text, fraction updates and
-right-click routing through the layer; toggling pass-through off blocks the bar.
-It runs in the existing Chrome CI job, including unchanged complete setup through
-the Display chain with saved-position fixture data. `script_scope_geometry_cursor_spec.rb`
-covers owner/teardown refusals and pinned gemstonev/highlight-manager excerpts;
-its `shim-geometry-cursors` browser scenario checks inherited cursor modes/reset
-and submitting-viewer monitor measurements. `monitor_geometry_spec.rb` checks
-signed selection, explicit fallbacks, platform-provider parsing and viewer isolation.
-Platform-provider fixtures do not certify native Windows/Linux behavior.
-`scheduler_spec.rb` and `script_scope_scheduling_spec.rb` cover bounded scheduling,
-owner/viewer attribution, repeat/stop results, cancellation races, backpressure,
-teardown and retained host handles. `script_scope_scheduling_acceptance_spec.rb`
-uses the pinned `scheduling.json` source blocks: repository's actual ten-second
-timer and sail2's original startup race. Positive sail2 setup/save uses an explicit
-test-only readiness sentinel; inherited sensitivity and the original hide/destroy
-Close callback are positive acceptance cases. Four Chrome scenarios run in the
-existing browser CI job, including a separate retained-input hide/timed-show case.
-Native WebKit verifies the real owned window disappears and returns. Gemstonev
-difficulty-window acceptance uses the unchanged source and captures its command
-and main-window handoff; it does not certify the main game window.
-No script download or settings-file write occurs; commands and saves are captured.
-`browser_integration_spec.rb` adds `native-progress-sizing`: plain and colored
-tracks at 18/24/36px, color removal without geometry changes, visible labels,
-the 18px default and indeterminate/reduced-motion behavior. It uses the same
-core renderer as shim controls and runs in the existing browser CI selection.
-
-HeaderBar coverage in `script_scope_header_bar_spec.rb` verifies title replacement,
-owner isolation, content identity, close vetoes and cleanup. With
-`NATIVE_BROWSER=1`, it also checks header action/input behavior and the original
-tpick welcome setup in Chrome. `fixtures/webui/tpick-titlebar.json` retains
-unchanged source methods and hashes. Information/settings header construction
-passes. `script_scope_tpick_setup_spec.rb` adds full default settings/information,
-source data and callbacks, required cues, profile/default/save persistence and
-explicit Monk/Paladin source-defect and optional-image boundaries. Grid rebasing,
-label provider lifecycle, empty/live notebooks and renderer layout are separately
-regressed. Native WKWebView validation is recorded in the handoff.
-
-The progress browser fixture also loads original tpick global/label CSS from the retained corpus fixture
-and verifies that its requested font does not replace the WebUI theme.
-
-The same workflow has a separate Linux Chrome job. Playwright drives the existing
-shim entry/checkbox and separator fixtures, plus a native-page callback fixture.
-The model/tree/ComboBox case also checks expansion, text edits, toggles, multiple
-selection and duplicate option labels against real Ruby callbacks. Each starts
-with the production private `file:///` bootstrap and a fresh browser
-cookie jar, asserting the `/auth` intermediate document, authenticated final page,
-rendered controls and Ruby callback results. No game account or native GTK is used.
-The Builder case loads the complete unchanged `ecleanse` setup XML and invokes
-its original callbacks with isolated game lookups and a temporary settings path.
-It checks keyboard behavior, disabled controls, mutually exclusive options,
-Close saving and layout at requested/larger viewport sizes. Geometry assertions
-detect overlapping checkbox labels, horizontal overflow and an inaccessible
-footer. Separate Ruby lifecycle tests verify that detach and browser exit
-destroy the setup without saving. Fixture provenance and limits are recorded in
-[`fixtures/webui/README.txt`](fixtures/webui/README.txt).
-
-The unchanged `ewaggle` Builder fixture adds table prefix search, cross-list
-transfers, original same-list duplication, named choices, numeric edits and save
-callbacks. It uses the same browser command below and runs in the existing CI job.
-The repository fixture also covers character-by-character search, fixed headers,
-the last column's keyboard resize handle and retained widths, and independent
-scrolling of long comments without moving the list. Its inert listing has enough
-rows to overflow the list viewport; original script construction and filtering
-remain unchanged. DOM tests force an older search response between newer edits
-and verify that superseded retries cannot replace the final query or prevent a
-subsequent intentional script reset.
-The original `ebounty`, `eherbs`, and `BlackArts` setups each have an independent
-browser example in that job. A failure in one does not skip the others. Their
-tests cover dependent checkbox resets, availability, editable combo choices,
-list add/delete/reset, button sizing, and Close/save as applicable. The original
-`ebounty` and `BlackArts` list callbacks require Lich's nil extension; their
-examples invoke the same selected example in a separate Ruby process with that
-actual extension loaded. Child failures or an empty/pending child run fail the
-parent example. The parent suite's NilClass remains unchanged. The expected
-`eloot` missing-ID refusal is checked in the same production environment.
-
-Huntplan adds an independent Chrome case for its original hidden-tab setup,
-character limit, invalid profile-slot message and Save & Exit callback. The
-unchanged Bigshot fixture records its missing `boon_flee_from` tooltip lookup as
-an expected source failure; zero unmapped XML declarations do not imply that
-its setup callbacks were successfully connected. Unhandled queued Builder errors
-must also close the owner's UI and request script termination. Separate corrected
-eloot and Bigshot candidates apply exact, test-only source repairs after digest
-checks; their original fixtures remain untouched. Each adds an independent Chrome
-case covering controls, dependencies and Close/save. Ruby checks additionally
-cover all eloot list handlers, tipping dispatch, Bigshot profile/boon migration,
-scalar fields and text areas, and destruction without saving. The shared control
-browser case verifies TextView focus-out independently of text changes.
-
-Queued setup handlers may enqueue further handlers. A fixed number of queue
-markers proves only that preceding work has run, not that nested work is finished.
-For asynchronous acceptance, wait with a deadline for the required observable
-state and check callback diagnostics, then assert the result. The Bigshot profile
-load example checks its loaded fields and dependent fog control together. A
-timeout remains a failure; sleeps alone, extra markers and reruns must not stand
-in for completion. RSpec's random seed controls example ordering, not thread
-scheduling.
-
-Native external-link policy can be checked on macOS without opening a browser:
-
-```bash
-xcrun swiftc lib/webui/native/macos/ExternalLinks.swift spec/webui/native_link_policy.swift -o /tmp/lich-link-policy
-/tmp/lich-link-policy
-zsh lib/webui/native/macos/build.sh
-```
-
-The policy check verifies trusted main-frame link activation, HTTP(S) destinations,
-and refusal of redirects, subframes, credential URLs and local cross-port links.
-
-Native presentation regressions require a logged-in macOS desktop and the installed
-Swift compiler. After initializing the workspace Ruby environment, run:
-
-```bash
-NATIVE_HOST=1 command rspec spec/lib/webui/native_host_presentation_spec.rb
-```
-
-These checks compile the production host with a test entry point in a disposable
-app bundle. A loopback WebSocket sends reveal requests after the hidden window
-has been idle, followed by repeated hide/show and borderless minimize/restore
-cycles. Assertions observe actual AppKit state without polling or evaluating
-JavaScript to wake the hidden WebView. Ordinary suite runs leave these two cases
-pending; no browser credentials, game connection or downloaded assets are used.
-The loopback server's EOF cleanup regression runs in the ordinary suite without
-`NATIVE_HOST=1`, a native app or the Swift compiler.
-
-After `npm ci --prefix spec/webui`, install Chrome if it is not already available:
-
-```bash
-cd spec/webui
-npx --no-install playwright install chrome
-cd ../..
-```
-
-`script_scope_canvas_spec.rb` adds `shim-canvas`: two-axis scrolling while the
-button remains held, pointer polling across marker redraws, release outside the
-surface, focus-loss cancellation and modifier-wheel coordinates. Its Ruby cases
-cover viewer attribution, disconnect cancellation and bounded virtual extents.
-
-CI installs the browser system dependencies (reusing the runner image's Chrome)
-and runs these files through Bundler, split across two shards with two parallel
-workers each (see `.github/workflows/webui_tests.yaml`; a new browser spec file
-must be added to one shard). Run all browser scenarios locally from the
-repository root in the initialized Ruby shell:
-
-```bash
-NATIVE_BROWSER=1 parallel_rspec -n 4 spec/lib/common spec/lib/webui --test-options '--tag browser'
-```
-
-Chrome runs headlessly in an isolated Playwright context. The browser runner has
-bounded waits and closes its browser; RSpec stops the service and removes the
-private bootstrap directory. Setup scenarios wait for server-confirmed page closure
-before terminating Chrome. Failures propagate to RSpec and save screenshots under
-ignored `spec/webui/test-results/`. Traces are retained for every browser run so
-failures in subsequent Ruby saved-state assertions also have browser diagnostics;
-CI uploads them on job failure and retains them for seven days. Only disposable
-fixture state is used. Missing browser/dependencies
-fail the explicit run rather than silently skipping it.
-
-The original ewaggle Ruby regression also submits final combo/numeric values
-directly through Close without preceding change events. It checks the original
-settings-file callback, independently of browser timing. Related cases verify
-that already accepted changes are not repeated and reconciliation is viewer-local.
-
-Ordinary `rspec` leaves explicitly gated browser cases pending, so local Ruby testing does
-not require Node or Chrome. Node, jsdom and Playwright are test-only dependencies.
-These checks cover browser rendering and transport; they do not establish native
-app-window focus, always-on-top, OS geometry or process-cleanup acceptance.
-Windows/Linux platform acceptance beyond these checks and the macOS AppKit host
-remain separate from this Linux-only workflow.
 
 ## Directory Structure
 
@@ -555,12 +305,7 @@ Lich::DragonRealms::MyModule = ::MyModule
 
 **Cause**: Production code relies on NilClass `method_missing` monkey-patch.
 
-**Fix**: For a unit test, isolate the specific dependency. For original-script
-acceptance, do not fabricate nil behavior or silently repair the source. The
-Builder harness uses a separate Ruby process with Lich's actual NilClass
-extension where production behavior requires it, and keeps missing Builder IDs
-as explicit failures. Document that dependency and any separately labeled source
-repair; see [fixture provenance](fixtures/webui/README.txt).
+**Fix**: Mock the specific method or stub the dependency.
 
 ### Missing Standard Library
 
@@ -622,7 +367,7 @@ include_examples 'guild predicate', 'Moon Mage', :moon_mage?
 
 #### Dependency Inversion (DIP)
 
-**Prefer existing production lifecycle APIs or test-double `reset!` methods:**
+**Prefer public `reset!` APIs over `class_variable_set`:**
 
 ```ruby
 # Good - uses public API
@@ -638,7 +383,7 @@ end
 
 **When `class_variable_set` is acceptable:**
 1. Testing the class variable implementation itself
-2. No suitable production lifecycle method exists; do not add a production reset solely for tests
+2. No `reset!` method exists (add TODO to create one)
 3. Document the reason with a comment
 
 ```ruby
@@ -703,14 +448,24 @@ Before submitting a spec file, verify:
 - [ ] `before(:each)` calls appropriate `reset!` methods
 - [ ] Global variables (`$foo`) are reset if modified
 - [ ] Class variables are reset via `reset!` or documented `class_variable_set`
-- [ ] Tests pass with randomized ordering; investigate a failing seed rather than rerunning until green
+- [ ] Tests pass with `--order random` (run 3+ times)
 - [ ] Tests pass in isolation: `rspec path/to/specific_spec.rb`
 - [ ] Tests pass when run with full suite: `rspec`
 
 ### Production Code Requirements for Testability
 
-Use production ownership and disposal boundaries, immutable constants, and
-dependency injection where practical. A real reset/close operation may be tested
-through its public API, but do not add test-only production methods. Test doubles
-may expose `reset!`; tests of legacy shared state may restore that state directly
-with a comment explaining the isolation requirement, as described above.
+When writing production code, include:
+
+1. **`reset!` method** for any class with mutable state
+2. **Frozen constants** for immutable data (`FREEZE` pattern constants)
+3. **Dependency injection** where practical (pass dependencies as args)
+
+```ruby
+module MyModule
+  @@some_state = []
+
+  def self.reset!
+    @@some_state = []
+  end
+end
+```

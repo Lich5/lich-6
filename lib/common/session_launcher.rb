@@ -121,11 +121,10 @@ module Lich
         # Builds optional CLI flags for child launches.
         # Emits path flags only when explicitly overridden to a non-default value,
         # or, for :inherit flags, when this process holds a value the child cannot
-        # re-derive. With force_path_flags: true, explicit nonempty paths are
-        # retained even when they equal defaults. Explicit empty paths always
-        # opt out. Otherwise child ARGV omits re-derivable default directories.
+        # re-derive. This keeps child ARGV concise and avoids passing parent
+        # default directories.
         #
-        # @param context [Hash] caller-supplied launch options and path overrides
+        # @param context [Hash] Optional launch context from GUI callbacks.
         # @return [Array<String>] Optional flags (possibly empty).
         def optional_spawn_flags(context)
           flags = []
@@ -176,8 +175,6 @@ module Lich
         end
 
         # Returns an explicit per-launch path override when it differs from default.
-        # WebUI supplies force_path_flags to retain even default-valued explicit
-        # paths, keeping a spawned session tied to its launcher's installation.
         #
         # @param context [Hash]
         # @param path_flag [Hash]
@@ -191,8 +188,6 @@ module Lich
           # asked for nothing, so don't fall back to this process's own value.
           value = context[context_key]
           return nil if value.to_s.empty?
-          # Explicit empty values remain opt-outs even when path flags are forced.
-          return value if context[:force_path_flags] == true
 
           value_expanded = File.expand_path(value.to_s)
           default_value = default_path_value(path_flag[:option], constant_name, context)

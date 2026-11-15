@@ -14,9 +14,6 @@ module Lich
       # not. The title is bracketed here ("[Town Square, Central]") and the
       # number is stripped from it; the number's presence also turns on
       # Lich.display_uid (a global, not parser state).
-      # @param subtitle [String] main-window subtitle
-      # @param nav_uid_pending [Boolean] whether nav already supplied an arrival UID
-      # @return [Hash] parser state changes derived from the subtitle
       def self.main_subtitle(subtitle, nav_uid_pending:) # rubocop:disable Lint/UnusedMethodArgument
         if Lich.display_uid == false && subtitle[3..-1] =~ / - \d+$/
           Lich.enable_display_uid_automatically
@@ -35,10 +32,6 @@ module Lich
       # linked) is stashed, but nothing reads it: the stash is only consumed
       # inside room objs, and opening room objs, <nav> or a reset clears it
       # first.
-      # @param id [String, Integer] server object ID
-      # @param flags [Hash<String, String>] creature status attributes
-      # @param in_room_objs [Boolean] whether the status arrived in the room-object component
-      # @return [Boolean, Symbol] true or :applied when updated, false when deferred or unavailable
       def self.apply_crtr_status(id, flags, in_room_objs: false)
         return false if in_room_objs
 

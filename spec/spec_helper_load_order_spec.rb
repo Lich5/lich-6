@@ -78,9 +78,6 @@ RSpec.describe 'spec_helper reset hook load order' do
     end
   end
 
-  # Reads the load-order probe outcome for one example.
-  # @param full_description [Object] full description fixture input
-  # @return [String] the recorded example outcome
   def outcome_of(full_description)
     example = probe_result['examples'].find { |e| e['full_description'] == full_description }
     raise "no probe example #{full_description.inspect}: #{Array(probe_result['messages']).join}" unless example

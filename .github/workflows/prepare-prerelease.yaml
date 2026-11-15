@@ -3,8 +3,9 @@
 # Purpose: Prepare a Release Please prerelease (PR only; no GitHub Release) on
 #          a prerelease train (pre/beta or pre/beta/<slug>).
 #
-# Trigger: workflow_dispatch (manual).
-# The workflow_run configuration below is commented out and inactive.
+# Triggers:
+#   - workflow_dispatch (manual)
+#   - workflow_run (auto) after cherry-pick train completes
 #
 # Contracts / Invariants:
 #   - Base must be "main".

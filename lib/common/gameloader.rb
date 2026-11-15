@@ -12,8 +12,6 @@ module Lich
         require File.join(LIB_DIR, 'common', 'hmr.rb')
       end
 
-      # Loads GemStone modules, including its parser delta.
-      # @return [void] loads the GemStone modules and starts watchers
       def self.gemstone
         self.common_before
         require File.join(LIB_DIR, 'gemstone', 'sk.rb')
@@ -59,8 +57,6 @@ module Lich
         self.common_after
       end
 
-      # Loads DragonRealms modules, including its parser delta.
-      # @return [void] loads the DragonRealms modules and starts watchers
       def self.dragon_realms
         self.common_before
         require File.join(LIB_DIR, 'common', 'map', 'map_dr.rb')

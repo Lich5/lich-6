@@ -1,0 +1,42 @@
+# Throwaway testbed probe (not for merge): does --add-account's
+# password prompt work in a real Windows console?
+name: win-getpass-probe
+
+on:
+  push:
+    branches: ['testbed/pw-2393-**']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      BUNDLE_WITHOUT: 'gtk:vscode:profanity'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: '4.0.9'
+          bundler-cache: true
+      - name: Versions
+        shell: pwsh
+        run: |
+          ruby -v
+          ruby -rio/console -e "puts 'io-console ' + (Gem.loaded_specs['io-console']&.version&.to_s || IO::ConsoleMode.class.name rescue 'default')"
+          [Environment]::OSVersion.VersionString
+      - name: Pipes from each shell
+        shell: pwsh
+        run: ./probe/pipes.ps1
+      - name: Drive a real console
+        if: always()
+        shell: pwsh
+        run: ./probe/console_drive.ps1

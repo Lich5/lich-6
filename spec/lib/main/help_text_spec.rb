@@ -2,9 +2,11 @@
 
 require 'rspec'
 
+# login_spec_helper sets up Lich::Util, which game_selection pulls in transitively
+# by way of Authentication::LoginHelpers.
 require_relative '../../login_spec_helper'
 require_relative '../../../lib/main/help_text'
-require_relative '../../../lib/common/authentication/login_helpers'
+require_relative '../../../lib/common/gui/game_selection'
 
 RSpec.describe Lich::Main::HelpText do
   describe '.render' do
@@ -33,11 +35,30 @@ RSpec.describe Lich::Main::HelpText do
       expect(output).to include('--add-character ACCOUNT CHAR_NAME')
     end
 
+    it 'documents --add-account without a password argument' do
+      [described_class.render(nil), described_class.render('accounts')].each do |output|
+        expect(output).not_to match(/--add-account \S+ \S*PASSWORD/)
+      end
+      expect(described_class.render('accounts')).to include('--add-account ACCOUNT [--password-stdin] [--frontend FRONTEND]')
+      expect(described_class.render('accounts')).to include(%(printf '%s\\n' "$PASSWORD" | lich --add-account MYACCOUNT --password-stdin))
+    end
+
+    it 'says how the --add-account password is supplied, and on which shells each example works' do
+      output = described_class.render('accounts')
+
+      expect(output).to include('Prompted for on the terminal; what you type is not shown.')
+      expect(output).to include('--password-stdin reads the first line of standard input instead.')
+      expect(output).to include('Leading and trailing spaces are part of the password.')
+      expect(output).to include('Windows PowerShell 5.1 changes non-ASCII characters')
+      expect(output).to match(/# sh, bash, zsh:\n\s+printf /)
+      expect(output).to match(/# PowerShell 7:\n\s+\$env:PASSWORD \| lich --add-account MYACCOUNT --password-stdin/)
+    end
+
     it 'lists every game code --game-code accepts' do
       output = described_class.render('accounts')
 
       Lich::Common::Authentication::LoginHelpers::VALID_GAME_CODES.each do |code|
-        name = Lich::Common::Authentication::LoginHelpers::GAME_NAMES.fetch(code)
+        name = Lich::Common::GUI::GameSelection::GAME_MAPPING.fetch(code)
         expect(output).to match(/\b#{code}\s+#{Regexp.escape(name)}/)
       end
     end
@@ -60,11 +81,11 @@ RSpec.describe Lich::Main::HelpText do
       expect(output).to include('--active-session-dir=PATH')
     end
 
-    it 'requires an explicit flag to suppress the default WebUI launcher' do
+    it 'requires an explicit flag to suppress the default GTK GUI' do
       output = described_class.render('advanced')
 
-      expect(output).to include('--no-gui, --no-gtk  Do not open the WebUI launcher (--no-gtk is a legacy alias)')
-      expect(output).to include('The native WebUI launcher starts by default when no arguments are given.')
+      expect(output).to include('--no-gui, --no-gtk  Run without the GTK GUI (aliases)')
+      expect(output).to include('The GTK GUI starts by default. To suppress it, pass --no-gui or --no-gtk,')
       expect(output).to include('including when using --headless.')
     end
 

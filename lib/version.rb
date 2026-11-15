@@ -1,9 +1,9 @@
 # Lich5 carveout to better manage semver
 
-LICH_VERSION = '5.22.0' # x-release-please-version
+LICH_VERSION = '5.24.2' # x-release-please-version
 
 REQUIRED_RUBY = '4.0'
-RECOMMENDED_RUBY = '4.0'
+RECOMMENDED_RUBY = '4.0.9'
 
 if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(REQUIRED_RUBY)
   if (RUBY_PLATFORM =~ /mingw|win/) and (RUBY_PLATFORM !~ /darwin/i)

@@ -323,9 +323,6 @@ RSpec.describe 'Lich::Common::XMLParser <crtrStatus> handling' do
       end
     end
 
-    # Captures the state of a creature identified by ID.
-    # @param id [String, Integer] server object ID
-    # @return [Hash] selected creature state for assertions
     def snapshot(id)
       creature = Lich::Gemstone::Creature[id]
       [creature.health, creature.max_health, creature.crtr_flag?(:dead), creature.has_status?('prone')]
