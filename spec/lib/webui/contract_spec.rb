@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+require_relative '../../spec_helper'
+require_relative '../../support/webui_fresh_process'
+require 'webui/contract'
+
+RSpec.describe Lich::WebUI::Contract do
+  include WebUIFreshProcess
+
+  it 'declares exactly the supported 30-type vocabulary' do
+    expect(described_class::TYPES).to eq(%i[
+                                           page group stack columns grid tabs expander split overlay scroll divider
+                                           text markdown log progress image
+                                           button toggle checkbox radio radio_option text_input password_input textarea number_input slider select
+                                           table dialog composite
+                                         ])
+    expect(described_class.schemas.keys).to contain_exactly(*described_class::TYPES)
+  end
+
+  it 'returns deeply frozen machine-readable schemas' do
+    schema = described_class.schema(:table)
+
+    expect(schema).to be_frozen
+    expect(schema[:properties]).to be_frozen
+    expect(schema[:properties][:columns]).to be_frozen
+    expect { schema[:properties][:extra] = {} }.to raise_error(FrozenError)
+  end
+
+  it 'declares password values sensitive and submit-only' do
+    schema = described_class.schema(:password_input)
+
+    expect(schema[:sensitive]).to be true
+    expect(schema[:value_scope]).to eq(:sensitive_write_only)
+    expect(schema[:events].keys).to eq([:submit])
+    expect(schema[:properties][:sensitive]).to include(default: true, forced: true)
+  end
+
+  it 'keeps the authored password reveal permission in the shared property scope' do
+    expect(described_class.schema(:password_input)[:properties][:revealable]).to include(scope: :shared, default: false)
+  end
+
+  it 'keeps composite dimensions required after generic attributes are merged' do
+    properties = described_class.schema(:composite).fetch(:properties)
+
+    expect(properties.fetch(:width)).to include(required: true)
+    expect(properties.fetch(:height)).to include(required: true)
+  end
+
+  it 'negotiates compatible versions and refuses unsupported majors' do
+    expect(described_class.negotiate!('2.99.0')).to eq('2.52.0')
+    expect { described_class.negotiate!('3.0.0') }
+      .to raise_error(Lich::WebUI::VersionError, /unsupported contract major 3/)
+    expect { described_class.negotiate!('invalid') }
+      .to raise_error(Lich::WebUI::VersionError, /invalid contract version/)
+  end
+
+  it 'raises for an unknown component type' do
+    expect { described_class.schema(:tree) }
+      .to raise_error(Lich::WebUI::UnknownTypeError, /unknown component type :tree/)
+  end
+
+  it 'assembles frozen schemas when required alone in a fresh Ruby process' do
+    code = 'abort "schema not frozen" unless Lich::WebUI::Contract.schema(:table)[:properties].frozen?; puts "ready"'
+    output, errors, status = run_ruby_with_deadline(code, '-r', 'webui/contract')
+    expect_child_within_deadline(status, output, errors, 'fresh-process contract example')
+    expect(status.success?).to be(true), errors
+    expect(output).to eq("ready\n")
+  end
+  it 'includes select in the exported input vocabulary' do
+    expect(described_class::INPUT_TYPES).to eq(%i[
+                                                 button toggle checkbox radio radio_option text_input password_input textarea number_input slider select
+                                               ])
+    expect(described_class::INPUT_TYPES).not_to include(:table, :dialog, :composite)
+  end
+
+  it 'admits decimal majors and refuses alternate numeric spellings' do
+    %w[2 02 2.99.0].each { |version| expect(described_class.negotiate!(version)).to eq(described_class::VERSION) }
+    ['0x2.0.0', '0b10.0.0', '0o2.0.0', '+2.0.0', ' 2.0.0', '2_0.0.0', '.2', ''].each do |version|
+      expect { described_class.negotiate!(version) }.to raise_error(Lich::WebUI::VersionError, /invalid contract version/)
+    end
+    expect { described_class.negotiate!('3.0.0') }.to raise_error(Lich::WebUI::VersionError, /unsupported contract major/)
+  end
+end

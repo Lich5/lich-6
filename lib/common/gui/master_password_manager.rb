@@ -29,10 +29,9 @@ module Lich
         VALIDATION_ITERATIONS = 100_000
         VALIDATION_KEY_LENGTH = 32
         VALIDATION_SALT_PREFIX = 'lich5-master-password-validation-v1'
-        # Shortest master password the CLI accepts when one is created or replaced.
-        # The GTK dialogs keep their own length checks. Applies to new passwords
-        # only: an existing password is checked against the stored validation
-        # test, never by length.
+        # Shortest master password the CLI and the WebUI launcher accept when one is
+        # created or replaced. Applies to new passwords only: an existing password is
+        # checked against the stored validation test, never by length.
         MIN_PASSWORD_LENGTH = 8
         # Fixed refusals for a new master password; none includes the password.
         NEW_PASSWORD_EMPTY = 'Master password cannot be empty.'
@@ -51,11 +50,9 @@ module Lich
           input.chomp
         end
 
-        # The one acceptance rule for a new master password on every CLI create and
-        # change path. The GTK dialogs keep their own checks and share only the
-        # keychain length refusal below. Existing passwords
-        # (unlock and recovery) are never checked here; the validation test
-        # decides them.
+        # The one acceptance rule for a new master password on every CLI and WebUI
+        # launcher create and change path. Existing passwords (unlock and recovery)
+        # are never checked here; the validation test decides them.
         # @param password [String, nil] proposed new master password
         # @return [String, nil] fixed refusal message, or nil when acceptable
         def self.new_password_refusal(password)
@@ -67,8 +64,8 @@ module Lich
         end
 
         # Refuses a new master password the platform's keychain cannot hold, so
-        # the person choosing it is told before anything is stored. Shared by the
-        # CLI rule and the GTK dialogs. Only macOS has such a limit here.
+        # the person choosing it is told before anything is stored. Part of the
+        # new-password rule above. Only macOS has such a limit here.
         # @param password [String, nil] proposed new master password
         # @return [String, nil] fixed refusal message, or nil when it fits
         def self.keychain_length_refusal(password)

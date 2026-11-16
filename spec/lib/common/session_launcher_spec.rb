@@ -206,6 +206,54 @@ RSpec.describe Lich::Common::SessionLauncher do
     )
   end
 
+  it 'forces the parent data directory into detached Multi-Launch children' do
+    allow(described_class).to receive(:optional_spawn_flags).and_call_original
+    allow(Lich).to receive(:track_dark_mode).and_return(nil)
+    stub_const('DATA_DIR', '/tmp/active-data')
+
+    described_class.launch(
+      launch_data + ['CHARACTER=Tsetem'],
+      launch_context: { frontend: 'stormfront', data_dir: '/tmp/active-data', force_path_flags: true }
+    )
+
+    expect(described_class).to have_received(:spawn).with(
+      '/usr/bin/ruby', File.expand_path($PROGRAM_NAME), '--login', 'Tsetem', '--GST', '--stormfront',
+      '--custom-launch=/path/to/custom', '--data=/tmp/active-data', hash_including(chdir: anything)
+    )
+  end
+
+  it 'still suppresses a default-valued data directory when path flags are not forced' do
+    allow(described_class).to receive(:optional_spawn_flags).and_call_original
+    allow(Lich).to receive(:track_dark_mode).and_return(nil)
+    stub_const('DATA_DIR', '/tmp/active-data')
+
+    described_class.launch(
+      launch_data + ['CHARACTER=Tsetem'],
+      launch_context: { frontend: 'stormfront', data_dir: '/tmp/active-data' }
+    )
+
+    expect(described_class).to have_received(:spawn).with(
+      '/usr/bin/ruby', File.expand_path($PROGRAM_NAME), '--login', 'Tsetem', '--GST', '--stormfront',
+      '--custom-launch=/path/to/custom', hash_including(chdir: anything)
+    )
+  end
+
+  it 'keeps an explicitly empty data directory as an opt-out when path flags are forced' do
+    allow(described_class).to receive(:optional_spawn_flags).and_call_original
+    allow(Lich).to receive(:track_dark_mode).and_return(nil)
+    stub_const('DATA_DIR', '/tmp/active-data')
+
+    described_class.launch(
+      launch_data + ['CHARACTER=Tsetem'],
+      launch_context: { frontend: 'stormfront', data_dir: '', force_path_flags: true }
+    )
+
+    expect(described_class).to have_received(:spawn).with(
+      '/usr/bin/ruby', File.expand_path($PROGRAM_NAME), '--login', 'Tsetem', '--GST', '--stormfront',
+      '--custom-launch=/path/to/custom', hash_including(chdir: anything)
+    )
+  end
+
   it 'forwards an explicit active_session_dir override' do
     allow(described_class).to receive(:optional_spawn_flags).and_call_original
     allow(Lich).to receive(:track_dark_mode).and_return(nil)
@@ -262,10 +310,10 @@ RSpec.describe Lich::Common::SessionLauncher do
   end
 
   it 'inherits this process active_session_dir when the launch context omits it' do
-    # Production GUI launch contexts (GuiLogin#handle_play_action) carry account
-    # and frontend keys only, never directory overrides. Without inheritance the
-    # parent's --active-session-dir is dropped on every child, and each one
-    # coordinates through its own TEMP_DIR instead of the shared registry.
+    # Launch contexts can carry account and frontend keys without directory
+    # overrides. Without inheritance the parent's --active-session-dir is
+    # dropped on every child, and each one coordinates through its own TEMP_DIR
+    # instead of the shared registry.
     allow(described_class).to receive(:optional_spawn_flags).and_call_original
     allow(Lich).to receive(:track_dark_mode).and_return(nil)
     stub_const('LICH_DIR', '/tmp/lich-home')

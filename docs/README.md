@@ -12,6 +12,8 @@ skip the RSpec run in CI.
 
 | Doc | Kind | Covers |
 |---|---|---|
+| **WebUI** | | |
+| [WebUI author guide](webui-integration.md) | API | Native interfaces, bounded script compatibility, hosting and validation |
 | **Contributing** | | |
 | [YARD style guide](contributing/yard-style-guide.md) | Guide | Which methods get docs, required tags, type notation |
 | **Scripting API** | | |
@@ -22,7 +24,7 @@ skip the RSpec run in CI.
 | [Gem packages](scripting/gem-packages.md) | Behavior | Scripts shipped as a `.gem` on GitHub releases via `lich5-update --add-gem`: contract, what is refused, trust model |
 | **Engine** | | |
 | [Runtime I/O](engine/runtime-io.md) | Behavior | Detachable frontends, `Script#gets` timeouts, socket-read hooks |
-| [GTK hardening](engine/gtk-hardening.md) | Behavior | Shared GTK main loop protection and callback retention |
+| [GTK compatibility lifecycle](engine/gtk-hardening.md) | Behavior | Script-only migration bridge, dispatch and cleanup |
 | [SQLite busy timeout](engine/sqlite-busy-timeout.md) | Behavior | 5 s busy timeout on core DB connections |
 | **Connection** | | |
 | [EAccess protocol](connection/eaccess-protocol-analysis.md) | Research | `eaccess.play.net:7910` command reference |
